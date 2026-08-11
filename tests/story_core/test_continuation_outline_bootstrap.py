@@ -32,6 +32,22 @@ from packages.story_core.continuation_outline_bootstrap import (
 from packages.story_core.outline_rolling_store import RollingOutlineStore
 
 
+CHAPTER_CONTRACT = {
+    "payoff_contract": {
+        "need": "林修必须拿到替换镜芯",
+        "pressure": "买家只给他一夜验货",
+        "hidden_advantage": "他能恢复物品上次完整运行状态",
+        "concrete_reward": "修复订单并获得父亲失踪线索",
+    },
+    "chapter_sop": {
+        "opening_carry": "接上铜镜第一次亮起",
+        "mid_feedback": "镜面恢复一段旧影像",
+        "turn": "影像中的人认出了林修",
+        "ending_hook": "镜中人叫出林修父亲的名字",
+    },
+}
+
+
 def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -426,31 +442,53 @@ def test_rolling_batch_from_generated_window_preserves_chapter_contracts() -> No
     )
 
     chapter = detailed_chapter(148)
-    chapter.update(
-        {
-            "payoff_contract": {
-                "need": "林修必须拿到替换镜芯",
-                "pressure": "买家只给他一夜验货",
-                "hidden_advantage": "他能恢复物品上次完整运行状态",
-                "concrete_reward": "修复订单并获得父亲失踪线索",
-            },
-            "chapter_sop": {
-                "opening_carry": "接上铜镜第一次亮起",
-                "mid_feedback": "镜面恢复一段旧影像",
-                "turn": "影像中的人认出了林修",
-                "ending_hook": "镜中人叫出林修父亲的名字",
-            },
-        }
-    )
+    chapter.update(CHAPTER_CONTRACT)
 
     row = rolling_batch_from_generated_window(
         chapters=[chapter],
         character_cards=[character_card(chapter["cast"][0], "protagonist")],
         volume_range=(148, 160),
+        require_shuangwen_contracts=True,
     )[0]
 
     assert row["payoff_contract"] == chapter["payoff_contract"]
     assert row["chapter_sop"] == chapter["chapter_sop"]
+
+
+def test_disabled_rolling_conversion_drops_partial_model_contracts() -> None:
+    from packages.story_core.continuation_outline_bootstrap import (
+        rolling_batch_from_generated_window,
+    )
+
+    chapter = detailed_chapter(148)
+    chapter["payoff_contract"] = {"need": "模型恶意夹带的局部字段"}
+
+    row = rolling_batch_from_generated_window(
+        chapters=[chapter],
+        character_cards=[character_card("林修", "protagonist")],
+        volume_range=(148, 160),
+        require_shuangwen_contracts=False,
+    )[0]
+
+    assert "payoff_contract" not in row
+    assert "chapter_sop" not in row
+
+
+def test_enabled_rolling_conversion_rejects_partial_contracts() -> None:
+    from packages.story_core.continuation_outline_bootstrap import (
+        rolling_batch_from_generated_window,
+    )
+
+    chapter = detailed_chapter(148)
+    chapter["payoff_contract"] = {"need": "林修必须拿到替换镜芯"}
+
+    with pytest.raises(ValueError, match="chapter_contract_missing"):
+        rolling_batch_from_generated_window(
+            chapters=[chapter],
+            character_cards=[character_card("林修", "protagonist")],
+            volume_range=(148, 160),
+            require_shuangwen_contracts=True,
+        )
 
 
 def test_rolling_batch_rejects_blank_gain_or_cost() -> None:
@@ -542,8 +580,16 @@ def test_llm_rolling_window_generator_makes_one_planner_call() -> None:
             content = json.dumps(
                 {
                     "chapters": [
-                        {**detailed_chapter(148), "cast": ["林修"]},
-                        {**detailed_chapter(149), "cast": ["林修"]},
+                        {
+                            **detailed_chapter(148),
+                            "cast": ["林修"],
+                            "payoff_contract": {"need": "恶意夹带"},
+                        },
+                        {
+                            **detailed_chapter(149),
+                            "cast": ["林修"],
+                            "chapter_sop": {"turn": "恶意夹带"},
+                        },
                     ]
                 },
                 ensure_ascii=False,
@@ -561,13 +607,52 @@ def test_llm_rolling_window_generator_makes_one_planner_call() -> None:
         chapter_numbers=[148, 149],
         volume_range=(148, 160),
         character_cards=[character_card("林修", "protagonist")],
+        require_shuangwen_contracts=False,
     )
     assert [row["chapter_number"] for row in rows] == [148, 149]
     assert len(captured) == 1
     assert captured[0]["stage"] == "planner"
+    serialized_request = json.dumps(captured[0]["messages"], ensure_ascii=False)
+    assert "payoff_contract" not in serialized_request
+    assert "chapter_sop" not in serialized_request
+    assert all("payoff_contract" not in row for row in rows)
+    assert all("chapter_sop" not in row for row in rows)
     # The generator never touches the filesystem; it just
     # produces the rolling rows.
     assert all(isinstance(row["scenes"], list) and len(row["scenes"]) >= 2 for row in rows)
+
+
+def test_llm_rolling_window_generator_requires_enabled_contracts() -> None:
+    from packages.story_core.continuation_outline_bootstrap import (
+        LLMRollingWindowGenerator,
+    )
+
+    captured: list[dict[str, Any]] = []
+
+    class _FakeGateway:
+        def complete_stage(self, stage: str, request):  # type: ignore[no-untyped-def]
+            captured.append({"stage": stage, "messages": list(request.messages)})
+            chapter = {**detailed_chapter(148), **CHAPTER_CONTRACT, "cast": ["林修"]}
+            from packages.story_core.model_gateway import ModelResponse
+
+            return ModelResponse.success(
+                request,
+                text=json.dumps({"chapters": [chapter]}, ensure_ascii=False),
+            )
+
+    rows = LLMRollingWindowGenerator(gateway=_FakeGateway()).generate(  # type: ignore[arg-type]
+        context={"current_arc": "续写主线"},
+        chapter_numbers=[148],
+        volume_range=(148, 160),
+        character_cards=[character_card("林修", "protagonist")],
+        require_shuangwen_contracts=True,
+    )
+
+    serialized_request = json.dumps(captured[0]["messages"], ensure_ascii=False)
+    assert "payoff_contract" in serialized_request
+    assert "chapter_sop" in serialized_request
+    assert rows[0]["payoff_contract"] == CHAPTER_CONTRACT["payoff_contract"]
+    assert rows[0]["chapter_sop"] == CHAPTER_CONTRACT["chapter_sop"]
 
 
 def test_llm_rolling_window_generator_normalizes_common_cli_shape() -> None:
@@ -595,6 +680,7 @@ def test_llm_rolling_window_generator_normalizes_common_cli_shape() -> None:
         chapter_numbers=[148],
         volume_range=(148, 160),
         character_cards=[character_card("林修", "protagonist")],
+        require_shuangwen_contracts=False,
     )
 
     assert rows[0]["chapter_number"] == 148
@@ -770,6 +856,7 @@ def _fake_rolling_generator(
             chapter_numbers: list[int],
             volume_range: tuple[int, int],
             character_cards: list[dict[str, Any]],
+            require_shuangwen_contracts: bool,
         ) -> list[dict[str, Any]]:
             captured.append(
                 {
@@ -777,6 +864,7 @@ def _fake_rolling_generator(
                     "chapter_numbers": list(chapter_numbers),
                     "volume_range": tuple(volume_range),
                     "character_cards": list(character_cards),
+                    "require_shuangwen_contracts": require_shuangwen_contracts,
                 }
             )
             if error:
@@ -847,6 +935,59 @@ def test_bootstrapper_full_run_reaches_ready(tmp_path: Path) -> None:
         for chapter in rolling.read_rolling_outline()["chapters"]
     ]
     assert numbers == [148, 149, 150, 151, 152]
+
+
+def test_disabled_bootstrap_drops_partial_contracts_before_persisting(
+    tmp_path: Path,
+) -> None:
+    root = _seed_legacy_approved_project(tmp_path, current_chapter=147)
+    chapters = []
+    for number in range(148, 153):
+        chapter = _rolling_chapter_payload(number)
+        chapter["payoff_contract"] = {"need": "模型恶意夹带的局部字段"}
+        chapters.append(chapter)
+    rolling_stub, rolling_calls = _fake_rolling_generator(chapters=chapters)
+
+    result = ContinuationOutlineBootstrapper(
+        project_root=root,
+        planning_generator=object(),
+        rolling_generator=rolling_stub,
+    ).run()
+
+    assert result.ready
+    assert rolling_calls[0]["require_shuangwen_contracts"] is False
+    persisted = RollingOutlineStore(root).read_rolling_outline()
+    assert all("payoff_contract" not in row for row in persisted["chapters"])
+    assert all("chapter_sop" not in row for row in persisted["chapters"])
+
+
+def test_enabled_bootstrap_requires_and_persists_full_contracts(
+    tmp_path: Path,
+) -> None:
+    root = _seed_legacy_approved_project(tmp_path, current_chapter=147)
+    project_path = root / ".webnovel" / "project.json"
+    project = _read_json(project_path)
+    project["enabled_skill_module_ids"] = [
+        "commercial-shuangwen::chapter-sop"
+    ]
+    _write_json(project_path, project)
+    chapters = [
+        {**_rolling_chapter_payload(number), **CHAPTER_CONTRACT}
+        for number in range(148, 153)
+    ]
+    rolling_stub, rolling_calls = _fake_rolling_generator(chapters=chapters)
+
+    result = ContinuationOutlineBootstrapper(
+        project_root=root,
+        planning_generator=object(),
+        rolling_generator=rolling_stub,
+    ).run()
+
+    assert result.ready
+    assert rolling_calls[0]["require_shuangwen_contracts"] is True
+    persisted = RollingOutlineStore(root).read_rolling_outline()
+    assert persisted["chapters"][0]["payoff_contract"] == CHAPTER_CONTRACT["payoff_contract"]
+    assert persisted["chapters"][0]["chapter_sop"] == CHAPTER_CONTRACT["chapter_sop"]
 
 
 def test_bootstrapper_real_import_baseline_generates_future_arc(

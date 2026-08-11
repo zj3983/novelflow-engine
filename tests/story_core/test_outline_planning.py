@@ -5,6 +5,7 @@ from copy import deepcopy
 import pytest
 
 from packages.story_core.outline_planning import (
+    sanitize_generated_outline_amounts,
     validate_generated_continuation_plan,
     validate_generated_opening_plan,
 )
@@ -356,6 +357,11 @@ def test_enabled_chapter_sop_rejects_missing_or_partial_contracts(
         ("chapter_sop", "ending_hook", "留下新的悬念"),
         ("chapter_sop", "ending_hook", "留下一个新的悬念"),
         ("chapter_sop", "mid_feedback", "推进"),
+        ("chapter_sop", "mid_feedback", "继续推进一下"),
+        ("payoff_contract", "pressure", "压力升级中"),
+        ("payoff_contract", "hidden_advantage", "情况复杂化"),
+        ("chapter_sop", "mid_feedback", "得到反馈后"),
+        ("chapter_sop", "ending_hook", "留下悬念待续"),
         ("chapter_sop", "mid_feedback", "..."),
         ("chapter_sop", "opening_carry", "continue"),
     ],
@@ -377,6 +383,62 @@ def test_enabled_chapter_sop_rejects_vague_values(
             valid_payload,
             require_chapter_contracts=True,
         )
+
+
+@pytest.mark.parametrize(
+    "section,field,location",
+    [
+        (
+            "payoff_contract",
+            "concrete_reward",
+            "1:payoff_contract.concrete_reward",
+        ),
+        (
+            "chapter_sop",
+            "mid_feedback",
+            "1:chapter_sop.mid_feedback",
+        ),
+    ],
+)
+def test_opening_plan_rejects_monetary_amount_in_chapter_contracts(
+    valid_payload: dict,
+    section: str,
+    field: str,
+    location: str,
+) -> None:
+    _add_chapter_contracts(valid_payload)
+    valid_payload["outline"]["chapters"][0][section][field] = "到账1764元"
+
+    with pytest.raises(
+        ValueError,
+        match=rf"^generated_outline_contains_monetary_amount:{location}$",
+    ):
+        validate_generated_opening_plan(
+            valid_payload,
+            require_chapter_contracts=True,
+        )
+
+
+@pytest.mark.parametrize(
+    "section,field",
+    [
+        ("payoff_contract", "concrete_reward"),
+        ("chapter_sop", "mid_feedback"),
+    ],
+)
+def test_amount_sanitizer_cleans_chapter_contract_fields(
+    valid_payload: dict,
+    section: str,
+    field: str,
+) -> None:
+    _add_chapter_contracts(valid_payload)
+    valid_payload["outline"]["chapters"][0][section][field] = "到账1764元"
+
+    sanitized = sanitize_generated_outline_amounts(valid_payload)
+    value = sanitized["outline"]["chapters"][0][section][field]
+
+    assert "1764" not in value
+    assert "元" not in value
 
 
 def test_opening_plan_rejects_concrete_monetary_amount(valid_payload: dict) -> None:

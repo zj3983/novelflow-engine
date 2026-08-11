@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-from packages.story_core.outline_planning import validate_concrete_chapter_contract
+from packages.story_core.outline_planning import apply_chapter_contract_policy
 
 
 class RollingPlanError(ValueError):
@@ -419,16 +419,14 @@ def validate_rolling_chapter(
                     f"index={index} field={field}"
                 )
 
-    if require_chapter_contracts:
-        try:
-            validate_concrete_chapter_contract(
-                payload,
-                chapter_number=chapter_number,
-            )
-        except ValueError as exc:
-            raise RollingValidationError(str(exc)) from exc
-
-    return dict(payload)
+    try:
+        return apply_chapter_contract_policy(
+            payload,
+            require_chapter_contracts=require_chapter_contracts,
+            chapter_number=chapter_number,
+        )
+    except ValueError as exc:
+        raise RollingValidationError(str(exc)) from exc
 
 
 def validate_rolling_batch(

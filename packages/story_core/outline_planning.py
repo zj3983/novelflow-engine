@@ -101,6 +101,7 @@ _CHAPTER_CONTRACT_FIELDS = {
         "ending_hook",
     ),
 }
+CHAPTER_SOP_MODULE_ID = "commercial-shuangwen::chapter-sop"
 _ABSTRACT_CHAPTER_CONTRACT_NOUNS = frozenset(
     {
         "压力",
@@ -162,14 +163,51 @@ _GENERIC_CHAPTER_CONTRACT_MODIFIERS = frozenset(
         "有",
     }
 )
-_GENERIC_CHAPTER_CONTRACT_TERMS = tuple(
-    sorted(
-        _ABSTRACT_CHAPTER_CONTRACT_NOUNS
-        | _GENERIC_CHAPTER_CONTRACT_ACTIONS
-        | _GENERIC_CHAPTER_CONTRACT_MODIFIERS,
-        key=len,
-        reverse=True,
+_GENERIC_CHAPTER_CONTRACT_SUFFIXES = frozenset(
+    {
+        "一下",
+        "一下子",
+        "中",
+        "后",
+        "之后",
+        "化",
+        "待续",
+        "起来",
+        "下去",
+        "着",
+        "过",
+    }
+)
+
+
+def _regex_union(values: frozenset[str]) -> str:
+    return "|".join(
+        re.escape(value) for value in sorted(values, key=len, reverse=True)
     )
+
+
+_ABSTRACT_CHAPTER_CONTRACT_PATTERN = _regex_union(
+    _ABSTRACT_CHAPTER_CONTRACT_NOUNS
+)
+_GENERIC_CHAPTER_CONTRACT_PATTERN = _regex_union(
+    _GENERIC_CHAPTER_CONTRACT_ACTIONS | _GENERIC_CHAPTER_CONTRACT_MODIFIERS
+)
+_GENERIC_CHAPTER_CONTRACT_SUFFIX_PATTERN = _regex_union(
+    _GENERIC_CHAPTER_CONTRACT_SUFFIXES
+)
+_GENERIC_ACTION_ONLY_PHRASE_PATTERN = re.compile(
+    rf"^(?:{_GENERIC_CHAPTER_CONTRACT_PATTERN})+"
+    rf"(?:{_GENERIC_CHAPTER_CONTRACT_SUFFIX_PATTERN})*$",
+    re.IGNORECASE,
+)
+_GENERIC_ABSTRACT_PHRASE_PATTERN = re.compile(
+    rf"^(?:{_GENERIC_CHAPTER_CONTRACT_PATTERN}|"
+    rf"{_GENERIC_CHAPTER_CONTRACT_SUFFIX_PATTERN})*"
+    rf"(?:{_ABSTRACT_CHAPTER_CONTRACT_PATTERN})"
+    rf"(?:{_GENERIC_CHAPTER_CONTRACT_PATTERN}|"
+    rf"{_ABSTRACT_CHAPTER_CONTRACT_PATTERN}|"
+    rf"{_GENERIC_CHAPTER_CONTRACT_SUFFIX_PATTERN})*$",
+    re.IGNORECASE,
 )
 _NUMBER_TOKEN = (
     r"(?:\d+(?:,\d{3})*(?:\.\d+)?[万亿]?"
@@ -251,10 +289,12 @@ def _is_generic_chapter_contract_value(value: str) -> bool:
         "",
         unicodedata.normalize("NFKC", value),
     ).casefold()
-    remainder = normalized
-    for term in _GENERIC_CHAPTER_CONTRACT_TERMS:
-        remainder = remainder.replace(term, "")
-    return not remainder
+    if not normalized:
+        return True
+    return bool(
+        _GENERIC_ACTION_ONLY_PHRASE_PATTERN.fullmatch(normalized)
+        or _GENERIC_ABSTRACT_PHRASE_PATTERN.fullmatch(normalized)
+    )
 
 
 def validate_concrete_chapter_contract(
@@ -285,6 +325,26 @@ def validate_concrete_chapter_contract(
                 raise ValueError(
                     f"chapter_contract_not_concrete:{number}:{location}"
                 )
+
+
+def apply_chapter_contract_policy(
+    chapter: dict[str, Any],
+    *,
+    require_chapter_contracts: bool,
+    chapter_number: int | None = None,
+) -> dict[str, Any]:
+    """Return a copy with contracts strictly validated or fully removed."""
+
+    normalized = dict(chapter)
+    if require_chapter_contracts:
+        validate_concrete_chapter_contract(
+            normalized,
+            chapter_number=chapter_number,
+        )
+    else:
+        for section_name in _CHAPTER_CONTRACT_FIELDS:
+            normalized.pop(section_name, None)
+    return normalized
 
 
 def _validate_generated_chapter_contracts(plan: GeneratedOutlinePlan) -> None:
@@ -413,6 +473,18 @@ def sanitize_generated_outline_amounts(payload: Any) -> dict[str, Any]:
                 field_name,
                 _sanitize_generated_narrative_value(getattr(chapter, field_name)),
             )
+        for section_name, field_names in _CHAPTER_CONTRACT_FIELDS.items():
+            section = getattr(chapter, section_name)
+            if section is None:
+                continue
+            for field_name in field_names:
+                setattr(
+                    section,
+                    field_name,
+                    _sanitize_generated_narrative_value(
+                        getattr(section, field_name)
+                    ),
+                )
     return plan.model_dump(mode="json")
 
 
@@ -460,6 +532,15 @@ def _validate_generated_outline_amounts(plan: GeneratedOutlinePlan) -> None:
                 getattr(chapter, field_name),
                 f"{chapter.chapter_number}:{field_name}",
             )
+        for section_name, field_names in _CHAPTER_CONTRACT_FIELDS.items():
+            section = getattr(chapter, section_name)
+            if section is None:
+                continue
+            for field_name in field_names:
+                _validate_generated_narrative_value(
+                    getattr(section, field_name),
+                    f"{chapter.chapter_number}:{section_name}.{field_name}",
+                )
 
 
 def validate_generated_opening_plan(

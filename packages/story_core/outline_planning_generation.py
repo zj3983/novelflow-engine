@@ -15,6 +15,7 @@ from packages.story_core.model_gateway import ModelRequest, RuntimeModelGateway
 from packages.story_core.novel_type_catalog import novel_type_prompt_context, runtime_novel_type
 from packages.story_core.novel_type_ids import canonical_novel_type_id
 from packages.story_core.outline_planning import (
+    CHAPTER_SOP_MODULE_ID,
     CharacterTier,
     GeneratedOutlinePlan,
     INITIAL_OUTLINE_CHAPTER_COUNT,
@@ -50,14 +51,13 @@ _OUTLINE_SKILL_LIST_MAX_CHARS = _OUTLINE_SKILL_CONTEXT_MAX_CHARS - (
     len(json.dumps({"outline": []}, ensure_ascii=False))
     - len(json.dumps([], ensure_ascii=False))
 )
-_CHAPTER_SOP_MODULE_ID = "commercial-shuangwen::chapter-sop"
 _CHAPTER_SKILL_CONTEXT_MAX_CHARS = 1200
 _CHAPTER_SKILL_LIST_MAX_CHARS = _CHAPTER_SKILL_CONTEXT_MAX_CHARS - (
     len(json.dumps({"chapter_plan": []}, ensure_ascii=False))
     - len(json.dumps([], ensure_ascii=False))
 )
 _CHAPTER_CONTRACT_FIELDS = ("payoff_contract", "chapter_sop")
-_CHAPTER_CONTRACT_RULE = (
+CHAPTER_CONTRACT_RULE = (
     "Every chapter must include payoff_contract.need/pressure/hidden_advantage/"
     "concrete_reward and chapter_sop.opening_carry/mid_feedback/turn/ending_hook. "
     "Each chapter_contract value must name an observable event/action/result grounded "
@@ -68,7 +68,7 @@ _CHAPTER_CONTRACT_RULE = (
 )
 
 
-def _chapter_output_schema(
+def chapter_output_schema(
     model: type[BaseModel],
     *,
     require_chapter_contracts: bool,
@@ -522,7 +522,7 @@ class LLMOutlinePlanningGenerator:
         stop_after_phase: str | None = None,
     ) -> GeneratedOutlinePlan:
         validated = OutlinePlanningBrief.model_validate(brief)
-        chapter_contracts_enabled = _CHAPTER_SOP_MODULE_ID in {
+        chapter_contracts_enabled = CHAPTER_SOP_MODULE_ID in {
             str(module_id).strip()
             for module_id in validated.enabled_skill_module_ids
         }
@@ -679,7 +679,7 @@ class LLMOutlinePlanningGenerator:
             validation_rules.append(financial_outline_rule)
             validation_rules.extend(power_contract_rules)
             if chapter_contracts_enabled:
-                validation_rules.append(_CHAPTER_CONTRACT_RULE)
+                validation_rules.append(CHAPTER_CONTRACT_RULE)
             is_game_story = effective_novel_type_id == "game_webnovel"
             if is_game_story:
                 validation_rules.extend(
@@ -742,7 +742,7 @@ class LLMOutlinePlanningGenerator:
                     "current_strategy", "observe"
                 ),
                 "one_time_guidance": normalized_guidance,
-                "output_schema": _chapter_output_schema(
+                "output_schema": chapter_output_schema(
                     GeneratedOutlinePlan,
                     require_chapter_contracts=chapter_contracts_enabled,
                 ),
@@ -794,7 +794,7 @@ class LLMOutlinePlanningGenerator:
                 else "For non-game stories, leave game_line_payoff and reality_line_payoff empty. "
             )
             chapter_contract_prompt = (
-                f"{_CHAPTER_CONTRACT_RULE} "
+                f"{CHAPTER_CONTRACT_RULE} "
                 if chapter_contracts_enabled
                 else ""
             )
@@ -945,14 +945,14 @@ class LLMOutlinePlanningGenerator:
                     **prompt_context,
                     "generation_phase": "outline",
                     "target_chapter_numbers": [],
-                    "output_schema": _chapter_output_schema(
+                    "output_schema": chapter_output_schema(
                         GeneratedOutlineFoundation,
                         require_chapter_contracts=False,
                     ),
                     "validation_rules": [
                         rule
                         for rule in validation_rules
-                        if rule != _CHAPTER_CONTRACT_RULE
+                        if rule != CHAPTER_CONTRACT_RULE
                     ],
                 }
                 if outline_skill_context:
@@ -1098,7 +1098,7 @@ class LLMOutlinePlanningGenerator:
                     "genre_trope_templates": trope_candidates,
                     "chapter_outline_template": outline_template.get("chapter", {}),
                     "target_chapter_numbers": target_chapter_numbers,
-                    "output_schema": _chapter_output_schema(
+                    "output_schema": chapter_output_schema(
                         GeneratedChapterWindow,
                         require_chapter_contracts=chapter_contracts_enabled,
                     ),
@@ -1108,7 +1108,7 @@ class LLMOutlinePlanningGenerator:
                         "Use trope_beat only on a milestone that fits the active arc.",
                         financial_outline_rule,
                         *(
-                            [_CHAPTER_CONTRACT_RULE]
+                            [CHAPTER_CONTRACT_RULE]
                             if chapter_contracts_enabled
                             else []
                         ),

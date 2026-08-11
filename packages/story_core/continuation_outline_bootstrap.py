@@ -372,6 +372,7 @@ def _project_chapter(
     *,
     expected_chapter_number: int,
     real_cast: set[str],
+    require_shuangwen_contracts: bool,
 ) -> dict[str, Any]:
     """Map one planner-stage chapter row into the rolling schema.
 
@@ -440,7 +441,7 @@ def _project_chapter(
         for key in ("payoff_contract", "chapter_sop")
         if isinstance(payload.get(key), dict)
     }
-    return {
+    row = {
         "chapter_number": chapter_number,
         "title": str(payload.get("title") or "").strip(),
         "chapter_goal": chapter_goal,
@@ -454,6 +455,15 @@ def _project_chapter(
         "state_delta": state_delta,
         **chapter_contracts,
     }
+    from packages.story_core.outline_planning import (
+        apply_chapter_contract_policy,
+    )
+
+    return apply_chapter_contract_policy(
+        row,
+        require_chapter_contracts=require_shuangwen_contracts,
+        chapter_number=chapter_number,
+    )
 
 
 def rolling_batch_from_generated_window(
@@ -461,6 +471,7 @@ def rolling_batch_from_generated_window(
     chapters: list[dict[str, Any]],
     character_cards: list[dict[str, Any]],
     volume_range: tuple[int, int],
+    require_shuangwen_contracts: bool = False,
 ) -> list[dict[str, Any]]:
     """Project a planner-stage window into rolling-schema rows.
 
@@ -503,6 +514,7 @@ def rolling_batch_from_generated_window(
                     payload,
                     expected_chapter_number=expected_number,
                     real_cast=real_cast,
+                    require_shuangwen_contracts=require_shuangwen_contracts,
                 )
             )
         except ValueError as exc:
@@ -532,6 +544,7 @@ class RollingWindowGenerator(Protocol):
         chapter_numbers: list[int],
         volume_range: tuple[int, int],
         character_cards: list[dict[str, Any]],
+        require_shuangwen_contracts: bool,
     ) -> list[dict[str, Any]]: ...
 
 
@@ -623,10 +636,13 @@ class LLMRollingWindowGenerator:
         chapter_numbers: list[int],
         volume_range: tuple[int, int],
         character_cards: list[dict[str, Any]],
+        require_shuangwen_contracts: bool,
     ) -> list[dict[str, Any]]:
         from packages.story_core.agent_base import parse_json_message_content
         from packages.story_core.outline_planning_generation import (
+            CHAPTER_CONTRACT_RULE,
             GeneratedChapterWindow,
+            chapter_output_schema,
         )
         from packages.story_core.outline_rolling import validate_rolling_batch
 
@@ -637,7 +653,10 @@ class LLMRollingWindowGenerator:
             "chapter_numbers": list(chapter_numbers),
             "volume_range": list(volume_range),
             "character_cards": list(character_cards),
-            "output_schema": GeneratedChapterWindow.model_json_schema(),
+            "output_schema": chapter_output_schema(
+                GeneratedChapterWindow,
+                require_chapter_contracts=require_shuangwen_contracts,
+            ),
         }
         response = self._gateway.complete_stage(
             "planner",
@@ -653,6 +672,7 @@ class LLMRollingWindowGenerator:
                             "scene_chain必须包含2至4个对象，不能写成字符串；每个对象填写"
                             "location、pov、goal、obstacle、action、change、next和state_delta。"
                             "cast只能使用character_cards中已有的人名。"
+                            f"{CHAPTER_CONTRACT_RULE if require_shuangwen_contracts else ''}"
                         ),
                     },
                     {
@@ -685,11 +705,13 @@ class LLMRollingWindowGenerator:
             chapters=[row.model_dump(mode="python") for row in window.chapters],
             character_cards=list(character_cards),
             volume_range=tuple(volume_range),
+            require_shuangwen_contracts=require_shuangwen_contracts,
         )
-        validate_rolling_batch(
+        batch = validate_rolling_batch(
             batch,
             expected_chapter_numbers=list(chapter_numbers),
             volume_range=tuple(volume_range),
+            require_chapter_contracts=require_shuangwen_contracts,
         )
         return batch
 
@@ -1230,11 +1252,13 @@ class ContinuationOutlineBootstrapper:
         volume_range = self._volume_range(missing)
         context = self._rolling_context()
         character_cards = self._rolling_character_cards()
+        require_shuangwen_contracts = self._require_shuangwen_contracts()
         rows = self._rolling_generator.generate(
             context=context,
             chapter_numbers=missing,
             volume_range=volume_range,
             character_cards=character_cards,
+            require_shuangwen_contracts=require_shuangwen_contracts,
         )
         if not isinstance(rows, list):
             raise _BootstrapFailure(
@@ -1244,10 +1268,11 @@ class ContinuationOutlineBootstrapper:
         try:
             from packages.story_core.outline_rolling import validate_rolling_batch
 
-            validate_rolling_batch(
+            rows = validate_rolling_batch(
                 rows,
                 expected_chapter_numbers=missing,
                 volume_range=volume_range,
+                require_chapter_contracts=require_shuangwen_contracts,
             )
         except ValueError as exc:
             raise _BootstrapFailure(
@@ -1258,6 +1283,7 @@ class ContinuationOutlineBootstrapper:
             chapters=rows,
             expected_chapter_numbers=missing,
             volume_range=volume_range,
+            require_chapter_contracts=require_shuangwen_contracts,
         )
         self._mark_phase(
             checkpoint,
@@ -1294,6 +1320,29 @@ class ContinuationOutlineBootstrapper:
         payload = _read_json(path)
         return payload if isinstance(payload, dict) else {}
 
+    def _enabled_skill_module_ids(self) -> list[str]:
+        from packages.story_core.skill_packs import (
+            resolve_enabled_skill_module_ids,
+        )
+
+        project = _read_json(self._root / ".webnovel" / "project.json") or {}
+        state = _read_json(self._root / ".webnovel" / "state.json") or {}
+        if not isinstance(project, dict):
+            project = {}
+        if not isinstance(state, dict):
+            state = {}
+        return resolve_enabled_skill_module_ids(project, state) or []
+
+    def _require_shuangwen_contracts(self) -> bool:
+        from packages.story_core.outline_planning import (
+            CHAPTER_SOP_MODULE_ID,
+        )
+
+        return CHAPTER_SOP_MODULE_ID in {
+            str(module_id).strip()
+            for module_id in self._enabled_skill_module_ids()
+        }
+
     def _compute_fingerprint(self, analysis: dict[str, Any]) -> str:
         project = _read_json(self._root / ".webnovel" / "project.json") or {}
         state = _read_json(self._root / ".webnovel" / "state.json") or {}
@@ -1315,6 +1364,7 @@ class ContinuationOutlineBootstrapper:
                 else ""
             ),
             "analysis_confirmed": analysis.get("story_overview", "")[:200],
+            "enabled_skill_module_ids": self._enabled_skill_module_ids(),
         }
         encoded = json.dumps(
             fingerprint_source,

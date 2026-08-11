@@ -550,6 +550,22 @@ def test_rolling_validation_remains_compatible_without_chapter_sop() -> None:
     assert "chapter_sop" not in validated
 
 
+def test_disabled_rolling_validation_drops_returned_contract_fields() -> None:
+    payload = _valid_chapter_payload(148)
+    payload["payoff_contract"] = {"need": "模型夹带的局部字段"}
+    payload["chapter_sop"] = {"turn": "模型夹带的局部字段"}
+
+    validated = validate_rolling_chapter(
+        payload,
+        expected_chapter_number=148,
+        volume_range=(148, 160),
+        require_chapter_contracts=False,
+    )
+
+    assert "payoff_contract" not in validated
+    assert "chapter_sop" not in validated
+
+
 @pytest.mark.parametrize(
     "mutation,error_field",
     [

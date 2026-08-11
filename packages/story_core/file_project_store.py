@@ -124,6 +124,7 @@ from packages.story_core.opening_directions import (
     validate_opening_direction_set_primary_tropes,
 )
 from packages.story_core.outline_planning import (
+    CHAPTER_SOP_MODULE_ID,
     GeneratedOutlinePlan,
     INITIAL_OUTLINE_CHAPTER_COUNT,
     validate_generated_continuation_plan,
@@ -8229,7 +8230,15 @@ class FileProjectStore:
             raise RollingOutlineFailed(
                 "rolling_outline_generation_requires_outline_workspace"
             )
-        planner = RollingOutlinePlanner(generator=generator)
+        enabled_module_ids = resolve_enabled_skill_module_ids(
+            self.project(),
+            self.state(),
+        ) or []
+        planner = RollingOutlinePlanner(
+            generator=generator,
+            require_chapter_contracts=CHAPTER_SOP_MODULE_ID
+            in {str(module_id).strip() for module_id in enabled_module_ids},
+        )
         return planner.ensure_rolling_outline(
             project_root=self.root,
             target_chapter=target_chapter,

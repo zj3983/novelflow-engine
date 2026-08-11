@@ -111,6 +111,23 @@ def _chapter(number: int) -> dict:
     }
 
 
+def _chapter_contracts() -> dict:
+    return {
+        "payoff_contract": {
+            "need": "林修必须拿到替换镜芯",
+            "pressure": "买家只给他一夜验货",
+            "hidden_advantage": "他能恢复物品上次完整运行状态",
+            "concrete_reward": "修复订单并获得父亲失踪线索",
+        },
+        "chapter_sop": {
+            "opening_carry": "接上铜镜第一次亮起",
+            "mid_feedback": "镜面恢复一段旧影像",
+            "turn": "影像中的人认出了林修",
+            "ending_hook": "镜中人叫出林修父亲的名字",
+        },
+    }
+
+
 # --- Happy path -------------------------------------------------------------
 
 
@@ -143,6 +160,50 @@ def test_rolling_store_writes_new_chapters_and_marks_them_generated(
     assert all(source == "generated" for source in sources)
     # The legacy outline is NOT created or modified.
     assert not (tmp_path / ".webnovel" / "outline.json").exists()
+
+
+def test_disabled_rolling_store_drops_partial_contract_fields(tmp_path: Path) -> None:
+    chapter = _chapter(148)
+    chapter["payoff_contract"] = {"need": "模型夹带的局部字段"}
+
+    RollingOutlineStore(tmp_path).apply_rolling_batch(
+        chapters=[chapter],
+        expected_chapter_numbers=[148],
+        volume_range=(140, 160),
+        require_chapter_contracts=False,
+    )
+
+    persisted = RollingOutlineStore(tmp_path).read_chapter(148)
+    assert "payoff_contract" not in persisted
+    assert "chapter_sop" not in persisted
+
+
+def test_enabled_rolling_store_requires_and_persists_full_contracts(
+    tmp_path: Path,
+) -> None:
+    partial = _chapter(148)
+    partial["payoff_contract"] = {"need": "林修必须拿到替换镜芯"}
+    store = RollingOutlineStore(tmp_path)
+
+    with pytest.raises(RollingValidationError, match="chapter_contract_missing"):
+        store.apply_rolling_batch(
+            chapters=[partial],
+            expected_chapter_numbers=[148],
+            volume_range=(140, 160),
+            require_chapter_contracts=True,
+        )
+
+    complete = {**_chapter(148), **_chapter_contracts()}
+    store.apply_rolling_batch(
+        chapters=[complete],
+        expected_chapter_numbers=[148],
+        volume_range=(140, 160),
+        require_chapter_contracts=True,
+    )
+
+    persisted = store.read_chapter(148)
+    assert persisted["payoff_contract"] == complete["payoff_contract"]
+    assert persisted["chapter_sop"] == complete["chapter_sop"]
 
 
 def test_rolling_store_does_not_modify_legacy_outline(tmp_path: Path) -> None:

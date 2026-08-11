@@ -403,6 +403,7 @@ class RollingOutlineStore:
         chapters: list[dict[str, Any]],
         expected_chapter_numbers: list[int],
         volume_range: tuple[int, int],
+        require_chapter_contracts: bool = False,
     ) -> list[int]:
         """Apply a rolling-fill batch to the project
         outline. Returns the chapter numbers that were
@@ -420,10 +421,11 @@ class RollingOutlineStore:
         rolling outline) are skipped, not re-written.
         """
         # Step 1: validate the entire batch up front.
-        validate_rolling_batch(
+        validated_chapters = validate_rolling_batch(
             chapters,
             expected_chapter_numbers=expected_chapter_numbers,
             volume_range=volume_range,
+            require_chapter_contracts=require_chapter_contracts,
         )
 
         # Step 2: read both the legacy outline and the
@@ -441,7 +443,7 @@ class RollingOutlineStore:
         # idempotency check the plan rule requires ("已
         # 存在或人工修改的细纲不会被覆盖").
         new_chapters: list[dict[str, Any]] = []
-        for chapter, number in zip(chapters, expected_chapter_numbers):
+        for chapter, number in zip(validated_chapters, expected_chapter_numbers):
             if number in already_filled:
                 continue
             new_chapters.append(chapter)

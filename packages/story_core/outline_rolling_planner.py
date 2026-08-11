@@ -168,6 +168,7 @@ class RollingOutlinePlanner:
     """
 
     generator: Callable[[int], dict[str, Any]]
+    require_chapter_contracts: bool = False
 
     def ensure_rolling_outline(
         self,
@@ -224,6 +225,7 @@ class RollingOutlinePlanner:
                 chapters=payloads,
                 expected_chapter_numbers=gap,
                 volume_range=volume_range,
+                require_chapter_contracts=self.require_chapter_contracts,
             )
         except RollingValidationError as exc:
             raise RollingOutlineFailed(
