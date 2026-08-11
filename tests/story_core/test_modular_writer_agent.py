@@ -487,6 +487,92 @@ def test_writer_agent_prompt_contains_director_artifact_and_context() -> None:
     assert "对话先回应" in prompt
 
 
+def test_commercial_shuangwen_modular_writer_loads_only_writer_modules() -> None:
+    runtime = _RecordingRuntime(responses=["沈砚收起拓印，走向藏谱阁。"])
+    request = _writer_request(
+        genre="玄幻",
+        craft_modules=[
+            {"id": "commercial-shuangwen", "enabled": True},
+            {
+                "id": "commercial-shuangwen::plot-engine",
+                "enabled": True,
+                "content": "plot-engine：5—15章推进说明",
+            },
+            {
+                "id": "commercial-shuangwen::chapter-sop",
+                "enabled": True,
+                "content": "chapter-sop：章节规划指令",
+            },
+            {
+                "id": "commercial-shuangwen::writer-execution",
+                "enabled": True,
+                "content": "未筛选的写手规则",
+            },
+            {
+                "id": "commercial-shuangwen::review-checklist",
+                "enabled": True,
+                "content": "review-checklist：审稿检查",
+            },
+            {
+                "id": "commercial-shuangwen::genre-examples",
+                "enabled": True,
+                "content": "未按题材筛选的公会押上声望示例",
+            },
+        ],
+    )
+
+    WriterAgent(runtime=runtime).run(request)
+
+    model_request = runtime.requests[0]
+    prompt = model_request.prompt
+    assert model_request.metadata["loaded_skill_module_ids"] == [
+        "commercial-shuangwen::genre-examples",
+        "commercial-shuangwen::writer-execution",
+    ]
+    assert model_request.metadata["writer_skill_context_chars"] <= 2200
+    assert "写清施压者为什么误判" in prompt
+    assert "周执事押上长老担保" in prompt
+    assert "审核员怕担责而扣件" in prompt
+    assert prompt.count("周执事押上长老担保") == 1
+    assert prompt.count("审核员怕担责而扣件") == 1
+    for excluded in (
+        "plot-engine",
+        "chapter-sop",
+        "review-checklist",
+        "5—15章",
+        "审稿检查",
+        "能断句就断句",
+        "公会押上声望",
+        "供应商承担违约风险停货",
+    ):
+        assert excluded not in prompt
+
+
+@pytest.mark.parametrize(
+    "craft_modules",
+    [
+        [],
+        [{"id": "commercial-shuangwen", "enabled": True}],
+        [
+            {"id": "commercial-shuangwen", "enabled": True},
+            {"id": "commercial-shuangwen::writer-execution", "enabled": False},
+        ],
+        [{"id": "missing-pack::writer-execution", "enabled": True}],
+    ],
+)
+def test_modular_writer_ignores_disabled_or_missing_skill_modules(craft_modules) -> None:
+    baseline_runtime = _RecordingRuntime(responses=["正文。"])
+    selected_runtime = _RecordingRuntime(responses=["正文。"])
+
+    WriterAgent(runtime=baseline_runtime).run(_writer_request(genre="玄幻", craft_modules=[]))
+    WriterAgent(runtime=selected_runtime).run(
+        _writer_request(genre="玄幻", craft_modules=craft_modules)
+    )
+
+    assert selected_runtime.requests[0].prompt == baseline_runtime.requests[0].prompt
+    assert selected_runtime.requests[0].metadata.get("loaded_skill_module_ids", []) == []
+
+
 def test_writer_prompt_contains_one_off_rewrite_guidance() -> None:
     prompt = build_writer_prompt(
         _writer_request(rewrite_guidance="事故只写必要后果，不描写器官和尸体细节。")

@@ -9,8 +9,14 @@ backing provider is Codex CLI, Gemini CLI, or HTTP API.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import re
 from typing import Any, Optional
+
+from packages.story_core.genre_stages.common_writer import (
+    resolve_writer_skill_context,
+    writer_skill_trace,
+)
 
 from ..contracts import WriterRequest, WriterResult
 from .prompt import build_writer_prompt
@@ -29,6 +35,76 @@ class _ModelRequest:
     prompt: str
     stage: str
     metadata: dict[str, Any]
+
+
+def _writer_prompt_request(
+    request: WriterRequest,
+) -> tuple[WriterRequest, list[str], int]:
+    regular_modules: list[dict[str, Any]] = []
+    skill_ids: list[str] = []
+    module_ids: list[str] = []
+    disabled_skill_ids: set[str] = set()
+
+    for module in request.craft_modules:
+        if not isinstance(module, dict):
+            continue
+        module_id = str(module.get("id") or "").strip()
+        if module_id and "::" not in module_id and module.get("enabled") is False:
+            disabled_skill_ids.add(module_id)
+
+    for module in request.craft_modules:
+        if not isinstance(module, dict):
+            continue
+        module_id = str(module.get("id") or "").strip()
+        content = str(module.get("content") or "").strip()
+        if module_id and "::" in module_id:
+            if module.get("enabled") is False:
+                continue
+            skill_id = module_id.split("::", 1)[0].strip()
+            if skill_id and skill_id not in disabled_skill_ids:
+                if skill_id not in skill_ids:
+                    skill_ids.append(skill_id)
+                if module_id not in module_ids:
+                    module_ids.append(module_id)
+            continue
+        if content:
+            if module.get("enabled") is not False:
+                regular_modules.append(module)
+            continue
+        if not module_id or module.get("enabled") is False:
+            continue
+        if module_id not in disabled_skill_ids and module_id not in skill_ids:
+            skill_ids.append(module_id)
+
+    skill_context = resolve_writer_skill_context(
+        skill_ids,
+        module_ids,
+        genre_id=request.genre,
+    )
+    loaded_modules: list[dict[str, Any]] = []
+    for pack in skill_context.get("writer", []):
+        if not isinstance(pack, dict):
+            continue
+        skill_id = str(pack.get("skill_id") or "").strip()
+        for module in pack.get("modules", []):
+            if not isinstance(module, dict):
+                continue
+            selected_module_id = str(module.get("module_id") or "").strip()
+            instructions = str(module.get("instructions") or "").strip()
+            if skill_id and selected_module_id and instructions:
+                loaded_modules.append(
+                    {
+                        "id": f"{skill_id}::{selected_module_id}",
+                        "content": instructions,
+                    }
+                )
+
+    trace_ids = [item["key"] for item in writer_skill_trace(skill_context)]
+    context_chars = len(json.dumps(skill_context, ensure_ascii=False)) if skill_context else 0
+    prompt_request = request.model_copy(
+        update={"craft_modules": [*regular_modules, *loaded_modules]}
+    )
+    return prompt_request, trace_ids, context_chars
 
 
 def _extract_text(response: Any) -> str:
@@ -328,7 +404,14 @@ class WriterAgent:
         self._allow_automatic_repair = allow_automatic_repair
 
     def run(self, request: WriterRequest) -> WriterResult:
-        prompt = build_writer_prompt(request)
+        prompt_request, loaded_skill_module_ids, writer_skill_context_chars = (
+            _writer_prompt_request(request)
+        )
+        prompt = build_writer_prompt(prompt_request)
+        skill_metadata = {
+            "loaded_skill_module_ids": loaded_skill_module_ids,
+            "writer_skill_context_chars": writer_skill_context_chars,
+        }
         model_request = _ModelRequest(
             prompt=prompt,
             stage="writer",
@@ -336,6 +419,7 @@ class WriterAgent:
                 "chapter_number": request.chapter_number,
                 "agent": "writer",
                 "schema_version": request.director_artifact.schema_version,
+                **skill_metadata,
             },
         )
         response = self._runtime.complete(model_request)
@@ -454,6 +538,7 @@ class WriterAgent:
                     "schema_version": request.director_artifact.schema_version,
                     "attempt": retry_index + 2,
                     "reason": reason,
+                    **skill_metadata,
                 },
             )
             retry_response = self._runtime.complete(retry_request)

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -1527,13 +1528,29 @@ def test_body_prompt_prefers_positive_craft_guidance_over_rule_scolding():
     assert prompt.count("不得") <= 2
 
 
-def test_body_prompt_loads_only_enabled_skill_purposes(monkeypatch):
+def test_body_prompt_loads_only_enabled_writer_skill_context(monkeypatch):
     from packages.story_core.genre_stages import common_writer as common_writer_module
+
+    captured: dict[str, object] = {}
+
+    def fake_skill_context(skill_ids, **kwargs):
+        captured.update({"skill_ids": skill_ids, **kwargs})
+        return [
+            {
+                "skill_id": "plain-webnovel",
+                "modules": [
+                    {
+                        "module_id": "writer-execution",
+                        "instructions": "对手的误判要有可见依据。",
+                    }
+                ],
+            }
+        ]
 
     monkeypatch.setattr(
         common_writer_module,
         "skill_pack_prompt_context",
-        lambda skill_ids, *, purpose, max_chars_per_pack: [{"purpose": purpose, "skill_ids": skill_ids}],
+        fake_skill_context,
     )
     story = StoryState(
         story_id="s-skill-stage",
@@ -1541,11 +1558,114 @@ def test_body_prompt_loads_only_enabled_skill_purposes(monkeypatch):
         genre="都市",
         style="白描",
         enabled_skill_ids=["plain-webnovel"],
+        enabled_skill_module_ids=["plain-webnovel::writer-execution"],
     )
     prompt = StoryOrchestrator()._body_prompt(story, 1, {})
 
+    assert captured == {
+        "skill_ids": ["plain-webnovel"],
+        "enabled_module_ids": ["plain-webnovel::writer-execution"],
+        "purpose": "writer",
+        "include_examples": True,
+        "genre_id": "urban",
+        "max_chars_per_pack": 2200,
+        "compact": True,
+        "max_serialized_chars": 2187,
+    }
     assert "启用 Skill 模块摘要" in prompt
-    assert "plain-webnovel" in prompt
+    assert "对手的误判要有可见依据" in prompt
+
+
+def test_commercial_shuangwen_writer_context_is_scoped_bounded_and_keeps_plan_contracts():
+    from packages.story_core.genre_stages.common_writer import writer_skill_trace
+
+    module_ids = [
+        "commercial-shuangwen::plot-engine",
+        "commercial-shuangwen::chapter-sop",
+        "commercial-shuangwen::writer-execution",
+        "commercial-shuangwen::review-checklist",
+        "commercial-shuangwen::genre-examples",
+    ]
+    story = StoryState(
+        story_id="s-commercial-shuangwen-writer",
+        outline="沈砚参加宗门石碑试炼。",
+        genre="玄幻",
+        genre_plugin_ids=["xuanhuan"],
+        style="通俗网文",
+        enabled_skill_ids=["commercial-shuangwen"],
+        enabled_skill_module_ids=module_ids,
+    )
+    plan = {
+        "event_plan": {"chapter_title": "石碑第九纹"},
+        "payoff_contract": {
+            "need": "沈砚必须取得内门名额",
+            "pressure": "周执事当众要求取消本次登记",
+            "hidden_advantage": "沈砚的完整拳路能点亮石碑第九纹",
+            "concrete_reward": "沈砚依门规取得内门名额",
+        },
+        "chapter_sop": {
+            "opening_carry": "沈砚在众人注视下按上石碑",
+            "mid_feedback": "石碑第九纹逐次亮起",
+            "turn": "旧族谱映出一行被刮去的姓名",
+            "ending_hook": "沈砚带着拓印走向藏谱阁",
+        },
+    }
+
+    orchestrator = StoryOrchestrator()
+    context = orchestrator._build_writer_context(story, 3, plan)
+    prompt = orchestrator._body_prompt(story, 3, plan)
+    trace_ids = [item["module_id"] for item in writer_skill_trace(context.skill_context)]
+    serialized = json.dumps(context.skill_context, ensure_ascii=False)
+
+    assert trace_ids == ["genre-examples", "writer-execution"]
+    assert len(serialized) <= 2200
+    assert "写清施压者为什么误判" in prompt
+    assert "周执事押上长老担保" in prompt
+    assert "审核员怕担责而扣件" in prompt
+    assert prompt.count("周执事押上长老担保") == 1
+    assert prompt.count("审核员怕担责而扣件") == 1
+    assert "沈砚必须取得内门名额" in prompt
+    assert "沈砚在众人注视下按上石碑" in prompt
+    assert "沈砚带着拓印走向藏谱阁" in prompt
+    for excluded in (
+        "plot-engine",
+        "chapter-sop",
+        "review-checklist",
+        "5—15章",
+        "审稿检查",
+        "能断句就断句",
+        "公会押上声望",
+        "供应商承担违约风险停货",
+    ):
+        assert excluded not in prompt
+
+
+@pytest.mark.parametrize(
+    ("skill_ids", "module_ids"),
+    [
+        ([], []),
+        (["commercial-shuangwen"], []),
+        (["commercial-shuangwen"], ["commercial-shuangwen::plot-engine"]),
+        (["missing-pack"], ["missing-pack::writer-execution"]),
+    ],
+)
+def test_disabled_or_missing_writer_skill_modules_do_not_change_prompt(skill_ids, module_ids):
+    base = StoryState(
+        story_id="s-writer-skill-disabled",
+        outline="沈砚参加宗门石碑试炼。",
+        genre="玄幻",
+        genre_plugin_ids=["xuanhuan"],
+        style="通俗网文",
+    )
+    selected = base.model_copy(
+        update={
+            "enabled_skill_ids": skill_ids,
+            "enabled_skill_module_ids": module_ids,
+        }
+    )
+    plan = {"event_plan": {"chapter_title": "石碑第九纹"}}
+
+    assert StoryOrchestrator()._body_prompt(selected, 3, plan) == StoryOrchestrator()._body_prompt(base, 3, plan)
 
 
 def test_writer_skill_rules_are_deduplicated_and_use_full_instructions():

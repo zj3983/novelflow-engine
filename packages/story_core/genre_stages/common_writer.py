@@ -20,7 +20,7 @@ from packages.story_core.novel_type_catalog import (
     novel_type_prompt_context,
     runtime_novel_type,
 )
-from packages.story_core.prompt_modules import replaceable_slots
+from packages.story_core.novel_type_ids import canonical_novel_type_id
 from packages.story_core.skill_packs import skill_pack_prompt_context
 from packages.story_core.writing_taskbook import ensure_writing_taskbook, writer_facing_text
 from packages.story_core.world_blueprint_context import flatten_selected_rules
@@ -41,6 +41,10 @@ class WriterContext:
     world_facts_for_prompt: list[str]
     trope_guidance: list[str]
     trope_contract_for_prompt: dict[str, Any]
+
+
+_WRITER_SKILL_CONTEXT_BUDGET = 2200
+_WRITER_SKILL_PAYLOAD_BUDGET = 2187
 
 
 def _plain_writer_phrase(value: str) -> str:
@@ -162,35 +166,82 @@ def _genre_context_summary_for_prompt(context: dict[str, Any], *, include_method
     }
 
 
-def _skill_context_for_prompt(story: Any, purposes: tuple[str, ...]) -> dict[str, Any]:
-    skill_ids = [str(item).strip() for item in getattr(story, "enabled_skill_ids", []) if str(item).strip()]
-    if not skill_ids:
+def _writer_genre_id(story: Any) -> str:
+    for genre_id in normalize_novel_type_ids(getattr(story, "genre_plugin_ids", [])):
+        if canonical := canonical_novel_type_id(genre_id):
+            return canonical
+    record = _runtime_novel_type_for_story(story)
+    if record is not None:
+        return canonical_novel_type_id(record.id)
+    return canonical_novel_type_id(getattr(story, "genre", ""))
+
+
+def _writer_safe_skill_instructions(value: str) -> str:
+    return str(value or "").replace(
+        "明确拒绝“能断句就断句”，也拒绝省略对象、原因和结果的电报式短句对话。",
+        "段落按完整动作、观察或话题自然分隔；对话保留必要的对象、原因和结果。",
+    )
+
+
+def resolve_writer_skill_context(
+    skill_ids: list[str],
+    module_ids: list[str],
+    *,
+    genre_id: str,
+) -> dict[str, Any]:
+    enabled_skills = [str(item).strip() for item in skill_ids if str(item).strip()]
+    enabled_modules = [str(item).strip() for item in module_ids if str(item).strip()]
+    if not enabled_skills or not enabled_modules:
         return {}
-    module_ids = [
-        str(item).strip()
-        for item in getattr(story, "enabled_skill_module_ids", [])
-        if str(item).strip()
-    ]
-    if not module_ids:
-        module_ids = None
-    selected: dict[str, Any] = {}
-    replaceable = replaceable_slots()
-    replaced_defaults: list[str] = []
-    for purpose in purposes:
-        skill_kwargs: dict[str, Any] = {
-            "purpose": purpose,
-            "max_chars_per_pack": 1800,
-        }
-        if module_ids is not None:
-            skill_kwargs["enabled_module_ids"] = module_ids
-        context = skill_pack_prompt_context(skill_ids, **skill_kwargs)
-        if context:
-            selected[purpose] = context
-            if purpose in replaceable:
-                replaced_defaults.append(replaceable[purpose])
-    if replaced_defaults:
-        selected["_replaced_defaults"] = sorted(set(replaced_defaults))
+
+    context = skill_pack_prompt_context(
+        enabled_skills,
+        enabled_module_ids=enabled_modules,
+        purpose="writer",
+        include_examples=True,
+        genre_id=canonical_novel_type_id(genre_id),
+        max_chars_per_pack=_WRITER_SKILL_CONTEXT_BUDGET,
+        compact=True,
+        max_serialized_chars=_WRITER_SKILL_PAYLOAD_BUDGET,
+    )
+    sanitized: list[dict[str, Any]] = []
+    for pack in context:
+        if not isinstance(pack, dict):
+            continue
+        modules: list[dict[str, str]] = []
+        for module in pack.get("modules", []):
+            if not isinstance(module, dict):
+                continue
+            instructions = _writer_safe_skill_instructions(module.get("instructions", "")).strip()
+            if instructions:
+                modules.append(
+                    {
+                        "module_id": str(module.get("module_id") or "").strip(),
+                        "instructions": instructions,
+                    }
+                )
+        if modules:
+            sanitized.append(
+                {
+                    "skill_id": str(pack.get("skill_id") or "").strip(),
+                    "modules": modules,
+                }
+            )
+    selected = {"writer": sanitized} if sanitized else {}
+    if len(json.dumps(selected, ensure_ascii=False)) > _WRITER_SKILL_CONTEXT_BUDGET:
+        return {}
     return selected
+
+
+def _skill_context_for_prompt(
+    story: Any,
+    _purposes: tuple[str, ...] = ("writer",),
+) -> dict[str, Any]:
+    return resolve_writer_skill_context(
+        list(getattr(story, "enabled_skill_ids", [])),
+        list(getattr(story, "enabled_skill_module_ids", [])),
+        genre_id=_writer_genre_id(story),
+    )
 
 
 def _compact_prompt_text(value: str, limit: int) -> str:
@@ -327,6 +378,41 @@ def _writer_direction_section(chapter_number: int, plan: dict[str, Any]) -> list
         ("结尾承接", satisfaction.get("next_hook") or event_plan.get("next_focus")),
     ):
         text = _compact_prompt_text(_plain_writer_phrase(str(value or "")), 100)
+        if text:
+            lines.append(f"{label}：{text}")
+    contract_sources = [
+        plan,
+        event_plan,
+        plan.get("chapter_intent") if isinstance(plan.get("chapter_intent"), dict) else {},
+        plan.get("chapter_plan") if isinstance(plan.get("chapter_plan"), dict) else {},
+    ]
+    payoff_contract = next(
+        (
+            source["payoff_contract"]
+            for source in contract_sources
+            if isinstance(source.get("payoff_contract"), dict)
+        ),
+        {},
+    )
+    chapter_sop = next(
+        (
+            source["chapter_sop"]
+            for source in contract_sources
+            if isinstance(source.get("chapter_sop"), dict)
+        ),
+        {},
+    )
+    for label, value in (
+        ("眼前需求", payoff_contract.get("need")),
+        ("当场压力", payoff_contract.get("pressure")),
+        ("可用优势", payoff_contract.get("hidden_advantage")),
+        ("具体回报", payoff_contract.get("concrete_reward")),
+        ("开场承接", chapter_sop.get("opening_carry")),
+        ("中段反馈", chapter_sop.get("mid_feedback")),
+        ("本章转折", chapter_sop.get("turn")),
+        ("结尾钩子", chapter_sop.get("ending_hook")),
+    ):
+        text = _compact_prompt_text(_plain_writer_phrase(str(value or "")), 140)
         if text:
             lines.append(f"{label}：{text}")
     return lines
