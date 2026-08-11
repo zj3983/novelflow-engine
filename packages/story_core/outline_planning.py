@@ -115,6 +115,7 @@ _ABSTRACT_CHAPTER_CONTRACT_NOUNS = frozenset(
         "收获",
         "爽点",
         "局势",
+        "紧张感",
         "事情",
         "剧情",
         "伏笔",
@@ -139,6 +140,12 @@ _GENERIC_CHAPTER_CONTRACT_ACTIONS = frozenset(
         "埋下",
         "提升",
         "增加",
+        "加剧",
+        "恶化",
+        "处理",
+        "发展",
+        "行动",
+        "调查",
         "continue",
     }
 )
@@ -161,42 +168,40 @@ _GENERIC_CHAPTER_CONTRACT_MODIFIERS = frozenset(
         "了",
         "的",
         "有",
-    }
-)
-_GENERIC_CHAPTER_CONTRACT_SUFFIXES = frozenset(
-    {
-        "一下",
-        "一下子",
-        "中",
-        "后",
-        "之后",
-        "化",
-        "待续",
-        "起来",
-        "下去",
-        "着",
-        "过",
+        "吧",
+        "呢",
+        "呗",
+        "时",
+        "以后",
+        "阶段",
+        "些",
     }
 )
 
-_CONTAINED_GENERIC_CHAPTER_CONTRACT_PATTERNS = (
-    re.compile(r"^继续(?:推进|处理|发展|行动|调查)", re.IGNORECASE),
-    re.compile(r"(?:压力|冲突|局势).*(?:升级|加剧|恶化)"),
-    re.compile(r"情况.*(?:复杂|变化)"),
-    re.compile(r"(?:得到|获得|有所).*(?:反馈|收获|进展)"),
-    re.compile(r"留下.*悬念"),
-    re.compile(r"出现.*(?:新|新的)?.*问题"),
-)
-_GENERIC_CHAPTER_CONTRACT_RESIDUE_TERMS = tuple(
-    sorted(
-        _ABSTRACT_CHAPTER_CONTRACT_NOUNS
-        | _GENERIC_CHAPTER_CONTRACT_ACTIONS
-        | _GENERIC_CHAPTER_CONTRACT_MODIFIERS
-        | _GENERIC_CHAPTER_CONTRACT_SUFFIXES,
-        key=len,
-        reverse=True,
+
+def _chapter_contract_term_pattern(values: frozenset[str]) -> re.Pattern[str]:
+    alternatives = "|".join(
+        re.escape(value) for value in sorted(values, key=len, reverse=True)
     )
+    return re.compile(alternatives, re.IGNORECASE)
+
+
+_GENERIC_CHAPTER_CONTRACT_ACTION_PATTERN = _chapter_contract_term_pattern(
+    _GENERIC_CHAPTER_CONTRACT_ACTIONS
 )
+_GENERIC_CHAPTER_CONTRACT_DRIVER_PATTERN = _chapter_contract_term_pattern(
+    _GENERIC_CHAPTER_CONTRACT_ACTIONS | _GENERIC_CHAPTER_CONTRACT_MODIFIERS
+)
+_ABSTRACT_CHAPTER_CONTRACT_NOUN_PATTERN = _chapter_contract_term_pattern(
+    _ABSTRACT_CHAPTER_CONTRACT_NOUNS
+)
+_GENERIC_CHAPTER_CONTRACT_VOCABULARY_PATTERN = _chapter_contract_term_pattern(
+    _GENERIC_CHAPTER_CONTRACT_ACTIONS
+    | _GENERIC_CHAPTER_CONTRACT_MODIFIERS
+    | _ABSTRACT_CHAPTER_CONTRACT_NOUNS
+)
+_CHAPTER_CONTRACT_PUNCTUATION_PATTERN = re.compile(r"[\W_]+", re.UNICODE)
+_CJK_CHARACTER_PATTERN = re.compile(r"[\u3400-\u9fff]")
 _NUMBER_TOKEN = (
     r"(?:\d+(?:,\d{3})*(?:\.\d+)?[万亿]?"
     r"|[零〇一二两三四五六七八九十百千万亿]+)"
@@ -271,23 +276,51 @@ def _chapter_contract_value(section: Any, field_name: str) -> Any:
     return getattr(section, field_name, None)
 
 
-def _is_generic_chapter_contract_value(value: str) -> bool:
-    normalized = re.sub(
-        r"[\s，。！？、,.!?;；:_-]+",
+def _normalize_chapter_contract_clause(value: str) -> str:
+    return _CHAPTER_CONTRACT_PUNCTUATION_PATTERN.sub(
         "",
-        unicodedata.normalize("NFKC", value),
-    ).casefold()
-    if not normalized:
+        unicodedata.normalize("NFKC", value).casefold(),
+    )
+
+
+def _concrete_chapter_contract_residue(value: str) -> str:
+    residue = _GENERIC_CHAPTER_CONTRACT_VOCABULARY_PATTERN.sub("", value)
+    return "".join(_CJK_CHARACTER_PATTERN.findall(residue))
+
+
+def _contains_generic_chapter_contract_composition(value: str) -> bool:
+    if not value:
         return True
-    if any(
-        pattern.search(normalized)
-        for pattern in _CONTAINED_GENERIC_CHAPTER_CONTRACT_PATTERNS
+    driver_hits = list(_GENERIC_CHAPTER_CONTRACT_DRIVER_PATTERN.finditer(value))
+    has_action = bool(_GENERIC_CHAPTER_CONTRACT_ACTION_PATTERN.search(value))
+    has_abstract_noun = bool(
+        _ABSTRACT_CHAPTER_CONTRACT_NOUN_PATTERN.search(value)
+    )
+    if (has_action and len(driver_hits) >= 2) or (
+        driver_hits and has_abstract_noun
     ):
         return True
-    remainder = normalized
-    for term in _GENERIC_CHAPTER_CONTRACT_RESIDUE_TERMS:
-        remainder = remainder.replace(term, "")
-    return not remainder
+    has_generic_vocabulary = bool(
+        _GENERIC_CHAPTER_CONTRACT_VOCABULARY_PATTERN.search(value)
+    )
+    return has_generic_vocabulary and len(
+        _concrete_chapter_contract_residue(value)
+    ) < 2
+
+
+def _is_generic_chapter_contract_value(value: str) -> bool:
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    summary, delimiter, detail = normalized.partition(":")
+    normalized_summary = _normalize_chapter_contract_clause(summary)
+    if delimiter and _contains_generic_chapter_contract_composition(
+        normalized_summary
+    ):
+        normalized_detail = _normalize_chapter_contract_clause(detail)
+        if len(_concrete_chapter_contract_residue(normalized_detail)) >= 2:
+            return False
+    return _contains_generic_chapter_contract_composition(
+        _normalize_chapter_contract_clause(normalized)
+    )
 
 
 def validate_concrete_chapter_contract(
