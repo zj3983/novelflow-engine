@@ -848,6 +848,9 @@ def _project_payload(store: FileProjectStore) -> dict[str, Any]:
             if enabled_skill_module_ids is not None
             else []
         ),
+        "skill_module_selection_mode": (
+            "legacy_all" if enabled_skill_module_ids is None else "explicit"
+        ),
         "status": project.get("status") or "simulating",
         "pipeline_stage": project.get("pipeline_stage") or ("simulating" if current_chapter else "environment_ready"),
         "active_story_id": _story_id_for(store),

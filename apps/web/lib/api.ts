@@ -1145,6 +1145,7 @@ export type ProjectPipelineStage =
 
 export type ProjectStatus = "draft" | "outlining" | "writing" | "reviewing" | "simulating" | "paused" | "completed" | string;
 export type ProjectLifecycle = "active" | "archived" | "trashed";
+export type SkillModuleSelectionMode = "legacy_all" | "explicit";
 
 export type UpdateProjectRequest = {
   title?: string;
@@ -1190,6 +1191,7 @@ export type ProjectResponse = {
   relationship_graph?: ImportedRelationshipEdge[];
   enabled_skill_ids?: string[];
   enabled_skill_module_ids?: string[] | null;
+  skill_module_selection_mode?: SkillModuleSelectionMode;
   status: ProjectStatus;
   pipeline_stage?: ProjectPipelineStage;
   active_story_id: string;
@@ -2217,6 +2219,7 @@ type MockProject = {
   relationship_graph?: ImportedRelationshipEdge[];
   enabled_skill_ids?: string[];
   enabled_skill_module_ids?: string[] | null;
+  skill_module_selection_mode?: SkillModuleSelectionMode;
   status: ProjectStatus;
   pipeline_stage?: ProjectPipelineStage;
   active_story_id: string;
@@ -4029,6 +4032,7 @@ function mockCreateProject(payload: CreateProjectRequest): ProjectResponse {
     relationship_graph: payload.relationship_graph ?? payload.world_blueprint?.relationship_graph ?? [],
     enabled_skill_ids: payload.enabled_skill_ids ?? [],
     enabled_skill_module_ids: payload.enabled_skill_module_ids ?? [],
+    skill_module_selection_mode: "explicit",
     status: payload.active_story_id ? "simulating" : "draft",
     pipeline_stage: payload.pipeline_stage ?? (payload.active_story_id ? "environment_ready" : "imported"),
     active_story_id: payload.active_story_id ?? "",
@@ -4181,6 +4185,7 @@ function persistProjectIntoMockStore(project: ProjectResponse): ProjectResponse 
     relationship_graph: clone(project.relationship_graph ?? project.world_blueprint?.relationship_graph ?? []),
     enabled_skill_ids: clone(project.enabled_skill_ids ?? []),
     enabled_skill_module_ids: clone(project.enabled_skill_module_ids ?? []),
+    skill_module_selection_mode: project.skill_module_selection_mode,
     status: project.status,
     pipeline_stage: project.pipeline_stage ?? "imported",
     active_story_id: project.active_story_id,
@@ -4223,6 +4228,7 @@ function mockUpdateProject(projectId: string, payload: UpdateProjectRequest): Pr
     ...(payload.relationship_graph !== undefined ? { relationship_graph: payload.relationship_graph } : {}),
     ...(payload.enabled_skill_ids !== undefined ? { enabled_skill_ids: payload.enabled_skill_ids } : {}),
     ...(payload.enabled_skill_module_ids !== undefined ? { enabled_skill_module_ids: payload.enabled_skill_module_ids } : {}),
+    ...(payload.enabled_skill_module_ids !== undefined ? { skill_module_selection_mode: "explicit" as const } : {}),
     ...(payload.status !== undefined ? { status: payload.status } : {}),
     ...(payload.pipeline_stage !== undefined ? { pipeline_stage: payload.pipeline_stage } : {}),
     ...(payload.active_story_id !== undefined ? { active_story_id: payload.active_story_id } : {}),

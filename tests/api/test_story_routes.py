@@ -678,7 +678,26 @@ def test_legacy_project_serialization_emits_empty_module_list_without_mutating_s
 
     assert response.status_code == 200
     assert response.json()["enabled_skill_module_ids"] == []
+    assert response.json()["skill_module_selection_mode"] == "legacy_all"
     assert story_routes.store.get_project(project_id).enabled_skill_module_ids is None
+
+
+def test_explicit_empty_project_serialization_marks_module_selection_explicit():
+    project_id = "p-explicit-empty-project-response"
+    story_routes.store.create_project(
+        NovelProject(
+            project_id=project_id,
+            title="Explicit Empty Project Response",
+            enabled_skill_ids=["commercial-shuangwen"],
+            enabled_skill_module_ids=[],
+        )
+    )
+
+    response = client.get(f"/projects/{project_id}")
+
+    assert response.status_code == 200
+    assert response.json()["enabled_skill_module_ids"] == []
+    assert response.json()["skill_module_selection_mode"] == "explicit"
 
 
 def test_legacy_file_project_serialization_emits_empty_module_list_without_mutating_files(tmp_path):
@@ -691,7 +710,25 @@ def test_legacy_file_project_serialization_emits_empty_module_list_without_mutat
     response = file_projects._project_payload(store)
 
     assert response["enabled_skill_module_ids"] == []
+    assert response["skill_module_selection_mode"] == "legacy_all"
     assert "enabled_skill_module_ids" not in store.project()
+
+
+def test_explicit_empty_file_project_serialization_marks_module_selection_explicit(tmp_path):
+    from packages.story_core.file_project_store import FileProjectStore
+
+    root = tmp_path / "explicit-empty-file-project-response"
+    _make_file_project(root, project_id="p-explicit-empty-file-project-response")
+    project_path = root / ".webnovel" / "project.json"
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    project["enabled_skill_ids"] = ["commercial-shuangwen"]
+    project["enabled_skill_module_ids"] = []
+    project_path.write_text(json.dumps(project), encoding="utf-8")
+
+    response = file_projects._project_payload(FileProjectStore(root))
+
+    assert response["enabled_skill_module_ids"] == []
+    assert response["skill_module_selection_mode"] == "explicit"
 
 
 @pytest.mark.parametrize(

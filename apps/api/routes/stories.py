@@ -570,6 +570,7 @@ class ProjectResponse(BaseModel):
 
     enabled_skill_ids: list[str] = Field(default_factory=list)
     enabled_skill_module_ids: list[str] = Field(default_factory=list)
+    skill_module_selection_mode: Literal["legacy_all", "explicit"] = "explicit"
 
     status: str = "draft"
 
@@ -1788,6 +1789,11 @@ def _serialize_project(project: NovelProject) -> ProjectResponse:
             list(project.enabled_skill_module_ids)
             if project.enabled_skill_module_ids is not None
             else []
+        ),
+        skill_module_selection_mode=(
+            "legacy_all"
+            if project.enabled_skill_module_ids is None
+            else "explicit"
         ),
 
         status=project.status,

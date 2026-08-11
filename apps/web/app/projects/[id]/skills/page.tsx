@@ -63,7 +63,8 @@ export default function ProjectSkillsPage() {
   const [uninstallingSkillId, setUninstallingSkillId] = useState<string | null>(null);
   const [uninstallingModuleKey, setUninstallingModuleKey] = useState<string | null>(null);
   const enabled = useMemo(() => new Set(project?.enabled_skill_ids ?? []), [project?.enabled_skill_ids]);
-  const legacyModuleMode = project?.enabled_skill_module_ids == null;
+  const legacyModuleMode = project?.skill_module_selection_mode === "legacy_all"
+    || (project?.skill_module_selection_mode == null && project?.enabled_skill_module_ids == null);
   const enabledModules = useMemo(
     () => new Set(project?.enabled_skill_module_ids ?? []),
     [project?.enabled_skill_module_ids],
@@ -266,9 +267,9 @@ export default function ProjectSkillsPage() {
             <p className="ws-card__hint">每个包和子 skill 分开控制。只有打开的模块才会进入写作包和提示词。</p>
           </div>
           <span className="ws-toolbar__meta">
-            {project?.enabled_skill_module_ids == null
+            {legacyModuleMode
               ? `${project?.enabled_skill_ids?.length ?? 0} 个旧包配置`
-              : `${project.enabled_skill_module_ids.length} 个模块启用`}
+              : `${project?.enabled_skill_module_ids?.length ?? 0} 个模块启用`}
           </span>
         </div>
         {packs.length ? (
