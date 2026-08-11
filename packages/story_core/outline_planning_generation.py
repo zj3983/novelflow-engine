@@ -273,7 +273,7 @@ class OutlinePlanningBrief(_PlanningInput):
     historical_chapter_summaries: list[dict[str, Any]] = Field(default_factory=list)
     power_system_spec: dict[str, Any] = Field(default_factory=dict)
     enabled_skill_ids: list[str] = Field(default_factory=list)
-    enabled_skill_module_ids: list[str] = Field(default_factory=list)
+    enabled_skill_module_ids: list[str] | None = None
 
 
 class GeneratedChapterWindow(_PlanningInput):
@@ -522,9 +522,13 @@ class LLMOutlinePlanningGenerator:
         stop_after_phase: str | None = None,
     ) -> GeneratedOutlinePlan:
         validated = OutlinePlanningBrief.model_validate(brief)
-        chapter_contracts_enabled = CHAPTER_SOP_MODULE_ID in {
+        chapter_contracts_enabled = (
+            validated.enabled_skill_module_ids is None
+            and CHAPTER_SOP_MODULE_ID.split("::", 1)[0]
+            in validated.enabled_skill_ids
+        ) or CHAPTER_SOP_MODULE_ID in {
             str(module_id).strip()
-            for module_id in validated.enabled_skill_module_ids
+            for module_id in (validated.enabled_skill_module_ids or [])
         }
         normalized_guidance = guidance.strip()
         if len(normalized_guidance) > 1000:

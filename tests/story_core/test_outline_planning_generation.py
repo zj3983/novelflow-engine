@@ -787,7 +787,7 @@ def test_planning_brief_has_one_overall_source_instead_of_three_story_core_copie
 
     assert payload["overall_context"]["story"]
     assert payload["enabled_skill_ids"] == []
-    assert payload["enabled_skill_module_ids"] == []
+    assert payload["enabled_skill_module_ids"] is None
     assert "story_core" not in payload
     assert "character_story_core" not in payload
     assert "planning_story_core" not in payload

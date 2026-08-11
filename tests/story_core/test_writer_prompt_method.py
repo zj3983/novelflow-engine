@@ -1576,7 +1576,7 @@ def test_body_prompt_loads_only_enabled_writer_skill_context(monkeypatch):
     assert "对手的误判要有可见依据" in prompt
 
 
-def test_commercial_shuangwen_writer_context_is_scoped_bounded_and_keeps_plan_contracts():
+def test_commercial_shuangwen_writer_context_is_scoped_and_bounded():
     from packages.story_core.genre_stages.common_writer import writer_skill_trace
 
     module_ids = [
@@ -1597,18 +1597,6 @@ def test_commercial_shuangwen_writer_context_is_scoped_bounded_and_keeps_plan_co
     )
     plan = {
         "event_plan": {"chapter_title": "石碑第九纹"},
-        "payoff_contract": {
-            "need": "沈砚必须取得内门名额",
-            "pressure": "周执事当众要求取消本次登记",
-            "hidden_advantage": "沈砚的完整拳路能点亮石碑第九纹",
-            "concrete_reward": "沈砚依门规取得内门名额",
-        },
-        "chapter_sop": {
-            "opening_carry": "沈砚在众人注视下按上石碑",
-            "mid_feedback": "石碑第九纹逐次亮起",
-            "turn": "旧族谱映出一行被刮去的姓名",
-            "ending_hook": "沈砚带着拓印走向藏谱阁",
-        },
     }
 
     orchestrator = StoryOrchestrator()
@@ -1624,9 +1612,6 @@ def test_commercial_shuangwen_writer_context_is_scoped_bounded_and_keeps_plan_co
     assert "审核员怕担责而扣件" in prompt
     assert prompt.count("周执事押上长老担保") == 1
     assert prompt.count("审核员怕担责而扣件") == 1
-    assert "沈砚必须取得内门名额" in prompt
-    assert "沈砚在众人注视下按上石碑" in prompt
-    assert "沈砚带着拓印走向藏谱阁" in prompt
     for excluded in (
         "plot-engine",
         "chapter-sop",

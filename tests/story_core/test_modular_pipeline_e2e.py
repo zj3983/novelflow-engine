@@ -485,6 +485,88 @@ def test_orchestrator_wires_director_writer_and_fact_extractor(tmp_path: Path):
     assert {"director", "writer", "fact_extractor"} <= progress_stages
 
 
+def test_modular_pipeline_threads_explicit_skill_module_ids_to_writer(tmp_path: Path):
+    _seed_legacy_project(tmp_path, with_outline=False)
+    project_path = tmp_path / ".webnovel" / "project.json"
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    project.update(
+        {
+            "genre": "xuanhuan",
+            "enabled_skill_ids": ["commercial-shuangwen"],
+            "enabled_skill_module_ids": [
+                "commercial-shuangwen::plot-engine",
+                "commercial-shuangwen::chapter-sop",
+                "commercial-shuangwen::writer-execution",
+                "commercial-shuangwen::review-checklist",
+                "commercial-shuangwen::genre-examples",
+            ],
+        }
+    )
+    _write_json(project_path, project)
+    writer_runtime = _StubWriterRuntime()
+
+    StoryOrchestrator(use_modular_agents=True).generate_next_chapter_via_modular_pipeline(
+        project_root=tmp_path,
+        chapter_number=1,
+        director_runtime=_StubDirectorRuntime(),
+        writer_runtime=writer_runtime,
+    )
+
+    writer_call = writer_runtime.calls[0]
+    assert writer_call.metadata["loaded_skill_module_ids"] == [
+        "commercial-shuangwen::genre-examples",
+        "commercial-shuangwen::writer-execution",
+    ]
+    assert "写清施压者为什么误判" in writer_call.prompt
+    assert "周执事押上长老担保" in writer_call.prompt
+    assert "plot-engine" not in writer_call.prompt
+    assert "review-checklist" not in writer_call.prompt
+
+
+@pytest.mark.parametrize(
+    ("module_selection", "expected_ids"),
+    [
+        (
+            None,
+            [
+                "commercial-shuangwen::genre-examples",
+                "commercial-shuangwen::writer-execution",
+            ],
+        ),
+        ([], []),
+    ],
+)
+def test_modular_pipeline_preserves_absent_vs_explicit_empty_module_selection(
+    tmp_path: Path,
+    module_selection,
+    expected_ids,
+) -> None:
+    _seed_legacy_project(tmp_path, with_outline=False)
+    project_path = tmp_path / ".webnovel" / "project.json"
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    project.update(
+        {
+            "genre": "xuanhuan",
+            "enabled_skill_ids": ["commercial-shuangwen"],
+        }
+    )
+    if module_selection is None:
+        project.pop("enabled_skill_module_ids", None)
+    else:
+        project["enabled_skill_module_ids"] = module_selection
+    _write_json(project_path, project)
+    writer_runtime = _StubWriterRuntime()
+
+    StoryOrchestrator(use_modular_agents=True).generate_next_chapter_via_modular_pipeline(
+        project_root=tmp_path,
+        chapter_number=1,
+        director_runtime=_StubDirectorRuntime(),
+        writer_runtime=writer_runtime,
+    )
+
+    assert writer_runtime.calls[0].metadata["loaded_skill_module_ids"] == expected_ids
+
+
 def test_orchestrator_modular_path_works_without_legacy_project(tmp_path: Path):
     """The modular pipeline still runs on an empty project.
 

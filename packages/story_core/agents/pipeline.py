@@ -102,6 +102,7 @@ from packages.story_core.context.writer_context import (
     build_writer_context,
 )
 from packages.story_core.continuity.delta import ContinuityDelta
+from packages.story_core.skill_packs import resolve_enabled_skill_module_ids
 
 
 # --- Result envelopes ---------------------------------------------------------
@@ -242,6 +243,14 @@ def _ensure_writer_context(
             "entity_cards": canonical.entity_cards or legacy.entity_cards,
             "world_rules": canonical.world_rules or legacy.world_rules,
             "craft_modules": canonical.craft_modules or legacy.craft_modules,
+            "enabled_skill_ids": (
+                canonical.enabled_skill_ids or legacy.enabled_skill_ids
+            ),
+            "enabled_skill_module_ids": (
+                canonical.enabled_skill_module_ids
+                if canonical.enabled_skill_module_ids is not None
+                else legacy.enabled_skill_module_ids
+            ),
             "book_outline": canonical.book_outline or legacy.book_outline,
         }
     )
@@ -337,6 +346,10 @@ def _legacy_writer_context(
         continuity_facts = _normalize_legacy_facts(previous.get("facts"))
     enabled_skill_ids = legacy_enabled_skill_ids(system_root_path)
     project_payload = legacy_project_view(system_root_path) or {}
+    enabled_skill_module_ids = resolve_enabled_skill_module_ids(
+        project_payload,
+        state,
+    )
     project_title = ""
     genre = ""
     if isinstance(project_payload, dict):
@@ -355,6 +368,8 @@ def _legacy_writer_context(
         entity_cards=character_cards,  # characters double as entity cards in legacy shape
         world_rules=world_facts,
         craft_modules=[{"id": skill_id, "enabled": True} for skill_id in enabled_skill_ids],
+        enabled_skill_ids=enabled_skill_ids,
+        enabled_skill_module_ids=enabled_skill_module_ids,
     )
 
 
@@ -1037,6 +1052,12 @@ def _build_writer_request(
         entity_cards=list(context.entity_cards),
         world_rules=list(context.world_rules),
         craft_modules=list(context.craft_modules),
+        enabled_skill_ids=list(context.enabled_skill_ids),
+        enabled_skill_module_ids=(
+            list(context.enabled_skill_module_ids)
+            if context.enabled_skill_module_ids is not None
+            else None
+        ),
     )
 
 

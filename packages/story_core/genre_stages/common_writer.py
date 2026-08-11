@@ -185,13 +185,17 @@ def _writer_safe_skill_instructions(value: str) -> str:
 
 def resolve_writer_skill_context(
     skill_ids: list[str],
-    module_ids: list[str],
+    module_ids: list[str] | None,
     *,
     genre_id: str,
 ) -> dict[str, Any]:
     enabled_skills = [str(item).strip() for item in skill_ids if str(item).strip()]
-    enabled_modules = [str(item).strip() for item in module_ids if str(item).strip()]
-    if not enabled_skills or not enabled_modules:
+    enabled_modules = (
+        [str(item).strip() for item in module_ids if str(item).strip()]
+        if module_ids is not None
+        else None
+    )
+    if not enabled_skills or enabled_modules == []:
         return {}
 
     context = skill_pack_prompt_context(
@@ -211,6 +215,11 @@ def resolve_writer_skill_context(
         modules: list[dict[str, str]] = []
         for module in pack.get("modules", []):
             if not isinstance(module, dict):
+                continue
+            if (
+                str(pack.get("skill_id") or "").strip() == "commercial-shuangwen"
+                and str(module.get("module_id") or "").strip() == "root"
+            ):
                 continue
             instructions = _writer_safe_skill_instructions(module.get("instructions", "")).strip()
             if instructions:
@@ -239,7 +248,7 @@ def _skill_context_for_prompt(
 ) -> dict[str, Any]:
     return resolve_writer_skill_context(
         list(getattr(story, "enabled_skill_ids", [])),
-        list(getattr(story, "enabled_skill_module_ids", [])),
+        getattr(story, "enabled_skill_module_ids", None),
         genre_id=_writer_genre_id(story),
     )
 
@@ -380,27 +389,15 @@ def _writer_direction_section(chapter_number: int, plan: dict[str, Any]) -> list
         text = _compact_prompt_text(_plain_writer_phrase(str(value or "")), 100)
         if text:
             lines.append(f"{label}：{text}")
-    contract_sources = [
-        plan,
-        event_plan,
-        plan.get("chapter_intent") if isinstance(plan.get("chapter_intent"), dict) else {},
-        plan.get("chapter_plan") if isinstance(plan.get("chapter_plan"), dict) else {},
-    ]
-    payoff_contract = next(
-        (
-            source["payoff_contract"]
-            for source in contract_sources
-            if isinstance(source.get("payoff_contract"), dict)
-        ),
-        {},
+    payoff_contract = (
+        plan.get("payoff_contract")
+        if isinstance(plan.get("payoff_contract"), dict)
+        else {}
     )
-    chapter_sop = next(
-        (
-            source["chapter_sop"]
-            for source in contract_sources
-            if isinstance(source.get("chapter_sop"), dict)
-        ),
-        {},
+    chapter_sop = (
+        plan.get("chapter_sop")
+        if isinstance(plan.get("chapter_sop"), dict)
+        else {}
     )
     for label, value in (
         ("眼前需求", payoff_contract.get("need")),

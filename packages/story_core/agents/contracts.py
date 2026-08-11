@@ -130,6 +130,9 @@ class WriterRequest(BaseModel):
     entity_cards: list[dict] = Field(default_factory=list)
     world_rules: list[Any] = Field(default_factory=list)
     craft_modules: list[dict] = Field(default_factory=list)
+    enabled_skill_ids: list[str] = Field(default_factory=list)
+    # None is a legacy pack-level selection; [] is an explicit module disable.
+    enabled_skill_module_ids: list[str] | None = None
 
 
 class WriterResult(BaseModel):

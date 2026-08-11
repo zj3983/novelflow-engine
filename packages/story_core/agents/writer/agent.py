@@ -76,9 +76,19 @@ def _writer_prompt_request(
         if module_id not in disabled_skill_ids and module_id not in skill_ids:
             skill_ids.append(module_id)
 
+    selected_skill_ids = [
+        str(item).strip()
+        for item in request.enabled_skill_ids
+        if str(item).strip()
+    ]
+    selected_module_ids = (
+        request.enabled_skill_module_ids
+        if selected_skill_ids
+        else module_ids
+    )
     skill_context = resolve_writer_skill_context(
-        skill_ids,
-        module_ids,
+        selected_skill_ids or skill_ids,
+        selected_module_ids,
         genre_id=request.genre,
     )
     loaded_modules: list[dict[str, Any]] = []

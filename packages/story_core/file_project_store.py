@@ -5767,7 +5767,7 @@ class FileProjectStore:
                 else {}
             ),
             enabled_skill_ids=resolve_enabled_skill_ids(project, state),
-            enabled_skill_module_ids=resolve_enabled_skill_module_ids(project, state) or [],
+            enabled_skill_module_ids=resolve_enabled_skill_module_ids(project, state),
         )
 
     def _merge_generated_character_cards(
@@ -8233,11 +8233,22 @@ class FileProjectStore:
         enabled_module_ids = resolve_enabled_skill_module_ids(
             self.project(),
             self.state(),
-        ) or []
+        )
+        enabled_skill_ids = resolve_enabled_skill_ids(
+            self.project(),
+            self.state(),
+        )
         planner = RollingOutlinePlanner(
             generator=generator,
-            require_chapter_contracts=CHAPTER_SOP_MODULE_ID
-            in {str(module_id).strip() for module_id in enabled_module_ids},
+            require_chapter_contracts=(
+                enabled_module_ids is None
+                and CHAPTER_SOP_MODULE_ID.split("::", 1)[0] in enabled_skill_ids
+            )
+            or CHAPTER_SOP_MODULE_ID
+            in {
+                str(module_id).strip()
+                for module_id in (enabled_module_ids or [])
+            },
         )
         return planner.ensure_rolling_outline(
             project_root=self.root,
@@ -8409,7 +8420,7 @@ class FileProjectStore:
                 resolve_enabled_skill_ids(project, current_state)
             ),
             "enabled_skill_module_ids": deepcopy(
-                resolve_enabled_skill_module_ids(project, current_state) or []
+                resolve_enabled_skill_module_ids(project, current_state)
             ),
             "characters": static_characters,
             "monster_profiles": [],
@@ -9076,7 +9087,7 @@ class FileProjectStore:
             "style": str(state.get("style") or project.get("style") or ""),
             "current_chapter": int(state.get("current_chapter") or 0),
             "enabled_skill_ids": resolve_enabled_skill_ids(project, state),
-            "enabled_skill_module_ids": resolve_enabled_skill_module_ids(project, state) or [],
+            "enabled_skill_module_ids": resolve_enabled_skill_module_ids(project, state),
             "author_constraints": self._global_author_constraints(
                 project.get("author_constraints") or state.get("author_constraints") or []
             ),

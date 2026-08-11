@@ -3461,6 +3461,48 @@ def test_outline_planning_brief_respects_explicit_project_module_disable(tmp_pat
     assert brief.enabled_skill_module_ids == []
 
 
+@pytest.mark.parametrize(
+    ("module_selection", "expected"),
+    [
+        (None, None),
+        ([], []),
+        (
+            ["commercial-shuangwen::writer-execution"],
+            ["commercial-shuangwen::writer-execution"],
+        ),
+    ],
+)
+def test_store_preserves_three_state_skill_module_selection(
+    tmp_path,
+    module_selection,
+    expected,
+):
+    project = {
+        "project_id": "p-module-selection",
+        "title": "石碑第九纹",
+        "seed_outline": "沈砚参加宗门石碑试炼。",
+        "world_blueprint": {"genre_plugin_ids": ["xuanhuan"]},
+        "enabled_skill_ids": ["commercial-shuangwen"],
+    }
+    if module_selection is not None:
+        project["enabled_skill_module_ids"] = module_selection
+    store = _make_minimal_file_project(
+        tmp_path / "novel",
+        project=project,
+        state={"story_id": "s-module-selection", "current_chapter": 0},
+    )
+
+    direction = store._story_state_payload_for_direction(
+        store.state(),
+        store.project(),
+        1,
+    )
+    brief = store._planning_brief()
+
+    assert direction["enabled_skill_module_ids"] == expected
+    assert brief.enabled_skill_module_ids == expected
+
+
 def test_generate_outline_plan_resumes_from_persisted_phase_checkpoints(tmp_path):
     store = _make_minimal_file_project(
         tmp_path / "novel",

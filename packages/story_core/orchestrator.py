@@ -4370,6 +4370,10 @@ class StoryOrchestrator:
             "scene_cards": scene_cards,
             "style_guidance": style_guidance,
         }
+        for contract_key in ("payoff_contract", "chapter_sop"):
+            contract = outline_chapter.get(contract_key)
+            if isinstance(contract, dict) and contract:
+                writer_plan[contract_key] = deepcopy(contract)
         writer_plan["governance"] = build_chapter_governance(
             working_story,
             _governance_bundle_view(chapter_number, writer_plan),
@@ -4432,7 +4436,7 @@ class StoryOrchestrator:
         ]
         enabled_skill_module_ids = [
             str(item).strip()
-            for item in getattr(working_story, "enabled_skill_module_ids", [])
+            for item in (getattr(working_story, "enabled_skill_module_ids", None) or [])
             if str(item).strip()
         ]
         if injected_skill_modules:

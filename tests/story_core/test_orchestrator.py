@@ -659,6 +659,72 @@ def test_outline_level_up_with_valid_attribute_decision_reaches_writer_unchanged
     assert captured["decision"] == decision
 
 
+def test_canonical_outline_chapter_contracts_reach_production_writer_plan(monkeypatch):
+    payoff_contract = {
+        "need": "沈砚必须取得内门名额",
+        "pressure": "周执事当众要求取消本次登记",
+        "hidden_advantage": "完整拳路能点亮石碑第九纹",
+        "concrete_reward": "沈砚依门规取得内门名额",
+    }
+    chapter_sop = {
+        "opening_carry": "沈砚在众人注视下按上石碑",
+        "mid_feedback": "石碑第九纹逐次亮起",
+        "turn": "旧族谱映出一行被刮去的姓名",
+        "ending_hook": "沈砚带着拓印走向藏谱阁",
+    }
+    story = StoryState(
+        story_id="s-canonical-chapter-contracts",
+        outline="沈砚参加宗门石碑试炼。",
+        outline_context={
+            "chapter": {
+                "chapter_number": 1,
+                "title": "石碑第九纹",
+                "goal": "取得内门名额",
+                "obstacle": "周执事阻止登记",
+                "action": "沈砚演示完整拳路",
+                "turn": "石碑亮起第九纹",
+                "payoff": "内门名额登记完成",
+                "ending_hook": "族谱映出缺失姓名",
+                "cast": ["沈砚"],
+                "scene_chain": _outline_scene_chain("沈砚"),
+                "payoff_contract": payoff_contract,
+                "chapter_sop": chapter_sop,
+            }
+        },
+        genre="玄幻",
+        genre_plugin_ids=["xuanhuan"],
+        style="通俗网文",
+        characters=[CharacterState(name="沈砚", role="protagonist")],
+    )
+    orchestrator = StoryOrchestrator()
+    captured: dict[str, object] = {}
+    original_body_prompt = orchestrator._body_prompt
+
+    def capture_body_prompt(story, chapter_number, plan):
+        captured["payoff_contract"] = plan.get("payoff_contract")
+        captured["chapter_sop"] = plan.get("chapter_sop")
+        captured["prompt"] = original_body_prompt(story, chapter_number, plan)
+        return captured["prompt"]
+
+    def fake_timed_chat(_story, _prompt, *, agent, **_kwargs):
+        if agent == "planner":
+            raise AssertionError("canonical outline chapter should bypass planner regeneration")
+        if agent == "writer":
+            return "", "writer stopped after contract capture"
+        raise AssertionError(agent)
+
+    monkeypatch.setattr(orchestrator, "_body_prompt", capture_body_prompt)
+    monkeypatch.setattr(orchestrator, "_timed_chat", fake_timed_chat)
+
+    orchestrator.generate_next_chapter(story)
+
+    assert captured["payoff_contract"] == payoff_contract
+    assert captured["chapter_sop"] == chapter_sop
+    assert "沈砚必须取得内门名额" in captured["prompt"]
+    assert "沈砚在众人注视下按上石碑" in captured["prompt"]
+    assert "沈砚带着拓印走向藏谱阁" in captured["prompt"]
+
+
 def test_writer_request_failure_is_preserved_in_failed_bundle(monkeypatch):
     story = StoryState(
         story_id="s-writer-request-failure",

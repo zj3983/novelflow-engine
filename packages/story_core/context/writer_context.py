@@ -27,6 +27,11 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from packages.story_core.skill_packs import (
+    resolve_enabled_skill_ids,
+    resolve_enabled_skill_module_ids,
+)
+
 from ..agents.contracts import DirectorArtifact
 from .project_reader import ProjectContextReader
 
@@ -119,6 +124,9 @@ class WriterContext(BaseModel):
     entity_cards: list[dict[str, Any]] = Field(default_factory=list)
     world_rules: list[str] = Field(default_factory=list)
     craft_modules: list[dict[str, Any]] = Field(default_factory=list)
+    enabled_skill_ids: list[str] = Field(default_factory=list)
+    # Preserve legacy pack-level selection separately from explicit no-modules.
+    enabled_skill_module_ids: list[str] | None = None
     book_outline: dict[str, Any] | None = None
 
 
@@ -152,6 +160,7 @@ def build_writer_context(
     # projects that have not yet migrated to ``.story-system/``;
     # ``_legacy_writer_context`` is responsible for the read.
     project_payload = reader.try_read_json("project.json", kind="project") or {}
+    state_payload = reader.try_read_json("state.json", kind="state") or {}
     project_title = ""
     genre = ""
     if isinstance(project_payload, dict):
@@ -251,6 +260,11 @@ def build_writer_context(
         entity_cards=entity_cards,
         world_rules=world_rules,
         craft_modules=craft_modules,
+        enabled_skill_ids=resolve_enabled_skill_ids(project_payload, state_payload),
+        enabled_skill_module_ids=resolve_enabled_skill_module_ids(
+            project_payload,
+            state_payload,
+        ),
         book_outline=None,
     )
 

@@ -633,7 +633,8 @@ class StoryState(BaseModel):
     memory_index: list[MemoryIndexEntry] = Field(default_factory=list)
     arc_recaps: list[ArcRecap] = Field(default_factory=list)
     enabled_skill_ids: list[str] = Field(default_factory=list)
-    enabled_skill_module_ids: list[str] = Field(default_factory=list)
+    # None means a legacy pack-level selection; [] explicitly disables modules.
+    enabled_skill_module_ids: list[str] | None = None
 
     @model_validator(mode="after")
     def _sanitize_imported_state(self) -> "StoryState":
@@ -657,7 +658,8 @@ class NovelProject(BaseModel):
     relationship_graph: list[dict] = Field(default_factory=list)
     story_core_context: dict = Field(default_factory=dict, exclude=True)
     enabled_skill_ids: list[str] = Field(default_factory=list)
-    enabled_skill_module_ids: list[str] = Field(default_factory=list)
+    # None means a legacy pack-level selection; [] explicitly disables modules.
+    enabled_skill_module_ids: list[str] | None = None
     status: ProjectStatusType = "draft"
     pipeline_stage: ProjectPipelineStage = "imported"
     active_story_id: str = ""
