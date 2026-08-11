@@ -212,6 +212,20 @@ def test_fitting_example_cannot_consume_budget_reserved_for_a_later_rule() -> No
     assert "示例先占预算" not in instructions
 
 
+def test_context_cannot_consume_budget_reserved_for_a_later_rule() -> None:
+    source = """# 模块
+## 说明
+说明会先占预算。
+## 规则
+后置规则必须保留。
+"""
+
+    instructions = extract_skill_instructions(source, limit=16)
+
+    assert "后置规则必须保留" in instructions
+    assert "说明会先占预算" not in instructions
+
+
 def test_genre_examples_keep_only_general_and_canonical_selected_genre(
     tmp_path: Path, monkeypatch
 ) -> None:

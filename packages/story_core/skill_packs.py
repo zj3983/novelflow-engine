@@ -17,6 +17,17 @@ from packages.story_core.novel_type_ids import canonical_novel_type_id
 SKILL_PACK_SCHEMA_VERSION = "skill-pack/v1"
 DEFAULT_SKILL_PACKS_DIR = Path("data") / "skill-packs"
 _SAFE_ID_RE = re.compile(r"[^a-zA-Z0-9_.-]+")
+_MANDATORY_HEADING_MARKERS = (
+    "\u89c4\u5219",
+    "\u6307\u4ee4",
+    "\u8981\u6c42",
+    "\u65b9\u6cd5",
+    "\u539f\u5219",
+    "\u5de5\u4f5c\u6d41",
+    "\u5de5\u4f5c\u6d41\u7a0b",
+    "\u6b65\u9aa4",
+    "\u68c0\u67e5\u6e05\u5355",
+)
 
 
 @dataclass(frozen=True)
@@ -210,9 +221,10 @@ def extract_skill_instructions(
     if is_genre_examples and not include_examples:
         return ""
 
-    candidates: list[tuple[bool, str]] = []
+    candidates: list[tuple[int, str]] = []
     skipped_scope_level: int | None = None
     example_scope_level: int | None = None
+    mandatory_scope_level: int | None = None
     genre_scope: tuple[int, str] | None = None
     selected_genre = canonical_novel_type_id(genre_id)
     allowed_genres = {"\u901a\u7528"}
@@ -225,6 +237,8 @@ def extract_skill_instructions(
                 skipped_scope_level = None
             if example_scope_level is not None and level <= example_scope_level:
                 example_scope_level = None
+            if mandatory_scope_level is not None and level <= mandatory_scope_level:
+                mandatory_scope_level = None
             if genre_scope is not None and level <= genre_scope[0]:
                 genre_scope = None
 
@@ -232,6 +246,8 @@ def extract_skill_instructions(
                 skipped_scope_level = level
             if any(marker in heading for marker in ("\u6b63\u4f8b", "\u53cd\u4f8b", "\u7ed3\u6784\u793a\u4f8b", "\u793a\u4f8b")):
                 example_scope_level = level
+            if any(marker in heading for marker in _MANDATORY_HEADING_MARKERS):
+                mandatory_scope_level = level
             if is_genre_examples:
                 tag_match = re.search(r"\[([^\]]+)\]", heading)
                 if tag_match:
@@ -257,13 +273,19 @@ def extract_skill_instructions(
         block = " ".join(block_lines).strip()
         if not block:
             continue
-        candidates.append((example_scope_level is not None, block))
+        if example_scope_level is not None:
+            priority = 2
+        elif mandatory_scope_level is not None:
+            priority = 0
+        else:
+            priority = 1
+        candidates.append((priority, block))
 
     selected: list[str] = []
     total = 0
-    for optional in (False, True):
-        for is_example, block in candidates:
-            if is_example != optional:
+    for priority in range(3):
+        for block_priority, block in candidates:
+            if block_priority != priority:
                 continue
             added_chars = len(block) + (1 if selected else 0)
             if total + added_chars > limit:
