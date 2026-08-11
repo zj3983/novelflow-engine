@@ -18,18 +18,11 @@ from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.models import StoryState
 from packages.story_core.novel_type_catalog import resolve_novel_type_id, runtime_novel_type
 from packages.story_core.project_outline import normalize_project_outline
+from packages.story_core.skill_packs import get_skill_pack, skill_module_key
 
 
 PROJECT_ID_PATTERN = re.compile(r"p-[A-Za-z0-9-]+")
-NARRATIVE_ENHANCEMENT_MODULE_IDS = {
-    "commercial-shuangwen": (
-        "commercial-shuangwen::plot-engine",
-        "commercial-shuangwen::chapter-sop",
-        "commercial-shuangwen::writer-execution",
-        "commercial-shuangwen::review-checklist",
-        "commercial-shuangwen::genre-examples",
-    ),
-}
+KNOWN_NARRATIVE_ENHANCEMENT_IDS = frozenset({"commercial-shuangwen"})
 
 
 class FileProjectCreateSpec(BaseModel):
@@ -52,7 +45,7 @@ class FileProjectCreateSpec(BaseModel):
         normalized_ids: list[str] = []
         for raw_id in value:
             enhancement_id = raw_id.strip()
-            if enhancement_id not in NARRATIVE_ENHANCEMENT_MODULE_IDS:
+            if enhancement_id not in KNOWN_NARRATIVE_ENHANCEMENT_IDS:
                 raise ValueError(f"unknown_narrative_enhancement_id:{enhancement_id}")
             if enhancement_id not in normalized_ids:
                 normalized_ids.append(enhancement_id)
@@ -89,11 +82,16 @@ def _write_json(path: Path, payload: Any) -> None:
 
 def _narrative_skill_selection(spec: FileProjectCreateSpec) -> tuple[list[str], list[str]]:
     enabled_skill_ids = list(spec.narrative_enhancement_ids)
-    enabled_module_ids = [
-        module_id
-        for enhancement_id in enabled_skill_ids
-        for module_id in NARRATIVE_ENHANCEMENT_MODULE_IDS[enhancement_id]
-    ]
+    enabled_module_ids: list[str] = []
+    for enhancement_id in enabled_skill_ids:
+        pack = get_skill_pack(enhancement_id)
+        if pack is None:
+            continue
+        enabled_module_ids.extend(
+            skill_module_key(pack.skill_id, module.module_id)
+            for module in pack.modules
+            if module.module_id != "root"
+        )
     return enabled_skill_ids, enabled_module_ids
 
 

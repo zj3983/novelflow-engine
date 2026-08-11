@@ -16,6 +16,7 @@ from packages.story_core.novel_type_library import NovelTypeLibrary
 from packages.story_core.novel_type_catalog import novel_type_prompt_context, runtime_novel_type
 from packages.story_core.opening_directions import LLMOpeningDirectionGenerator
 from packages.story_core.runtime_config import StageRuntimeSettings
+from packages.story_core.skill_packs import get_skill_pack, skill_module_key
 
 
 @pytest.fixture
@@ -63,13 +64,9 @@ def test_file_project_creation_accepts_narrative_enhancement_request(creation_ap
 
     assert response.status_code == 201, response.text
     project = response.json()
-    expected_module_ids = [
-        "commercial-shuangwen::plot-engine",
-        "commercial-shuangwen::chapter-sop",
-        "commercial-shuangwen::writer-execution",
-        "commercial-shuangwen::review-checklist",
-        "commercial-shuangwen::genre-examples",
-    ]
+    pack = get_skill_pack("commercial-shuangwen")
+    assert pack is not None
+    expected_module_ids = [skill_module_key(pack.skill_id, module.module_id) for module in pack.modules]
     assert project["enabled_skill_ids"] == ["commercial-shuangwen"]
     assert project["enabled_skill_module_ids"] == expected_module_ids
     state = FileProjectStore(Path(project["source_path"])).state()

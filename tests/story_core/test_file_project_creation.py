@@ -1,6 +1,7 @@
 import json
 import re
 from dataclasses import FrozenInstanceError
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -14,10 +15,17 @@ from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.models import NovelProject, NovelProjectSummary
 from packages.story_core.novel_type_catalog import NOVEL_TYPE_CATALOG
 from packages.story_core.project_outline import normalize_project_outline
+from packages.story_core.skill_packs import get_skill_pack, skill_module_key
 
 
 def read_json(path):
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def commercial_shuangwen_module_ids():
+    pack = get_skill_pack("commercial-shuangwen")
+    assert pack is not None
+    return [skill_module_key(pack.skill_id, module.module_id) for module in pack.modules]
 
 
 def test_create_blank_project_writes_clean_complete_project(tmp_path):
@@ -124,13 +132,7 @@ def test_create_project_persists_selected_narrative_enhancement_in_project_and_s
     )
 
     expected_skill_ids = ["commercial-shuangwen"]
-    expected_module_ids = [
-        "commercial-shuangwen::plot-engine",
-        "commercial-shuangwen::chapter-sop",
-        "commercial-shuangwen::writer-execution",
-        "commercial-shuangwen::review-checklist",
-        "commercial-shuangwen::genre-examples",
-    ]
+    expected_module_ids = commercial_shuangwen_module_ids()
     project = read_json(created.root / ".webnovel/project.json")
     state = read_json(created.root / ".webnovel/state.json")
     master = read_json(created.root / ".story-system/MASTER_SETTING.json")
@@ -140,6 +142,52 @@ def test_create_project_persists_selected_narrative_enhancement_in_project_and_s
         assert payload["enabled_skill_module_ids"] == expected_module_ids
     assert master["project"] == project
     assert master["state"] == state
+
+
+def test_create_project_preserves_known_enhancement_when_pack_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_SKILL_PACKS_DIR", str(tmp_path / "missing-skill-packs"))
+
+    created = create_file_project(
+        tmp_path,
+        FileProjectCreateSpec(
+            mode="blank",
+            title="照夜行",
+            novel_type_id="xuanhuan",
+            narrative_enhancement_ids=["commercial-shuangwen"],
+        ),
+        project_id_factory=lambda: "p-missing-enhancement",
+    )
+
+    for relative_path in (".webnovel/project.json", ".webnovel/state.json"):
+        persisted = read_json(created.root / relative_path)
+        assert persisted["enabled_skill_ids"] == ["commercial-shuangwen"]
+        assert persisted["enabled_skill_module_ids"] == []
+
+
+def test_create_project_does_not_enable_pack_root_as_stage_module(tmp_path, monkeypatch):
+    stage_module_id = "stage-module"
+    pack = SimpleNamespace(
+        skill_id="commercial-shuangwen",
+        modules=[
+            SimpleNamespace(module_id="root"),
+            SimpleNamespace(module_id=stage_module_id),
+        ],
+    )
+    monkeypatch.setattr(file_project_creation, "get_skill_pack", lambda _skill_id: pack)
+
+    created = create_file_project(
+        tmp_path,
+        FileProjectCreateSpec(
+            mode="blank",
+            title="照夜行",
+            novel_type_id="xuanhuan",
+            narrative_enhancement_ids=["commercial-shuangwen"],
+        ),
+        project_id_factory=lambda: "p-no-root-module",
+    )
+
+    project = read_json(created.root / ".webnovel/project.json")
+    assert project["enabled_skill_module_ids"] == [skill_module_key(pack.skill_id, stage_module_id)]
 
 
 @pytest.mark.parametrize("enhancements", [None, []])

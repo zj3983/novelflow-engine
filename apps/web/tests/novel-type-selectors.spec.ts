@@ -21,6 +21,15 @@ const customType: NovelTypeFixture = {
   builtin: false,
 };
 
+const commercialShuangwenPack = {
+  schema_version: "skill-pack/v1",
+  skill_id: "commercial-shuangwen",
+  name: "商业爽文推进",
+  version: "1.0.0",
+  module_count: 5,
+  modules: [],
+};
+
 function novelTypeResponse(type: NovelTypeFixture) {
   return {
     ...type,
@@ -78,6 +87,20 @@ async function routeNovelTypes(
   return { requestCount: () => requests };
 }
 
+async function routeSkillPacks(
+  page: Page,
+  packs: unknown[] = [commercialShuangwenPack],
+  options: { fail?: boolean } = {},
+) {
+  await page.route("**/skill-packs", async (route) => {
+    await route.fulfill({
+      status: options.fail ? 503 : 200,
+      contentType: "application/json",
+      body: JSON.stringify(options.fail ? { detail: "skill_pack_service_unavailable" } : packs),
+    });
+  });
+}
+
 function projectFixture(typeId?: string) {
   return {
     project_id: "file:selector-fixture",
@@ -129,6 +152,7 @@ async function routeSettingsProject(
 
 test("新建页加载全局类型，优先通用类型并提交动态 ID", async ({ page }) => {
   await routeNovelTypes(page, [customType, genericType]);
+  await routeSkillPacks(page);
   const creates: unknown[] = [];
   await page.route("**/file-projects", async (route) => {
     creates.push(route.request().postDataJSON());
@@ -152,17 +176,12 @@ test("新建页加载全局类型，优先通用类型并提交动态 ID", async
   await page.getByRole("button", { name: "创建小说" }).click();
 
   await expect(page).toHaveURL(/file%3Acreated\/outline$/);
-  expect(creates).toEqual([{
-    mode: "blank",
-    title: "试剑录",
-    novel_type_id: customType.id,
-    idea: "",
-    narrative_enhancement_ids: [],
-  }]);
+  expect(creates).toEqual([{ mode: "blank", title: "试剑录", novel_type_id: customType.id, idea: "" }]);
 });
 
 test("新建页叙事增强默认关闭，勾选后随请求提交且不跟随题材", async ({ page }) => {
   await routeNovelTypes(page, [genericType, customType]);
+  await routeSkillPacks(page);
   const creates: unknown[] = [];
   await page.route("**/file-projects", async (route) => {
     creates.push(route.request().postDataJSON());
@@ -194,6 +213,30 @@ test("新建页叙事增强默认关闭，勾选后随请求提交且不跟随�
     idea: "",
     narrative_enhancement_ids: ["commercial-shuangwen"],
   }]);
+});
+
+test("新建页在叙事增强包未安装时显示不可用并禁用选择", async ({ page }) => {
+  await routeNovelTypes(page, [genericType]);
+  await routeSkillPacks(page, []);
+
+  await page.goto("/projects/new");
+
+  await expect(page.getByRole("checkbox", { name: "商业爽文推进" })).toBeDisabled();
+  await expect(page.getByRole("alert").filter({ hasText: "未安装“商业爽文推进”叙事增强" }))
+    .toContainText("未安装“商业爽文推进”叙事增强，当前不可用。");
+});
+
+test("新建页叙事增强列表加载失败时保持创建可用", async ({ page }) => {
+  await routeNovelTypes(page, [genericType]);
+  await routeSkillPacks(page, [], { fail: true });
+
+  await page.goto("/projects/new");
+
+  await expect(page.getByRole("checkbox", { name: "商业爽文推进" })).toBeDisabled();
+  await expect(page.getByRole("alert").filter({ hasText: "叙事增强列表加载失败" }))
+    .toContainText("叙事增强列表加载失败，“商业爽文推进”当前不可用。");
+  await page.getByRole("textbox", { name: /^灵感/ }).fill("列表失败也可以创建");
+  await expect(page.getByRole("button", { name: "创建小说" })).toBeEnabled();
 });
 
 test("新建页在没有通用类型时默认第一项", async ({ page }) => {

@@ -5,10 +5,16 @@ import { type FormEvent, type KeyboardEvent, useEffect, useMemo, useRef, useStat
 
 import { PageHeader } from "../../../components/ws/PageHeader";
 import { ContinuationImportWizard } from "../../../components/ContinuationImportWizard";
-import { createFileProject, fetchNovelTypes as listNovelTypes, type NovelType } from "../../../lib/api";
+import {
+  createFileProject,
+  fetchNovelTypes as listNovelTypes,
+  listSkillPacks,
+  type NovelType,
+} from "../../../lib/api";
 import { DEFAULT_NOVEL_TYPE_ID } from "../../../lib/novelTypes";
 
 type CreationMode = "inspiration" | "blank" | "continuation";
+type EnhancementAvailability = "loading" | "available" | "missing" | "error";
 
 export default function NewProjectPage() {
   const router = useRouter();
@@ -27,6 +33,8 @@ export default function NewProjectPage() {
   const [typesLoadVersion, setTypesLoadVersion] = useState(0);
   const [idea, setIdea] = useState("");
   const [commercialShuangwenEnabled, setCommercialShuangwenEnabled] = useState(false);
+  const [commercialShuangwenAvailability, setCommercialShuangwenAvailability] =
+    useState<EnhancementAvailability>("loading");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -65,6 +73,27 @@ export default function NewProjectPage() {
       cancelled = true;
     };
   }, [typesLoadVersion]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void listSkillPacks()
+      .then((packs) => {
+        if (cancelled) return;
+        const installed = packs.some((pack) => pack.skill_id === "commercial-shuangwen");
+        setCommercialShuangwenAvailability(installed ? "available" : "missing");
+        if (!installed) setCommercialShuangwenEnabled(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setCommercialShuangwenAvailability("error");
+        setCommercialShuangwenEnabled(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const selectedNovelType = useMemo(
     () => novelTypes.find((type) => type.id === novelTypeId),
@@ -113,7 +142,9 @@ export default function NewProjectPage() {
         title: title.trim(),
         novel_type_id: novelTypeId,
         idea: mode === "inspiration" ? idea.trim() : "",
-        narrative_enhancement_ids: commercialShuangwenEnabled ? ["commercial-shuangwen"] : [],
+        ...(commercialShuangwenEnabled
+          ? { narrative_enhancement_ids: ["commercial-shuangwen"] }
+          : {}),
       });
       if (!mountedRef.current || requestId !== submitRequestIdRef.current) return;
       router.push(response.next_path);
@@ -222,6 +253,7 @@ export default function NewProjectPage() {
                 type="checkbox"
                 aria-label="商业爽文推进"
                 checked={commercialShuangwenEnabled}
+                disabled={commercialShuangwenAvailability !== "available"}
                 onChange={(event) => setCommercialShuangwenEnabled(event.target.checked)}
               />
               <span>
@@ -230,6 +262,16 @@ export default function NewProjectPage() {
                 <span className="ws-card__hint">需求、压制、反击、回报；按题材加载具体例子。</span>
               </span>
             </label>
+            {commercialShuangwenAvailability === "missing" ? (
+              <p className="ws-project-create__error" role="alert">
+                未安装“商业爽文推进”叙事增强，当前不可用。
+              </p>
+            ) : null}
+            {commercialShuangwenAvailability === "error" ? (
+              <p className="ws-project-create__error" role="alert">
+                叙事增强列表加载失败，“商业爽文推进”当前不可用。
+              </p>
+            ) : null}
           </section>
 
           {typesError ? (
