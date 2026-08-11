@@ -1,0 +1,12 @@
+{
+  "schema_version": "skill-pack/v1",
+  "skill_id": "commercial-shuangwen",
+  "name": "商业爽文推进",
+  "version": "1.0.0",
+  "author": "local",
+  "description": "可叠加到既有题材与正典之上的商业爽文叙事推进方法。",
+  "enabled_by_default": false,
+  "scope": "narrative_method",
+  "can_invent_canon": false,
+  "requests_automatic_revision": false
+}
