@@ -210,8 +210,7 @@ def extract_skill_instructions(
     if is_genre_examples and not include_examples:
         return ""
 
-    selected: list[str] = []
-    total = 0
+    candidates: list[tuple[bool, str]] = []
     skipped_scope_level: int | None = None
     example_scope_level: int | None = None
     genre_scope: tuple[int, str] | None = None
@@ -258,11 +257,19 @@ def extract_skill_instructions(
         block = " ".join(block_lines).strip()
         if not block:
             continue
-        added_chars = len(block) + (1 if selected else 0)
-        if total + added_chars > limit:
-            continue
-        selected.append(block)
-        total += added_chars
+        candidates.append((example_scope_level is not None, block))
+
+    selected: list[str] = []
+    total = 0
+    for optional in (False, True):
+        for is_example, block in candidates:
+            if is_example != optional:
+                continue
+            added_chars = len(block) + (1 if selected else 0)
+            if total + added_chars > limit:
+                continue
+            selected.append(block)
+            total += added_chars
 
     return " ".join(selected).strip()
 

@@ -198,6 +198,20 @@ def test_oversized_example_does_not_hide_a_later_rule_block() -> None:
     assert "完整示例第二行" not in instructions
 
 
+def test_fitting_example_cannot_consume_budget_reserved_for_a_later_rule() -> None:
+    source = """# 单章结构
+## 正例
+示例先占预算。
+## 规则
+后置规则必须保留。
+"""
+
+    instructions = extract_skill_instructions(source, limit=18, include_examples=True)
+
+    assert "后置规则必须保留" in instructions
+    assert "示例先占预算" not in instructions
+
+
 def test_genre_examples_keep_only_general_and_canonical_selected_genre(
     tmp_path: Path, monkeypatch
 ) -> None:
