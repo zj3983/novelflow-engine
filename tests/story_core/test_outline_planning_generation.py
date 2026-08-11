@@ -1052,6 +1052,7 @@ def test_outline_skill_context_uses_canonical_genre_and_bounded_budget(monkeypat
         "compact": True,
         "max_serialized_chars": 3587,
     }
+    assert captured_prompt["skill_context"] == {"outline": sentinel}
 
 
 def _valid_plan_with_chapter_contracts() -> dict:
@@ -1059,7 +1060,6 @@ def _valid_plan_with_chapter_contracts() -> dict:
     for chapter in plan["outline"]["chapters"]:
         chapter.update(deepcopy(CHAPTER_CONTRACT))
     return plan
-    assert captured_prompt["skill_context"] == {"outline": sentinel}
 
 
 def test_split_outline_prompt_routes_skill_only_to_outline_foundation(monkeypatch) -> None:

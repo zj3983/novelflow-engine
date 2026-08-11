@@ -101,37 +101,75 @@ _CHAPTER_CONTRACT_FIELDS = {
         "ending_hook",
     ),
 }
-_MIN_CHAPTER_CONTRACT_INFORMATION_CHARS = 6
-_CHAPTER_CONTRACT_INFORMATION_CHAR_PATTERN = re.compile(
-    r"[\u3400-\u9fffA-Za-z0-9]"
+_ABSTRACT_CHAPTER_CONTRACT_NOUNS = frozenset(
+    {
+        "压力",
+        "冲突",
+        "情况",
+        "问题",
+        "反馈",
+        "悬念",
+        "进展",
+        "变化",
+        "收获",
+        "爽点",
+        "局势",
+        "事情",
+        "剧情",
+        "伏笔",
+    }
 )
-_GENERIC_CHAPTER_CONTRACT_PATTERNS = (
-    re.compile(
-        r"^(?:continue|proceed|progress|tbd|todo|placeholder)$",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"^(?:继续|接着|后续)(?:推进|发展|展开|进行)?(?:一下)?"
-        r"(?:剧情|故事|情节|事件|行动)?(?:下去)?$"
-    ),
-    re.compile(
-        r"^(?:事情|情况|局势|形势|情节|剧情)"
-        r"(?:(?:发生|出现|产生)了?|有了?|变得)?"
-        r"(?:一些|一点|新的?|更多)?(?:变化|改变|复杂|不简单|转折)$"
-    ),
-    re.compile(
-        r"^(?:有所|得到|获得|取得|收获|制造)(?:了)?"
-        r"(?:一些|一点|一定|新的?|更多)?"
-        r"(?:收获|成果|回报|爽点|进展|好处)?$"
-    ),
-    re.compile(
-        r"^(?:留下|设置|制造|埋下)(?:了)?(?:一个|一些|一点)?"
-        r"(?:新的?|更多)?(?:悬念|钩子|伏笔)$"
-    ),
-    re.compile(
-        r"^(?:提升|增加|加强|加大|制造)(?:了)?"
-        r"(?:一些|一点|新的?|更多)?(?:压力|冲突|紧张感|难度)$"
-    ),
+_GENERIC_CHAPTER_CONTRACT_ACTIONS = frozenset(
+    {
+        "继续",
+        "进一步",
+        "升级",
+        "推进",
+        "出现",
+        "得到",
+        "有所",
+        "留下",
+        "发生",
+        "产生",
+        "变得",
+        "获得",
+        "设置",
+        "制造",
+        "埋下",
+        "提升",
+        "增加",
+        "continue",
+    }
+)
+_GENERIC_CHAPTER_CONTRACT_MODIFIERS = frozenset(
+    {
+        "新的",
+        "新",
+        "重要",
+        "更加",
+        "更多",
+        "一些",
+        "一点",
+        "一个",
+        "复杂",
+        "不简单",
+        "待定",
+        "placeholder",
+        "tbd",
+        "todo",
+        "了",
+        "的",
+        "有",
+    }
+)
+_GENERIC_CHAPTER_CONTRACT_TERMS = tuple(
+    sorted(
+        _ABSTRACT_CHAPTER_CONTRACT_NOUNS
+        | _GENERIC_CHAPTER_CONTRACT_ACTIONS
+        | _GENERIC_CHAPTER_CONTRACT_MODIFIERS,
+        key=len,
+        reverse=True,
+    )
 )
 _NUMBER_TOKEN = (
     r"(?:\d+(?:,\d{3})*(?:\.\d+)?[万亿]?"
@@ -212,16 +250,11 @@ def _is_generic_chapter_contract_value(value: str) -> bool:
         r"[\s，。！？、,.!?;；:_-]+",
         "",
         unicodedata.normalize("NFKC", value),
-    )
-    information_chars = _CHAPTER_CONTRACT_INFORMATION_CHAR_PATTERN.findall(
-        normalized
-    )
-    if len(information_chars) < _MIN_CHAPTER_CONTRACT_INFORMATION_CHARS:
-        return True
-    return any(
-        pattern.fullmatch(normalized)
-        for pattern in _GENERIC_CHAPTER_CONTRACT_PATTERNS
-    )
+    ).casefold()
+    remainder = normalized
+    for term in _GENERIC_CHAPTER_CONTRACT_TERMS:
+        remainder = remainder.replace(term, "")
+    return not remainder
 
 
 def validate_concrete_chapter_contract(

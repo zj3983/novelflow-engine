@@ -278,6 +278,32 @@ def test_disabled_chapter_sop_keeps_legacy_plan_compatible(valid_payload: dict) 
 
 
 @pytest.mark.parametrize(
+    "section,field,value",
+    [
+        ("chapter_sop", "mid_feedback", "铜镜亮了"),
+        ("payoff_contract", "pressure", "买家到场"),
+        ("payoff_contract", "concrete_reward", "镜芯到手"),
+        ("payoff_contract", "concrete_reward", "订单完成"),
+    ],
+)
+def test_enabled_chapter_sop_accepts_concise_concrete_events(
+    valid_payload: dict,
+    section: str,
+    field: str,
+    value: str,
+) -> None:
+    _add_chapter_contracts(valid_payload)
+    valid_payload["outline"]["chapters"][0][section][field] = value
+
+    plan = validate_generated_opening_plan(
+        valid_payload,
+        require_chapter_contracts=True,
+    )
+
+    assert getattr(getattr(plan.outline.chapters[0], section), field) == value
+
+
+@pytest.mark.parametrize(
     "mutation,missing_field",
     [
         (
@@ -321,11 +347,16 @@ def test_enabled_chapter_sop_rejects_missing_or_partial_contracts(
         ("payoff_contract", "pressure", "事情发生了变化"),
         ("payoff_contract", "concrete_reward", "有所收获"),
         ("payoff_contract", "concrete_reward", "获得一些收获"),
+        ("payoff_contract", "pressure", "压力进一步升级"),
+        ("payoff_contract", "pressure", "冲突进一步升级"),
+        ("chapter_sop", "turn", "出现新的问题"),
+        ("chapter_sop", "mid_feedback", "得到重要反馈"),
         ("chapter_sop", "turn", "事情不简单"),
         ("chapter_sop", "ending_hook", "留下悬念"),
         ("chapter_sop", "ending_hook", "留下新的悬念"),
         ("chapter_sop", "ending_hook", "留下一个新的悬念"),
         ("chapter_sop", "mid_feedback", "推进"),
+        ("chapter_sop", "mid_feedback", "..."),
         ("chapter_sop", "opening_carry", "continue"),
     ],
 )
