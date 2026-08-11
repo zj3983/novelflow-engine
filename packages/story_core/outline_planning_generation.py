@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from copy import deepcopy
 from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -19,6 +20,7 @@ from packages.story_core.outline_planning import (
     INITIAL_OUTLINE_CHAPTER_COUNT,
     PlanningCharacterCard,
     sanitize_generated_outline_amounts,
+    validate_concrete_chapter_contract,
     validate_generated_continuation_plan,
     validate_generated_opening_plan,
 )
@@ -48,6 +50,99 @@ _OUTLINE_SKILL_LIST_MAX_CHARS = _OUTLINE_SKILL_CONTEXT_MAX_CHARS - (
     len(json.dumps({"outline": []}, ensure_ascii=False))
     - len(json.dumps([], ensure_ascii=False))
 )
+_CHAPTER_SOP_MODULE_ID = "commercial-shuangwen::chapter-sop"
+_CHAPTER_SKILL_CONTEXT_MAX_CHARS = 1200
+_CHAPTER_SKILL_LIST_MAX_CHARS = _CHAPTER_SKILL_CONTEXT_MAX_CHARS - (
+    len(json.dumps({"chapter_plan": []}, ensure_ascii=False))
+    - len(json.dumps([], ensure_ascii=False))
+)
+_CHAPTER_CONTRACT_FIELDS = ("payoff_contract", "chapter_sop")
+_CHAPTER_CONTRACT_RULE = (
+    "Every chapter must include payoff_contract.need/pressure/hidden_advantage/"
+    "concrete_reward and chapter_sop.opening_carry/mid_feedback/turn/ending_hook. "
+    "Each chapter_contract value must name an observable event/action/result grounded "
+    "in the total outline, active stage outline, current project facts, established "
+    "world, and established characters; it must not invent canon. Reject vague labels "
+    "such as 提升压力, 情况复杂, 留下悬念, 获得爽点, 事情不简单, or continue. "
+    "These fields describe the selected chapter's contract and must not force a full macro loop."
+)
+
+
+def _chapter_output_schema(
+    model: type[BaseModel],
+    *,
+    require_chapter_contracts: bool,
+) -> dict[str, Any]:
+    schema = deepcopy(model.model_json_schema())
+    definitions = schema.get("$defs")
+    if not isinstance(definitions, dict):
+        return schema
+
+    chapter_definitions = [
+        definition
+        for name, definition in definitions.items()
+        if name in {"ChapterPlan", "GeneratedDetailedChapter"}
+        and isinstance(definition, dict)
+    ]
+    if not require_chapter_contracts:
+        for definition in chapter_definitions:
+            properties = definition.get("properties")
+            if isinstance(properties, dict):
+                for field_name in _CHAPTER_CONTRACT_FIELDS:
+                    properties.pop(field_name, None)
+            required = definition.get("required")
+            if isinstance(required, list):
+                definition["required"] = [
+                    field_name
+                    for field_name in required
+                    if field_name not in _CHAPTER_CONTRACT_FIELDS
+                ]
+        definitions.pop("ChapterPayoffContract", None)
+        definitions.pop("ChapterSop", None)
+        return schema
+
+    for definition in chapter_definitions:
+        properties = definition.get("properties")
+        if not isinstance(properties, dict):
+            continue
+        required = list(definition.get("required") or [])
+        for field_name in _CHAPTER_CONTRACT_FIELDS:
+            property_schema = properties.get(field_name)
+            if isinstance(property_schema, dict):
+                non_null = next(
+                    (
+                        option
+                        for option in property_schema.get("anyOf", [])
+                        if isinstance(option, dict) and "$ref" in option
+                    ),
+                    None,
+                )
+                if non_null is not None:
+                    properties[field_name] = non_null
+            if field_name not in required:
+                required.append(field_name)
+        definition["required"] = required
+    for name in ("ChapterPayoffContract", "ChapterSop"):
+        definition = definitions.get(name)
+        if isinstance(definition, dict) and isinstance(definition.get("properties"), dict):
+            definition["required"] = list(definition["properties"])
+    return schema
+
+
+def _drop_disabled_chapter_contracts(payload: Any) -> None:
+    if not isinstance(payload, dict):
+        return
+    outline = payload.get("outline")
+    if not isinstance(outline, dict):
+        return
+    chapters = outline.get("chapters")
+    if not isinstance(chapters, list):
+        return
+    for chapter in chapters:
+        if not isinstance(chapter, dict):
+            continue
+        for field_name in _CHAPTER_CONTRACT_FIELDS:
+            chapter.pop(field_name, None)
 
 
 def _runtime_gateway_for_legacy_injection(
@@ -425,6 +520,10 @@ class LLMOutlinePlanningGenerator:
         stop_after_phase: str | None = None,
     ) -> GeneratedOutlinePlan:
         validated = OutlinePlanningBrief.model_validate(brief)
+        chapter_contracts_enabled = _CHAPTER_SOP_MODULE_ID in {
+            str(module_id).strip()
+            for module_id in validated.enabled_skill_module_ids
+        }
         normalized_guidance = guidance.strip()
         if len(normalized_guidance) > 1000:
             raise ValueError("regeneration_guidance_too_long")
@@ -577,6 +676,8 @@ class LLMOutlinePlanningGenerator:
 
             validation_rules.append(financial_outline_rule)
             validation_rules.extend(power_contract_rules)
+            if chapter_contracts_enabled:
+                validation_rules.append(_CHAPTER_CONTRACT_RULE)
             is_game_story = effective_novel_type_id == "game_webnovel"
             if is_game_story:
                 validation_rules.extend(
@@ -637,7 +738,10 @@ class LLMOutlinePlanningGenerator:
                     "current_strategy", "observe"
                 ),
                 "one_time_guidance": normalized_guidance,
-                "output_schema": GeneratedOutlinePlan.model_json_schema(),
+                "output_schema": _chapter_output_schema(
+                    GeneratedOutlinePlan,
+                    require_chapter_contracts=chapter_contracts_enabled,
+                ),
                 "validation_rules": validation_rules,
             }
             outline_skill_context = (
@@ -654,9 +758,28 @@ class LLMOutlinePlanningGenerator:
                 if validated.enabled_skill_ids
                 else []
             )
+            chapter_skill_context = (
+                skill_pack_prompt_context(
+                    validated.enabled_skill_ids,
+                    enabled_module_ids=validated.enabled_skill_module_ids,
+                    purpose="chapter_plan",
+                    include_examples=True,
+                    genre_id=effective_novel_type_id,
+                    max_chars_per_pack=_CHAPTER_SKILL_CONTEXT_MAX_CHARS,
+                    compact=True,
+                    max_serialized_chars=_CHAPTER_SKILL_LIST_MAX_CHARS,
+                )
+                if chapter_contracts_enabled and validated.enabled_skill_ids
+                else []
+            )
             skill_method_guard = ""
+            stage_skill_context: dict[str, Any] = {}
             if outline_skill_context:
-                prompt_context["skill_context"] = {"outline": outline_skill_context}
+                stage_skill_context["outline"] = outline_skill_context
+            if chapter_skill_context:
+                stage_skill_context["chapter_plan"] = chapter_skill_context
+            if stage_skill_context:
+                prompt_context["skill_context"] = stage_skill_context
                 skill_method_guard = _OUTLINE_SKILL_GUARD
             if power_system:
                 prompt_context["power_system"] = power_system
@@ -666,6 +789,11 @@ class LLMOutlinePlanningGenerator:
                 if is_game_story
                 else "For non-game stories, leave game_line_payoff and reality_line_payoff empty. "
             )
+            chapter_contract_prompt = (
+                f"{_CHAPTER_CONTRACT_RULE} "
+                if chapter_contracts_enabled
+                else ""
+            )
             payload = {
                 "model": runtime.model,
                 "messages": [
@@ -673,6 +801,7 @@ class LLMOutlinePlanningGenerator:
                         "role": "system",
                         "content": (
                             f"{skill_method_guard}"
+                            f"{chapter_contract_prompt}"
                             f"{financial_outline_rule} "
                             f"{' '.join(power_contract_rules)} "
                             "Follow prompt_context.output_schema exactly. Do not add fields, rename fields, "
@@ -812,8 +941,22 @@ class LLMOutlinePlanningGenerator:
                     **prompt_context,
                     "generation_phase": "outline",
                     "target_chapter_numbers": [],
-                    "output_schema": GeneratedOutlineFoundation.model_json_schema(),
+                    "output_schema": _chapter_output_schema(
+                        GeneratedOutlineFoundation,
+                        require_chapter_contracts=False,
+                    ),
+                    "validation_rules": [
+                        rule
+                        for rule in validation_rules
+                        if rule != _CHAPTER_CONTRACT_RULE
+                    ],
                 }
+                if outline_skill_context:
+                    outline_context["skill_context"] = {
+                        "outline": outline_skill_context
+                    }
+                else:
+                    outline_context.pop("skill_context", None)
                 outline_payload = {
                     **payload,
                     "reasoning_effort": "low",
@@ -821,7 +964,7 @@ class LLMOutlinePlanningGenerator:
                         {
                             "role": "system",
                             "content": (
-                                f"{skill_method_guard}"
+                                f"{_OUTLINE_SKILL_GUARD if outline_skill_context else ''}"
                                 "Generate only the story structure as JSON with the single root field outline. "
                                 "Fill overall fields including theme_statement, foreground_story, background_story, "
                                 "book_objective, ending_image, core_ending_chapter, extension_ceiling_chapter, "
@@ -951,14 +1094,26 @@ class LLMOutlinePlanningGenerator:
                     "genre_trope_templates": trope_candidates,
                     "chapter_outline_template": outline_template.get("chapter", {}),
                     "target_chapter_numbers": target_chapter_numbers,
-                    "output_schema": GeneratedChapterWindow.model_json_schema(),
+                    "output_schema": _chapter_output_schema(
+                        GeneratedChapterWindow,
+                        require_chapter_contracts=chapter_contracts_enabled,
+                    ),
                     "validation_rules": [
                         "Return exactly one chapter for every target_chapter_numbers value, in order.",
                         "Every cast name must exactly match one name in characters.",
                         "Use trope_beat only on a milestone that fits the active arc.",
                         financial_outline_rule,
+                        *(
+                            [_CHAPTER_CONTRACT_RULE]
+                            if chapter_contracts_enabled
+                            else []
+                        ),
                     ],
                 }
+                if chapter_skill_context:
+                    chapter_context["skill_context"] = {
+                        "chapter_plan": chapter_skill_context
+                    }
                 chapter_payload = {
                     **payload,
                     "reasoning_effort": "low",
@@ -966,6 +1121,8 @@ class LLMOutlinePlanningGenerator:
                         {
                             "role": "system",
                             "content": (
+                                f"{_OUTLINE_SKILL_GUARD if chapter_skill_context else ''}"
+                                f"{chapter_contract_prompt}"
                                 "Generate only the requested Chinese webnovel chapter outline window. "
                                 "Fill each chapter using prompt_context.chapter_outline_template. "
                                 "Return JSON with the single root field chapters. Do not repeat overall, arcs, or character cards. "
@@ -975,12 +1132,20 @@ class LLMOutlinePlanningGenerator:
                         {"role": "user", "content": json.dumps(chapter_context, ensure_ascii=False)},
                     ],
                 }
+
+                def validate_chapter_window_contracts(result: BaseModel) -> None:
+                    if not chapter_contracts_enabled:
+                        return
+                    for chapter in getattr(result, "chapters", []):
+                        validate_concrete_chapter_contract(chapter)
+
                 chapter_window = run_phase(
                     "chapter_window",
                     GeneratedChapterWindow,
                     chapter_payload,
                     "chapter_window_generation_failed",
                     "invalid_chapter_window_json",
+                    validate_chapter_window_contracts,
                 )
                 # Plan rule: the rolling-only fields must not
                 # enter the three-level outline schema. Project
@@ -1018,6 +1183,8 @@ class LLMOutlinePlanningGenerator:
                 parsed = parse_json_message_content(response)
                 if parsed is None:
                     raise ValueError("invalid_json")
+            if not chapter_contracts_enabled:
+                _drop_disabled_chapter_contracts(parsed)
             parsed = sanitize_generated_outline_amounts(parsed)
             if preserve_unlocked_legacy_tropes:
                 _preserve_unlocked_legacy_tropes(
@@ -1043,6 +1210,7 @@ class LLMOutlinePlanningGenerator:
                     trope_templates=trope_candidates,
                     expected_primary_trope_id=expected_primary_trope_id,
                     fallback_outline=validated.existing_outline,
+                    require_chapter_contracts=chapter_contracts_enabled,
                 )
             fallback_outline = (
                 validated.existing_outline
@@ -1055,6 +1223,7 @@ class LLMOutlinePlanningGenerator:
                 trope_templates=trope_candidates,
                 expected_primary_trope_id=expected_primary_trope_id,
                 fallback_outline=fallback_outline,
+                require_chapter_contracts=chapter_contracts_enabled,
             )
         except Exception as exc:
             if split_plan_completed and phase_callback:

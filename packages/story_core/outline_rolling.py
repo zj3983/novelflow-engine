@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
+from packages.story_core.outline_planning import validate_concrete_chapter_contract
+
 
 class RollingPlanError(ValueError):
     """Raised when the planning helpers are given an
@@ -305,6 +307,7 @@ def validate_rolling_chapter(
     *,
     expected_chapter_number: int,
     volume_range: tuple[int, int],
+    require_chapter_contracts: bool = False,
 ) -> dict[str, Any]:
     """Validate one rolling-fill chapter payload.
 
@@ -416,6 +419,15 @@ def validate_rolling_chapter(
                     f"index={index} field={field}"
                 )
 
+    if require_chapter_contracts:
+        try:
+            validate_concrete_chapter_contract(
+                payload,
+                chapter_number=chapter_number,
+            )
+        except ValueError as exc:
+            raise RollingValidationError(str(exc)) from exc
+
     return dict(payload)
 
 
@@ -424,6 +436,7 @@ def validate_rolling_batch(
     *,
     expected_chapter_numbers: list[int],
     volume_range: tuple[int, int],
+    require_chapter_contracts: bool = False,
 ) -> list[dict[str, Any]]:
     """Validate an entire rolling-fill batch in one pass.
 
@@ -455,6 +468,7 @@ def validate_rolling_batch(
                     payload,
                     expected_chapter_number=expected,
                     volume_range=volume_range,
+                    require_chapter_contracts=require_chapter_contracts,
                 )
             )
         except RollingValidationError as exc:

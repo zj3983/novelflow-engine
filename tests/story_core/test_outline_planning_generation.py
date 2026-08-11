@@ -26,6 +26,21 @@ from packages.story_core.runtime_config import StageRuntimeSettings
 
 PACKS_DIR = Path(__file__).resolve().parents[2] / "data" / "skill-packs"
 
+CHAPTER_CONTRACT = {
+    "payoff_contract": {
+        "need": "林修必须拿到替换镜芯",
+        "pressure": "买家只给他一夜验货",
+        "hidden_advantage": "他能恢复物品上次完整运行状态",
+        "concrete_reward": "修复订单并获得父亲失踪线索",
+    },
+    "chapter_sop": {
+        "opening_carry": "接上铜镜第一次亮起",
+        "mid_feedback": "镜面恢复一段旧影像",
+        "turn": "影像中的人认出了林修",
+        "ending_hook": "镜中人叫出林修父亲的名字",
+    },
+}
+
 
 def test_generator_constructor_does_not_accept_legacy_strategy_resolver() -> None:
     assert "strategy_resolver" not in inspect.signature(LLMOutlinePlanningGenerator).parameters
@@ -367,11 +382,17 @@ def _codex_phase_content(prompt: dict) -> dict:
         }
     template = plan["outline"]["chapters"][0]
     detailed = _detailed_chapter_template()
+    contract = (
+        deepcopy(CHAPTER_CONTRACT)
+        if "payoff_contract" in json.dumps(prompt["output_schema"], ensure_ascii=False)
+        else {}
+    )
     return {
         "chapters": [
             {
                 **template,
                 **detailed,
+                **contract,
                 "chapter_number": number,
                 "trope_beat": template["trope_beat"] if number == 1 else None,
             }
@@ -779,7 +800,18 @@ def test_enabled_xuanhuan_outline_prompt_gets_only_outline_skill_modules(monkeyp
     def fake_post(base_url, path, payload, api_key, **kwargs):
         captured["system"] = payload["messages"][0]["content"]
         captured["context"] = json.loads(payload["messages"][1]["content"])
-        return {"choices": [{"message": {"content": json.dumps(_valid_plan(), ensure_ascii=False)}}]}
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            _valid_plan_with_chapter_contracts(),
+                            ensure_ascii=False,
+                        )
+                    }
+                }
+            ]
+        }
 
     all_module_ids = [
         f"commercial-shuangwen::{module_id}"
@@ -798,7 +830,7 @@ def test_enabled_xuanhuan_outline_prompt_gets_only_outline_skill_modules(monkeyp
     )
 
     stage_skill_context = captured["context"]["skill_context"]
-    assert set(stage_skill_context) == {"outline"}
+    assert set(stage_skill_context) == {"outline", "chapter_plan"}
     assert len(json.dumps(stage_skill_context, ensure_ascii=False)) <= 3600
     skill_context = stage_skill_context["outline"]
     assert [module["module_id"] for module in skill_context[0]["modules"]] == [
@@ -824,10 +856,129 @@ def test_enabled_xuanhuan_outline_prompt_gets_only_outline_skill_modules(monkeyp
     assert "chapter-sop" not in serialized
     assert "writer-execution" not in serialized
     assert "review-checklist" not in serialized
+    assert [
+        module["module_id"]
+        for module in stage_skill_context["chapter_plan"][0]["modules"]
+    ] == ["chapter-sop", "genre-examples"]
     assert "may shape conflict and payoff" in captured["system"]
     assert "must not invent canon" in captured["system"]
     assert "must not replace prompt_context.output_schema" in captured["system"]
     assert "must not override the established outline, world, or characters" in captured["system"]
+
+
+def test_enabled_chapter_sop_requires_and_persists_concrete_chapter_contracts(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_SKILL_PACKS_DIR", str(PACKS_DIR))
+    captured: dict = {}
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        captured["system"] = payload["messages"][0]["content"]
+        captured["context"] = json.loads(payload["messages"][1]["content"])
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            _valid_plan_with_chapter_contracts(),
+                            ensure_ascii=False,
+                        )
+                    }
+                }
+            ]
+        }
+
+    fixture = RecordingRuntime()
+    result = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=fixture.resolve,
+    ).generate(
+        _skill_enabled_brief(["commercial-shuangwen::chapter-sop"]),
+        mode="initial",
+    )
+
+    serialized_schema = json.dumps(captured["context"]["output_schema"], ensure_ascii=False)
+    serialized_prompt = json.dumps(captured["context"], ensure_ascii=False)
+    assert "payoff_contract" in serialized_schema
+    assert "chapter_sop" in serialized_schema
+    assert "chapter_contract" in " ".join(captured["context"]["validation_rules"])
+    assert "chapter_plan" in captured["context"]["skill_context"]
+    assert "chapter-sop" in serialized_prompt
+    assert "observable event/action/result" in captured["system"]
+    assert "must not invent canon" in captured["system"]
+    assert "must not force a full macro loop" in captured["system"]
+    assert result.outline.chapters[0].payoff_contract.model_dump() == CHAPTER_CONTRACT["payoff_contract"]
+    assert result.outline.chapters[0].chapter_sop.model_dump() == CHAPTER_CONTRACT["chapter_sop"]
+
+
+def test_disabled_chapter_sop_does_not_mention_or_persist_contract_fields(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_SKILL_PACKS_DIR", str(PACKS_DIR))
+    captured: dict = {}
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        captured["request"] = payload
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            _valid_plan_with_chapter_contracts(),
+                            ensure_ascii=False,
+                        )
+                    }
+                }
+            ]
+        }
+
+    fixture = RecordingRuntime()
+    result = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=fixture.resolve,
+    ).generate(_skill_enabled_brief([]), mode="initial")
+
+    serialized_request = json.dumps(captured["request"], ensure_ascii=False)
+    assert "payoff_contract" not in serialized_request
+    assert "chapter_sop" not in serialized_request
+    assert result.outline.chapters[0].payoff_contract is None
+    assert result.outline.chapters[0].chapter_sop is None
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda chapter: chapter["payoff_contract"].pop("pressure"),
+        lambda chapter: chapter["chapter_sop"].update({"ending_hook": "留下悬念"}),
+    ],
+)
+def test_enabled_chapter_sop_rejects_partial_or_vague_generated_contracts(
+    monkeypatch,
+    mutation,
+) -> None:
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_SKILL_PACKS_DIR", str(PACKS_DIR))
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        plan = _valid_plan_with_chapter_contracts()
+        mutation(plan["outline"]["chapters"][0])
+        return {
+            "choices": [
+                {"message": {"content": json.dumps(plan, ensure_ascii=False)}}
+            ]
+        }
+
+    fixture = RecordingRuntime()
+    with pytest.raises(ValueError, match="outline_planning_generation_failed") as exc_info:
+        LLMOutlinePlanningGenerator(
+            post_json=fake_post,
+            runtime_resolver=fixture.resolve,
+        ).generate(
+            _skill_enabled_brief(["commercial-shuangwen::chapter-sop"]),
+            mode="initial",
+        )
+
+    assert exc_info.value.__cause__ is not None
+    assert "chapter_contract_" in str(exc_info.value.__cause__)
 
 
 def test_outline_skill_context_uses_canonical_genre_and_bounded_budget(monkeypatch) -> None:
@@ -862,6 +1013,13 @@ def test_outline_skill_context_uses_canonical_genre_and_bounded_budget(monkeypat
         "compact": True,
         "max_serialized_chars": 3587,
     }
+
+
+def _valid_plan_with_chapter_contracts() -> dict:
+    plan = _valid_plan()
+    for chapter in plan["outline"]["chapters"]:
+        chapter.update(deepcopy(CHAPTER_CONTRACT))
+    return plan
     assert captured_prompt["skill_context"] == {"outline": sentinel}
 
 
@@ -910,7 +1068,16 @@ def test_split_outline_prompt_routes_skill_only_to_outline_foundation(monkeypatc
     ] == ["genre-examples", "plot-engine"]
     assert "may shape conflict and payoff" in foundation["system"]
     assert "skill_context" not in captured["outline_planning_character_roster"]["context"]
-    assert "skill_context" not in captured["outline_planning_chapter_window"]["context"]
+    chapter_window = captured["outline_planning_chapter_window"]
+    assert [
+        module["module_id"]
+        for module in chapter_window["context"]["skill_context"]["chapter_plan"][0]["modules"]
+    ] == ["chapter-sop", "genre-examples"]
+    assert "payoff_contract" in json.dumps(
+        chapter_window["context"]["output_schema"],
+        ensure_ascii=False,
+    )
+    assert "observable event/action/result" in chapter_window["system"]
 
 
 @pytest.mark.parametrize(

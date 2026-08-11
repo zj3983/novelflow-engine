@@ -420,6 +420,39 @@ def test_rolling_batch_from_generated_window_happy_path() -> None:
     assert "state_delta_summary" not in first
 
 
+def test_rolling_batch_from_generated_window_preserves_chapter_contracts() -> None:
+    from packages.story_core.continuation_outline_bootstrap import (
+        rolling_batch_from_generated_window,
+    )
+
+    chapter = detailed_chapter(148)
+    chapter.update(
+        {
+            "payoff_contract": {
+                "need": "林修必须拿到替换镜芯",
+                "pressure": "买家只给他一夜验货",
+                "hidden_advantage": "他能恢复物品上次完整运行状态",
+                "concrete_reward": "修复订单并获得父亲失踪线索",
+            },
+            "chapter_sop": {
+                "opening_carry": "接上铜镜第一次亮起",
+                "mid_feedback": "镜面恢复一段旧影像",
+                "turn": "影像中的人认出了林修",
+                "ending_hook": "镜中人叫出林修父亲的名字",
+            },
+        }
+    )
+
+    row = rolling_batch_from_generated_window(
+        chapters=[chapter],
+        character_cards=[character_card(chapter["cast"][0], "protagonist")],
+        volume_range=(148, 160),
+    )[0]
+
+    assert row["payoff_contract"] == chapter["payoff_contract"]
+    assert row["chapter_sop"] == chapter["chapter_sop"]
+
+
 def test_rolling_batch_rejects_blank_gain_or_cost() -> None:
     from packages.story_core.continuation_outline_bootstrap import (
         rolling_batch_from_generated_window,

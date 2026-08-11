@@ -8,6 +8,28 @@ from packages.story_core.outline_planning import (
     validate_generated_continuation_plan,
     validate_generated_opening_plan,
 )
+from packages.story_core.project_outline import normalize_project_outline
+
+
+CHAPTER_CONTRACT = {
+    "payoff_contract": {
+        "need": "林修必须拿到替换镜芯",
+        "pressure": "买家只给他一夜验货",
+        "hidden_advantage": "他能恢复物品上次完整运行状态",
+        "concrete_reward": "修复订单并获得父亲失踪线索",
+    },
+    "chapter_sop": {
+        "opening_carry": "接上铜镜第一次亮起",
+        "mid_feedback": "镜面恢复一段旧影像",
+        "turn": "影像中的人认出了林修",
+        "ending_hook": "镜中人叫出林修父亲的名字",
+    },
+}
+
+
+def _add_chapter_contracts(payload: dict) -> None:
+    for chapter in payload["outline"]["chapters"]:
+        chapter.update(deepcopy(CHAPTER_CONTRACT))
 
 
 def _character(name: str, tier: str, first_appearance: int = 1) -> dict:
@@ -216,6 +238,105 @@ def test_plan_accepts_explicit_empty_target_sequence(valid_payload: dict) -> Non
     )
 
     assert plan.outline.chapters == []
+
+
+def test_chapter_contract_round_trips_through_outline_normalization(
+    valid_payload: dict,
+) -> None:
+    contract = deepcopy(CHAPTER_CONTRACT)
+    contract["payoff_contract"]["need"] = "  林修必须拿到替换镜芯  "
+    valid_payload["outline"]["chapters"][0].update(contract)
+
+    normalized = normalize_project_outline(valid_payload["outline"])
+    reloaded = normalize_project_outline(normalized)
+
+    assert reloaded["chapters"][0]["payoff_contract"] == CHAPTER_CONTRACT["payoff_contract"]
+    assert reloaded["chapters"][0]["chapter_sop"] == CHAPTER_CONTRACT["chapter_sop"]
+    assert "payoff_contract" not in reloaded["chapters"][1]
+    assert "chapter_sop" not in reloaded["chapters"][1]
+
+
+def test_enabled_chapter_sop_requires_complete_concrete_contracts(
+    valid_payload: dict,
+) -> None:
+    _add_chapter_contracts(valid_payload)
+
+    plan = validate_generated_opening_plan(
+        valid_payload,
+        require_chapter_contracts=True,
+    )
+
+    assert plan.outline.chapters[0].payoff_contract.need == CHAPTER_CONTRACT["payoff_contract"]["need"]
+    assert plan.outline.chapters[0].chapter_sop.ending_hook == CHAPTER_CONTRACT["chapter_sop"]["ending_hook"]
+
+
+def test_disabled_chapter_sop_keeps_legacy_plan_compatible(valid_payload: dict) -> None:
+    plan = validate_generated_opening_plan(valid_payload)
+
+    assert plan.outline.chapters[0].payoff_contract is None
+    assert plan.outline.chapters[0].chapter_sop is None
+
+
+@pytest.mark.parametrize(
+    "mutation,missing_field",
+    [
+        (
+            lambda chapter: chapter.pop("payoff_contract"),
+            "payoff_contract",
+        ),
+        (
+            lambda chapter: chapter["payoff_contract"].pop("pressure"),
+            "payoff_contract.pressure",
+        ),
+        (
+            lambda chapter: chapter["chapter_sop"].update({"mid_feedback": ""}),
+            "chapter_sop.mid_feedback",
+        ),
+    ],
+)
+def test_enabled_chapter_sop_rejects_missing_or_partial_contracts(
+    valid_payload: dict,
+    mutation,
+    missing_field: str,
+) -> None:
+    _add_chapter_contracts(valid_payload)
+    mutation(valid_payload["outline"]["chapters"][0])
+
+    with pytest.raises(ValueError, match=rf"chapter_contract_missing:1:{missing_field}"):
+        validate_generated_opening_plan(
+            valid_payload,
+            require_chapter_contracts=True,
+        )
+
+
+@pytest.mark.parametrize(
+    "section,field,value",
+    [
+        ("payoff_contract", "pressure", "提升压力"),
+        ("payoff_contract", "hidden_advantage", "情况复杂"),
+        ("payoff_contract", "concrete_reward", "获得爽点"),
+        ("chapter_sop", "turn", "事情不简单"),
+        ("chapter_sop", "ending_hook", "留下悬念"),
+        ("chapter_sop", "opening_carry", "continue"),
+    ],
+)
+def test_enabled_chapter_sop_rejects_vague_values(
+    valid_payload: dict,
+    section: str,
+    field: str,
+    value: str,
+) -> None:
+    _add_chapter_contracts(valid_payload)
+    valid_payload["outline"]["chapters"][0][section][field] = value
+
+    with pytest.raises(
+        ValueError,
+        match=rf"chapter_contract_not_concrete:1:{section}.{field}",
+    ):
+        validate_generated_opening_plan(
+            valid_payload,
+            require_chapter_contracts=True,
+        )
 
 
 def test_opening_plan_rejects_concrete_monetary_amount(valid_payload: dict) -> None:

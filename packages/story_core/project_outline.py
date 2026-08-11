@@ -187,6 +187,30 @@ class ChapterScenePlan(_OutlineModel):
     state_delta: dict[str, Any] = Field(default_factory=dict)
 
 
+class ChapterPayoffContract(_OutlineModel):
+    need: str = Field(default="", max_length=500)
+    pressure: str = Field(default="", max_length=500)
+    hidden_advantage: str = Field(default="", max_length=500)
+    concrete_reward: str = Field(default="", max_length=500)
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def trim_contract_text(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+
+class ChapterSop(_OutlineModel):
+    opening_carry: str = Field(default="", max_length=500)
+    mid_feedback: str = Field(default="", max_length=500)
+    turn: str = Field(default="", max_length=500)
+    ending_hook: str = Field(default="", max_length=500)
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def trim_sop_text(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+
 class ChapterPlan(_OutlineModel):
     chapter_number: int = Field(ge=1, strict=True)
     title: str = ""
@@ -207,6 +231,14 @@ class ChapterPlan(_OutlineModel):
     must_include: list[str] = Field(default_factory=list)
     must_not_write: list[str] = Field(default_factory=list)
     scene_chain: list[ChapterScenePlan] = Field(default_factory=list)
+    payoff_contract: ChapterPayoffContract | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    chapter_sop: ChapterSop | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
     @field_validator("chapter_number", mode="before")
     @classmethod
@@ -355,6 +387,10 @@ def normalize_project_outline(payload: Any) -> dict[str, Any]:
             chapter.pop("level_target", None)
         if chapter.get("attribute_allocation_decision") is None:
             chapter.pop("attribute_allocation_decision", None)
+        if chapter.get("payoff_contract") is None:
+            chapter.pop("payoff_contract", None)
+        if chapter.get("chapter_sop") is None:
+            chapter.pop("chapter_sop", None)
     return normalized
 
 

@@ -27,9 +27,26 @@ from packages.story_core.outline_rolling import (
     RollingPlanError,
     RollingValidationError,
     plan_rolling_window,
+    rolling_chapter_to_outline_entry,
     validate_rolling_batch,
     validate_rolling_chapter,
 )
+
+
+CHAPTER_CONTRACT = {
+    "payoff_contract": {
+        "need": "林修必须拿到替换镜芯",
+        "pressure": "买家只给他一夜验货",
+        "hidden_advantage": "他能恢复物品上次完整运行状态",
+        "concrete_reward": "修复订单并获得父亲失踪线索",
+    },
+    "chapter_sop": {
+        "opening_carry": "接上铜镜第一次亮起",
+        "mid_feedback": "镜面恢复一段旧影像",
+        "turn": "影像中的人认出了林修",
+        "ending_hook": "镜中人叫出林修父亲的名字",
+    },
+}
 
 
 # --- Test fixtures ----------------------------------------------------------
@@ -502,4 +519,65 @@ def test_validate_rolling_batch_rejects_empty_chapters() -> None:
             [],
             expected_chapter_numbers=[],
             volume_range=(140, 160),
+        )
+
+
+def test_rolling_validation_and_outline_adaptation_preserve_chapter_contracts() -> None:
+    payload = {**_valid_chapter_payload(148), **CHAPTER_CONTRACT}
+
+    validated = validate_rolling_chapter(
+        payload,
+        expected_chapter_number=148,
+        volume_range=(140, 160),
+        require_chapter_contracts=True,
+    )
+    adapted = rolling_chapter_to_outline_entry(validated)
+
+    assert validated["payoff_contract"] == CHAPTER_CONTRACT["payoff_contract"]
+    assert validated["chapter_sop"] == CHAPTER_CONTRACT["chapter_sop"]
+    assert adapted["payoff_contract"] == CHAPTER_CONTRACT["payoff_contract"]
+    assert adapted["chapter_sop"] == CHAPTER_CONTRACT["chapter_sop"]
+
+
+def test_rolling_validation_remains_compatible_without_chapter_sop() -> None:
+    validated = validate_rolling_chapter(
+        _valid_chapter_payload(148),
+        expected_chapter_number=148,
+        volume_range=(140, 160),
+    )
+
+    assert "payoff_contract" not in validated
+    assert "chapter_sop" not in validated
+
+
+@pytest.mark.parametrize(
+    "mutation,error_field",
+    [
+        (
+            lambda payload: payload["payoff_contract"].pop("need"),
+            "payoff_contract.need",
+        ),
+        (
+            lambda payload: payload["chapter_sop"].update({"ending_hook": "留下悬念"}),
+            "chapter_sop.ending_hook",
+        ),
+    ],
+)
+def test_enabled_rolling_contract_validation_rejects_partial_or_vague_values(
+    mutation,
+    error_field: str,
+) -> None:
+    payload = {
+        **_valid_chapter_payload(148),
+        "payoff_contract": dict(CHAPTER_CONTRACT["payoff_contract"]),
+        "chapter_sop": dict(CHAPTER_CONTRACT["chapter_sop"]),
+    }
+    mutation(payload)
+
+    with pytest.raises(RollingValidationError, match=error_field):
+        validate_rolling_chapter(
+            payload,
+            expected_chapter_number=148,
+            volume_range=(140, 160),
+            require_chapter_contracts=True,
         )

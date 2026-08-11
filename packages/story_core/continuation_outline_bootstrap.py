@@ -435,6 +435,11 @@ def _project_chapter(
     ]
     scenes = _coerce_scenes(payload)
 
+    chapter_contracts = {
+        key: dict(payload[key])
+        for key in ("payoff_contract", "chapter_sop")
+        if isinstance(payload.get(key), dict)
+    }
     return {
         "chapter_number": chapter_number,
         "title": str(payload.get("title") or "").strip(),
@@ -447,6 +452,7 @@ def _project_chapter(
         "foreshadowing": clean_foreshadowing,
         "hook": hook,
         "state_delta": state_delta,
+        **chapter_contracts,
     }
 
 

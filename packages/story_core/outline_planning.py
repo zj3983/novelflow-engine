@@ -87,6 +87,37 @@ _GENERATED_CHAPTER_NARRATIVE_FIELDS = (
     "payoff",
     "ending_hook",
 )
+_CHAPTER_CONTRACT_FIELDS = {
+    "payoff_contract": (
+        "need",
+        "pressure",
+        "hidden_advantage",
+        "concrete_reward",
+    ),
+    "chapter_sop": (
+        "opening_carry",
+        "mid_feedback",
+        "turn",
+        "ending_hook",
+    ),
+}
+_VAGUE_CHAPTER_CONTRACT_VALUES = {
+    "continue",
+    "tbd",
+    "todo",
+    "事情不简单",
+    "事情更加复杂",
+    "情况复杂",
+    "情况更加复杂",
+    "制造爽点",
+    "增加压力",
+    "待定",
+    "提升压力",
+    "留下悬念",
+    "继续",
+    "获得爽点",
+    "设置悬念",
+}
 _NUMBER_TOKEN = (
     r"(?:\d+(?:,\d{3})*(?:\.\d+)?[万亿]?"
     r"|[零〇一二两三四五六七八九十百千万亿]+)"
@@ -147,6 +178,57 @@ _NON_FEE_METRIC_BEFORE_PERCENTAGE_PATTERN = re.compile(
 def _require_text(value: str, error: str) -> None:
     if not str(value or "").strip():
         raise ValueError(error)
+
+
+def _chapter_contract_section(chapter: Any, section_name: str) -> Any:
+    if isinstance(chapter, dict):
+        return chapter.get(section_name)
+    return getattr(chapter, section_name, None)
+
+
+def _chapter_contract_value(section: Any, field_name: str) -> Any:
+    if isinstance(section, dict):
+        return section.get(field_name)
+    return getattr(section, field_name, None)
+
+
+def _normalized_contract_placeholder(value: str) -> str:
+    return re.sub(r"[\s，。！？、,.!?;；:_-]+", "", value).casefold()
+
+
+def validate_concrete_chapter_contract(
+    chapter: Any,
+    *,
+    chapter_number: int | None = None,
+) -> None:
+    """Require the eight observable chapter-contract values."""
+
+    number = chapter_number
+    if number is None:
+        raw_number = (
+            chapter.get("chapter_number")
+            if isinstance(chapter, dict)
+            else getattr(chapter, "chapter_number", 0)
+        )
+        number = int(raw_number or 0)
+    for section_name, field_names in _CHAPTER_CONTRACT_FIELDS.items():
+        section = _chapter_contract_section(chapter, section_name)
+        if section is None:
+            raise ValueError(f"chapter_contract_missing:{number}:{section_name}")
+        for field_name in field_names:
+            value = _chapter_contract_value(section, field_name)
+            location = f"{section_name}.{field_name}"
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"chapter_contract_missing:{number}:{location}")
+            if _normalized_contract_placeholder(value) in _VAGUE_CHAPTER_CONTRACT_VALUES:
+                raise ValueError(
+                    f"chapter_contract_not_concrete:{number}:{location}"
+                )
+
+
+def _validate_generated_chapter_contracts(plan: GeneratedOutlinePlan) -> None:
+    for chapter in plan.outline.chapters:
+        validate_concrete_chapter_contract(chapter)
 
 
 def _contains_monetary_amount(value: str) -> bool:
@@ -327,11 +409,14 @@ def validate_generated_opening_plan(
     expected_primary_trope_id: str | None = None,
     fallback_outline: dict[str, Any] | None = None,
     committed_through_chapter: int | None = None,
+    require_chapter_contracts: bool = False,
 ) -> GeneratedOutlinePlan:
     """Validate an AI-generated opening plan without constraining manual drafts."""
 
     plan = GeneratedOutlinePlan.model_validate(payload)
     _validate_generated_outline_amounts(plan)
+    if require_chapter_contracts:
+        _validate_generated_chapter_contracts(plan)
     overall = plan.outline.overall
     if (
         overall.planned_length > 0
@@ -435,11 +520,14 @@ def validate_generated_continuation_plan(
     expected_primary_trope_id: str | None = None,
     fallback_outline: dict[str, Any] | None = None,
     committed_through_chapter: int | None = None,
+    require_chapter_contracts: bool = False,
 ) -> GeneratedOutlinePlan:
     """Validate an incremental plan without requiring opening-only structure."""
 
     plan = GeneratedOutlinePlan.model_validate(payload)
     _validate_generated_outline_amounts(plan)
+    if require_chapter_contracts:
+        _validate_generated_chapter_contracts(plan)
     chapter_numbers = [chapter.chapter_number for chapter in plan.outline.chapters]
     if chapter_numbers != expected_chapter_numbers:
         raise ValueError("generated_chapters_do_not_match_target_window")
