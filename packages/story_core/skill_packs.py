@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from packages.story_core.novel_type_ids import canonical_novel_type_id
+
 
 SKILL_PACK_SCHEMA_VERSION = "skill-pack/v1"
 DEFAULT_SKILL_PACKS_DIR = Path("data") / "skill-packs"
@@ -151,14 +153,51 @@ def _plain_summary(text: str, *, limit: int = 180) -> str:
     return summary[:limit].rstrip()
 
 
-def extract_skill_instructions(text: str, *, limit: int = 1000) -> str:
-    """Extract complete, writer-facing rules from a Skill document.
+def _markdown_heading_blocks(body: str) -> list[tuple[int, str, list[str]]]:
+    blocks: list[tuple[int, str, list[str]]] = []
+    level = 0
+    heading = ""
+    lines: list[str] = []
+    for raw in body.splitlines():
+        match = re.match(r"^(#{1,6})\s+(.+?)\s*$", raw)
+        if match:
+            if heading or lines:
+                blocks.append((level, heading, lines))
+            level = len(match.group(1))
+            heading = match.group(2).strip()
+            lines = []
+            continue
+        lines.append(raw)
+    if heading or lines:
+        blocks.append((level, heading, lines))
+    return blocks
 
-    The writer needs instructions, not a front-matter summary or a copied
-    example.  Keep whole lines so the prompt never ends halfway through a
-    rule, and soften the few terse-writing slogans that conflict with the
-    project's modern Chinese dialogue contract.
-    """
+
+def _clean_instruction_line(line: str) -> str:
+    line = re.sub(r"^[-*]\s+", "", line)
+    line = re.sub(r"^\d+[.)]\s+", "", line)
+    line = re.sub(r"\*\*([^*]+)\*\*", r"\1", line)
+    line = line.replace("`", "").strip()
+
+    # These slogans are useful as editing notes but too easy to turn
+    # into clipped, unnatural dialogue when copied literally.
+    for old, new in (
+        ("\u8d8a\u77ed\u8d8a\u72e0", "\u77ed\u53e5\u53ea\u7528\u4e8e\u5f3a\u8c03\u6216\u6253\u65ad"),
+        ("\u6253\u788e\u957f\u53e5", "\u62c6\u5206\u8fc7\u957f\u53e5\uff0c\u4f46\u4fdd\u7559\u5fc5\u8981\u7684\u5bf9\u8c61\u3001\u539f\u56e0\u548c\u7ed3\u679c"),
+        ("\u7559\u767d > \u8bf4\u5c3d", "\u53ef\u4ee5\u7559\u767d\u60c5\u7eea\uff0c\u4f46\u4e0d\u7701\u7565\u5bf9\u8bdd\u5bf9\u8c61\u548c\u884c\u52a8\u51b3\u5b9a"),
+    ):
+        line = line.replace(old, new)
+    return line
+
+
+def extract_skill_instructions(
+    text: str,
+    *,
+    limit: int = 1000,
+    include_examples: bool = False,
+    genre_id: str = "",
+) -> str:
+    """Extract complete, purpose-aware heading blocks from a Skill document."""
 
     body = text
     if text.startswith("---"):
@@ -166,52 +205,65 @@ def extract_skill_instructions(text: str, *, limit: int = 1000) -> str:
         if len(parts) >= 3:
             body = parts[2]
 
-    skipped_section = False
+    meta = _frontmatter(text)
+    is_genre_examples = normalize_skill_id(meta.get("name", "")) == "genre-examples"
+    if is_genre_examples and not include_examples:
+        return ""
+
     selected: list[str] = []
     total = 0
-    skip_markers = (
-        "\u4f55\u65f6\u7528",
-        "\u4f55\u65f6\u4f7f\u7528",
-        "\u53cd\u4f8b",
-        "\u793a\u4f8b",
-        "\u4e0b\u4e00\u6b65",
-    )
-    for raw in body.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("|") or line.startswith("```"):
+    skipped_scope_level: int | None = None
+    example_scope_level: int | None = None
+    genre_scope: tuple[int, str] | None = None
+    selected_genre = canonical_novel_type_id(genre_id)
+    allowed_genres = {"\u901a\u7528"}
+    if selected_genre:
+        allowed_genres.add(selected_genre)
+
+    for level, heading, raw_lines in _markdown_heading_blocks(body):
+        if level:
+            if skipped_scope_level is not None and level <= skipped_scope_level:
+                skipped_scope_level = None
+            if example_scope_level is not None and level <= example_scope_level:
+                example_scope_level = None
+            if genre_scope is not None and level <= genre_scope[0]:
+                genre_scope = None
+
+            if any(marker in heading for marker in ("\u4f55\u65f6\u7528", "\u4f55\u65f6\u4f7f\u7528", "\u4e0b\u4e00\u6b65")):
+                skipped_scope_level = level
+            if any(marker in heading for marker in ("\u6b63\u4f8b", "\u53cd\u4f8b", "\u7ed3\u6784\u793a\u4f8b", "\u793a\u4f8b")):
+                example_scope_level = level
+            if is_genre_examples:
+                tag_match = re.search(r"\[([^\]]+)\]", heading)
+                if tag_match:
+                    tag = tag_match.group(1).strip()
+                    canonical_tag = "\u901a\u7528" if tag == "\u901a\u7528" else canonical_novel_type_id(tag)
+                    genre_scope = (level, canonical_tag)
+
+        if skipped_scope_level is not None:
             continue
-        if line.startswith("#"):
-            heading = line.lstrip("#").strip()
-            skipped_section = any(marker in heading for marker in skip_markers)
-            if skipped_section:
+        if example_scope_level is not None and not include_examples:
+            continue
+        if genre_scope is not None and genre_scope[1] not in allowed_genres:
+            continue
+
+        block_lines = [heading] if heading else []
+        for raw in raw_lines:
+            line = raw.strip()
+            if not line or line.startswith("|") or line.startswith("```"):
                 continue
-            line = heading
-        elif skipped_section:
+            cleaned = _clean_instruction_line(line)
+            if cleaned:
+                block_lines.append(cleaned)
+        block = " ".join(block_lines).strip()
+        if not block:
             continue
-
-        line = re.sub(r"^[-*]\s+", "", line)
-        line = re.sub(r"^\d+[.)]\s+", "", line)
-        line = re.sub(r"\*\*([^*]+)\*\*", r"\1", line)
-        line = line.replace("`", "").strip()
-        if not line:
-            continue
-
-        # These slogans are useful as editing notes but too easy to turn
-        # into clipped, unnatural dialogue when copied literally.
-        for old, new in (
-            ("\u8d8a\u77ed\u8d8a\u72e0", "\u77ed\u53e5\u53ea\u7528\u4e8e\u5f3a\u8c03\u6216\u6253\u65ad"),
-            ("\u6253\u788e\u957f\u53e5", "\u62c6\u5206\u8fc7\u957f\u53e5\uff0c\u4f46\u4fdd\u7559\u5fc5\u8981\u7684\u5bf9\u8c61\u3001\u539f\u56e0\u548c\u7ed3\u679c"),
-            ("\u7559\u767d > \u8bf4\u5c3d", "\u53ef\u4ee5\u7559\u767d\u60c5\u7eea\uff0c\u4f46\u4e0d\u7701\u7565\u5bf9\u8bdd\u5bf9\u8c61\u548c\u884c\u52a8\u51b3\u5b9a"),
-        ):
-            line = line.replace(old, new)
-
-        if selected and total + len(line) + 1 > limit:
+        added_chars = len(block) + (1 if selected else 0)
+        if total + added_chars > limit:
             break
-        selected.append(line)
-        total += len(line) + 1
+        selected.append(block)
+        total += added_chars
 
-    if not selected:
-        return _plain_summary(text, limit=limit)
     return " ".join(selected).strip()
 
 
@@ -229,6 +281,12 @@ def infer_skill_purposes(*values: str) -> list[str]:
     ]
     purposes = [purpose for purpose, needles in mapping if any(needle in text for needle in needles)]
     return purposes or ["general"]
+
+
+def _declared_purposes(meta: Mapping[str, str], *fallback_values: str) -> list[str]:
+    raw = str(meta.get("purposes") or "")
+    declared = [item.strip() for item in raw.split(",") if item.strip()]
+    return list(dict.fromkeys(declared)) or infer_skill_purposes(*fallback_values)
 
 
 def _load_manifest(root: Path, root_skill_text: str) -> dict[str, Any]:
@@ -269,7 +327,12 @@ def load_skill_pack(path: str | Path) -> SkillPack:
                     title=str(meta.get("name") or module_root.name),
                     description=str(meta.get("description") or ""),
                     summary=_plain_summary(content),
-                    purposes=infer_skill_purposes(module_id, str(meta.get("name") or ""), str(meta.get("description") or "")),
+                    purposes=_declared_purposes(
+                        meta,
+                        module_id,
+                        str(meta.get("name") or ""),
+                        str(meta.get("description") or ""),
+                    ),
                     content=content,
                     relative_path=str(skill_md.relative_to(root)).replace("\\", "/"),
                 )
@@ -503,6 +566,8 @@ def skill_pack_prompt_context(
     *,
     enabled_module_ids: list[str] | None = None,
     purpose: str | None = None,
+    include_examples: bool = False,
+    genre_id: str = "",
     max_chars_per_pack: int = 5000,
 ) -> list[dict[str, Any]]:
     contexts: list[dict[str, Any]] = []
@@ -516,7 +581,9 @@ def skill_pack_prompt_context(
         root_skill = (
             extract_skill_instructions(
                 pack.root_content,
-                limit=min(1000, max(240, max_chars_per_pack)),
+                limit=max(0, min(1000, max_chars_per_pack)),
+                include_examples=include_examples,
+                genre_id=genre_id,
             )
             if root_selected
             else ""
@@ -530,19 +597,22 @@ def skill_pack_prompt_context(
             if used_chars >= max_chars_per_pack:
                 break
             remaining = max_chars_per_pack - used_chars
-            content = module.content[: max(0, min(remaining, 1800))]
+            instructions = extract_skill_instructions(
+                module.content,
+                limit=max(0, min(1000, remaining)),
+                include_examples=include_examples,
+                genre_id=genre_id,
+            )
+            content = instructions
             used_chars += len(content)
             module_summaries.append(
                 {
                     "module_id": module.module_id,
                     "title": module.title,
                     "description": module.description,
-                    "summary": module.summary,
+                    "summary": _plain_summary(instructions),
                     "purposes": module.purposes,
-                    "instructions": extract_skill_instructions(
-                        module.content,
-                        limit=min(1000, max(240, remaining)),
-                    ),
+                    "instructions": instructions,
                     "content": content,
                     "relative_path": module.relative_path,
                 }

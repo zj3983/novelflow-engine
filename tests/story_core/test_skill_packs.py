@@ -128,6 +128,96 @@ def test_skill_context_exposes_complete_actionable_instructions() -> None:
     assert not instructions.endswith("以")
 
 
+def test_explicit_purposes_take_precedence_and_complete_examples_are_preserved(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = _write_pack(tmp_path)
+    module_text = """---
+name: chapter-sop
+description: 商业爽文单章结构
+purposes: chapter_plan, writer,chapter_plan
+---
+# 单章结构
+## 规则
+先承接上一章，再兑现具体反馈。
+## 正例
+铜镜亮起后没有映出林修，
+而是映出失踪十年的父亲。
+## 反例
+林修觉得事情没有这么简单。
+"""
+    (source / "skills" / "writer" / "SKILL.md").write_text(module_text, encoding="utf-8")
+    registry = tmp_path / "registry"
+    imported = import_skill_pack_from_path(source, root=registry)
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_SKILL_PACKS_DIR", str(registry))
+
+    module = next(item for item in imported.modules if item.module_id == "chapter-sop")
+    assert module.purposes == ["chapter_plan", "writer"]
+
+    context = skill_pack_prompt_context(
+        ["plain-webnovel"],
+        purpose="chapter_plan",
+        include_examples=True,
+    )
+    instructions = context[0]["modules"][0]["instructions"]
+    assert "先承接上一章" in instructions
+    assert "铜镜亮起后" in instructions
+    assert "而是映出失踪十年的父亲" in instructions
+    assert "事情没有这么简单" in instructions
+
+
+def test_example_block_is_omitted_instead_of_truncated() -> None:
+    source = """# 单章结构
+## 规则
+规则必须保留。
+## 正例
+完整示例的第一行。
+完整示例的第二行。
+"""
+
+    instructions = extract_skill_instructions(source, limit=34, include_examples=True)
+
+    assert "规则必须保留" in instructions
+    assert "完整示例的第一行" not in instructions
+    assert "完整示例的第二行" not in instructions
+
+
+def test_genre_examples_keep_only_general_and_canonical_selected_genre(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = _write_pack(tmp_path)
+    module_text = """---
+name: genre-examples
+purposes: genre_examples
+---
+# 题材示例
+## [通用]
+通用循环。
+## [game_webnovel]
+网游循环。
+## [urban]
+都市循环。
+"""
+    genre_module = source / "skills" / "genre-examples" / "SKILL.md"
+    genre_module.parent.mkdir(parents=True)
+    genre_module.write_text(module_text, encoding="utf-8")
+    registry = tmp_path / "registry"
+    import_skill_pack_from_path(source, root=registry)
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_SKILL_PACKS_DIR", str(registry))
+
+    context = skill_pack_prompt_context(
+        ["plain-webnovel"],
+        purpose="genre_examples",
+        include_examples=True,
+        genre_id="网游",
+    )
+    serialized = json.dumps(context, ensure_ascii=False)
+
+    assert "通用循环" in serialized
+    assert "网游循环" in serialized
+    assert "都市循环" not in serialized
+
+
 def test_explicit_empty_module_selection_is_distinct_from_legacy_missing_selection() -> None:
     assert resolve_enabled_skill_module_ids({"enabled_skill_module_ids": []}, {}) == []
     assert resolve_enabled_skill_module_ids({}, {"enabled_skill_module_ids": ["legacy::writer"]}) == ["legacy::writer"]
