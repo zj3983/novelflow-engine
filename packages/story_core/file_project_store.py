@@ -8050,10 +8050,6 @@ class FileProjectStore:
         it on the snapshot summary. A candidate with no delta
         returns zero counts and leaves the registry untouched.
         """
-        from packages.story_core.canon.entity_designer import EntityDesigner
-        from packages.story_core.canon.registry import CanonRegistry
-        from packages.story_core.canon.service import CanonService
-
         delta = getattr(candidate, "continuity_delta", None)
         if delta is None:
             return {
@@ -8066,6 +8062,8 @@ class FileProjectStore:
                 "timeline_advances": 0,
                 "foreshadowing_changes": 0,
             }
+
+        from packages.story_core.canon.service import CanonService
 
         registry = self._load_canon_registry()
         service = CanonService(

@@ -14,7 +14,11 @@ from fastapi.testclient import TestClient
 from apps.api.main import app
 from apps.api.routes import file_projects as file_project_routes
 from apps.api.routes import stories as story_routes
-from packages.story_core.file_project_creation import FileProjectCreateSpec
+from packages.story_core.candidate_draft import CandidateDraft
+from packages.story_core.file_project_creation import (
+    FileProjectCreateSpec,
+    create_file_project,
+)
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.genre_stages.common_writer import writer_skill_trace
 from packages.story_core.model_gateway import ModelResponse
@@ -34,7 +38,7 @@ from packages.story_core.skill_packs import (
 
 PACKS_DIR = Path(__file__).resolve().parents[2] / "data" / "skill-packs"
 PACK_DIR = PACKS_DIR / "commercial-shuangwen"
-REAL_PROJECT_ID = "p-da2c16a6ee9440d6ad52cb402ead88a0"
+PROTECTED_PROJECT_ENV = "NOVEL_AUTOGROWTH_PROTECTED_PROJECT_ROOT"
 GAME_SPECIFIC_MARKERS = (
     "game_webnovel",
     "\u516c\u4f1a\u62bc\u4e0a\u58f0\u671b\u5c01\u9501\u526f\u672c",
@@ -63,22 +67,20 @@ def _enable_local_packs(monkeypatch) -> None:
     monkeypatch.setenv("NOVEL_AUTOGROWTH_SKILL_PACKS_DIR", str(PACKS_DIR))
 
 
-def _real_user_project_root() -> Path | None:
-    main_workspace = Path(
-        os.environ.get(
-            "NOVEL_AUTOGROWTH_MAIN_WORKSPACE",
-            r"D:\xiaoshuofish-flow-test",
-        )
+def _protected_project_root(tmp_path: Path) -> Path:
+    configured_root = os.environ.get(PROTECTED_PROJECT_ENV, "").strip()
+    if configured_root:
+        candidate = Path(configured_root)
+        assert candidate.is_dir(), f"protected_project_root_missing:{candidate}"
+        return candidate.resolve(strict=True)
+
+    sentinel = tmp_path / "protected-project-sentinel"
+    sentinel.mkdir()
+    (sentinel / "project.json").write_text(
+        '{"enabled_skill_ids": []}\n',
+        encoding="utf-8",
     )
-    if not main_workspace.is_dir():
-        return None
-    resolved_workspace = main_workspace.resolve(strict=True)
-    candidate = resolved_workspace / "data" / "exported-projects" / REAL_PROJECT_ID
-    if not candidate.is_dir():
-        return None
-    resolved_candidate = candidate.resolve(strict=True)
-    assert resolved_candidate.is_relative_to(resolved_workspace)
-    return resolved_candidate
+    return sentinel.resolve(strict=True)
 
 
 def _content_fingerprint(root: Path) -> str:
@@ -116,10 +118,12 @@ def _checked_project_path(source_path: str, temp_root: Path) -> Path:
 def _remove_checked_projects(project_paths: list[Path], temp_root: Path) -> None:
     resolved_root = temp_root.resolve(strict=True)
     for project_path in project_paths:
-        resolved_project = project_path.resolve(strict=True)
+        resolved_project = project_path.resolve(strict=False)
         assert resolved_project != resolved_root
         assert resolved_project.is_relative_to(resolved_root)
-        shutil.rmtree(resolved_project)
+        if resolved_project.exists():
+            assert resolved_project.is_dir()
+            shutil.rmtree(resolved_project)
         assert not resolved_project.exists()
     assert not any(path.is_dir() for path in resolved_root.iterdir())
 
@@ -135,22 +139,20 @@ def isolated_task8_api(tmp_path: Path, monkeypatch):
     )
     monkeypatch.setattr(story_routes.store, "create_project", legacy_create)
 
-    real_project_root = _real_user_project_root()
-    real_project_before = (
-        _content_fingerprint(real_project_root)
-        if real_project_root is not None
-        else None
-    )
+    protected_project_root = _protected_project_root(tmp_path)
+    protected_project_before = _content_fingerprint(protected_project_root)
     generated_projects: list[Path] = []
     try:
-        with TestClient(app, raise_server_exceptions=False) as client:
+        with TestClient(app) as client:
             yield client, temp_root, generated_projects, legacy_create
     finally:
         try:
             _remove_checked_projects(generated_projects, temp_root)
         finally:
-            if real_project_root is not None:
-                assert _content_fingerprint(real_project_root) == real_project_before
+            assert (
+                _content_fingerprint(protected_project_root)
+                == protected_project_before
+            )
 
 
 def _joined_instructions(context: list[dict[str, object]]) -> str:
@@ -495,69 +497,71 @@ class _PassingReviewGateway:
         )
 
 
-def test_commercial_shuangwen_end_to_end_isolates_two_xuanhuan_projects(
-    isolated_task8_api,
-    monkeypatch,
-) -> None:
-    client, temp_root, generated_projects, legacy_create = isolated_task8_api
-
+def _create_prompt_contract_stores(
+    tmp_path: Path,
+) -> tuple[FileProjectStore, FileProjectStore]:
+    project_root = tmp_path / "prompt-contract-projects"
     base_payload = {
         "mode": "blank",
-        "title": "石碑试炼",
+        "title": "Prompt Contract Baseline",
         "novel_type_id": "xuanhuan",
     }
-    assert FileProjectCreateSpec.model_validate(base_payload).narrative_enhancement_ids == []
-    assert FileProjectCreateSpec.model_validate(
-        {**base_payload, "narrative_enhancement_ids": []}
-    ).narrative_enhancement_ids == []
-    assert skill_pack_prompt_context(
-        ["missing-pack"],
-        purpose="outline",
-        include_examples=True,
-        genre_id="xuanhuan",
-    ) == []
+    baseline = create_file_project(
+        project_root,
+        FileProjectCreateSpec.model_validate(
+            {**base_payload, "narrative_enhancement_ids": []}
+        ),
+        project_id_factory=lambda: "p-prompt-contract-baseline",
+    )
+    enhanced = create_file_project(
+        project_root,
+        FileProjectCreateSpec.model_validate(
+            {
+                **base_payload,
+                "title": "Prompt Contract Enhanced",
+                "narrative_enhancement_ids": ["commercial-shuangwen"],
+            }
+        ),
+        project_id_factory=lambda: "p-prompt-contract-enhanced",
+    )
+    return FileProjectStore(baseline.root), FileProjectStore(enhanced.root)
 
-    baseline_response = client.post(
-        "/file-projects",
-        json={**base_payload, "narrative_enhancement_ids": []},
-    )
-    enhanced_response = client.post(
-        "/file-projects",
-        json={
-            **base_payload,
-            "title": "Task 8 Enhanced Xuanhuan",
-            "narrative_enhancement_ids": ["commercial-shuangwen"],
-        },
-    )
-    assert baseline_response.status_code == 201, baseline_response.text
-    assert enhanced_response.status_code == 201, enhanced_response.text
-    baseline_project = baseline_response.json()
-    enhanced_project = enhanced_response.json()
-    baseline_root = _checked_project_path(baseline_project["source_path"], temp_root)
-    enhanced_root = _checked_project_path(enhanced_project["source_path"], temp_root)
-    generated_projects.extend((baseline_root, enhanced_root))
-    assert baseline_root != enhanced_root
-    assert {path.name for path in temp_root.iterdir()} == {
-        baseline_root.name,
-        enhanced_root.name,
+
+def _seed_pending_candidate(
+    store: FileProjectStore,
+    *,
+    body: str,
+    include_contract: bool,
+) -> CandidateDraft:
+    """Seed the pending candidate that has no public fixture-upload endpoint."""
+
+    submission_payload: dict[str, object] = {
+        "chapter_number": 1,
+        "chapter_title": "石碑第九纹",
+        "body": body,
+        "updated_story": store.state(),
+        "quality_report": {"ok": True, "issues": []},
     }
-    baseline_store = FileProjectStore(baseline_root)
-    enhanced_store = FileProjectStore(enhanced_root)
-    legacy_create.assert_not_called()
+    if include_contract:
+        submission_payload.update(CHAPTER_CONTRACT)
+    candidate = CandidateDraft.create(
+        project_id=str(store.project()["project_id"]),
+        chapter_number=1,
+        chapter_title="石碑第九纹",
+        body=body,
+        quality_report={"ok": True, "issues": []},
+        submission_payload=submission_payload,
+    )
+    store.candidate_store.save(candidate)
+    return candidate
 
-    pack = get_skill_pack("commercial-shuangwen")
-    assert pack is not None
-    expected_module_ids = [
-        skill_module_key(pack.skill_id, module.module_id)
-        for module in pack.modules
-        if module.module_id != "root"
-    ]
-    for payload in (baseline_store.project(), baseline_store.state()):
-        assert payload["enabled_skill_ids"] == []
-        assert payload["enabled_skill_module_ids"] == []
-    for payload in (enhanced_store.project(), enhanced_store.state()):
-        assert payload["enabled_skill_ids"] == ["commercial-shuangwen"]
-        assert payload["enabled_skill_module_ids"] == expected_module_ids
+
+def test_private_prompt_assembly_isolates_commercial_shuangwen_contracts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _enable_local_packs(monkeypatch)
+    baseline_store, enhanced_store = _create_prompt_contract_stores(tmp_path)
 
     baseline_outline_request = _capture_outline_prompt(baseline_store)
     enhanced_outline_request = _capture_outline_prompt(enhanced_store)
@@ -613,7 +617,11 @@ def test_commercial_shuangwen_end_to_end_isolates_two_xuanhuan_projects(
         "genre-examples",
         "writer-execution",
     ]
-    for value in (*CHAPTER_CONTRACT["payoff_contract"].values(), *CHAPTER_CONTRACT["chapter_sop"].values()):
+    contract_values = (
+        *CHAPTER_CONTRACT["payoff_contract"].values(),
+        *CHAPTER_CONTRACT["chapter_sop"].values(),
+    )
+    for value in contract_values:
         assert value not in baseline_writer_prompt
         assert value in enhanced_writer_prompt
     assert "写清施压者为什么误判" not in baseline_writer_prompt
@@ -630,33 +638,109 @@ def test_commercial_shuangwen_end_to_end_isolates_two_xuanhuan_projects(
         for marker in GAME_SPECIFIC_MARKERS:
             assert marker not in text
 
+
+def test_commercial_shuangwen_http_workflow_isolates_creation_and_manual_review(
+    isolated_task8_api,
+    monkeypatch,
+) -> None:
+    client, temp_root, generated_projects, legacy_create = isolated_task8_api
+
+    base_payload = {
+        "mode": "blank",
+        "title": "石碑试炼",
+        "novel_type_id": "xuanhuan",
+    }
+    assert FileProjectCreateSpec.model_validate(base_payload).narrative_enhancement_ids == []
+    assert FileProjectCreateSpec.model_validate(
+        {**base_payload, "narrative_enhancement_ids": []}
+    ).narrative_enhancement_ids == []
+    assert skill_pack_prompt_context(
+        ["missing-pack"],
+        purpose="outline",
+        include_examples=True,
+        genre_id="xuanhuan",
+    ) == []
+
+    baseline_response = client.post(
+        "/file-projects",
+        json={**base_payload, "narrative_enhancement_ids": []},
+    )
+    assert baseline_response.status_code == 201, baseline_response.text
+    baseline_project = baseline_response.json()
+    baseline_root = _checked_project_path(baseline_project["source_path"], temp_root)
+    generated_projects.append(baseline_root)
+
+    enhanced_response = client.post(
+        "/file-projects",
+        json={
+            **base_payload,
+            "title": "Task 8 Enhanced Xuanhuan",
+            "narrative_enhancement_ids": ["commercial-shuangwen"],
+        },
+    )
+    assert enhanced_response.status_code == 201, enhanced_response.text
+    enhanced_project = enhanced_response.json()
+    enhanced_root = _checked_project_path(enhanced_project["source_path"], temp_root)
+    generated_projects.append(enhanced_root)
+    assert baseline_root != enhanced_root
+    assert {path.name for path in temp_root.iterdir()} == {
+        baseline_root.name,
+        enhanced_root.name,
+    }
+    baseline_store = FileProjectStore(baseline_root)
+    enhanced_store = FileProjectStore(enhanced_root)
+    legacy_create.assert_not_called()
+
+    pack = get_skill_pack("commercial-shuangwen")
+    assert pack is not None
+    expected_module_ids = [
+        skill_module_key(pack.skill_id, module.module_id)
+        for module in pack.modules
+        if module.module_id != "root"
+    ]
+    for payload in (baseline_store.project(), baseline_store.state()):
+        assert payload["enabled_skill_ids"] == []
+        assert payload["enabled_skill_module_ids"] == []
+    for payload in (enhanced_store.project(), enhanced_store.state()):
+        assert payload["enabled_skill_ids"] == ["commercial-shuangwen"]
+        assert payload["enabled_skill_module_ids"] == expected_module_ids
+
+    baseline_outline_response = client.put(
+        f"/file-projects/{baseline_root.name}/outline",
+        json=_workflow_outline(enhanced=False),
+    )
+    enhanced_outline_response = client.put(
+        f"/file-projects/{enhanced_root.name}/outline",
+        json=_workflow_outline(enhanced=True),
+    )
+    assert baseline_outline_response.status_code == 200, (
+        baseline_outline_response.text
+    )
+    assert enhanced_outline_response.status_code == 200, (
+        enhanced_outline_response.text
+    )
+
     confirmed_body = "沈砚补全最后一式，石碑第九纹亮起，周执事重新打开名册。"
-    confirmed_body_bytes = confirmed_body.encode("utf-8")
-    chapter_body_paths: dict[Path, Path] = {}
-    for store, include_contract in (
-        (baseline_store, False),
-        (enhanced_store, True),
+    baseline_candidate = _seed_pending_candidate(
+        baseline_store,
+        body=confirmed_body,
+        include_contract=False,
+    )
+    enhanced_candidate = _seed_pending_candidate(
+        enhanced_store,
+        body=confirmed_body,
+        include_contract=True,
+    )
+    for project_root, candidate in (
+        (baseline_root, baseline_candidate),
+        (enhanced_root, enhanced_candidate),
     ):
-        state = store.state()
-        state["current_chapter"] = 1
-        store._write_json_atomic(store.webnovel_dir / "state.json", state)
-        body_path = store.root / "chapters" / "0001-confirmed.md"
-        body_path.parent.mkdir(parents=True, exist_ok=True)
-        body_path.write_bytes(confirmed_body_bytes)
-        chapter_body_paths[store.root] = body_path
-        chapter = {
-            "chapter_number": 1,
-            "chapter_title": "石碑第九纹",
-            "body_path": body_path.relative_to(store.root).as_posix(),
-            "body_sha256": sha256(confirmed_body_bytes).hexdigest(),
-            "quality_report": {"ok": True, "issues": []},
-        }
-        if include_contract:
-            chapter.update(CHAPTER_CONTRACT)
-        store._write_json(
-            store.story_system_dir / "chapters" / "0001.json",
-            chapter,
+        confirm_response = client.post(
+            f"/file-projects/{project_root.name}/candidates/"
+            f"{candidate.candidate_id}/confirm?force=true"
         )
+        assert confirm_response.status_code == 200, confirm_response.text
+        assert confirm_response.json()["candidate"]["status"] == "confirmed"
 
     baseline_gateway = _PassingReviewGateway()
     monkeypatch.setattr(
@@ -682,7 +766,8 @@ def test_commercial_shuangwen_end_to_end_isolates_two_xuanhuan_projects(
         review_gateway,
         raising=False,
     )
-    enhanced_body_path = chapter_body_paths[enhanced_store.root]
+    enhanced_chapter = enhanced_store.chapter(1)
+    enhanced_body_path = enhanced_store.root / str(enhanced_chapter["body_path"])
     body_before = enhanced_body_path.read_bytes()
     candidate_hash_before = enhanced_store._candidate_artifacts_hash()
     review_response = client.post(
@@ -706,3 +791,7 @@ def test_commercial_shuangwen_end_to_end_isolates_two_xuanhuan_projects(
         enhanced_store.review(1)["skill_reviews"]["commercial-shuangwen"]
         == report
     )
+
+    checked_baseline_root = _checked_project_path(str(baseline_root), temp_root)
+    shutil.rmtree(checked_baseline_root)
+    assert not checked_baseline_root.exists()
