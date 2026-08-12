@@ -76,7 +76,8 @@ def _planned_chapter_title(context: DirectorContext) -> str:
             continue
         number = entry.get("number") or entry.get("chapter_number") or 0
         if int(number) == context.chapter_number:
-            return str(entry.get("title") or entry.get("chapter_title") or "").strip()
+            raw_title = str(entry.get("title") or entry.get("chapter_title") or "")
+            return raw_title if raw_title.strip() else ""
     return ""
 
 
