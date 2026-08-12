@@ -16,13 +16,13 @@ import { DEFAULT_NOVEL_TYPE_ID } from "../../../lib/novelTypes";
 type CreationMode = "inspiration" | "blank" | "continuation";
 type EnhancementAvailability = "loading" | "available" | "missing" | "incomplete" | "error";
 
-const COMMERCIAL_SHUANGWEN_REQUIRED_MODULE_IDS = [
-  "plot-engine",
-  "chapter-sop",
-  "writer-execution",
-  "review-checklist",
-  "genre-examples",
-] as const;
+const COMMERCIAL_SHUANGWEN_REQUIRED_MODULE_PURPOSES = {
+  "plot-engine": ["outline"],
+  "chapter-sop": ["chapter_plan"],
+  "writer-execution": ["writer"],
+  "review-checklist": ["reviewer"],
+  "genre-examples": ["outline", "chapter_plan", "writer"],
+} as const;
 
 export default function NewProjectPage() {
   const router = useRouter();
@@ -97,16 +97,63 @@ export default function NewProjectPage() {
           setCommercialShuangwenEnabled(false);
           return;
         }
-        const installedModuleIds = new Set(pack.modules.map((module) => module.module_id));
-        const missingModuleIds = COMMERCIAL_SHUANGWEN_REQUIRED_MODULE_IDS.filter(
-          (moduleId) => !installedModuleIds.has(moduleId),
+        const installedModules = new Map(pack.modules.map((module) => [module.module_id, module]));
+        const missingModuleIds = Object.keys(COMMERCIAL_SHUANGWEN_REQUIRED_MODULE_PURPOSES).filter(
+          (moduleId) => !installedModules.has(moduleId),
         );
+        const localPurposeMismatches = Object.entries(
+          COMMERCIAL_SHUANGWEN_REQUIRED_MODULE_PURPOSES,
+        ).flatMap(([moduleId, requiredPurposes]) => {
+          const module = installedModules.get(moduleId);
+          if (!module) return [];
+          const actualPurposes = new Set(module.purposes ?? []);
+          const requiredPurposeSet = new Set<string>(requiredPurposes);
+          const missingPurposes = requiredPurposes.filter((purpose) => !actualPurposes.has(purpose));
+          const unexpectedPurposes = [...actualPurposes].filter(
+            (purpose) => !requiredPurposeSet.has(purpose),
+          );
+          return missingPurposes.length > 0 || unexpectedPurposes.length > 0
+            ? [{
+                module_id: moduleId,
+                missing_purposes: missingPurposes,
+                unexpected_purposes: unexpectedPurposes,
+              }]
+            : [];
+        });
         const status = pack.narrative_enhancement_status;
         const reportedMissing = status?.missing_module_ids ?? [];
         const effectiveMissing = reportedMissing.length > 0 ? reportedMissing : missingModuleIds;
-        if (status?.status === "incomplete" || effectiveMissing.length > 0) {
+        const reportedPurposeMismatches = status?.purpose_mismatches ?? [];
+        const effectivePurposeMismatches = reportedPurposeMismatches.length > 0
+          ? reportedPurposeMismatches
+          : localPurposeMismatches;
+        if (
+          status?.status === "incomplete"
+          || effectiveMissing.length > 0
+          || effectivePurposeMismatches.length > 0
+        ) {
+          const reasons = [];
+          if (effectiveMissing.length > 0) {
+            reasons.push(`缺少必需模块：${effectiveMissing.join(", ")}`);
+          }
+          if (effectivePurposeMismatches.length > 0) {
+            reasons.push(
+              `模块用途不匹配：${effectivePurposeMismatches
+                .map((mismatch) => {
+                  const details = [];
+                  if (mismatch.missing_purposes.length > 0) {
+                    details.push(`缺少 ${mismatch.missing_purposes.join("+")}`);
+                  }
+                  if ((mismatch.unexpected_purposes ?? []).length > 0) {
+                    details.push(`多出 ${mismatch.unexpected_purposes.join("+")}`);
+                  }
+                  return `${mismatch.module_id} ${details.join("，")}`;
+                })
+                .join(", ")}`,
+            );
+          }
           setCommercialShuangwenAvailability("incomplete");
-          setCommercialShuangwenUnavailableReason(effectiveMissing.join(", "));
+          setCommercialShuangwenUnavailableReason(reasons.join("；"));
           setCommercialShuangwenEnabled(false);
           return;
         }
@@ -305,7 +352,7 @@ export default function NewProjectPage() {
             ) : null}
             {commercialShuangwenAvailability === "incomplete" ? (
               <p className="ws-project-create__error" role="alert">
-                “商业爽文推进”缺少必需模块：{commercialShuangwenUnavailableReason}，当前不可用。
+                “商业爽文推进”配置不完整：{commercialShuangwenUnavailableReason}，当前不可用。
               </p>
             ) : null}
             {commercialShuangwenAvailability === "error" ? (

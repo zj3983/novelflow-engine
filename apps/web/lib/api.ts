@@ -1730,6 +1730,13 @@ export type SkillPackSummary = {
     status: "available" | "unavailable" | "incomplete" | "unknown" | string;
     reason: string;
     missing_module_ids: string[];
+    purpose_mismatches?: Array<{
+      module_id: string;
+      required_purposes: string[];
+      actual_purposes: string[];
+      missing_purposes: string[];
+      unexpected_purposes: string[];
+    }>;
   };
 };
 

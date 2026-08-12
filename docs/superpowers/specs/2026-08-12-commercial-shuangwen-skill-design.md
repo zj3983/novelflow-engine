@@ -286,3 +286,15 @@ Skill Markdown 使用以下标题：
 - 写作包只包含本章所需爽文规则和少量对应题材例子。
 - 正文不出现工作流术语，也不会因该 Skill 产生大量残缺短句。
 - 未启用该 Skill 的项目生成上下文与行为保持不变。
+
+## 可选的受保护项目校验
+
+默认集成测试只使用临时哨兵目录。需要额外确认某个既有项目不会被测试修改时，必须显式设置环境变量，路径不写入源码或测试数据：
+
+```powershell
+$env:NOVEL_AUTOGROWTH_PROTECTED_PROJECT_ROOT = '<existing-project-root>'
+python -m pytest tests/story_core/test_commercial_shuangwen_skill.py::test_integration_commercial_shuangwen_http_workflow_isolates_creation_and_manual_review -q
+Remove-Item Env:NOVEL_AUTOGROWTH_PROTECTED_PROJECT_ROOT
+```
+
+测试会在运行前后计算该目录的内容指纹；任何变化都会使测试失败。另有单元测试确认只有显式设置的目录会被选为受保护根目录。

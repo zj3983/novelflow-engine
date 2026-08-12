@@ -101,6 +101,26 @@ def _narrative_skill_selection(spec: FileProjectCreateSpec) -> tuple[list[str], 
                     f"narrative_enhancement_incomplete:{enhancement_id}:"
                     f"missing_modules:{missing}"
                 )
+            if availability.reason == "invalid_module_purposes":
+                mismatch_details = []
+                for mismatch in availability.purpose_mismatches:
+                    details = []
+                    if mismatch.missing_purposes:
+                        details.append(
+                            f"missing={'+'.join(mismatch.missing_purposes)}"
+                        )
+                    if mismatch.unexpected_purposes:
+                        details.append(
+                            "unexpected="
+                            f"{'+'.join(mismatch.unexpected_purposes)}"
+                        )
+                    mismatch_details.append(
+                        f"{mismatch.module_id}:{';'.join(details)}"
+                    )
+                raise ValueError(
+                    f"narrative_enhancement_incomplete:{enhancement_id}:"
+                    f"invalid_module_purposes:{','.join(mismatch_details)}"
+                )
             raise ValueError(
                 f"narrative_enhancement_unavailable:{enhancement_id}:"
                 f"{availability.reason}"

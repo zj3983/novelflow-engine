@@ -130,6 +130,51 @@ def test_file_project_creation_rejects_incomplete_narrative_enhancement(
     legacy_create.assert_not_called()
 
 
+def test_file_project_creation_rejects_narrative_enhancement_purpose_mismatch(
+    creation_api,
+    monkeypatch,
+):
+    client, export_root, legacy_create = creation_api
+    purposes = {
+        "plot-engine": ["outline"],
+        "chapter-sop": ["chapter_plan"],
+        "writer-execution": ["writer", "reviewer"],
+        "review-checklist": ["reviewer"],
+        "genre-examples": ["outline", "chapter_plan", "writer"],
+    }
+    mismatched_pack = SimpleNamespace(
+        skill_id="commercial-shuangwen",
+        modules=[
+            SimpleNamespace(module_id=module_id, purposes=module_purposes)
+            for module_id, module_purposes in purposes.items()
+        ],
+    )
+    monkeypatch.setattr(
+        file_project_creation,
+        "get_skill_pack",
+        lambda _skill_id: mismatched_pack,
+    )
+
+    response = client.post(
+        "/file-projects",
+        json={
+            "mode": "blank",
+            "title": "Purpose Mismatch",
+            "novel_type_id": "urban",
+            "narrative_enhancement_ids": ["commercial-shuangwen"],
+        },
+    )
+
+    assert response.status_code == 422
+    assert (
+        "narrative_enhancement_incomplete:commercial-shuangwen:"
+        "invalid_module_purposes:writer-execution:unexpected=reviewer"
+        in response.text
+    )
+    assert not export_root.exists() or list(export_root.iterdir()) == []
+    legacy_create.assert_not_called()
+
+
 def test_file_project_response_exposes_sanitized_continuation_boundary(creation_api):
     client, _, _ = creation_api
     created = client.post(
@@ -1433,7 +1478,7 @@ def test_generate_file_project_plan_passes_mode_and_trimmed_guidance(creation_ap
     assert calls[0][1:] == ("regenerate", "阶段对手要有现实利益")
 
 
-def test_outline_generation_api_preserves_explicit_skill_modules_and_genre(
+def test_public_outline_to_writing_packet_chain_preserves_modules_genre_and_budget(
     creation_api,
     monkeypatch,
 ):
@@ -1447,13 +1492,16 @@ def test_outline_generation_api_preserves_explicit_skill_modules_and_genre(
             "narrative_enhancement_ids": ["commercial-shuangwen"],
         },
     ).json()
-    root = Path(project["source_path"])
-    selected_modules = ["commercial-shuangwen::genre-examples"]
-    for relative_path in (".webnovel/project.json", ".webnovel/state.json"):
-        path = root / relative_path
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        payload["enabled_skill_module_ids"] = selected_modules
-        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    selected_modules = [
+        "commercial-shuangwen::genre-examples",
+        "commercial-shuangwen::writer-execution",
+    ]
+    selection_response = client.put(
+        f"/file-projects/{project['project_id']}",
+        json={"enabled_skill_module_ids": selected_modules},
+    )
+    assert selection_response.status_code == 200, selection_response.text
+    assert selection_response.json()["enabled_skill_module_ids"] == selected_modules
 
     trope = novel_type_prompt_context(runtime_novel_type("xuanhuan"))[
         "genre_trope_templates"
@@ -1484,6 +1532,27 @@ def test_outline_generation_api_preserves_explicit_skill_modules_and_genre(
         "enabled_skill_module_ids": selected_modules,
         "novel_type_id": "xuanhuan",
     }
+
+    packet_response = client.get(
+        f"/file-projects/{project['project_id']}/writing-packet?chapter_number=1"
+    )
+    assert packet_response.status_code == 200, packet_response.text
+    writer_context = packet_response.json()["skill_context"]["writer"]
+    serialized = json.dumps(writer_context, ensure_ascii=False)
+    assert len(serialized) <= 2600
+    assert [
+        module["module_id"]
+        for pack_context in writer_context
+        for module in pack_context["modules"]
+    ] == ["genre-examples", "writer-execution"]
+    assert all(set(pack_context) == {"skill_id", "modules"} for pack_context in writer_context)
+    assert all(
+        set(module) == {"module_id", "instructions"}
+        for pack_context in writer_context
+        for module in pack_context["modules"]
+    )
+    assert "review-checklist" not in serialized
+    assert "公会押上声望封锁副本" not in serialized
 
 
 def test_outline_generation_checkpoint_api_and_restart_phase(creation_api, monkeypatch):

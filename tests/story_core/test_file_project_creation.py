@@ -194,19 +194,63 @@ def test_create_project_rejects_incomplete_commercial_shuangwen_pack(
     assert not (tmp_path / "p-incomplete-enhancement").exists()
 
 
-def test_create_project_does_not_enable_pack_root_as_stage_module(tmp_path, monkeypatch):
-    stage_module_ids = [
-        "plot-engine",
-        "chapter-sop",
-        "writer-execution",
-        "review-checklist",
-        "genre-examples",
-    ]
+def test_create_project_rejects_commercial_shuangwen_module_purpose_mismatch(
+    tmp_path,
+    monkeypatch,
+):
+    required_purposes = {
+        "plot-engine": ["outline"],
+        "chapter-sop": ["chapter_plan"],
+        "writer-execution": ["writer", "reviewer"],
+        "review-checklist": ["reviewer"],
+        "genre-examples": ["outline", "chapter_plan", "writer"],
+    }
     pack = SimpleNamespace(
         skill_id="commercial-shuangwen",
         modules=[
-            SimpleNamespace(module_id="root"),
-            *(SimpleNamespace(module_id=module_id) for module_id in stage_module_ids),
+            SimpleNamespace(module_id=module_id, purposes=purposes)
+            for module_id, purposes in required_purposes.items()
+        ],
+    )
+    monkeypatch.setattr(file_project_creation, "get_skill_pack", lambda _skill_id: pack)
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "narrative_enhancement_incomplete:commercial-shuangwen:"
+            "invalid_module_purposes:writer-execution:unexpected=reviewer"
+        ),
+    ):
+        create_file_project(
+            tmp_path,
+            FileProjectCreateSpec(
+                mode="blank",
+                title="Purpose Contract",
+                novel_type_id="xuanhuan",
+                narrative_enhancement_ids=["commercial-shuangwen"],
+            ),
+            project_id_factory=lambda: "p-purpose-mismatch",
+        )
+    assert not (tmp_path / "p-purpose-mismatch").exists()
+
+
+def test_create_project_does_not_enable_pack_root_as_stage_module(tmp_path, monkeypatch):
+    stage_module_purposes = {
+        "plot-engine": ["outline"],
+        "chapter-sop": ["chapter_plan"],
+        "writer-execution": ["writer"],
+        "review-checklist": ["reviewer"],
+        "genre-examples": ["outline", "chapter_plan", "writer"],
+    }
+    stage_module_ids = list(stage_module_purposes)
+    pack = SimpleNamespace(
+        skill_id="commercial-shuangwen",
+        modules=[
+            SimpleNamespace(module_id="root", purposes=[]),
+            *(
+                SimpleNamespace(module_id=module_id, purposes=purposes)
+                for module_id, purposes in stage_module_purposes.items()
+            ),
         ],
     )
     monkeypatch.setattr(file_project_creation, "get_skill_pack", lambda _skill_id: pack)

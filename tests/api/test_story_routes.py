@@ -1103,6 +1103,16 @@ def test_project_writing_packet_preserves_module_selection_mode(
     serialized = json.dumps(skill_context, ensure_ascii=False)
     assert "review-checklist" not in serialized
     if expected_writer_modules:
+        assert len(json.dumps(writer_context, ensure_ascii=False)) <= 2600
+        assert all(
+            set(pack_context) == {"skill_id", "modules"}
+            for pack_context in writer_context
+        )
+        assert all(
+            set(module) == {"module_id", "instructions"}
+            for pack_context in writer_context
+            for module in pack_context["modules"]
+        )
         assert "周执事押上长老担保" in serialized
         assert "公会押上声望封锁副本" not in serialized
 

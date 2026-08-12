@@ -848,4 +848,6 @@ def writer_skill_pack_prompt_context(
         include_examples=True,
         genre_id=canonical_novel_type_id(genre_id),
         max_chars_per_pack=max_chars_per_pack,
+        compact=True,
+        max_serialized_chars=max_chars_per_pack,
     )

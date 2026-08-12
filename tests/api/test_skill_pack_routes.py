@@ -77,6 +77,56 @@ def test_commercial_shuangwen_pack_list_reports_missing_required_modules(
     ]
 
 
+def test_commercial_shuangwen_pack_list_reports_module_purpose_mismatch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    registry = tmp_path / "registry"
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_SKILL_PACKS_DIR", str(registry))
+    source = tmp_path / "commercial-shuangwen"
+    (source / "manifest.json").parent.mkdir(parents=True)
+    (source / "manifest.json").write_text(
+        json.dumps({"skill_id": "commercial-shuangwen", "name": "Commercial Shuangwen"}),
+        encoding="utf-8",
+    )
+    (source / "SKILL.md").write_text("# Commercial Shuangwen\n", encoding="utf-8")
+    purposes = {
+        "plot-engine": "outline",
+        "chapter-sop": "chapter_plan",
+        "writer-execution": "writer,reviewer",
+        "review-checklist": "reviewer",
+        "genre-examples": "outline,chapter_plan,writer",
+    }
+    for module_id, module_purposes in purposes.items():
+        module_root = source / "skills" / module_id
+        module_root.mkdir(parents=True)
+        (module_root / "SKILL.md").write_text(
+            f"---\nname: {module_id}\npurposes: {module_purposes}\n---\n\n# {module_id}\n",
+            encoding="utf-8",
+        )
+    assert client.post(
+        "/skill-packs/import",
+        json={"source_path": str(source)},
+    ).status_code == 200
+
+    response = client.get("/skill-packs")
+
+    assert response.status_code == 200
+    status = response.json()[0]["narrative_enhancement_status"]
+    assert status["status"] == "incomplete"
+    assert status["reason"] == "invalid_module_purposes"
+    assert status["missing_module_ids"] == []
+    assert status["purpose_mismatches"] == [
+        {
+            "module_id": "writer-execution",
+            "required_purposes": ["writer"],
+            "actual_purposes": ["reviewer", "writer"],
+            "missing_purposes": [],
+            "unexpected_purposes": ["reviewer"],
+        }
+    ]
+
+
 def test_skill_pack_import_rejects_path_outside_allowed_roots(tmp_path: Path, monkeypatch) -> None:
     allowed = tmp_path / "allowed"
     allowed.mkdir()

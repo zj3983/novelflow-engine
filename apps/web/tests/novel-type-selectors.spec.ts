@@ -28,12 +28,12 @@ const commercialShuangwenPack = {
   version: "1.0.0",
   module_count: 5,
   modules: [
-    "plot-engine",
-    "chapter-sop",
-    "writer-execution",
-    "review-checklist",
-    "genre-examples",
-  ].map((module_id) => ({ module_id, title: module_id })),
+    { module_id: "plot-engine", purposes: ["outline"] },
+    { module_id: "chapter-sop", purposes: ["chapter_plan"] },
+    { module_id: "writer-execution", purposes: ["writer"] },
+    { module_id: "review-checklist", purposes: ["reviewer"] },
+    { module_id: "genre-examples", purposes: ["outline", "chapter_plan", "writer"] },
+  ].map((module) => ({ ...module, title: module.module_id })),
 };
 
 function novelTypeResponse(type: NovelTypeFixture) {
@@ -247,6 +247,24 @@ test("新建页在商业爽文增强缺少必需模块时禁用并说明原因",
   await expect(page.getByRole("checkbox", { name: "商业爽文推进" })).toBeDisabled();
   await expect(page.getByRole("alert").filter({ hasText: "缺少必需模块" }))
     .toContainText("缺少必需模块：review-checklist");
+});
+
+test("新建页在商业爽文模块用途不匹配时禁用并说明原因", async ({ page }) => {
+  await routeNovelTypes(page, [genericType]);
+  await routeSkillPacks(page, [{
+    ...commercialShuangwenPack,
+    modules: commercialShuangwenPack.modules.map((module) =>
+      module.module_id === "writer-execution"
+        ? { ...module, purposes: ["writer", "reviewer"] }
+        : module,
+    ),
+  }]);
+
+  await page.goto("/projects/new");
+
+  await expect(page.getByRole("checkbox", { name: "商业爽文推进" })).toBeDisabled();
+  await expect(page.getByRole("alert").filter({ hasText: "模块用途不匹配" }))
+    .toContainText("writer-execution 多出 reviewer");
 });
 
 test("新建页叙事增强列表加载失败时保持创建可用", async ({ page }) => {

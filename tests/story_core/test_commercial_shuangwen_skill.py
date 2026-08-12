@@ -33,6 +33,7 @@ from packages.story_core.skill_packs import (
     resolve_enabled_skill_ids,
     skill_module_key,
     skill_pack_prompt_context,
+    writer_skill_pack_prompt_context,
 )
 
 
@@ -556,7 +557,7 @@ def _seed_pending_candidate(
     return candidate
 
 
-def test_private_prompt_assembly_isolates_commercial_shuangwen_contracts(
+def test_unit_private_prompt_assembly_isolates_commercial_shuangwen_contracts(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -639,7 +640,7 @@ def test_private_prompt_assembly_isolates_commercial_shuangwen_contracts(
             assert marker not in text
 
 
-def test_commercial_shuangwen_http_workflow_isolates_creation_and_manual_review(
+def test_integration_commercial_shuangwen_http_workflow_isolates_creation_and_manual_review(
     isolated_task8_api,
     monkeypatch,
 ) -> None:
@@ -812,3 +813,51 @@ def test_commercial_shuangwen_http_workflow_isolates_creation_and_manual_review(
     checked_baseline_root = _checked_project_path(str(baseline_root), temp_root)
     shutil.rmtree(checked_baseline_root)
     assert not checked_baseline_root.exists()
+
+
+def test_unit_external_writer_context_is_compact_and_within_total_budget(
+    monkeypatch,
+) -> None:
+    _enable_local_packs(monkeypatch)
+
+    context = writer_skill_pack_prompt_context(
+        ["commercial-shuangwen"],
+        enabled_module_ids=[
+            "commercial-shuangwen::genre-examples",
+            "commercial-shuangwen::writer-execution",
+            "commercial-shuangwen::review-checklist",
+        ],
+        genre_id="xuanhuan",
+    )
+    serialized = json.dumps(context, ensure_ascii=False)
+
+    assert len(serialized) <= 2600
+    assert [
+        module["module_id"]
+        for pack_context in context
+        for module in pack_context["modules"]
+    ] == ["genre-examples", "writer-execution"]
+    assert all(set(pack_context) == {"skill_id", "modules"} for pack_context in context)
+    assert all(
+        set(module) == {"module_id", "instructions"}
+        for pack_context in context
+        for module in pack_context["modules"]
+    )
+    assert "周执事押上长老担保" in serialized
+    assert "公会押上声望封锁副本" not in serialized
+    assert "review-checklist" not in serialized
+    assert "只报告证据、影响和修改方向" not in serialized
+
+
+def test_unit_optional_protected_project_env_selects_only_the_explicit_root(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    protected_root = tmp_path / "explicit-protected-project"
+    protected_root.mkdir()
+    (protected_root / "project.json").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv(PROTECTED_PROJECT_ENV, str(protected_root))
+
+    resolved = _protected_project_root(tmp_path / "unused")
+
+    assert resolved == protected_root.resolve(strict=True)
