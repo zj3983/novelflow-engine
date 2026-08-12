@@ -14,6 +14,7 @@ import packages.story_core.file_project_store as file_project_store_module
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.models import NovelProject, NovelProjectSummary
 from packages.story_core.novel_type_catalog import novel_type_prompt_context, runtime_novel_type
+from packages.story_core.novel_type_library import NovelTypeRecord
 from packages.story_core.opening_directions import (
     LLMOpeningDirectionGenerator,
     OpeningBrief,
@@ -396,7 +397,9 @@ def test_generator_prompt_contains_only_brief_genre_and_empty_guidance():
     assert "候选为空时才返回 null" in system_prompt
     assert "每个 direction.title 都必须是可直接使用的书名候选" in system_prompt
     assert "三个候选不能仅替换一个名词" in system_prompt
-    assert "不得照抄示例" in system_prompt
+    assert "三个候选的卖点组合和表达结构都要有区别" in system_prompt
+    assert "卖点组合或表达结构" not in system_prompt
+    assert "如有示例，只参考结构，不得照抄" in system_prompt
     entire_prompt = json.dumps(captured["payload"]["messages"], ensure_ascii=False)
     assert "SECRET_CHARACTER_CARD" not in entire_prompt
     assert "SECRET_HISTORY_CHAPTER" not in entire_prompt
@@ -455,7 +458,11 @@ def test_generator_adds_genre_specific_book_title_strategy_to_prompt_context(
 
 def test_generator_passes_runtime_novel_type_keywords_to_book_title_strategy(monkeypatch):
     calls = []
-    genre = SimpleNamespace(id="xuanhuan", keywords=("剑骨", "天命炉"))
+    genre = NovelTypeRecord(
+        id="xuanhuan",
+        name="玄幻",
+        keywords=("剑骨", "天命炉"),
+    )
     monkeypatch.setattr(opening_directions_module, "runtime_novel_type", lambda _: genre)
     monkeypatch.setattr(
         opening_directions_module,
@@ -484,6 +491,57 @@ def test_generator_passes_runtime_novel_type_keywords_to_book_title_strategy(mon
     guidance = prompt_context["title_strategy"]["guidance"]
     assert "剑骨" in guidance
     assert "天命炉" in guidance
+
+
+def test_title_strategy_keyword_projection_has_stable_prompt_budget(monkeypatch):
+    calls = []
+    long_keyword = "长" * 40
+    keywords = (
+        "  前部关键词  ",
+        "",
+        long_keyword,
+        "前部关键词",
+        *(f"关键词-{index:02d}-" + "扩" * 20 for index in range(20)),
+    )
+    genre = NovelTypeRecord(id="xuanhuan", name="玄幻", keywords=keywords)
+    monkeypatch.setattr(opening_directions_module, "runtime_novel_type", lambda _: genre)
+    monkeypatch.setattr(
+        opening_directions_module,
+        "novel_type_prompt_context",
+        lambda _: {"genre_trope_templates": []},
+    )
+    monkeypatch.setattr(opening_directions_module, "opening_core_reference", lambda _: {})
+
+    class Gateway:
+        def complete_stage(self, stage, request):
+            calls.append((stage, request))
+            payload = {
+                "directions": [
+                    direction("direction-1", primary_trope_id=None),
+                    direction("direction-2", primary_trope_id=None),
+                    direction("direction-3", primary_trope_id=None),
+                ]
+            }
+            return ModelResponse.success(request, text=json.dumps(payload))
+
+    LLMOpeningDirectionGenerator(model_gateway=Gateway()).generate(
+        OpeningBrief(novel_type_id="xuanhuan", idea="An idea")
+    )
+
+    projected = opening_directions_module._project_title_keywords(keywords)
+    assert projected[0] == "前部关键词"
+    assert projected[1] == "长" * 24
+    assert len(projected) <= 12
+    assert all(0 < len(item) <= 24 for item in projected)
+    assert sum(map(len, projected)) <= 160
+    assert len(projected) == len(set(projected))
+
+    guidance = json.loads(calls[0][1].prompt)["title_strategy"]["guidance"]
+    baseline = opening_directions_module.build_book_title_guidance("xuanhuan")
+    assert "前部关键词" in guidance
+    assert "长" * 24 in guidance
+    assert "长" * 25 not in guidance
+    assert len(guidance) <= len(baseline) + 160 + 12
 
 
 def test_generator_uses_planner_gateway_model_request():

@@ -19,6 +19,44 @@ from packages.story_core.story_core_card import CentralMystery, CoreAdvantage, I
 from packages.story_core.title_strategy import build_book_title_guidance
 
 
+_TITLE_KEYWORD_MAX_ITEMS = 12
+_TITLE_KEYWORD_MAX_CHARS = 24
+_TITLE_KEYWORD_TOTAL_CHARS = 160
+
+
+def _project_title_keywords(keywords: Any) -> tuple[str, ...]:
+    if isinstance(keywords, str):
+        raw_keywords = (keywords,)
+    else:
+        try:
+            raw_keywords = iter(keywords or ())
+        except TypeError:
+            raw_keywords = iter((keywords,))
+
+    projected: list[str] = []
+    seen: set[str] = set()
+    total_chars = 0
+    for raw_keyword in raw_keywords:
+        keyword = str(raw_keyword or "").strip()[:_TITLE_KEYWORD_MAX_CHARS]
+        if not keyword or keyword in seen:
+            continue
+        remaining_chars = _TITLE_KEYWORD_TOTAL_CHARS - total_chars
+        if remaining_chars <= 0:
+            break
+        keyword = keyword[:remaining_chars]
+        if keyword in seen:
+            continue
+        projected.append(keyword)
+        seen.add(keyword)
+        total_chars += len(keyword)
+        if (
+            len(projected) == _TITLE_KEYWORD_MAX_ITEMS
+            or total_chars == _TITLE_KEYWORD_TOTAL_CHARS
+        ):
+            break
+    return tuple(projected)
+
+
 def _runtime_gateway_for_legacy_injection(
     post_json: Callable[..., dict[str, Any]],
     runtime_resolver: Callable[[str], StageRuntimeSettings],
@@ -252,7 +290,9 @@ class LLMOpeningDirectionGenerator:
                     "purpose": "book_title_candidates",
                     "guidance": build_book_title_guidance(
                         genre.id,
-                        extra_terms=getattr(genre, "keywords", ()),
+                        extra_terms=_project_title_keywords(
+                            getattr(genre, "keywords", ())
+                        ),
                     ),
                 },
                 "working_title": validated_brief.working_title,
@@ -272,8 +312,8 @@ class LLMOpeningDirectionGenerator:
                 "initial_drive 必须填写 immediate_need、trigger、short_term_goal、failure_stakes、long_term_transition。"
                 "题材参考只用于启发，不能照抄成所有项目的固定设定。"
                 "每个 direction.title 都必须是可直接使用的书名候选。"
-                "三个候选不能仅替换一个名词，必须体现不同的卖点组合或表达结构。"
-                "不得照抄示例，只能参考 title_strategy 中示例的结构。"
+                "三个候选不能仅替换一个名词；三个候选的卖点组合和表达结构都要有区别。"
+                "如有示例，只参考结构，不得照抄。"
                 "从给定候选中为每项选择一个 primary_trope_id；候选为空时才返回 null。"
             )
             response = self._model_gateway.complete_stage(
