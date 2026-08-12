@@ -487,6 +487,50 @@ def test_writer_agent_prompt_contains_director_artifact_and_context() -> None:
     assert "对话先回应" in prompt
 
 
+def test_writer_agent_runtime_receives_final_plan_without_title_strategy() -> None:
+    runtime = _RecordingRuntime(responses=["顾临背着守夜人跃上屋顶。"])
+    artifact = DirectorArtifact(
+        chapter_number=12,
+        chapter_title="余烬照夜",
+        chapter_goal="顾临在钟楼熄灭前救出被困的守夜人",
+        opening_state="钟楼起火，楼梯已经断裂。",
+        scene_beats=[
+            SceneBeat(
+                order=1,
+                location="旧钟楼",
+                action="顾临沿外墙攀上钟室",
+                result="他找到守夜人并确认唯一出口",
+            )
+        ],
+        ending_state="两人落到相邻屋顶，钟楼在身后坍塌。",
+        hook="守夜人交出一枚刻着王室徽记的钥匙。",
+    )
+
+    WriterAgent(runtime=runtime).run(
+        _writer_request(
+            chapter_number=12,
+            project_title="诸天薪火",
+            director_artifact=artifact,
+        )
+    )
+
+    prompt = runtime.requests[0].prompt
+    assert "诸天薪火" in prompt
+    assert artifact.chapter_goal in prompt
+    assert artifact.scene_beats[0].action in prompt
+    assert artifact.scene_beats[0].result in prompt
+    assert artifact.hook in prompt
+    for planning_only_text in (
+        "核心卖点/能力",
+        "章节标题必须对应",
+        "满级魔龙",
+        "chapter_title_strategy",
+        "book_title_candidates",
+        "三个候选",
+    ):
+        assert planning_only_text not in prompt
+
+
 def test_commercial_shuangwen_modular_writer_loads_only_writer_modules() -> None:
     runtime = _RecordingRuntime(responses=["沈砚收起拓印，走向藏谱阁。"])
     request = _writer_request(

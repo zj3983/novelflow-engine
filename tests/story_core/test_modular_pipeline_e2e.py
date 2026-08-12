@@ -399,6 +399,137 @@ def test_writer_context_falls_back_to_legacy_when_story_system_is_partial(
     ]
 
 
+def test_legacy_writer_context_does_not_project_opening_or_outline_title_strategy(
+    tmp_path: Path,
+) -> None:
+    _seed_legacy_project(tmp_path, with_outline=True)
+    project_path = tmp_path / ".webnovel" / "project.json"
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    project["title"] = "诸天薪火"
+    project["enabled_skill_ids"] = ["dialogue-natural"]
+    _write_json(project_path, project)
+
+    outline_path = tmp_path / ".webnovel" / "outline.json"
+    outline = json.loads(outline_path.read_text(encoding="utf-8"))
+    outline["prompt_context"] = {
+        "chapter_title_strategy": "章节标题必须对应本章事件",
+        "example": "满级魔龙",
+    }
+    _write_json(outline_path, outline)
+    _write_json(
+        tmp_path / ".webnovel" / "opening_directions.json",
+        {
+            "title_strategy": {
+                "purpose": "book_title_candidates",
+                "guidance": "围绕核心卖点/能力生成三个候选",
+            }
+        },
+    )
+    artifact = DirectorArtifact(
+        chapter_number=1,
+        chapter_title="余烬照夜",
+        chapter_goal="顾临救出守夜人",
+        opening_state="钟楼起火",
+        scene_beats=[],
+        ending_state="两人脱险",
+    )
+
+    context = _ensure_writer_context(
+        project_root=tmp_path,
+        chapter_number=1,
+        director_artifact=artifact,
+    )
+
+    assert context.project_title == "诸天薪火"
+    assert context.director_artifact.chapter_title == "余烬照夜"
+    assert context.craft_modules == [{"id": "dialogue-natural", "enabled": True}]
+    projected = json.dumps(
+        {"world_rules": context.world_rules, "craft_modules": context.craft_modules},
+        ensure_ascii=False,
+    )
+    for planning_only_text in (
+        "核心卖点/能力",
+        "章节标题必须对应",
+        "满级魔龙",
+        "chapter_title_strategy",
+        "book_title_candidates",
+        "三个候选",
+    ):
+        assert planning_only_text not in projected
+
+
+def test_canonical_writer_context_reads_only_writer_owned_rules_and_modules(
+    tmp_path: Path,
+) -> None:
+    system_root = tmp_path / ".story-system"
+    _write_json(
+        system_root / "project.json",
+        {
+            "title": "诸天薪火",
+            "opening_directions": {
+                "title_strategy": {
+                    "purpose": "book_title_candidates",
+                    "guidance": "围绕核心卖点/能力生成三个候选",
+                }
+            },
+        },
+    )
+    _write_json(
+        system_root / "outline.json",
+        {
+            "prompt_context": {
+                "chapter_title_strategy": "章节标题必须对应本章事件",
+                "example": "满级魔龙",
+            }
+        },
+    )
+    _write_json(
+        system_root / "world-rules.json",
+        {"global": ["钟楼的铜门只能从内部开启。"]},
+    )
+    _write_json(
+        system_root / "craft-modules" / "dialogue-natural.json",
+        {
+            "id": "dialogue-natural",
+            "content": "对话先回应再表态。",
+            "enabled_by_default": True,
+            "stages": ["writer"],
+        },
+    )
+    artifact = DirectorArtifact(
+        chapter_number=12,
+        chapter_title="余烬照夜",
+        chapter_goal="顾临救出守夜人",
+        opening_state="钟楼起火",
+        scene_beats=[],
+        ending_state="两人脱险",
+    )
+
+    context = _ensure_writer_context(
+        project_root=tmp_path,
+        chapter_number=12,
+        director_artifact=artifact,
+    )
+
+    assert context.project_title == "诸天薪火"
+    assert context.director_artifact.chapter_title == "余烬照夜"
+    assert context.world_rules == ["钟楼的铜门只能从内部开启。"]
+    assert [module["id"] for module in context.craft_modules] == ["dialogue-natural"]
+    projected = json.dumps(
+        {"world_rules": context.world_rules, "craft_modules": context.craft_modules},
+        ensure_ascii=False,
+    )
+    for planning_only_text in (
+        "核心卖点/能力",
+        "章节标题必须对应",
+        "满级魔龙",
+        "chapter_title_strategy",
+        "book_title_candidates",
+        "三个候选",
+    ):
+        assert planning_only_text not in projected
+
+
 # --- Tests -------------------------------------------------------------------
 
 

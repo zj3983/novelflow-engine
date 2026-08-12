@@ -115,6 +115,56 @@ def test_writer_prompt_construction_lives_under_agents_writer():
     assert sample.strip()
 
 
+def test_writer_prompt_keeps_planning_title_strategy_out_of_writer_boundary():
+    from packages.story_core.agents.writer import build_writer_prompt
+    from packages.story_core.agents.contracts import (
+        DirectorArtifact,
+        SceneBeat,
+        WriterRequest,
+    )
+
+    director_artifact = DirectorArtifact(
+        chapter_number=12,
+        chapter_title="余烬照夜",
+        chapter_goal="顾临在钟楼熄灭前救出被困的守夜人",
+        opening_state="钟楼起火，楼梯已经断裂。",
+        scene_beats=[
+            SceneBeat(
+                order=1,
+                location="旧钟楼",
+                action="顾临沿外墙攀上钟室",
+                result="他找到守夜人并确认唯一出口",
+            )
+        ],
+        ending_state="两人落到相邻屋顶，钟楼在身后坍塌。",
+        hook="守夜人交出一枚刻着王室徽记的钥匙。",
+    )
+    request = WriterRequest(
+        chapter_number=12,
+        project_title="诸天薪火",
+        director_artifact=director_artifact,
+    )
+
+    prompt = build_writer_prompt(request)
+
+    assert "诸天薪火" in prompt
+    assert director_artifact.chapter_goal in prompt
+    assert director_artifact.opening_state in prompt
+    assert director_artifact.scene_beats[0].action in prompt
+    assert director_artifact.scene_beats[0].result in prompt
+    assert director_artifact.ending_state in prompt
+    assert director_artifact.hook in prompt
+    for planning_only_text in (
+        "核心卖点/能力",
+        "章节标题必须对应",
+        "满级魔龙",
+        "chapter_title_strategy",
+        "book_title_candidates",
+        "三个候选",
+    ):
+        assert planning_only_text not in prompt
+
+
 def test_director_prompt_construction_lives_under_agents_director():
     from packages.story_core.agents.director import build_director_prompt
     from packages.story_core.context.director_context import DirectorContext
