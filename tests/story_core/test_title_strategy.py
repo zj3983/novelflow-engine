@@ -147,3 +147,77 @@ def test_mixed_title_shapes_are_accepted():
     ]
 
     assert validate_chapter_title_window(chapters, genre_id="urban") is None
+
+
+def test_sparse_generated_numbers_are_not_treated_as_consecutive_positions():
+    generated = [
+        {"chapter_number": 14, "title": "第十四章发生了什么？"},
+        {"chapter_number": 16, "title": "第十六章发生了什么？"},
+        {"chapter_number": 17, "title": "第十七章发生了什么？"},
+    ]
+
+    assert (
+        validate_chapter_title_window(
+            generated,
+            genre_id="urban",
+            known_chapters=[{"chapter_number": 15, "title": "第十五章落定"}],
+            generated_chapter_numbers={14, 16, 17},
+        )
+        is None
+    )
+
+
+def test_known_chapter_completes_a_consecutive_generated_title_triple():
+    generated = [
+        {"chapter_number": 14, "title": "第十四章发生了什么？"},
+        {"chapter_number": 16, "title": "第十六章发生了什么？"},
+    ]
+
+    with pytest.raises(ValueError) as exc_info:
+        validate_chapter_title_window(
+            generated,
+            genre_id="urban",
+            known_chapters=[{"chapter_number": 15, "title": "第十五章发生了什么？"}],
+            generated_chapter_numbers={14, 16},
+        )
+
+    assert str(exc_info.value) == "repeated_chapter_title_shape:question:14-16"
+
+
+def test_generated_nonempty_titles_override_known_duplicates_without_empty_erasure():
+    generated = [
+        {"chapter_number": 14, "title": "生成标题为什么改变？"},
+        {"chapter_number": 14, "title": ""},
+        {"chapter_number": 16, "title": "第十六章发生了什么？"},
+    ]
+    known = [
+        {"chapter_number": 14, "title": "已有陈述标题"},
+        {"chapter_number": 15, "title": "第十五章发生了什么？"},
+        {"chapter_number": 15, "title": ""},
+    ]
+
+    with pytest.raises(ValueError, match="question:14-16"):
+        validate_chapter_title_window(
+            generated,
+            genre_id="urban",
+            known_chapters=known,
+            generated_chapter_numbers={14, 16},
+        )
+
+
+def test_old_title_triples_without_generated_chapters_do_not_block_current_window():
+    known = [
+        {"chapter_number": 1, "title": "旧问题一？"},
+        {"chapter_number": 2, "title": "旧问题二？"},
+        {"chapter_number": 3, "title": "旧问题三？"},
+    ]
+
+    assert (
+        validate_chapter_title_window(
+            [{"chapter_number": 10, "title": "当前任务已落定"}],
+            genre_id="urban",
+            known_chapters=known,
+            generated_chapter_numbers={10},
+        )
+        is None
+    )

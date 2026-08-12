@@ -697,6 +697,107 @@ def test_llm_rolling_window_generator_retries_title_validation_once(
     )
 
 
+def test_rolling_sparse_window_does_not_treat_14_16_17_as_consecutive() -> None:
+    from packages.story_core.continuation_outline_bootstrap import (
+        LLMRollingWindowGenerator,
+    )
+    from packages.story_core.model_gateway import ModelResponse
+
+    captured = []
+
+    class _FakeGateway:
+        def complete_stage(self, stage: str, request):  # type: ignore[no-untyped-def]
+            captured.append(request)
+            chapters = []
+            for number in (14, 16, 17):
+                chapter = {
+                    **detailed_chapter(number),
+                    "cast": ["林修"],
+                    "title": f"稀疏问题{number}？",
+                }
+                chapters.append(chapter)
+            return ModelResponse.success(
+                request,
+                text=json.dumps({"chapters": chapters}, ensure_ascii=False),
+            )
+
+    rows = LLMRollingWindowGenerator(gateway=_FakeGateway()).generate(
+        context={
+            "current_arc": "续写主线",
+            "existing_window_chapter_titles": [
+                {"chapter_number": 15, "title": "第十五章落定"}
+            ],
+        },
+        chapter_numbers=[14, 16, 17],
+        volume_range=(14, 30),
+        character_cards=[character_card("林修", "protagonist")],
+        require_shuangwen_contracts=False,
+        genre_id="xuanhuan",
+    )
+
+    assert len(captured) == 1
+    assert [row["chapter_number"] for row in rows] == [14, 16, 17]
+    first_context = json.loads(captured[0].messages[1]["content"])
+    assert first_context["existing_window_chapter_titles"] == [
+        {"chapter_number": 15, "title": "第十五章落定"}
+    ]
+
+
+def test_rolling_sparse_window_uses_existing_15_to_repair_14_15_16() -> None:
+    from packages.story_core.continuation_outline_bootstrap import (
+        LLMRollingWindowGenerator,
+    )
+    from packages.story_core.model_gateway import ModelResponse
+
+    captured = []
+
+    class _FakeGateway:
+        def complete_stage(self, stage: str, request):  # type: ignore[no-untyped-def]
+            captured.append(request)
+            chapters = []
+            for number in (14, 16):
+                chapter = {
+                    **detailed_chapter(number),
+                    "cast": ["林修"],
+                    "title": (
+                        f"连续问题{number}？"
+                        if number == 14 or len(captured) == 1
+                        else "第十六章落定"
+                    ),
+                }
+                chapters.append(chapter)
+            return ModelResponse.success(
+                request,
+                text=json.dumps({"chapters": chapters}, ensure_ascii=False),
+            )
+
+    rows = LLMRollingWindowGenerator(gateway=_FakeGateway()).generate(
+        context={
+            "current_arc": "续写主线",
+            "existing_window_chapter_titles": [
+                {"chapter_number": 15, "title": "第十五章发生了什么？"}
+            ],
+        },
+        chapter_numbers=[14, 16],
+        volume_range=(14, 30),
+        character_cards=[character_card("林修", "protagonist")],
+        require_shuangwen_contracts=False,
+        genre_id="xuanhuan",
+    )
+
+    assert len(captured) == 2
+    assert rows[1]["title"] == "第十六章落定"
+    retry_messages = [
+        message["content"]
+        for message in captured[1].messages[2:]
+        if message.get("role") == "system"
+    ]
+    assert any(
+        "repeated_chapter_title_shape:question:14-16" in message
+        for message in retry_messages
+    )
+
+
 def test_llm_rolling_window_generator_requires_enabled_contracts() -> None:
     from packages.story_core.continuation_outline_bootstrap import (
         LLMRollingWindowGenerator,
@@ -1335,6 +1436,32 @@ def test_bootstrapper_preserves_manual_rolling_chapters(tmp_path: Path) -> None:
     )
     assert chapter_148["title"] == "用户自定义章节"
     assert chapter_148["source"] == "manual"
+
+
+def test_bootstrapper_passes_existing_sparse_window_titles_to_rolling_generator(
+    tmp_path: Path,
+) -> None:
+    root = _seed_legacy_approved_project(tmp_path, current_chapter=147)
+    manual_chapter = _rolling_chapter_payload(149)
+    manual_chapter.update(title="谁留下了第十五章？", source="manual")
+    RollingOutlineStore(root).apply_rolling_batch(
+        chapters=[manual_chapter],
+        expected_chapter_numbers=[149],
+        volume_range=(148, 160),
+    )
+    rolling_stub, rolling_calls = _fake_rolling_generator()
+
+    result = ContinuationOutlineBootstrapper(
+        project_root=root,
+        planning_generator=object(),
+        rolling_generator=rolling_stub,
+    ).run()
+
+    assert result.ready
+    assert rolling_calls[0]["chapter_numbers"] == [148, 150, 151, 152]
+    assert rolling_calls[0]["context"]["existing_window_chapter_titles"] == [
+        {"chapter_number": 149, "title": "谁留下了第十五章？"}
+    ]
 
 
 def test_bootstrapper_invalid_chapter_batch_writes_nothing(tmp_path: Path) -> None:

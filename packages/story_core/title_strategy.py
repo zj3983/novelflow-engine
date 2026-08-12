@@ -114,6 +114,60 @@ def select_previous_chapter_titles(
     return selected
 
 
+def select_chapter_titles(
+    chapters: Sequence[Mapping[str, Any]],
+    *,
+    start_chapter: int,
+    end_chapter: int,
+) -> list[dict[str, Any]]:
+    titles_by_number: dict[int, str] = {}
+    for chapter in chapters:
+        number = chapter.get("chapter_number")
+        if (
+            not isinstance(number, int)
+            or isinstance(number, bool)
+            or number < start_chapter
+            or number > end_chapter
+        ):
+            continue
+        title = str(
+            chapter.get("title") or chapter.get("chapter_title") or ""
+        ).strip()
+        if title:
+            titles_by_number[number] = title
+    return [
+        {"chapter_number": number, "title": titles_by_number[number]}
+        for number in sorted(titles_by_number)
+    ]
+
+
+def select_adjacent_chapter_titles(
+    chapters: Sequence[Mapping[str, Any]],
+    *,
+    generated_chapter_numbers: Sequence[int],
+    max_items: int = 6,
+) -> list[dict[str, Any]]:
+    generated_numbers = {
+        number
+        for number in generated_chapter_numbers
+        if isinstance(number, int) and not isinstance(number, bool)
+    }
+    if not generated_numbers or max_items <= 0:
+        return []
+    adjacent = [
+        chapter
+        for chapter in chapters
+        if isinstance(chapter.get("chapter_number"), int)
+        and not isinstance(chapter.get("chapter_number"), bool)
+        and chapter["chapter_number"] not in generated_numbers
+        and any(
+            abs(chapter["chapter_number"] - generated_number) <= 2
+            for generated_number in generated_numbers
+        )
+    ]
+    return list(adjacent[:max_items])
+
+
 def _title_shape(title: str) -> str:
     text = re.sub(
         r"^第\s*[一二三四五六七八九十百千万\d]+\s*章[：:\s]*",
@@ -133,24 +187,48 @@ def validate_chapter_title_window(
     *,
     genre_id: str,
     previous_chapters: Sequence[Mapping[str, Any]] = (),
+    known_chapters: Sequence[Mapping[str, Any]] = (),
+    generated_chapter_numbers: Sequence[int] | set[int] | None = None,
 ) -> None:
     del genre_id
-    chapter_window = [*list(previous_chapters)[-2:], *chapters]
-    shapes = [
-        (
-            _title_shape(str(item.get("title") or item.get("chapter_title") or "")),
-            int(item.get("chapter_number") or 0),
-        )
-        for item in chapter_window
-    ]
-    for index in range(2, len(shapes)):
-        window = shapes[index - 2 : index + 1]
-        shape = window[0][0]
-        if shape == window[1][0] == window[2][0] and shape in {
-            "question",
-            "exclamation",
-        }:
+    generated_numbers = (
+        {
+            number
+            for number in generated_chapter_numbers
+            if isinstance(number, int) and not isinstance(number, bool)
+        }
+        if generated_chapter_numbers is not None
+        else {
+            chapter["chapter_number"]
+            for chapter in chapters
+            if isinstance(chapter.get("chapter_number"), int)
+            and not isinstance(chapter.get("chapter_number"), bool)
+        }
+    )
+    titles_by_number: dict[int, str] = {}
+    for source in (previous_chapters, known_chapters, chapters):
+        for chapter in source:
+            number = chapter.get("chapter_number")
+            if not isinstance(number, int) or isinstance(number, bool):
+                continue
+            title = str(
+                chapter.get("title") or chapter.get("chapter_title") or ""
+            ).strip()
+            if title:
+                titles_by_number[number] = title
+
+    for start in sorted(titles_by_number):
+        numbers = (start, start + 1, start + 2)
+        if not all(number in titles_by_number for number in numbers):
+            continue
+        if not generated_numbers.intersection(numbers):
+            continue
+        shape = _title_shape(titles_by_number[start])
+        if shape in {"question", "exclamation"} and all(
+            _title_shape(titles_by_number[number]) == shape
+            for number in numbers[1:]
+        ):
             raise ValueError(
                 f"repeated_chapter_title_shape:{shape}:"
-                f"{window[0][1]}-{window[2][1]}"
+                f"{numbers[0]}-{numbers[2]}"
             )

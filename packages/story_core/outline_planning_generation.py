@@ -32,6 +32,8 @@ from packages.story_core.runtime_config import (
 from packages.story_core.skill_packs import skill_pack_prompt_context
 from packages.story_core.title_strategy import (
     build_chapter_title_guidance,
+    select_adjacent_chapter_titles,
+    select_chapter_titles,
     select_previous_chapter_titles,
     validate_chapter_title_window,
 )
@@ -730,13 +732,23 @@ class LLMOutlinePlanningGenerator:
                     and not isinstance(chapter.get("chapter_number"), bool)
                     and int(chapter["chapter_number"]) <= boundary
                 ]
+            existing_outline_chapters = [
+                chapter
+                for chapter in validated.existing_outline.get("chapters", [])
+                if isinstance(chapter, dict)
+            ]
             previous_chapters = select_previous_chapter_titles(
-                [
-                    chapter
-                    for chapter in validated.existing_outline.get("chapters", [])
-                    if isinstance(chapter, dict)
-                ],
+                existing_outline_chapters,
                 target_start=min(target_chapter_numbers),
+            )
+            existing_window_chapters = select_chapter_titles(
+                existing_outline_chapters,
+                start_chapter=min(target_chapter_numbers),
+                end_chapter=max(target_chapter_numbers),
+            )
+            adjacent_existing_chapters = select_adjacent_chapter_titles(
+                existing_window_chapters,
+                generated_chapter_numbers=target_chapter_numbers,
             )
             chapter_title_strategy = build_chapter_title_guidance(
                 effective_novel_type_id
@@ -759,6 +771,7 @@ class LLMOutlinePlanningGenerator:
                 ),
                 "chapter_title_strategy": chapter_title_strategy,
                 "previous_chapter_titles": previous_chapters,
+                "existing_window_chapter_titles": adjacent_existing_chapters,
                 "target_chapter_numbers": target_chapter_numbers,
                 "current_strategy": validated.existing_outline.get("overall", {}).get(
                     "current_strategy", "observe"
@@ -981,6 +994,7 @@ class LLMOutlinePlanningGenerator:
                 }
                 outline_context.pop("chapter_title_strategy", None)
                 outline_context.pop("previous_chapter_titles", None)
+                outline_context.pop("existing_window_chapter_titles", None)
                 if outline_skill_context:
                     outline_context["skill_context"] = {
                         "outline": outline_skill_context
@@ -1125,6 +1139,7 @@ class LLMOutlinePlanningGenerator:
                     "chapter_outline_template": outline_template.get("chapter", {}),
                     "chapter_title_strategy": chapter_title_strategy,
                     "previous_chapter_titles": previous_chapters,
+                    "existing_window_chapter_titles": adjacent_existing_chapters,
                     "target_chapter_numbers": target_chapter_numbers,
                     "output_schema": chapter_output_schema(
                         GeneratedChapterWindow,
@@ -1175,6 +1190,8 @@ class LLMOutlinePlanningGenerator:
                         [chapter.model_dump(mode="python") for chapter in chapters],
                         genre_id=effective_novel_type_id,
                         previous_chapters=previous_chapters,
+                        known_chapters=existing_window_chapters,
+                        generated_chapter_numbers=target_chapter_numbers,
                     )
 
                 chapter_window = run_phase(
@@ -1225,6 +1242,8 @@ class LLMOutlinePlanningGenerator:
                         ],
                         genre_id=effective_novel_type_id,
                         previous_chapters=previous_chapters,
+                        known_chapters=existing_window_chapters,
+                        generated_chapter_numbers=target_chapter_numbers,
                     )
                     return candidate
 

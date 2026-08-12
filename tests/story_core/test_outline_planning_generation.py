@@ -1372,6 +1372,130 @@ def test_direct_outline_paths_retry_title_validation_once(
     assert "follow prompt_context.chapter_title_strategy" in system_prompts[0]
 
 
+def _sparse_extend_brief(
+    fixture: RecordingRuntime,
+    *,
+    chapter_15_title: str,
+) -> OutlinePlanningBrief:
+    brief = fixture.brief(
+        current_chapter=13,
+        existing_chapters=[*range(1, 14), 15],
+    )
+    payload = brief.model_dump(mode="json")
+    for chapter in payload["existing_outline"]["chapters"]:
+        chapter["title"] = (
+            chapter_15_title
+            if chapter["chapter_number"] == 15
+            else f"历史标题{chapter['chapter_number']}"
+        )
+    return OutlinePlanningBrief.model_validate(payload)
+
+
+def test_extend_sparse_window_does_not_treat_14_16_17_as_consecutive() -> None:
+    attempts = 0
+    prompts: list[dict] = []
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        prompt = json.loads(payload["messages"][1]["content"])
+        prompts.append(prompt)
+        plan = _valid_plan()
+        template = plan["outline"]["chapters"][0]
+        plan["outline"]["chapters"] = [
+            {
+                **template,
+                "chapter_number": number,
+                "title": (
+                    f"稀疏问题{number}？"
+                    if number in {14, 16, 17}
+                    else f"祖祠线索{number}"
+                ),
+                "trope_beat": None,
+            }
+            for number in prompt["target_chapter_numbers"]
+        ]
+        return {
+            "choices": [
+                {"message": {"content": json.dumps(plan, ensure_ascii=False)}}
+            ]
+        }
+
+    fixture = RecordingRuntime()
+    plan = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=fixture.resolve,
+    ).generate(
+        _sparse_extend_brief(fixture, chapter_15_title="第十五章落定"),
+        mode="extend",
+    )
+
+    assert attempts == 1
+    assert [chapter.chapter_number for chapter in plan.outline.chapters[:3]] == [
+        14,
+        16,
+        17,
+    ]
+    assert prompts[0]["existing_window_chapter_titles"] == [
+        {"chapter_number": 15, "title": "第十五章落定"}
+    ]
+
+
+def test_extend_sparse_window_uses_existing_15_to_repair_14_15_16() -> None:
+    attempts = 0
+    prompts: list[dict] = []
+    retry_messages: list[str] = []
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        prompt = json.loads(payload["messages"][1]["content"])
+        prompts.append(prompt)
+        retry_messages.extend(
+            message["content"]
+            for message in payload["messages"][2:]
+            if message.get("role") == "system"
+        )
+        plan = _valid_plan()
+        template = plan["outline"]["chapters"][0]
+        plan["outline"]["chapters"] = [
+            {
+                **template,
+                "chapter_number": number,
+                "title": (
+                    f"连续问题{number}？"
+                    if number == 14 or (number == 16 and attempts == 1)
+                    else f"祖祠线索{number}"
+                ),
+                "trope_beat": None,
+            }
+            for number in prompt["target_chapter_numbers"]
+        ]
+        return {
+            "choices": [
+                {"message": {"content": json.dumps(plan, ensure_ascii=False)}}
+            ]
+        }
+
+    fixture = RecordingRuntime()
+    LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=fixture.resolve,
+    ).generate(
+        _sparse_extend_brief(fixture, chapter_15_title="第十五章发生了什么？"),
+        mode="extend",
+    )
+
+    assert attempts == 2
+    assert prompts[0]["existing_window_chapter_titles"] == [
+        {"chapter_number": 15, "title": "第十五章发生了什么？"}
+    ]
+    assert any(
+        "repeated_chapter_title_shape:question:14-16" in message
+        for message in retry_messages
+    )
+
+
 @pytest.mark.parametrize(
     ("skill_ids", "module_ids"),
     [
@@ -1444,6 +1568,7 @@ def test_generator_requests_one_compact_structured_plan() -> None:
         "historical_chapter_summaries",
         "chapter_title_strategy",
         "previous_chapter_titles",
+        "existing_window_chapter_titles",
         "one_time_guidance",
         "output_schema",
         "validation_rules",
@@ -1455,6 +1580,7 @@ def test_generator_requests_one_compact_structured_plan() -> None:
     assert prompt["one_time_guidance"] == "反派要有现实利益"
     assert "必须对应本章真实发生的事件" in prompt["chapter_title_strategy"]
     assert prompt["previous_chapter_titles"] == []
+    assert prompt["existing_window_chapter_titles"] == []
     assert prompt["opening_direction"]["primary_trope_id"] == "low_status_reversal"
     assert prompt["genre_trope_templates"]
     assert prompt["genre_power_system_template"]["system_form"]
@@ -1840,12 +1966,21 @@ def test_codexcli_passes_only_two_sorted_preceding_titles_to_window_validator(
     validator_calls: list[dict] = []
     chapter_context: dict = {}
 
-    def capture_title_window(chapters, *, genre_id, previous_chapters=()):
+    def capture_title_window(
+        chapters,
+        *,
+        genre_id,
+        previous_chapters=(),
+        known_chapters=(),
+        generated_chapter_numbers=None,
+    ):
         validator_calls.append(
             {
                 "chapters": chapters,
                 "genre_id": genre_id,
                 "previous_chapters": previous_chapters,
+                "known_chapters": known_chapters,
+                "generated_chapter_numbers": generated_chapter_numbers,
             }
         )
 
@@ -1895,6 +2030,9 @@ def test_codexcli_passes_only_two_sorted_preceding_titles_to_window_validator(
     ]
     assert chapter_context["previous_chapter_titles"] == validator_calls[0][
         "previous_chapters"
+    ]
+    assert validator_calls[0]["generated_chapter_numbers"] == chapter_context[
+        "target_chapter_numbers"
     ]
     assert validator_calls[0]["chapters"][0]["chapter_number"] == 11
 

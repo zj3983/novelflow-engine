@@ -39,6 +39,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from packages.story_core.title_strategy import (
     build_chapter_title_guidance,
+    select_adjacent_chapter_titles,
+    select_chapter_titles,
     select_previous_chapter_titles,
     validate_chapter_title_window,
 )
@@ -479,6 +481,7 @@ def rolling_batch_from_generated_window(
     character_cards: list[dict[str, Any]],
     volume_range: tuple[int, int],
     require_shuangwen_contracts: bool = False,
+    expected_chapter_numbers: list[int] | None = None,
 ) -> list[dict[str, Any]]:
     """Project a planner-stage window into rolling-schema rows.
 
@@ -499,13 +502,21 @@ def rolling_batch_from_generated_window(
 
     if not chapters:
         raise ValueError("rolling_conversion_empty_batch")
+    if expected_chapter_numbers is not None and len(expected_chapter_numbers) != len(
+        chapters
+    ):
+        raise ValueError("rolling_conversion_expected_numbers_mismatch")
     real_cast = _real_cast_names(character_cards)
     start, end = volume_range
     rows: list[dict[str, Any]] = []
     failures: list[str] = []
     for index, payload in enumerate(chapters):
-        expected_number = start + index
-        if expected_number > end:
+        expected_number = (
+            expected_chapter_numbers[index]
+            if expected_chapter_numbers is not None
+            else start + index
+        )
+        if expected_number < start or expected_number > end:
             failures.append(
                 f"rolling_conversion_volume_exceeded:expected={expected_number} end={end}"
             )
@@ -667,8 +678,25 @@ class LLMRollingWindowGenerator:
             raw_previous_chapters if isinstance(raw_previous_chapters, list) else [],
             target_start=chapter_numbers[0],
         )
+        raw_existing_window_chapters = context.get(
+            "existing_window_chapter_titles", []
+        )
+        existing_window_chapters = select_chapter_titles(
+            (
+                raw_existing_window_chapters
+                if isinstance(raw_existing_window_chapters, list)
+                else []
+            ),
+            start_chapter=min(chapter_numbers),
+            end_chapter=max(chapter_numbers),
+        )
+        adjacent_existing_chapters = select_adjacent_chapter_titles(
+            existing_window_chapters,
+            generated_chapter_numbers=chapter_numbers,
+        )
         request_context = dict(context)
         request_context.pop("previous_chapter_titles", None)
+        request_context.pop("existing_window_chapter_titles", None)
         chapter_skill_context = skill_pack_prompt_context(
             list(enabled_skill_ids or []),
             enabled_module_ids=enabled_skill_module_ids,
@@ -686,6 +714,7 @@ class LLMRollingWindowGenerator:
             "character_cards": list(character_cards),
             "chapter_title_strategy": build_chapter_title_guidance(genre_id),
             "previous_chapter_titles": previous_chapters,
+            "existing_window_chapter_titles": adjacent_existing_chapters,
             "output_schema": chapter_output_schema(
                 GeneratedChapterWindow,
                 require_chapter_contracts=require_shuangwen_contracts,
@@ -752,12 +781,15 @@ class LLMRollingWindowGenerator:
                 generated_chapters,
                 genre_id=genre_id,
                 previous_chapters=previous_chapters,
+                known_chapters=existing_window_chapters,
+                generated_chapter_numbers=chapter_numbers,
             )
             batch = rolling_batch_from_generated_window(
                 chapters=generated_chapters,
                 character_cards=list(character_cards),
                 volume_range=tuple(volume_range),
                 require_shuangwen_contracts=require_shuangwen_contracts,
+                expected_chapter_numbers=list(chapter_numbers),
             )
             return validate_rolling_batch(
                 batch,
@@ -1352,6 +1384,11 @@ class ContinuationOutlineBootstrapper:
         context["previous_chapter_titles"] = select_previous_chapter_titles(
             title_history,
             target_start=missing[0],
+        )
+        context["existing_window_chapter_titles"] = select_chapter_titles(
+            title_history,
+            start_chapter=min(missing),
+            end_chapter=max(missing),
         )
         character_cards = self._rolling_character_cards()
         require_shuangwen_contracts = self._require_shuangwen_contracts()
