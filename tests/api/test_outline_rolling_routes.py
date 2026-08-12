@@ -160,6 +160,19 @@ def test_get_rolling_outline_returns_saved_chapter_details(rolling_api) -> None:
     assert payload["chapters"][0]["chapter_goal"] == "林修追查香炉裂纹的来源"
 
 
+def test_get_rolling_outline_returns_empty_window_before_first_fill(rolling_api) -> None:
+    client, export_root = rolling_api
+    project_id = _seed_minimal_file_project(export_root)
+
+    response = client.get(f"/file-projects/{project_id}/outline/rolling")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "schema_version": "rolling-outline/v1",
+        "chapters": [],
+    }
+
+
 def test_start_body_generation_rejects_before_creating_job_when_outline_missing(rolling_api) -> None:
     client, export_root = rolling_api
     project_id = _seed_minimal_file_project(export_root)

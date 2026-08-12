@@ -2855,6 +2855,7 @@ test("file project outline edits three levels and runs outline generation", asyn
   });
 
   await page.goto("/projects/file%3Aoutline-fixture/outline");
+  await expect(page.locator(".ws-outline-generation-progress .ws-outline-generation-steps article")).toHaveCount(3);
   await page.getByRole("tab", { name: "总纲", exact: true }).click();
   await expect(page.getByRole("heading", { name: "故事定位" })).toBeVisible();
   await expect(page.getByLabel("核心故事")).toHaveValue(storyCore.logline);

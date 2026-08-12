@@ -335,6 +335,18 @@ export default function OutlinePage() {
   }, [projectId]);
 
   useEffect(() => {
+    let cancelled = false;
+    fetchOutlineGenerationCheckpoints(projectId)
+      .then((response) => {
+        if (!cancelled) setGenerationCheckpoints(response);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
+  useEffect(() => {
     if (!generating) return;
     let cancelled = false;
     const refreshCheckpoints = () => {

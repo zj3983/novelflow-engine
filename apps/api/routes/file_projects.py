@@ -1978,7 +1978,10 @@ def init_file_project_routes() -> APIRouter:
         from packages.story_core.outline_rolling_store import RollingOutlineStore
 
         store = _store_for(project_id)
-        return RollingOutlineStore(store.root).read_rolling_outline()
+        return RollingOutlineStore(store.root).read_rolling_outline() or {
+            "schema_version": "rolling-outline/v1",
+            "chapters": [],
+        }
 
     @router.put("/file-projects/{project_id}/outline/rolling-chapter/{chapter_number}")
     def update_file_project_rolling_chapter(
