@@ -371,6 +371,7 @@ def test_generator_prompt_contains_only_brief_genre_and_empty_guidance():
         "genre_power_system_template",
         "genre_outline_template",
         "genre_opening_core_reference",
+        "title_strategy",
         "working_title",
         "idea",
         "regeneration_guidance",
@@ -380,6 +381,7 @@ def test_generator_prompt_contains_only_brief_genre_and_empty_guidance():
     assert prompt_context["regeneration_guidance"] == ""
     assert prompt_context["genre_trope_templates"]
     assert prompt_context["genre_opening_core_reference"] == {}
+    assert prompt_context["title_strategy"]["purpose"] == "book_title_candidates"
     assert prompt_context["genre_power_system_template"]["system_form"]
     assert prompt_context["genre_power_system_template"]["required_sections"]
     assert prompt_context["genre_power_system_template"]["minimum_path_count"] >= 1
@@ -392,10 +394,96 @@ def test_generator_prompt_contains_only_brief_genre_and_empty_guidance():
     assert "从给定候选中" in system_prompt
     assert "失败后果" in system_prompt
     assert "候选为空时才返回 null" in system_prompt
+    assert "每个 direction.title 都必须是可直接使用的书名候选" in system_prompt
+    assert "三个候选不能仅替换一个名词" in system_prompt
+    assert "不得照抄示例" in system_prompt
     entire_prompt = json.dumps(captured["payload"]["messages"], ensure_ascii=False)
     assert "SECRET_CHARACTER_CARD" not in entire_prompt
     assert "SECRET_HISTORY_CHAPTER" not in entire_prompt
     assert "SECRET_SKILL" not in entire_prompt
+
+
+@pytest.mark.parametrize(
+    ("novel_type_id", "included_terms", "excluded_terms", "has_examples"),
+    [
+        ("game_webnovel", ("全服", "Boss"), ("宗门", "功法"), True),
+        ("xuanhuan", ("宗门", "功法"), ("全服", "Boss"), False),
+    ],
+)
+def test_generator_adds_genre_specific_book_title_strategy_to_prompt_context(
+    novel_type_id,
+    included_terms,
+    excluded_terms,
+    has_examples,
+    monkeypatch,
+):
+    calls = []
+
+    class Gateway:
+        def complete_stage(self, stage, request):
+            calls.append((stage, request))
+            payload = {
+                "directions": [
+                    direction("direction-1", primary_trope_id=None),
+                    direction("direction-2", primary_trope_id=None),
+                    direction("direction-3", primary_trope_id=None),
+                ]
+            }
+            return ModelResponse.success(request, text=json.dumps(payload))
+
+    generator = LLMOpeningDirectionGenerator(model_gateway=Gateway())
+    original_prompt_context = opening_directions_module.novel_type_prompt_context
+    monkeypatch.setattr(
+        opening_directions_module,
+        "novel_type_prompt_context",
+        lambda record: {
+            **original_prompt_context(record),
+            "genre_trope_templates": [],
+        },
+    )
+    generator.generate(OpeningBrief(novel_type_id=novel_type_id, idea="An idea"))
+
+    assert calls[0][0] == "planner"
+    assert calls[0][1].operation == "opening_directions"
+    prompt_context = json.loads(calls[0][1].prompt)
+    title_strategy = prompt_context["title_strategy"]
+    assert title_strategy["purpose"] == "book_title_candidates"
+    assert all(term in title_strategy["guidance"] for term in included_terms)
+    assert all(term not in title_strategy["guidance"] for term in excluded_terms)
+    assert ("结构示例" in title_strategy["guidance"]) is has_examples
+
+
+def test_generator_passes_runtime_novel_type_keywords_to_book_title_strategy(monkeypatch):
+    calls = []
+    genre = SimpleNamespace(id="xuanhuan", keywords=("剑骨", "天命炉"))
+    monkeypatch.setattr(opening_directions_module, "runtime_novel_type", lambda _: genre)
+    monkeypatch.setattr(
+        opening_directions_module,
+        "novel_type_prompt_context",
+        lambda _: {"genre_trope_templates": []},
+    )
+    monkeypatch.setattr(opening_directions_module, "opening_core_reference", lambda _: {})
+
+    class Gateway:
+        def complete_stage(self, stage, request):
+            calls.append((stage, request))
+            payload = {
+                "directions": [
+                    direction("direction-1", primary_trope_id=None),
+                    direction("direction-2", primary_trope_id=None),
+                    direction("direction-3", primary_trope_id=None),
+                ]
+            }
+            return ModelResponse.success(request, text=json.dumps(payload))
+
+    LLMOpeningDirectionGenerator(model_gateway=Gateway()).generate(
+        OpeningBrief(novel_type_id="xuanhuan", idea="An idea")
+    )
+
+    prompt_context = json.loads(calls[0][1].prompt)
+    guidance = prompt_context["title_strategy"]["guidance"]
+    assert "剑骨" in guidance
+    assert "天命炉" in guidance
 
 
 def test_generator_uses_planner_gateway_model_request():

@@ -16,6 +16,7 @@ from packages.story_core.runtime_config import (
     resolve_stage_runtime,
 )
 from packages.story_core.story_core_card import CentralMystery, CoreAdvantage, InitialDrive
+from packages.story_core.title_strategy import build_book_title_guidance
 
 
 def _runtime_gateway_for_legacy_injection(
@@ -247,6 +248,13 @@ class LLMOpeningDirectionGenerator:
             prompt_context = {
                 **novel_type_prompt_context(genre),
                 "genre_opening_core_reference": opening_core_reference(genre.id),
+                "title_strategy": {
+                    "purpose": "book_title_candidates",
+                    "guidance": build_book_title_guidance(
+                        genre.id,
+                        extra_terms=getattr(genre, "keywords", ()),
+                    ),
+                },
                 "working_title": validated_brief.working_title,
                 "idea": validated_brief.idea,
                 "regeneration_guidance": normalized_guidance,
@@ -263,6 +271,9 @@ class LLMOpeningDirectionGenerator:
                 "central_mystery 必须填写 surface_anomaly、hidden_truth、reality_impact、reveal_path；"
                 "initial_drive 必须填写 immediate_need、trigger、short_term_goal、failure_stakes、long_term_transition。"
                 "题材参考只用于启发，不能照抄成所有项目的固定设定。"
+                "每个 direction.title 都必须是可直接使用的书名候选。"
+                "三个候选不能仅替换一个名词，必须体现不同的卖点组合或表达结构。"
+                "不得照抄示例，只能参考 title_strategy 中示例的结构。"
                 "从给定候选中为每项选择一个 primary_trope_id；候选为空时才返回 null。"
             )
             response = self._model_gateway.complete_stage(
