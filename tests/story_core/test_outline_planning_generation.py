@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import packages.story_core.outline_planning_generation as outline_generation_module
+import packages.story_core.title_strategy as title_strategy_module
 from packages.story_core.model_gateway import ModelResponse
 from packages.story_core.outline_planning import (
     INITIAL_OUTLINE_CHAPTER_COUNT,
@@ -1240,6 +1241,138 @@ def test_split_chapter_prompt_has_genre_specific_title_strategy(
 
 
 @pytest.mark.parametrize(
+    ("chapters", "target_start", "expected"),
+    [
+        (
+            [
+                {"chapter_number": 8, "title": "第八章？"},
+                {"chapter_number": 10, "title": "第十章旧标题"},
+                {"chapter_number": 10, "title": ""},
+                {"chapter_number": 10, "title": "第十章最后标题"},
+                {"chapter_number": 11, "title": "将被替换"},
+            ],
+            11,
+            [{"chapter_number": 10, "title": "第十章最后标题"}],
+        ),
+        (
+            [
+                {"chapter_number": 10, "title": "第十章"},
+                {"chapter_number": 9, "title": "第九章旧标题"},
+                {"chapter_number": 9, "title": "第九章最后标题"},
+            ],
+            11,
+            [
+                {"chapter_number": 9, "title": "第九章最后标题"},
+                {"chapter_number": 10, "title": "第十章"},
+            ],
+        ),
+    ],
+)
+def test_previous_chapter_titles_are_deduplicated_and_contiguous(
+    chapters: list[dict],
+    target_start: int,
+    expected: list[dict],
+) -> None:
+    assert title_strategy_module.select_previous_chapter_titles(
+        chapters,
+        target_start=target_start,
+    ) == expected
+
+
+@pytest.mark.parametrize("mode", ["initial", "extend"])
+@pytest.mark.parametrize("persistent_failure", [False, True])
+def test_direct_outline_paths_retry_title_validation_once(
+    mode: str,
+    persistent_failure: bool,
+) -> None:
+    attempts = 0
+    prompts: list[dict] = []
+    system_prompts: list[str] = []
+    retry_system_messages: list[str] = []
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        prompt = json.loads(payload["messages"][1]["content"])
+        prompts.append(prompt)
+        system_prompts.append(payload["messages"][0]["content"])
+        retry_system_messages.extend(
+            message["content"]
+            for message in payload["messages"][2:]
+            if message.get("role") == "system"
+        )
+        plan = _valid_plan()
+        template = plan["outline"]["chapters"][0]
+        plan["outline"]["chapters"] = [
+            {
+                **template,
+                "chapter_number": number,
+                "title": (
+                    f"第{number}个问题？"
+                    if attempts == 1 or persistent_failure
+                    else f"祖祠线索{number}"
+                ),
+                "trope_beat": template["trope_beat"] if number == 1 else None,
+            }
+            for number in prompt["target_chapter_numbers"]
+        ]
+        return {
+            "choices": [
+                {"message": {"content": json.dumps(plan, ensure_ascii=False)}}
+            ]
+        }
+
+    fixture = RecordingRuntime()
+    brief = (
+        _brief()
+        if mode == "initial"
+        else fixture.brief(current_chapter=10, existing_chapters=list(range(1, 11)))
+    )
+    if mode == "extend":
+        payload = brief.model_dump(mode="json")
+        for chapter in payload["existing_outline"]["chapters"]:
+            chapter["title"] = f"历史标题{chapter['chapter_number']}"
+        brief = OutlinePlanningBrief.model_validate(payload)
+
+    generator = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=fixture.resolve,
+    )
+
+    if persistent_failure:
+        with pytest.raises(
+            ValueError, match="^outline_planning_generation_failed$"
+        ) as exc_info:
+            generator.generate(brief, mode=mode)
+        assert isinstance(exc_info.value.__cause__, ValueError)
+        assert "repeated_chapter_title_shape:question" in str(
+            exc_info.value.__cause__
+        )
+    else:
+        plan = generator.generate(brief, mode=mode)
+        assert plan.outline.chapters[0].title.startswith("祖祠线索")
+
+    assert attempts == 2
+    assert "必须对应本章真实发生的事件" in prompts[0][
+        "chapter_title_strategy"
+    ]
+    expected_previous = (
+        []
+        if mode == "initial"
+        else [
+            {"chapter_number": 9, "title": "历史标题9"},
+            {"chapter_number": 10, "title": "历史标题10"},
+        ]
+    )
+    assert prompts[0]["previous_chapter_titles"] == expected_previous
+    assert any(
+        "repeated_chapter_title_shape:question" in message
+        for message in retry_system_messages
+    )
+    assert "follow prompt_context.chapter_title_strategy" in system_prompts[0]
+
+
+@pytest.mark.parametrize(
     ("skill_ids", "module_ids"),
     [
         pytest.param([], [], id="disabled-project"),
@@ -1309,6 +1442,8 @@ def test_generator_requests_one_compact_structured_plan() -> None:
         "recent_chapter_summaries",
         "continuation_start_chapter",
         "historical_chapter_summaries",
+        "chapter_title_strategy",
+        "previous_chapter_titles",
         "one_time_guidance",
         "output_schema",
         "validation_rules",
@@ -1318,6 +1453,8 @@ def test_generator_requests_one_compact_structured_plan() -> None:
     assert prompt["overall_context"]["positioning"]["failure_stakes"]
     assert "写长篇最怕" not in request["payload"]["messages"][1]["content"]
     assert prompt["one_time_guidance"] == "反派要有现实利益"
+    assert "必须对应本章真实发生的事件" in prompt["chapter_title_strategy"]
+    assert prompt["previous_chapter_titles"] == []
     assert prompt["opening_direction"]["primary_trope_id"] == "low_status_reversal"
     assert prompt["genre_trope_templates"]
     assert prompt["genre_power_system_template"]["system_form"]
@@ -1701,6 +1838,7 @@ def test_codexcli_passes_only_two_sorted_preceding_titles_to_window_validator(
     monkeypatch,
 ) -> None:
     validator_calls: list[dict] = []
+    chapter_context: dict = {}
 
     def capture_title_window(chapters, *, genre_id, previous_chapters=()):
         validator_calls.append(
@@ -1720,6 +1858,8 @@ def test_codexcli_passes_only_two_sorted_preceding_titles_to_window_validator(
 
     def fake_post(base_url, path, payload, api_key, **kwargs):
         prompt = json.loads(payload["messages"][1]["content"])
+        if prompt["generation_phase"] == "chapters":
+            chapter_context.update(prompt)
         content = _codex_phase_content(prompt)
         return {
             "choices": [
@@ -1752,6 +1892,9 @@ def test_codexcli_passes_only_two_sorted_preceding_titles_to_window_validator(
     assert validator_calls[0]["previous_chapters"] == [
         {"chapter_number": 9, "title": "旧标题9"},
         {"chapter_number": 10, "title": "旧标题10"},
+    ]
+    assert chapter_context["previous_chapter_titles"] == validator_calls[0][
+        "previous_chapters"
     ]
     assert validator_calls[0]["chapters"][0]["chapter_number"] == 11
 

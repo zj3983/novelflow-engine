@@ -613,6 +613,12 @@ def test_llm_rolling_window_generator_makes_one_planner_call() -> None:
     assert len(captured) == 1
     assert captured[0]["stage"] == "planner"
     serialized_request = json.dumps(captured[0]["messages"], ensure_ascii=False)
+    request_context = json.loads(captured[0]["messages"][1]["content"])
+    assert "必须对应本章真实发生的事件" in request_context[
+        "chapter_title_strategy"
+    ]
+    assert request_context["previous_chapter_titles"] == []
+    assert "chapter_title_strategy" in captured[0]["messages"][0]["content"]
     assert "payoff_contract" not in serialized_request
     assert "chapter_sop" not in serialized_request
     assert all("payoff_contract" not in row for row in rows)
@@ -620,6 +626,75 @@ def test_llm_rolling_window_generator_makes_one_planner_call() -> None:
     # The generator never touches the filesystem; it just
     # produces the rolling rows.
     assert all(isinstance(row["scenes"], list) and len(row["scenes"]) >= 2 for row in rows)
+
+
+@pytest.mark.parametrize("persistent_failure", [False, True])
+def test_llm_rolling_window_generator_retries_title_validation_once(
+    persistent_failure: bool,
+) -> None:
+    from packages.story_core.continuation_outline_bootstrap import (
+        LLMRollingWindowGenerator,
+    )
+    from packages.story_core.model_gateway import ModelResponse
+
+    captured = []
+
+    class _FakeGateway:
+        def complete_stage(self, stage: str, request):  # type: ignore[no-untyped-def]
+            captured.append(request)
+            chapter = {
+                **detailed_chapter(148),
+                "cast": ["林修"],
+                "title": (
+                    "第三个问题？"
+                    if len(captured) == 1 or persistent_failure
+                    else "旧炉显出裂纹"
+                ),
+            }
+            return ModelResponse.success(
+                request,
+                text=json.dumps({"chapters": [chapter]}, ensure_ascii=False),
+            )
+
+    generator = LLMRollingWindowGenerator(gateway=_FakeGateway())
+    kwargs = {
+        "context": {
+            "current_arc": "续写主线",
+            "previous_chapter_titles": [
+                {"chapter_number": 146, "title": "炉火为何熄灭？"},
+                {"chapter_number": 147, "title": "谁换了镜芯？"},
+            ],
+        },
+        "chapter_numbers": [148],
+        "volume_range": (148, 160),
+        "character_cards": [character_card("林修", "protagonist")],
+        "require_shuangwen_contracts": False,
+        "genre_id": "xuanhuan",
+    }
+
+    if persistent_failure:
+        with pytest.raises(ValueError, match="rolling_window_generation_failed"):
+            generator.generate(**kwargs)
+    else:
+        rows = generator.generate(**kwargs)
+        assert rows[0]["title"] == "旧炉显出裂纹"
+
+    assert len(captured) == 2
+    first_context = json.loads(captured[0].messages[1]["content"])
+    assert first_context["previous_chapter_titles"] == [
+        {"chapter_number": 146, "title": "炉火为何熄灭？"},
+        {"chapter_number": 147, "title": "谁换了镜芯？"},
+    ]
+    assert "宗门" in first_context["chapter_title_strategy"]
+    retry_messages = [
+        message["content"]
+        for message in captured[1].messages[2:]
+        if message.get("role") == "system"
+    ]
+    assert any(
+        "repeated_chapter_title_shape:question:146-148" in message
+        for message in retry_messages
+    )
 
 
 def test_llm_rolling_window_generator_requires_enabled_contracts() -> None:
@@ -985,6 +1060,10 @@ def test_bootstrapper_full_run_reaches_ready(tmp_path: Path) -> None:
     assert result.ready
     assert result.errors == []
     assert len(rolling_calls) == 1
+    assert rolling_calls[0]["context"]["previous_chapter_titles"] == [
+        {"chapter_number": 146, "title": "上一章"},
+        {"chapter_number": 147, "title": "已写章节"},
+    ]
 
     # Rolling outline was written for chapters 148..152.
     from packages.story_core.outline_rolling_store import RollingOutlineStore

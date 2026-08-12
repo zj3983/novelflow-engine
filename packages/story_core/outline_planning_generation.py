@@ -32,6 +32,7 @@ from packages.story_core.runtime_config import (
 from packages.story_core.skill_packs import skill_pack_prompt_context
 from packages.story_core.title_strategy import (
     build_chapter_title_guidance,
+    select_previous_chapter_titles,
     validate_chapter_title_window,
 )
 from packages.story_core.project_outline import (
@@ -729,6 +730,17 @@ class LLMOutlinePlanningGenerator:
                     and not isinstance(chapter.get("chapter_number"), bool)
                     and int(chapter["chapter_number"]) <= boundary
                 ]
+            previous_chapters = select_previous_chapter_titles(
+                [
+                    chapter
+                    for chapter in validated.existing_outline.get("chapters", [])
+                    if isinstance(chapter, dict)
+                ],
+                target_start=min(target_chapter_numbers),
+            )
+            chapter_title_strategy = build_chapter_title_guidance(
+                effective_novel_type_id
+            )
             prompt_context = {
                 "mode": mode,
                 **genre_context,
@@ -745,6 +757,8 @@ class LLMOutlinePlanningGenerator:
                 "historical_chapter_summaries": _compact_historical_chapter_summaries(
                     validated.historical_chapter_summaries
                 ),
+                "chapter_title_strategy": chapter_title_strategy,
+                "previous_chapter_titles": previous_chapters,
                 "target_chapter_numbers": target_chapter_numbers,
                 "current_strategy": validated.existing_outline.get("overall", {}).get(
                     "current_strategy", "observe"
@@ -819,6 +833,7 @@ class LLMOutlinePlanningGenerator:
                             "Follow prompt_context.output_schema exactly. Do not add fields, rename fields, "
                             "or use values outside the declared enums. Return every required field. "
                             "chapter_number values must exactly equal prompt_context.target_chapter_numbers in order. "
+                            "Generate chapter.title from the concrete events in that chapter and follow prompt_context.chapter_title_strategy. "
                             "For initial/regenerate, provide the complete core arcs through core_ending_chapter, but only those detailed chapters. "
                             "For extend, continue from committed facts and the active arc; obey current_strategy. "
                             "For extend, characters must contain only newly introduced character cards, while chapter cast may also use names from prompt_context.existing_character_names. "
@@ -964,6 +979,8 @@ class LLMOutlinePlanningGenerator:
                         if rule != CHAPTER_CONTRACT_RULE
                     ],
                 }
+                outline_context.pop("chapter_title_strategy", None)
+                outline_context.pop("previous_chapter_titles", None)
                 if outline_skill_context:
                     outline_context["skill_context"] = {
                         "outline": outline_skill_context
@@ -1092,21 +1109,6 @@ class LLMOutlinePlanningGenerator:
                         for seed in character_roster.characters
                     ],
                 }
-                target_start_chapter = min(target_chapter_numbers)
-                previous_chapters = sorted(
-                    [
-                        {
-                            "chapter_number": chapter["chapter_number"],
-                            "title": str(chapter.get("title") or ""),
-                        }
-                        for chapter in validated.existing_outline.get("chapters", [])
-                        if isinstance(chapter, dict)
-                        and isinstance(chapter.get("chapter_number"), int)
-                        and not isinstance(chapter.get("chapter_number"), bool)
-                        and chapter["chapter_number"] < target_start_chapter
-                    ],
-                    key=lambda chapter: chapter["chapter_number"],
-                )[-2:]
 
                 chapter_context = {
                     "generation_phase": "chapters",
@@ -1121,9 +1123,8 @@ class LLMOutlinePlanningGenerator:
                     ],
                     "genre_trope_templates": trope_candidates,
                     "chapter_outline_template": outline_template.get("chapter", {}),
-                    "chapter_title_strategy": build_chapter_title_guidance(
-                        effective_novel_type_id
-                    ),
+                    "chapter_title_strategy": chapter_title_strategy,
+                    "previous_chapter_titles": previous_chapters,
                     "target_chapter_numbers": target_chapter_numbers,
                     "output_schema": chapter_output_schema(
                         GeneratedChapterWindow,
@@ -1212,14 +1213,51 @@ class LLMOutlinePlanningGenerator:
                 parsed = foundation_data
                 split_plan_completed = True
             else:
-                response = _complete_payload(
-                    self._model_gateway,
-                    payload,
-                    operation="outline_planning",
-                )
-                parsed = parse_json_message_content(response)
-                if parsed is None:
-                    raise ValueError("invalid_json")
+                def parse_direct_outline(response: dict[str, Any]) -> dict[str, Any]:
+                    candidate = parse_json_message_content(response)
+                    if candidate is None:
+                        raise ValueError("invalid_json")
+                    candidate_plan = GeneratedOutlinePlan.model_validate(candidate)
+                    validate_chapter_title_window(
+                        [
+                            chapter.model_dump(mode="python")
+                            for chapter in candidate_plan.outline.chapters
+                        ],
+                        genre_id=effective_novel_type_id,
+                        previous_chapters=previous_chapters,
+                    )
+                    return candidate
+
+                try:
+                    response = _complete_payload(
+                        self._model_gateway,
+                        payload,
+                        operation="outline_planning",
+                    )
+                    parsed = parse_direct_outline(response)
+                except Exception as exc:
+                    validation_error = re.sub(r"\s+", " ", str(exc)).strip()[:1000]
+                    retry_payload = {
+                        **payload,
+                        "messages": [
+                            *payload.get("messages", []),
+                            {
+                                "role": "system",
+                                "content": (
+                                    "The previous JSON failed schema or chapter-title validation. "
+                                    "Correct only the reported problems, then return the complete JSON object "
+                                    "again without markdown or commentary. Validation error: "
+                                    f"{validation_error}"
+                                ),
+                            },
+                        ],
+                    }
+                    response = _complete_payload(
+                        self._model_gateway,
+                        retry_payload,
+                        operation="outline_planning_retry",
+                    )
+                    parsed = parse_direct_outline(response)
             if not chapter_contracts_enabled:
                 _drop_disabled_chapter_contracts(parsed)
             parsed = sanitize_generated_outline_amounts(parsed)

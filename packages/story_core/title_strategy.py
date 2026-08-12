@@ -78,6 +78,42 @@ def build_chapter_title_guidance(
     )
 
 
+def select_previous_chapter_titles(
+    chapters: Sequence[Mapping[str, Any]],
+    *,
+    target_start: int,
+) -> list[dict[str, Any]]:
+    titles_by_number: dict[int, str] = {}
+    eligible_numbers = {target_start - 2, target_start - 1}
+    for chapter in chapters:
+        number = chapter.get("chapter_number")
+        if (
+            not isinstance(number, int)
+            or isinstance(number, bool)
+            or number not in eligible_numbers
+        ):
+            continue
+        title = str(
+            chapter.get("title") or chapter.get("chapter_title") or ""
+        ).strip()
+        if title:
+            titles_by_number[number] = title
+
+    latest_number = target_start - 1
+    latest_title = titles_by_number.get(latest_number)
+    if not latest_title:
+        return []
+    selected = [{"chapter_number": latest_number, "title": latest_title}]
+    earlier_number = target_start - 2
+    earlier_title = titles_by_number.get(earlier_number)
+    if earlier_title:
+        selected.insert(
+            0,
+            {"chapter_number": earlier_number, "title": earlier_title},
+        )
+    return selected
+
+
 def _title_shape(title: str) -> str:
     text = re.sub(
         r"^第\s*[一二三四五六七八九十百千万\d]+\s*章[：:\s]*",

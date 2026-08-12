@@ -28,13 +28,20 @@ This module owns the contracts that drive that flow:
 
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import datetime, timezone
 import hashlib
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from packages.story_core.title_strategy import (
+    build_chapter_title_guidance,
+    select_previous_chapter_titles,
+    validate_chapter_title_window,
+)
 
 
 BootstrapPhaseId = Literal[
@@ -655,6 +662,13 @@ class LLMRollingWindowGenerator:
 
         if not chapter_numbers:
             raise ValueError("rolling_window_no_chapter_numbers")
+        raw_previous_chapters = context.get("previous_chapter_titles", [])
+        previous_chapters = select_previous_chapter_titles(
+            raw_previous_chapters if isinstance(raw_previous_chapters, list) else [],
+            target_start=chapter_numbers[0],
+        )
+        request_context = dict(context)
+        request_context.pop("previous_chapter_titles", None)
         chapter_skill_context = skill_pack_prompt_context(
             list(enabled_skill_ids or []),
             enabled_module_ids=enabled_skill_module_ids,
@@ -666,10 +680,12 @@ class LLMRollingWindowGenerator:
             max_serialized_chars=2600,
         )
         request_payload = {
-            "context": context,
+            "context": request_context,
             "chapter_numbers": list(chapter_numbers),
             "volume_range": list(volume_range),
             "character_cards": list(character_cards),
+            "chapter_title_strategy": build_chapter_title_guidance(genre_id),
+            "previous_chapter_titles": previous_chapters,
             "output_schema": chapter_output_schema(
                 GeneratedChapterWindow,
                 require_chapter_contracts=require_shuangwen_contracts,
@@ -685,63 +701,100 @@ class LLMRollingWindowGenerator:
             if chapter_skill_context
             else ""
         )
-        response = self._gateway.complete_stage(
-            "planner",
-            self._ModelRequest(
-                prompt="",
+        request = self._ModelRequest(
+            prompt="",
+            messages=(
+                {
+                    "role": "system",
+                    "content": (
+                        "为中文长篇小说生成滚动章节细纲，只返回JSON。"
+                        "根字段只能是chapters，章节数量、顺序和chapter_number必须与"
+                        "chapter_numbers完全一致。严格遵守output_schema。"
+                        "scene_chain必须包含2至4个对象，不能写成字符串；每个对象填写"
+                        "location、pov、goal、obstacle、action、change、next和state_delta。"
+                        "cast只能使用character_cards中已有的人名。"
+                        "chapter.title必须来自本章具体事件，并执行request.chapter_title_strategy。"
+                        f"{CHAPTER_CONTRACT_RULE if require_shuangwen_contracts else ''}"
+                        f"{skill_instruction}"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(request_payload, ensure_ascii=False),
+                },
+            ),
+            provider="",
+            model="",
+            operation="rolling_window",
+            temperature=None,
+            max_tokens=None,
+            json_mode=True,
+        )
+
+        def parse_and_validate(response: Any) -> list[dict[str, Any]]:
+            if not response.ok:
+                raise ValueError(response.error or "rolling_window_model_call_failed")
+            data = parse_json_message_content(
+                {"choices": [{"message": {"content": response.text}}]}
+            )
+            if data is None:
+                raise ValueError("rolling_window_invalid_json")
+            data = _normalize_rolling_window_payload(
+                data,
+                chapter_numbers=list(chapter_numbers),
+                character_cards=list(character_cards),
+            )
+            window = GeneratedChapterWindow.model_validate(data)
+            generated_chapters = [
+                row.model_dump(mode="python") for row in window.chapters
+            ]
+            validate_chapter_title_window(
+                generated_chapters,
+                genre_id=genre_id,
+                previous_chapters=previous_chapters,
+            )
+            batch = rolling_batch_from_generated_window(
+                chapters=generated_chapters,
+                character_cards=list(character_cards),
+                volume_range=tuple(volume_range),
+                require_shuangwen_contracts=require_shuangwen_contracts,
+            )
+            return validate_rolling_batch(
+                batch,
+                expected_chapter_numbers=list(chapter_numbers),
+                volume_range=tuple(volume_range),
+                require_chapter_contracts=require_shuangwen_contracts,
+            )
+
+        try:
+            return parse_and_validate(self._gateway.complete_stage("planner", request))
+        except Exception as exc:
+            validation_error = " ".join(str(exc).split())[:1000]
+            retry_request = replace(
+                request,
+                operation="rolling_window_retry",
                 messages=(
+                    *request.messages,
                     {
                         "role": "system",
                         "content": (
-                            "为中文长篇小说生成滚动章节细纲，只返回JSON。"
-                            "根字段只能是chapters，章节数量、顺序和chapter_number必须与"
-                            "chapter_numbers完全一致。严格遵守output_schema。"
-                            "scene_chain必须包含2至4个对象，不能写成字符串；每个对象填写"
-                            "location、pov、goal、obstacle、action、change、next和state_delta。"
-                            "cast只能使用character_cards中已有的人名。"
-                            f"{CHAPTER_CONTRACT_RULE if require_shuangwen_contracts else ''}"
-                            f"{skill_instruction}"
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": json.dumps(
-                            request_payload, ensure_ascii=False
+                            "上一次JSON未通过结构或章节标题校验。只修复报告的问题，"
+                            "重新返回完整JSON，不要使用Markdown或解释。校验错误："
+                            f"{validation_error}"
                         ),
                     },
                 ),
-                provider="",
-                model="",
-                operation="rolling_window",
-                temperature=None,
-                max_tokens=None,
-                json_mode=True,
-            ),
-        )
-        if not response.ok:
-            raise ValueError(response.error or "rolling_window_model_call_failed")
-        data = parse_json_message_content({"choices": [{"message": {"content": response.text}}]})
-        if data is None:
-            raise ValueError("rolling_window_invalid_json")
-        data = _normalize_rolling_window_payload(
-            data,
-            chapter_numbers=list(chapter_numbers),
-            character_cards=list(character_cards),
-        )
-        window = GeneratedChapterWindow.model_validate(data)
-        batch = rolling_batch_from_generated_window(
-            chapters=[row.model_dump(mode="python") for row in window.chapters],
-            character_cards=list(character_cards),
-            volume_range=tuple(volume_range),
-            require_shuangwen_contracts=require_shuangwen_contracts,
-        )
-        batch = validate_rolling_batch(
-            batch,
-            expected_chapter_numbers=list(chapter_numbers),
-            volume_range=tuple(volume_range),
-            require_chapter_contracts=require_shuangwen_contracts,
-        )
-        return batch
+            )
+            try:
+                return parse_and_validate(
+                    self._gateway.complete_stage("planner", retry_request)
+                )
+            except Exception as retry_exc:
+                detail = " ".join(str(retry_exc).split())[:500]
+                raise ValueError(
+                    "rolling_window_generation_failed:"
+                    f"{type(retry_exc).__name__}:{detail or 'no_detail'}"
+                ) from retry_exc
 
 
 __all__ = [
@@ -1279,6 +1332,27 @@ class ContinuationOutlineBootstrapper:
 
         volume_range = self._volume_range(missing)
         context = self._rolling_context()
+        title_history = [
+            chapter
+            for chapter in existing.get("chapters", [])
+            if isinstance(chapter, dict)
+        ]
+        chapters_dir = self._root / ".story-system" / "chapters"
+        if chapters_dir.is_dir():
+            for chapter_file in sorted(chapters_dir.glob("*.json")):
+                chapter = _read_json(chapter_file)
+                if not isinstance(chapter, dict):
+                    continue
+                title_history.append(
+                    {
+                        "chapter_number": chapter.get("chapter_number"),
+                        "title": chapter.get("chapter_title") or chapter.get("title"),
+                    }
+                )
+        context["previous_chapter_titles"] = select_previous_chapter_titles(
+            title_history,
+            target_start=missing[0],
+        )
         character_cards = self._rolling_character_cards()
         require_shuangwen_contracts = self._require_shuangwen_contracts()
         enabled_skill_ids = self._enabled_skill_ids()
