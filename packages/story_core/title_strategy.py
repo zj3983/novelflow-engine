@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 import re
 from typing import Any
+
+from packages.story_core.novel_type_catalog import resolve_novel_type_id
 
 
 _GENRE_TERMS = {
@@ -23,22 +25,34 @@ _GAME_EXAMPLES = (
 )
 
 
-def _terms(genre_id: str, extra_terms: Sequence[str] = ()) -> tuple[str, ...]:
+def _normalize_genre_id(genre_id: str) -> str:
+    return resolve_novel_type_id(genre_id) or "generic_webnovel"
+
+
+def _normalize_extra_terms(extra_terms: Iterable[str] | str) -> tuple[str, ...]:
+    raw_terms = (extra_terms,) if isinstance(extra_terms, str) else extra_terms
+    return tuple(str(item).strip() for item in raw_terms if str(item).strip())
+
+
+def _terms(
+    genre_id: str,
+    extra_terms: Iterable[str] | str = (),
+) -> tuple[str, ...]:
     base = _GENRE_TERMS.get(genre_id, _GENRE_TERMS["generic_webnovel"])
-    normalized_extras = (str(item).strip() for item in extra_terms)
-    return tuple(dict.fromkeys((*base, *(item for item in normalized_extras if item))))
+    return tuple(dict.fromkeys((*base, *_normalize_extra_terms(extra_terms))))
 
 
 def build_book_title_guidance(
     genre_id: str,
     *,
-    extra_terms: Sequence[str] = (),
+    extra_terms: Iterable[str] | str = (),
 ) -> str:
-    terms = "、".join(_terms(genre_id, extra_terms))
+    normalized_genre_id = _normalize_genre_id(genre_id)
+    terms = "、".join(_terms(normalized_genre_id, extra_terms))
     examples = "\n".join(f"- {item}" for item in _GAME_EXAMPLES)
     example_section = (
         f"\n结构示例（只学结构，不得照抄）：\n{examples}"
-        if genre_id == "game_webnovel"
+        if normalized_genre_id == "game_webnovel"
         else ""
     )
     return (
@@ -52,9 +66,9 @@ def build_book_title_guidance(
 def build_chapter_title_guidance(
     genre_id: str,
     *,
-    extra_terms: Sequence[str] = (),
+    extra_terms: Iterable[str] | str = (),
 ) -> str:
-    terms = "、".join(_terms(genre_id, extra_terms))
+    terms = "、".join(_terms(_normalize_genre_id(genre_id), extra_terms))
     return (
         "章节标题必须对应本章真实发生的事件，从危机、反击、反差、悬念或不可逆转折中选一种。"
         "禁止使用‘新的开始’‘危机来临’等抽象概括，不得虚构正文不存在的卖点。"
@@ -70,6 +84,7 @@ def _title_shape(title: str) -> str:
         "",
         title.strip(),
     )
+    text = text.rstrip(" \t\r\n》〉」』】）)]｝}”’\"'")
     if text.endswith(("？", "?")):
         return "question"
     if text.endswith(("！", "!")):
@@ -81,14 +96,16 @@ def validate_chapter_title_window(
     chapters: Sequence[Mapping[str, Any]],
     *,
     genre_id: str,
+    previous_chapters: Sequence[Mapping[str, Any]] = (),
 ) -> None:
     del genre_id
+    chapter_window = [*list(previous_chapters)[-2:], *chapters]
     shapes = [
         (
             _title_shape(str(item.get("title") or item.get("chapter_title") or "")),
             int(item.get("chapter_number") or 0),
         )
-        for item in chapters
+        for item in chapter_window
     ]
     for index in range(2, len(shapes)):
         window = shapes[index - 2 : index + 1]

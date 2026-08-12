@@ -48,6 +48,34 @@ def test_game_examples_never_leak_into_non_game_guidance():
     assert "结构示例" not in xuanhuan
 
 
+@pytest.mark.parametrize("genre_id", ["网游", "GAME_WEBNOVEL", " game_webnovel "])
+def test_genre_id_is_normalized_before_selecting_terms_and_examples(genre_id):
+    guidance = build_book_title_guidance(genre_id)
+
+    assert "全服" in guidance
+    assert "Boss" in guidance
+    assert "满级魔龙" in guidance
+
+
+def test_custom_genre_uses_extra_terms_without_game_vocabulary():
+    guidance = build_book_title_guidance(
+        "custom_science_fantasy",
+        extra_terms=("星门", "量子回响"),
+    )
+
+    assert "星门" in guidance
+    assert "量子回响" in guidance
+    assert "全服" not in guidance
+    assert "Boss" not in guidance
+
+
+def test_bare_string_extra_terms_is_treated_as_one_term():
+    guidance = build_chapter_title_guidance("urban", extra_terms="量子回响")
+
+    assert "量子回响" in guidance
+    assert "量、子、回、响" not in guidance
+
+
 def test_chapter_guidance_requires_event_evidence_and_supported_directions():
     guidance = build_chapter_title_guidance("urban")
 
@@ -72,6 +100,43 @@ def test_three_identical_expressive_shapes_are_rejected(suffix, shape):
         validate_chapter_title_window(chapters, genre_id="urban")
 
     assert str(exc_info.value) == f"repeated_chapter_title_shape:{shape}:1-3"
+
+
+@pytest.mark.parametrize(
+    ("titles", "shape"),
+    [
+        (("《谁动了合同？》", "“真相在哪？”", "【谁在撒谎？】"), "question"),
+        (("《合同归我！》", "“现在反击！”", "【当场翻盘！】"), "exclamation"),
+    ],
+)
+def test_title_shape_ignores_trailing_wrapper_punctuation(titles, shape):
+    chapters = [
+        {"chapter_number": number, "title": title}
+        for number, title in enumerate(titles, start=1)
+    ]
+
+    with pytest.raises(ValueError) as exc_info:
+        validate_chapter_title_window(chapters, genre_id="urban")
+
+    assert str(exc_info.value) == f"repeated_chapter_title_shape:{shape}:1-3"
+
+
+def test_previous_chapter_tail_is_included_in_title_window_validation():
+    previous_chapters = [
+        {"chapter_number": 8, "title": "旧案重启"},
+        {"chapter_number": 9, "title": "证人为什么改口？"},
+        {"chapter_number": 10, "title": "监控为何消失？"},
+    ]
+    new_chapters = [{"chapter_number": 11, "title": "合同是谁替换的？"}]
+
+    with pytest.raises(ValueError) as exc_info:
+        validate_chapter_title_window(
+            new_chapters,
+            genre_id="urban",
+            previous_chapters=previous_chapters,
+        )
+
+    assert str(exc_info.value) == "repeated_chapter_title_shape:question:9-11"
 
 
 def test_mixed_title_shapes_are_accepted():
