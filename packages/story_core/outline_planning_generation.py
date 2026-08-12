@@ -1160,6 +1160,11 @@ class LLMOutlinePlanningGenerator:
                     chapter_context["skill_context"] = {
                         "chapter_plan": chapter_skill_context
                     }
+                chapter_character_names = {
+                    str(card["name"]).strip()
+                    for card in foundation_data["characters"]
+                    if str(card.get("name") or "").strip()
+                }
                 chapter_payload = {
                     **payload,
                     "reasoning_effort": "low",
@@ -1182,6 +1187,10 @@ class LLMOutlinePlanningGenerator:
 
                 def validate_chapter_window_contracts(result: BaseModel) -> None:
                     chapters = getattr(result, "chapters", [])
+                    for chapter in chapters:
+                        for name in chapter.cast:
+                            if name not in chapter_character_names:
+                                raise ValueError(f"missing_character_card:{name}")
                     if chapter_contracts_enabled:
                         for chapter in chapters:
                             validate_concrete_chapter_contract(chapter)

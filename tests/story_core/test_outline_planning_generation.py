@@ -2219,7 +2219,7 @@ def test_codexcli_wraps_repeated_exclamation_titles_after_repair_retry() -> None
     assert str(exc_info.value.__cause__).startswith("chapter_window_generation_failed:")
 
 
-def test_codexcli_marks_chapter_phase_failed_when_combined_plan_validation_fails() -> None:
+def test_codexcli_marks_chapter_phase_failed_when_cast_repair_also_fails() -> None:
     events: list[tuple[str, str, str]] = []
 
     def fake_post(base_url, path, payload, api_key, **kwargs):
@@ -2244,7 +2244,63 @@ def test_codexcli_marks_chapter_phase_failed_when_combined_plan_validation_fails
         )
 
     assert events[-1][0:2] == ("chapter_window", "failed")
-    assert events[-1][2].startswith("combined_outline_validation_failed:")
+    assert events[-1][2].startswith("chapter_window_generation_failed:")
+    assert "missing_character_card:未登记角色" in events[-1][2]
+
+
+def test_codexcli_repairs_unknown_chapter_cast_before_combining_plan() -> None:
+    chapter_attempts = 0
+    retry_messages: list[str] = []
+    events: list[tuple[str, str, str]] = []
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        nonlocal chapter_attempts
+        prompt = json.loads(payload["messages"][1]["content"])
+        content = _codex_phase_content(prompt)
+        if prompt["generation_phase"] == "chapters":
+            chapter_attempts += 1
+            if chapter_attempts == 1:
+                content["chapters"][0]["cast"] = ["mysterious_officer"]
+            else:
+                retry_messages.extend(
+                    str(message.get("content") or "")
+                    for message in payload["messages"]
+                    if message.get("role") == "system"
+                )
+                content["chapters"][0]["cast"] = [
+                    prompt["characters"][0]["name"]
+                ]
+        return {
+            "choices": [
+                {"message": {"content": json.dumps(content, ensure_ascii=False)}}
+            ]
+        }
+
+    generator = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=lambda _stage: StageRuntimeSettings(
+            provider_id="codexcli",
+            protocol="codex_cli",
+            model="planning-test-model",
+            codex_command="codex-test",
+        ),
+    )
+
+    plan = generator.generate(
+        _brief(),
+        mode="initial",
+        phase_callback=lambda phase, status, _payload, error: events.append(
+            (phase, status, error)
+        ),
+    )
+
+    assert chapter_attempts == 2
+    assert any(
+        "missing_character_card:mysterious_officer" in message
+        for message in retry_messages
+    )
+    assert plan.outline.chapters[0].cast == [plan.characters[0].name]
+    assert events[-1][0:2] == ("chapter_window", "completed")
 
 
 @pytest.mark.parametrize("mode", ["initial", "regenerate", "extend"])
