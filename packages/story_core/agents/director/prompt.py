@@ -17,6 +17,50 @@ from ..contracts import DirectorArtifact, EntityRequirement, SceneBeat
 from ...context.director_context import DirectorContext
 
 
+def _parse_outline_chapter_number(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        number = value
+    elif isinstance(value, str):
+        try:
+            number = int(value.strip())
+        except ValueError:
+            return None
+    else:
+        return None
+    return number if number > 0 else None
+
+
+def outline_chapter_number(entry: dict[str, Any]) -> int | None:
+    number = _parse_outline_chapter_number(entry.get("number"))
+    if number is not None:
+        return number
+    return _parse_outline_chapter_number(entry.get("chapter_number"))
+
+
+def _outline_chapter_title(entry: dict[str, Any]) -> str:
+    for key in ("title", "chapter_title"):
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def planned_chapter_title(context: DirectorContext) -> str:
+    """Return the last valid title planned for the target chapter."""
+    selected = ""
+    for entry in context.nearby_outline:
+        if not isinstance(entry, dict):
+            continue
+        if outline_chapter_number(entry) != context.chapter_number:
+            continue
+        title = _outline_chapter_title(entry)
+        if title:
+            selected = title
+    return selected
+
+
 def _render_volume(context: DirectorContext) -> str:
     if not context.volume:
         return ""
@@ -34,8 +78,12 @@ def _render_nearby_outline(context: DirectorContext) -> str:
     boundary_lines: list[str] = []
     target_lines: list[str] = []
     for entry in context.nearby_outline:
-        number = entry.get("number") or entry.get("chapter_number") or "?"
-        title = entry.get("title") or entry.get("chapter_title") or ""
+        if not isinstance(entry, dict):
+            continue
+        number = outline_chapter_number(entry)
+        if number is None:
+            continue
+        title = _outline_chapter_title(entry)
         summary = entry.get("summary", "")
         goal = entry.get("goal", "")
         obstacle = entry.get("obstacle", "")
@@ -46,7 +94,7 @@ def _render_nearby_outline(context: DirectorContext) -> str:
         )
         if detail:
             line = f"{line}（{detail}）"
-        if int(number or 0) == int(context.chapter_number or 0):
+        if number == context.chapter_number:
             target_lines.append(line)
         else:
             boundary_lines.append(line)
@@ -102,8 +150,6 @@ def _render_character_cards(context: DirectorContext) -> str:
 
 def build_director_prompt(
     context: DirectorContext,
-    *,
-    planned_chapter_title: str = "",
 ) -> str:
     """Render the director's request prompt from a context view.
 
@@ -134,16 +180,28 @@ def build_director_prompt(
             "## 本次写作指导（必须落实到场景计划）\n"
             + context.rewrite_guidance.strip()
         )
-    title_instruction = (
-        "## 章节标题（chapter_title）\n"
-        f"本章细纲标题已经锁定，原样复制，不得重命名：{planned_chapter_title}"
-        if planned_chapter_title
-        else (
+    locked_title = planned_chapter_title(context)
+    if locked_title:
+        title_instruction = (
+            "## 章节标题（chapter_title）\n"
+            "JSON schema 仍需包含 chapter_title。"
+            "本章细纲标题已经锁定，原样复制，不得重命名："
+            f"{locked_title}"
+        )
+        output_instruction = (
+            "输出 chapter_title 字段、2 至 5 个有因果结果的 scene_beats；"
+            "chapter_title 只能复制上述锁定值。"
+        )
+    else:
+        title_instruction = (
             "## 章节标题（chapter_title）\n"
             "给一句不超过 20 字的章节标题，不得把整段细纲当标题；"
             "标题应与 scene_beats 共同表达这一章的关键变化。"
         )
-    )
+        output_instruction = (
+            "输出简短 chapter_title、2 至 5 个有因果结果的 scene_beats；"
+            "不得把整段细纲作为 chapter_goal 或标题。"
+        )
     sections.extend(
         [
             "## 必须回答的 8 个问题",
@@ -162,8 +220,7 @@ def build_director_prompt(
             "每项都要填写 notes，用一两句写清本章身份、用途、已知效果或场景作用；不要只给名称。",
             "",
             title_instruction,
-            "输出简短 chapter_title、2 至 5 个有因果结果的 scene_beats；"
-            "不得把整段细纲作为 chapter_goal 或标题。",
+            output_instruction,
         ]
     )
     return "\n\n".join(section for section in sections if section)
@@ -232,4 +289,9 @@ def parse_director_response(payload: Any) -> DirectorArtifact:
     )
 
 
-__all__ = ["build_director_prompt", "parse_director_response"]
+__all__ = [
+    "build_director_prompt",
+    "outline_chapter_number",
+    "parse_director_response",
+    "planned_chapter_title",
+]

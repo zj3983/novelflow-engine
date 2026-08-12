@@ -176,6 +176,9 @@ def test_director_preserves_planned_title_over_runtime_title(
     assert artifact.hook == payload["hook"]
     assert [item.name for item in artifact.entity_requirements] == ["妖林"]
     assert "本章细纲标题已经锁定，原样复制，不得重命名" in runtime.requests[0].prompt
+    assert "JSON schema 仍需包含 chapter_title" in runtime.requests[0].prompt
+    assert "给一句不超过 20 字" not in runtime.requests[0].prompt
+    assert "输出简短 chapter_title" not in runtime.requests[0].prompt
     assert "核心卖点/能力" not in runtime.requests[0].prompt
     assert "满级魔龙" not in runtime.requests[0].prompt
 
@@ -197,6 +200,98 @@ def test_director_preserves_planned_title_whitespace_exactly(tmp_path: Path) -> 
     artifact = agent.plan(context)
 
     assert artifact.chapter_title == planned_title
+
+
+@pytest.mark.parametrize(
+    "canonical_number",
+    ["not-a-number", {"invalid": True}, [], 0, -1, "0", True, 7.5],
+)
+def test_director_uses_legacy_number_when_canonical_number_is_invalid(
+    tmp_path: Path,
+    canonical_number: Any,
+) -> None:
+    runtime = _RecordingRuntime(
+        responses=[_executable_director_payload(chapter_title="临时改名")]
+    )
+    agent = DirectorAgent(runtime=runtime, project_root=tmp_path)
+    context = _context_with_outline(chapter_number=7, include_target=False).model_copy(
+        update={
+            "nearby_outline": [
+                {"number": "not-a-number", "title": "跳过我", "summary": "跳过无效项"},
+                {
+                    "number": canonical_number,
+                    "chapter_number": "7",
+                    "title": "章号安全回退",
+                    "summary": "目标章",
+                },
+            ]
+        }
+    )
+
+    artifact = agent.plan(context)
+
+    assert artifact.chapter_title == "章号安全回退"
+
+
+@pytest.mark.parametrize(
+    ("title", "legacy_title", "expected"),
+    [
+        ({"invalid": True}, "合法旧标题", "合法旧标题"),
+        ([], "合法旧标题", "合法旧标题"),
+        (42, "合法旧标题", "合法旧标题"),
+        ("   ", "合法旧标题", "合法旧标题"),
+        ({"invalid": True}, ["also invalid"], "临时改名"),
+    ],
+)
+def test_director_accepts_only_nonblank_string_outline_titles(
+    tmp_path: Path,
+    title: Any,
+    legacy_title: Any,
+    expected: str,
+) -> None:
+    runtime = _RecordingRuntime(
+        responses=[_executable_director_payload(chapter_title="临时改名")]
+    )
+    agent = DirectorAgent(runtime=runtime, project_root=tmp_path)
+    context = _context_with_outline(chapter_number=7, include_target=False).model_copy(
+        update={
+            "nearby_outline": [
+                {
+                    "number": 7,
+                    "title": title,
+                    "chapter_title": legacy_title,
+                    "summary": "目标章",
+                }
+            ]
+        }
+    )
+
+    artifact = agent.plan(context)
+
+    assert artifact.chapter_title == expected
+
+
+def test_director_uses_last_valid_title_across_duplicate_target_entries(
+    tmp_path: Path,
+) -> None:
+    runtime = _RecordingRuntime(
+        responses=[_executable_director_payload(chapter_title="临时改名")]
+    )
+    agent = DirectorAgent(runtime=runtime, project_root=tmp_path)
+    context = _context_with_outline(chapter_number=7, include_target=False).model_copy(
+        update={
+            "nearby_outline": [
+                {"number": 7, "title": "第一个有效标题", "summary": "目标章"},
+                {"number": 7, "title": "   ", "summary": "重复空标题"},
+                {"number": 7, "title": ["invalid"], "summary": "重复无效标题"},
+                {"chapter_number": 7, "chapter_title": "最后有效标题", "summary": "目标章"},
+            ]
+        }
+    )
+
+    artifact = agent.plan(context)
+
+    assert artifact.chapter_title == "最后有效标题"
 
 
 def test_director_agent_returns_director_artifact_not_prose(tmp_path: Path) -> None:
@@ -332,6 +427,9 @@ def test_director_agent_calls_runtime_when_outline_is_missing(tmp_path: Path) ->
     assert artifact.chapter_goal == "天黑前到达驿站"
     assert artifact.scene_beats[0].location == "妖林"
     assert artifact.entity_requirements[0].name == "妖林"
+    assert "给一句不超过 20 字" in runtime.requests[0].prompt
+    assert "输出简短 chapter_title" in runtime.requests[0].prompt
+    assert "本章细纲标题已经锁定" not in runtime.requests[0].prompt
 
 
 def test_director_agent_extracts_entity_requirements_from_runtime_response(
@@ -409,7 +507,7 @@ def test_director_agent_persists_artifact_under_story_system_director(tmp_path: 
     assert loaded["status"] == "ok"
     assert loaded["provider"] == "outline"
     assert loaded["model"] == "outline/v1"
-    assert loaded["output"]["chapter_number"] == 7
+    assert loaded["output"] == artifact.model_dump(mode="json")
     assert loaded["input_trace"]["reads"]  # the context reads were recorded
 
 

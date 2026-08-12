@@ -29,7 +29,12 @@ from ..contracts import DirectorArtifact
 from ...context.director_context import DirectorContext
 from ...context.contracts import ArtifactRead, ContextTrace
 from ...persistence.director_store import DirectorStore
-from .prompt import build_director_prompt, parse_director_response
+from .prompt import (
+    build_director_prompt,
+    outline_chapter_number,
+    parse_director_response,
+    planned_chapter_title,
+)
 from .runtime import DirectorRuntime
 
 
@@ -67,18 +72,6 @@ def _extract_payload(response: Any) -> dict[str, Any]:
         if isinstance(parsed, dict):
             return parsed
     return {}
-
-
-def _planned_chapter_title(context: DirectorContext) -> str:
-    """Return the target chapter title already selected by the outline."""
-    for entry in context.nearby_outline:
-        if not isinstance(entry, dict):
-            continue
-        number = entry.get("number") or entry.get("chapter_number") or 0
-        if int(number) == context.chapter_number:
-            raw_title = str(entry.get("title") or entry.get("chapter_title") or "")
-            return raw_title if raw_title.strip() else ""
-    return ""
 
 
 def _validate_executable_artifact(artifact: DirectorArtifact) -> None:
@@ -149,8 +142,8 @@ class DirectorAgent:
         for entry in context.nearby_outline:
             if not isinstance(entry, dict):
                 continue
-            number = entry.get("number") or entry.get("chapter_number")
-            if not isinstance(number, int):
+            number = outline_chapter_number(entry)
+            if number is None:
                 continue
             trace.add(
                 ArtifactRead(
@@ -175,8 +168,8 @@ class DirectorAgent:
         # itself. Earlier rounds short-circuited this and the
         # writer then had to improvise against an empty
         # ``scene_beats`` list.
-        planned_title = _planned_chapter_title(context)
-        prompt = build_director_prompt(context, planned_chapter_title=planned_title)
+        planned_title = planned_chapter_title(context)
+        prompt = build_director_prompt(context)
         model_request = _ModelRequest(
             prompt=prompt,
             stage="director",
