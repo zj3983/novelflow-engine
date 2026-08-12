@@ -168,6 +168,33 @@ def select_adjacent_chapter_titles(
     return list(adjacent[:max_items])
 
 
+def select_chapter_title_neighbors(
+    chapters: Sequence[Mapping[str, Any]],
+    *,
+    generated_chapter_numbers: Sequence[int],
+) -> list[dict[str, Any]]:
+    generated_numbers = {
+        number
+        for number in generated_chapter_numbers
+        if isinstance(number, int) and not isinstance(number, bool)
+    }
+    if not generated_numbers:
+        return []
+    candidates = select_chapter_titles(
+        chapters,
+        start_chapter=min(generated_numbers) - 2,
+        end_chapter=max(generated_numbers) + 2,
+    )
+    return [
+        chapter
+        for chapter in candidates
+        if any(
+            abs(chapter["chapter_number"] - generated_number) <= 2
+            for generated_number in generated_numbers
+        )
+    ]
+
+
 def _title_shape(title: str) -> str:
     text = re.sub(
         r"^第\s*[一二三四五六七八九十百千万\d]+\s*章[：:\s]*",

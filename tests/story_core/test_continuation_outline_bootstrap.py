@@ -798,6 +798,62 @@ def test_rolling_sparse_window_uses_existing_15_to_repair_14_15_16() -> None:
     )
 
 
+def test_rolling_single_missing_chapter_uses_right_neighbors_for_title_repair() -> None:
+    from packages.story_core.continuation_outline_bootstrap import (
+        LLMRollingWindowGenerator,
+    )
+    from packages.story_core.model_gateway import ModelResponse
+
+    captured = []
+
+    class _FakeGateway:
+        def complete_stage(self, stage: str, request):  # type: ignore[no-untyped-def]
+            captured.append(request)
+            chapter = {
+                **detailed_chapter(148),
+                "cast": ["林修"],
+                "title": "Who moved the mirror?" if len(captured) == 1 else "The mirror cracks",
+            }
+            return ModelResponse.success(
+                request,
+                text=json.dumps({"chapters": [chapter]}, ensure_ascii=False),
+            )
+
+    rows = LLMRollingWindowGenerator(gateway=_FakeGateway()).generate(
+        context={
+            "current_arc": "续写主线",
+            "existing_window_chapter_titles": [
+                {"chapter_number": 145, "title": "A distant old chapter?"},
+                {"chapter_number": 149, "title": "Who hid the lens?"},
+                {"chapter_number": 150, "title": "Where did the light go?"},
+                {"chapter_number": 151, "title": "Why did the bell ring?"},
+            ],
+        },
+        chapter_numbers=[148],
+        volume_range=(148, 160),
+        character_cards=[character_card("林修", "protagonist")],
+        require_shuangwen_contracts=False,
+        genre_id="xuanhuan",
+    )
+
+    assert len(captured) == 2
+    assert rows[0]["title"] == "The mirror cracks"
+    first_context = json.loads(captured[0].messages[1]["content"])
+    assert first_context["existing_window_chapter_titles"] == [
+        {"chapter_number": 149, "title": "Who hid the lens?"},
+        {"chapter_number": 150, "title": "Where did the light go?"},
+    ]
+    retry_messages = [
+        message["content"]
+        for message in captured[1].messages[2:]
+        if message.get("role") == "system"
+    ]
+    assert any(
+        "repeated_chapter_title_shape:question:148-150" in message
+        for message in retry_messages
+    )
+
+
 def test_llm_rolling_window_generator_requires_enabled_contracts() -> None:
     from packages.story_core.continuation_outline_bootstrap import (
         LLMRollingWindowGenerator,
@@ -1442,11 +1498,14 @@ def test_bootstrapper_passes_existing_sparse_window_titles_to_rolling_generator(
     tmp_path: Path,
 ) -> None:
     root = _seed_legacy_approved_project(tmp_path, current_chapter=147)
-    manual_chapter = _rolling_chapter_payload(149)
-    manual_chapter.update(title="谁留下了第十五章？", source="manual")
+    manual_chapters = [_rolling_chapter_payload(number) for number in range(149, 153)]
+    for chapter in manual_chapters:
+        chapter["source"] = "manual"
+    manual_chapters[0]["title"] = "Who hid the lens?"
+    manual_chapters[1]["title"] = "Where did the light go?"
     RollingOutlineStore(root).apply_rolling_batch(
-        chapters=[manual_chapter],
-        expected_chapter_numbers=[149],
+        chapters=manual_chapters,
+        expected_chapter_numbers=list(range(149, 153)),
         volume_range=(148, 160),
     )
     rolling_stub, rolling_calls = _fake_rolling_generator()
@@ -1458,9 +1517,12 @@ def test_bootstrapper_passes_existing_sparse_window_titles_to_rolling_generator(
     ).run()
 
     assert result.ready
-    assert rolling_calls[0]["chapter_numbers"] == [148, 150, 151, 152]
+    assert rolling_calls[0]["chapter_numbers"] == [148]
     assert rolling_calls[0]["context"]["existing_window_chapter_titles"] == [
-        {"chapter_number": 149, "title": "谁留下了第十五章？"}
+        {"chapter_number": 146, "title": "上一章"},
+        {"chapter_number": 147, "title": "已写章节"},
+        {"chapter_number": 149, "title": "Who hid the lens?"},
+        {"chapter_number": 150, "title": "Where did the light go?"},
     ]
 
 

@@ -40,7 +40,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from packages.story_core.title_strategy import (
     build_chapter_title_guidance,
     select_adjacent_chapter_titles,
-    select_chapter_titles,
+    select_chapter_title_neighbors,
     select_previous_chapter_titles,
     validate_chapter_title_window,
 )
@@ -681,14 +681,13 @@ class LLMRollingWindowGenerator:
         raw_existing_window_chapters = context.get(
             "existing_window_chapter_titles", []
         )
-        existing_window_chapters = select_chapter_titles(
+        existing_window_chapters = select_chapter_title_neighbors(
             (
                 raw_existing_window_chapters
                 if isinstance(raw_existing_window_chapters, list)
                 else []
             ),
-            start_chapter=min(chapter_numbers),
-            end_chapter=max(chapter_numbers),
+            generated_chapter_numbers=chapter_numbers,
         )
         adjacent_existing_chapters = select_adjacent_chapter_titles(
             existing_window_chapters,
@@ -1385,10 +1384,9 @@ class ContinuationOutlineBootstrapper:
             title_history,
             target_start=missing[0],
         )
-        context["existing_window_chapter_titles"] = select_chapter_titles(
+        context["existing_window_chapter_titles"] = select_chapter_title_neighbors(
             title_history,
-            start_chapter=min(missing),
-            end_chapter=max(missing),
+            generated_chapter_numbers=missing,
         )
         character_cards = self._rolling_character_cards()
         require_shuangwen_contracts = self._require_shuangwen_contracts()

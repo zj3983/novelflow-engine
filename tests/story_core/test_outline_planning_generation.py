@@ -1437,6 +1437,8 @@ def test_extend_sparse_window_does_not_treat_14_16_17_as_consecutive() -> None:
         17,
     ]
     assert prompts[0]["existing_window_chapter_titles"] == [
+        {"chapter_number": 12, "title": "历史标题12"},
+        {"chapter_number": 13, "title": "历史标题13"},
         {"chapter_number": 15, "title": "第十五章落定"}
     ]
 
@@ -1488,10 +1490,83 @@ def test_extend_sparse_window_uses_existing_15_to_repair_14_15_16() -> None:
 
     assert attempts == 2
     assert prompts[0]["existing_window_chapter_titles"] == [
+        {"chapter_number": 12, "title": "历史标题12"},
+        {"chapter_number": 13, "title": "历史标题13"},
         {"chapter_number": 15, "title": "第十五章发生了什么？"}
     ]
     assert any(
         "repeated_chapter_title_shape:question:14-16" in message
+        for message in retry_messages
+    )
+
+
+def test_extend_single_missing_chapter_uses_right_neighbors_for_title_repair() -> None:
+    attempts = 0
+    prompts: list[dict] = []
+    retry_messages: list[str] = []
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        prompt = json.loads(payload["messages"][1]["content"])
+        prompts.append(prompt)
+        retry_messages.extend(
+            message["content"]
+            for message in payload["messages"][2:]
+            if message.get("role") == "system"
+        )
+        plan = _valid_plan()
+        template = plan["outline"]["chapters"][0]
+        plan["outline"]["chapters"] = [
+            {
+                **template,
+                "chapter_number": 11,
+                "title": "Who opened the gate?" if attempts == 1 else "The gate opens",
+                "trope_beat": None,
+            }
+        ]
+        return {
+            "choices": [
+                {"message": {"content": json.dumps(plan, ensure_ascii=False)}}
+            ]
+        }
+
+    fixture = RecordingRuntime()
+    brief = fixture.brief(
+        current_chapter=10,
+        existing_chapters=[*range(1, 11), *range(12, 21)],
+    )
+    brief_payload = brief.model_dump(mode="json")
+    for chapter in brief_payload["existing_outline"]["chapters"]:
+        number = chapter["chapter_number"]
+        chapter["title"] = (
+            f"What happened in chapter {number}?"
+            if number in {12, 13, 20}
+            else f"History chapter {number}"
+        )
+
+    LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=fixture.resolve,
+    ).generate(
+        OutlinePlanningBrief.model_validate(brief_payload),
+        mode="extend",
+    )
+
+    assert attempts == 2
+    assert prompts[0]["target_chapter_numbers"] == [11]
+    assert prompts[0]["existing_window_chapter_titles"] == [
+        {"chapter_number": 9, "title": "History chapter 9"},
+        {"chapter_number": 10, "title": "History chapter 10"},
+        {"chapter_number": 12, "title": "What happened in chapter 12?"},
+        {"chapter_number": 13, "title": "What happened in chapter 13?"},
+    ]
+    assert all(
+        chapter["chapter_number"] != 20
+        for chapter in prompts[0]["existing_window_chapter_titles"]
+    )
+    assert any(
+        "repeated_chapter_title_shape:question:11-13" in message
         for message in retry_messages
     )
 

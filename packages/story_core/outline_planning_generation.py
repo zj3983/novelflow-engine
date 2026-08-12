@@ -33,7 +33,7 @@ from packages.story_core.skill_packs import skill_pack_prompt_context
 from packages.story_core.title_strategy import (
     build_chapter_title_guidance,
     select_adjacent_chapter_titles,
-    select_chapter_titles,
+    select_chapter_title_neighbors,
     select_previous_chapter_titles,
     validate_chapter_title_window,
 )
@@ -741,10 +741,9 @@ class LLMOutlinePlanningGenerator:
                 existing_outline_chapters,
                 target_start=min(target_chapter_numbers),
             )
-            existing_window_chapters = select_chapter_titles(
+            existing_window_chapters = select_chapter_title_neighbors(
                 existing_outline_chapters,
-                start_chapter=min(target_chapter_numbers),
-                end_chapter=max(target_chapter_numbers),
+                generated_chapter_numbers=target_chapter_numbers,
             )
             adjacent_existing_chapters = select_adjacent_chapter_titles(
                 existing_window_chapters,
