@@ -69,6 +69,17 @@ def _extract_payload(response: Any) -> dict[str, Any]:
     return {}
 
 
+def _planned_chapter_title(context: DirectorContext) -> str:
+    """Return the target chapter title already selected by the outline."""
+    for entry in context.nearby_outline:
+        if not isinstance(entry, dict):
+            continue
+        number = entry.get("number") or entry.get("chapter_number") or 0
+        if int(number) == context.chapter_number:
+            return str(entry.get("title") or entry.get("chapter_title") or "").strip()
+    return ""
+
+
 def _validate_executable_artifact(artifact: DirectorArtifact) -> None:
     """Reject director outputs the writer cannot execute.
 
@@ -137,7 +148,7 @@ class DirectorAgent:
         for entry in context.nearby_outline:
             if not isinstance(entry, dict):
                 continue
-            number = entry.get("number")
+            number = entry.get("number") or entry.get("chapter_number")
             if not isinstance(number, int):
                 continue
             trace.add(
@@ -163,7 +174,8 @@ class DirectorAgent:
         # itself. Earlier rounds short-circuited this and the
         # writer then had to improvise against an empty
         # ``scene_beats`` list.
-        prompt = build_director_prompt(context)
+        planned_title = _planned_chapter_title(context)
+        prompt = build_director_prompt(context, planned_chapter_title=planned_title)
         model_request = _ModelRequest(
             prompt=prompt,
             stage="director",
@@ -197,6 +209,8 @@ class DirectorAgent:
                     raise
         if artifact is None:  # pragma: no cover - defensive loop invariant
             raise last_error or RuntimeError("director_unavailable")
+        if planned_title:
+            artifact = artifact.model_copy(update={"chapter_title": planned_title})
         self._store.save(
             chapter_number=context.chapter_number,
             payload={

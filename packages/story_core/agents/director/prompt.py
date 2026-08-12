@@ -34,8 +34,8 @@ def _render_nearby_outline(context: DirectorContext) -> str:
     boundary_lines: list[str] = []
     target_lines: list[str] = []
     for entry in context.nearby_outline:
-        number = entry.get("number", "?")
-        title = entry.get("title", "")
+        number = entry.get("number") or entry.get("chapter_number") or "?"
+        title = entry.get("title") or entry.get("chapter_title") or ""
         summary = entry.get("summary", "")
         goal = entry.get("goal", "")
         obstacle = entry.get("obstacle", "")
@@ -53,7 +53,7 @@ def _render_nearby_outline(context: DirectorContext) -> str:
     sections: list[str] = []
     if target_lines:
         sections.append(
-            "## 本章细纲（必须展开为可执行场景计划，不得照抄为标题或正文）\n"
+            "## 本章细纲（正文内容必须展开为可执行场景计划，不得整段照抄）\n"
             + "\n".join(target_lines)
         )
     if boundary_lines:
@@ -100,7 +100,11 @@ def _render_character_cards(context: DirectorContext) -> str:
     return "\n".join(lines)
 
 
-def build_director_prompt(context: DirectorContext) -> str:
+def build_director_prompt(
+    context: DirectorContext,
+    *,
+    planned_chapter_title: str = "",
+) -> str:
     """Render the director's request prompt from a context view.
 
     The output covers the eight questions every chapter plan
@@ -130,6 +134,16 @@ def build_director_prompt(context: DirectorContext) -> str:
             "## 本次写作指导（必须落实到场景计划）\n"
             + context.rewrite_guidance.strip()
         )
+    title_instruction = (
+        "## 章节标题（chapter_title）\n"
+        f"本章细纲标题已经锁定，原样复制，不得重命名：{planned_chapter_title}"
+        if planned_chapter_title
+        else (
+            "## 章节标题（chapter_title）\n"
+            "给一句不超过 20 字的章节标题，不得把整段细纲当标题；"
+            "标题应与 scene_beats 共同表达这一章的关键变化。"
+        )
+    )
     sections.extend(
         [
             "## 必须回答的 8 个问题",
@@ -147,9 +161,7 @@ def build_director_prompt(context: DirectorContext) -> str:
             "kind 仅限：character / item / equipment / technique / location / organization / quest / monster / rule。",
             "每项都要填写 notes，用一两句写清本章身份、用途、已知效果或场景作用；不要只给名称。",
             "",
-            "## 章节标题（chapter_title）",
-            "给一句不超过 20 字的章节标题，"
-            "不得把整段细纲当标题；标题应与 scene_beats 共同表达这一章的关键变化。",
+            title_instruction,
             "输出简短 chapter_title、2 至 5 个有因果结果的 scene_beats；"
             "不得把整段细纲作为 chapter_goal 或标题。",
         ]

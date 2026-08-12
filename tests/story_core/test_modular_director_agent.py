@@ -144,6 +144,42 @@ def _context_with_outline(
 # --- Agent boundary ---------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "target_outline",
+    [
+        {"number": 7, "title": "管你是龙是虫，给我退回去！", "summary": "逼退来敌"},
+        {
+            "chapter_number": 7,
+            "chapter_title": "管你是龙是虫，给我退回去！",
+            "summary": "逼退来敌",
+        },
+    ],
+)
+def test_director_preserves_planned_title_over_runtime_title(
+    tmp_path: Path,
+    target_outline: dict[str, Any],
+) -> None:
+    payload = _executable_director_payload(chapter_title="临时改名")
+    runtime = _RecordingRuntime(responses=[payload])
+    agent = DirectorAgent(runtime=runtime, project_root=tmp_path)
+    context = _context_with_outline(chapter_number=7, include_target=False).model_copy(
+        update={"nearby_outline": [target_outline]}
+    )
+
+    artifact = agent.plan(context)
+
+    assert artifact.chapter_title == "管你是龙是虫，给我退回去！"
+    assert artifact.chapter_goal == payload["chapter_goal"]
+    assert artifact.opening_state == payload["opening_state"]
+    assert [beat.model_dump() for beat in artifact.scene_beats] == payload["scene_beats"]
+    assert artifact.ending_state == payload["ending_state"]
+    assert artifact.hook == payload["hook"]
+    assert [item.name for item in artifact.entity_requirements] == ["妖林"]
+    assert "本章细纲标题已经锁定，原样复制，不得重命名" in runtime.requests[0].prompt
+    assert "核心卖点/能力" not in runtime.requests[0].prompt
+    assert "满级魔龙" not in runtime.requests[0].prompt
+
+
 def test_director_agent_returns_director_artifact_not_prose(tmp_path: Path) -> None:
     runtime = _RecordingRuntime(
         responses=[_executable_director_payload()]
@@ -260,7 +296,7 @@ def test_director_uses_target_outline_as_input_instead_of_returning_it_verbatim(
     artifact = agent.plan(context)
 
     assert runtime.call_count == 1
-    assert artifact.chapter_title == "灰狼坡的红光"
+    assert artifact.chapter_title == "第2章"
     assert len(artifact.scene_beats) == 3
     assert artifact.chapter_goal != "本章目标：天黑前离开妖林。"
 
@@ -273,6 +309,7 @@ def test_director_agent_calls_runtime_when_outline_is_missing(tmp_path: Path) ->
     artifact = agent.plan(context)
 
     assert runtime.call_count == 1
+    assert artifact.chapter_title == "夜奔驿站"
     assert artifact.chapter_goal == "天黑前到达驿站"
     assert artifact.scene_beats[0].location == "妖林"
     assert artifact.entity_requirements[0].name == "妖林"
