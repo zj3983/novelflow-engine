@@ -1178,6 +1178,68 @@ def test_split_outline_prompt_routes_skill_only_to_outline_foundation(monkeypatc
 
 
 @pytest.mark.parametrize(
+    ("novel_type_id", "included_terms", "excluded_terms"),
+    [
+        ("game_webnovel", ("首杀", "Boss"), ("宗门", "功法")),
+        ("xuanhuan", ("宗门", "功法"), ("首杀", "Boss")),
+    ],
+)
+def test_split_chapter_prompt_has_genre_specific_title_strategy(
+    novel_type_id: str,
+    included_terms: tuple[str, ...],
+    excluded_terms: tuple[str, ...],
+) -> None:
+    captured: dict[str, dict] = {}
+
+    class Gateway:
+        def complete_stage(self, stage, request):
+            prompt = json.loads(request.messages[1]["content"])
+            captured[request.operation] = {
+                "system": request.messages[0]["content"],
+                "context": prompt,
+            }
+            if request.operation == "outline_planning_chapter_window":
+                raise RuntimeError("chapter request captured")
+            return ModelResponse.success(
+                request,
+                text=json.dumps(_codex_phase_content(prompt), ensure_ascii=False),
+            )
+
+    payload = _brief().model_dump(mode="json")
+    payload["novel_type_id"] = novel_type_id
+    runtime = StageRuntimeSettings(
+        provider_id="codexcli",
+        protocol="codex_cli",
+        model="planning-test-model",
+        codex_command="codex-test",
+    )
+
+    with pytest.raises(ValueError, match="outline_planning_generation_failed"):
+        LLMOutlinePlanningGenerator(
+            runtime_resolver=lambda _stage: runtime,
+            model_gateway=Gateway(),
+        ).generate(OutlinePlanningBrief.model_validate(payload), mode="initial")
+
+    assert "chapter_title_strategy" not in captured[
+        "outline_planning_outline_foundation"
+    ]["context"]
+    assert "chapter_title_strategy" not in captured[
+        "outline_planning_character_roster"
+    ]["context"]
+    chapter_window = captured["outline_planning_chapter_window"]
+    guidance = chapter_window["context"]["chapter_title_strategy"]
+    assert "必须对应本章真实发生的事件" in guidance
+    assert "不要重复写章节编号" in guidance
+    assert all(term in guidance for term in included_terms)
+    assert all(term not in guidance for term in excluded_terms)
+    assert (
+        "Generate chapter.title from the concrete events in that chapter"
+        in chapter_window["system"]
+    )
+    assert "follow prompt_context.chapter_title_strategy" in chapter_window["system"]
+
+
+@pytest.mark.parametrize(
     ("skill_ids", "module_ids"),
     [
         pytest.param([], [], id="disabled-project"),
@@ -1633,6 +1695,172 @@ def test_codexcli_retries_once_when_chapter_window_is_not_json() -> None:
 
     assert chapter_attempts == 2
     assert len(plan.outline.chapters) == INITIAL_OUTLINE_CHAPTER_COUNT
+
+
+def test_codexcli_passes_only_two_sorted_preceding_titles_to_window_validator(
+    monkeypatch,
+) -> None:
+    validator_calls: list[dict] = []
+
+    def capture_title_window(chapters, *, genre_id, previous_chapters=()):
+        validator_calls.append(
+            {
+                "chapters": chapters,
+                "genre_id": genre_id,
+                "previous_chapters": previous_chapters,
+            }
+        )
+
+    monkeypatch.setattr(
+        outline_generation_module,
+        "validate_chapter_title_window",
+        capture_title_window,
+        raising=False,
+    )
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        prompt = json.loads(payload["messages"][1]["content"])
+        content = _codex_phase_content(prompt)
+        return {
+            "choices": [
+                {"message": {"content": json.dumps(content, ensure_ascii=False)}}
+            ]
+        }
+
+    fixture = RecordingRuntime()
+    brief = fixture.brief(
+        current_chapter=10,
+        existing_chapters=[*range(1, 9), 10, 12, 9, 11],
+    )
+    payload = brief.model_dump(mode="json")
+    payload["continuation_start_chapter"] = 10
+    for chapter in payload["existing_outline"]["chapters"]:
+        chapter["title"] = f"旧标题{chapter['chapter_number']}"
+
+    LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=lambda _stage: StageRuntimeSettings(
+            provider_id="codexcli",
+            protocol="codex_cli",
+            model="planning-test-model",
+            codex_command="codex-test",
+        ),
+    ).generate(OutlinePlanningBrief.model_validate(payload), mode="regenerate")
+
+    assert len(validator_calls) == 1
+    assert validator_calls[0]["genre_id"] == "xuanhuan"
+    assert validator_calls[0]["previous_chapters"] == [
+        {"chapter_number": 9, "title": "旧标题9"},
+        {"chapter_number": 10, "title": "旧标题10"},
+    ]
+    assert validator_calls[0]["chapters"][0]["chapter_number"] == 11
+
+
+def test_codexcli_repairs_question_title_shape_continued_from_recent_history() -> None:
+    chapter_attempts = 0
+    retry_system_messages: list[str] = []
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        nonlocal chapter_attempts
+        prompt = json.loads(payload["messages"][1]["content"])
+        content = _codex_phase_content(prompt)
+        if prompt["generation_phase"] == "chapters":
+            chapter_attempts += 1
+            retry_system_messages.extend(
+                message["content"]
+                for message in payload["messages"][2:]
+                if message.get("role") == "system"
+            )
+            content["chapters"][0]["title"] = (
+                "青砖下藏着什么？" if chapter_attempts == 1 else "青砖下的旧名册"
+            )
+        return {
+            "choices": [
+                {"message": {"content": json.dumps(content, ensure_ascii=False)}}
+            ]
+        }
+
+    fixture = RecordingRuntime()
+    brief = fixture.brief(
+        current_chapter=10,
+        existing_chapters=[*range(1, 9), 10, 12, 9, 11],
+    )
+    payload = brief.model_dump(mode="json")
+    payload["continuation_start_chapter"] = 10
+    historical_titles = {
+        9: "香炉为何断了？",
+        10: "是谁换了名册？",
+        11: "将被替换的旧目标",
+        12: "另一个旧目标",
+    }
+    for chapter in payload["existing_outline"]["chapters"]:
+        chapter["title"] = historical_titles.get(
+            chapter["chapter_number"], f"旧标题{chapter['chapter_number']}"
+        )
+
+    plan = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=lambda _stage: StageRuntimeSettings(
+            provider_id="codexcli",
+            protocol="codex_cli",
+            model="planning-test-model",
+            codex_command="codex-test",
+        ),
+    ).generate(OutlinePlanningBrief.model_validate(payload), mode="regenerate")
+
+    assert chapter_attempts == 2
+    assert any(
+        "repeated_chapter_title_shape:question:9-11" in message
+        for message in retry_system_messages
+    )
+    assert plan.outline.chapters[0].title == "青砖下的旧名册"
+
+
+def test_codexcli_wraps_repeated_exclamation_titles_after_repair_retry() -> None:
+    chapter_attempts = 0
+    events: list[tuple[str, str, str]] = []
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        nonlocal chapter_attempts
+        prompt = json.loads(payload["messages"][1]["content"])
+        content = _codex_phase_content(prompt)
+        if prompt["generation_phase"] == "chapters":
+            chapter_attempts += 1
+            for chapter in content["chapters"][:3]:
+                chapter["title"] = f"证据现身{chapter['chapter_number']}！"
+        return {
+            "choices": [
+                {"message": {"content": json.dumps(content, ensure_ascii=False)}}
+            ]
+        }
+
+    generator = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=lambda _stage: StageRuntimeSettings(
+            provider_id="codexcli",
+            protocol="codex_cli",
+            model="planning-test-model",
+            codex_command="codex-test",
+        ),
+    )
+
+    with pytest.raises(
+        ValueError, match="^outline_planning_generation_failed$"
+    ) as exc_info:
+        generator.generate(
+            _brief(),
+            mode="initial",
+            phase_callback=lambda phase, status, _payload, error: events.append(
+                (phase, status, error)
+            ),
+        )
+
+    assert chapter_attempts == 2
+    assert events[-1][0:2] == ("chapter_window", "failed")
+    assert events[-1][2].startswith("chapter_window_generation_failed:ValueError:")
+    assert "repeated_chapter_title_shape:exclamation:1-3" in events[-1][2]
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert str(exc_info.value.__cause__).startswith("chapter_window_generation_failed:")
 
 
 def test_codexcli_marks_chapter_phase_failed_when_combined_plan_validation_fails() -> None:

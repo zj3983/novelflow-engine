@@ -30,6 +30,10 @@ from packages.story_core.runtime_config import (
     resolve_stage_runtime,
 )
 from packages.story_core.skill_packs import skill_pack_prompt_context
+from packages.story_core.title_strategy import (
+    build_chapter_title_guidance,
+    validate_chapter_title_window,
+)
 from packages.story_core.project_outline import (
     ChapterPlan,
     ChapterScenePlan,
@@ -905,6 +909,7 @@ class LLMOutlinePlanningGenerator:
                                 validation_error = re.sub(
                                     r"\s+", " ", str(exc)
                                 ).strip()[:1000]
+                                result = None
                         if result is None:
                             retry_payload = {
                                 **request_payload,
@@ -1087,6 +1092,21 @@ class LLMOutlinePlanningGenerator:
                         for seed in character_roster.characters
                     ],
                 }
+                target_start_chapter = min(target_chapter_numbers)
+                previous_chapters = sorted(
+                    [
+                        {
+                            "chapter_number": chapter["chapter_number"],
+                            "title": str(chapter.get("title") or ""),
+                        }
+                        for chapter in validated.existing_outline.get("chapters", [])
+                        if isinstance(chapter, dict)
+                        and isinstance(chapter.get("chapter_number"), int)
+                        and not isinstance(chapter.get("chapter_number"), bool)
+                        and chapter["chapter_number"] < target_start_chapter
+                    ],
+                    key=lambda chapter: chapter["chapter_number"],
+                )[-2:]
 
                 chapter_context = {
                     "generation_phase": "chapters",
@@ -1101,6 +1121,9 @@ class LLMOutlinePlanningGenerator:
                     ],
                     "genre_trope_templates": trope_candidates,
                     "chapter_outline_template": outline_template.get("chapter", {}),
+                    "chapter_title_strategy": build_chapter_title_guidance(
+                        effective_novel_type_id
+                    ),
                     "target_chapter_numbers": target_chapter_numbers,
                     "output_schema": chapter_output_schema(
                         GeneratedChapterWindow,
@@ -1133,6 +1156,7 @@ class LLMOutlinePlanningGenerator:
                                 f"{chapter_contract_prompt}"
                                 "Generate only the requested Chinese webnovel chapter outline window. "
                                 "Fill each chapter using prompt_context.chapter_outline_template. "
+                                "Generate chapter.title from the concrete events in that chapter and follow prompt_context.chapter_title_strategy. "
                                 "Return JSON with the single root field chapters. Do not repeat overall, arcs, or character cards. "
                                 "Follow prompt_context.output_schema and target_chapter_numbers exactly."
                             ),
@@ -1142,10 +1166,15 @@ class LLMOutlinePlanningGenerator:
                 }
 
                 def validate_chapter_window_contracts(result: BaseModel) -> None:
-                    if not chapter_contracts_enabled:
-                        return
-                    for chapter in getattr(result, "chapters", []):
-                        validate_concrete_chapter_contract(chapter)
+                    chapters = getattr(result, "chapters", [])
+                    if chapter_contracts_enabled:
+                        for chapter in chapters:
+                            validate_concrete_chapter_contract(chapter)
+                    validate_chapter_title_window(
+                        [chapter.model_dump(mode="python") for chapter in chapters],
+                        genre_id=effective_novel_type_id,
+                        previous_chapters=previous_chapters,
+                    )
 
                 chapter_window = run_phase(
                     "chapter_window",
