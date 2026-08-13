@@ -982,7 +982,7 @@ async function routeCurrentFileProject(
   return { projectId, encodedId, project, story, overview };
 }
 
-test("outline extension checks prerequisites before calling the planner", async ({ page }) => {
+test("volume detail errors stay in the outline workflow instead of starting prose", async ({ page }) => {
   const fixture = await routeCurrentFileProject(page, "outline-readiness-blocked");
   let generationCalls = 0;
   const outline = {
@@ -1026,6 +1026,28 @@ test("outline extension checks prerequisites before calling the planner", async 
   await page.route(`**/file-projects/${fixture.encodedId}/outline/rolling`, async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ schema_version: "rolling-outline/v1", chapters: [] }) });
   });
+  await page.route(`**/file-projects/${fixture.encodedId}/outline/volume-workflow?target_chapter=2`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        schema_version: "volume-workflow/v1",
+        target_chapter: 2,
+        status: "volume_plan_ready",
+        detail_status: "missing",
+        next_action: "generate_volume_detail",
+        volume_id: "future",
+        volume_range: [1, 30],
+      }),
+    });
+  });
+  await page.route(`**/file-projects/${fixture.encodedId}/outline/volumes/future/detail`, async (route) => {
+    await route.fulfill({
+      status: 422,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "world_context_required" }),
+    });
+  });
   await page.route(`**/file-projects/${fixture.encodedId}/outline/extension-readiness`, async (route) => {
     await route.fulfill({
       status: 200,
@@ -1046,10 +1068,75 @@ test("outline extension checks prerequisites before calling the planner", async 
   });
 
   await page.goto(`/projects/${fixture.encodedId}/outline`);
-  await page.getByRole("button", { name: "补充后续章节" }).click();
+  await page.getByRole("button", { name: "生成本卷完整细纲" }).click();
 
-  await expect(page.getByLabel("后续细纲资料体检")).toContainText("世界观缺少背景和可执行规则");
-  await expect(page.getByText("资料检查未通过，请先处理阻断项。")).toBeVisible();
+  await expect(page.getByText(/卷纲流程加载失败：.*world_context_required/)).toBeVisible();
+  expect(generationCalls).toBe(0);
+});
+
+test("write page sends a finished volume to next-volume design", async ({ page }) => {
+  const fixture = await routeCurrentFileProject(page, "write-volume-missing");
+  await page.route(`**/file-projects/${fixture.encodedId}/outline/volume-workflow?target_chapter=2`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        schema_version: "volume-workflow/v1",
+        target_chapter: 2,
+        status: "volume_missing",
+        detail_status: "volume_missing",
+        next_action: "design_next_volume",
+        volume_id: null,
+        volume_range: null,
+      }),
+    });
+  });
+
+  await page.goto(`/projects/${fixture.encodedId}/write?chapter=1`);
+  await expect(page.getByLabel("下一章准备状态")).toContainText("请先设计下一卷");
+  await expect(page.getByRole("button", { name: "生成下一章" })).toBeDisabled();
+  await page.getByRole("link", { name: "先设计下一卷" }).click();
+  await expect(page).toHaveURL(/outline\?tab=arcs&chapter=2&reason=volume_missing/);
+});
+
+test("write page blocks prose while volume detail is partial", async ({ page }) => {
+  const fixture = await routeCurrentFileProject(page, "write-volume-partial");
+  await page.route(`**/file-projects/${fixture.encodedId}/outline/volume-workflow?target_chapter=2`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        schema_version: "volume-workflow/v1",
+        target_chapter: 2,
+        status: "detail_partial",
+        detail_status: "partial",
+        next_action: "generate_volume_detail",
+        volume_id: "volume-1",
+        volume_range: [1, 60],
+      }),
+    });
+  });
+
+  await page.goto(`/projects/${fixture.encodedId}/write?chapter=1`);
+  await expect(page.getByLabel("下一章准备状态")).toContainText("本卷细纲只完成了一部分");
+  await expect(page.getByRole("button", { name: "生成下一章" })).toBeDisabled();
+  await expect(page.getByRole("link", { name: "继续生成本卷细纲" })).toBeVisible();
+});
+
+test("write page does not start prose when volume workflow cannot be read", async ({ page }) => {
+  const fixture = await routeCurrentFileProject(page, "write-volume-status-error");
+  let generationCalls = 0;
+  await page.route(`**/file-projects/${fixture.encodedId}/outline/volume-workflow?target_chapter=2`, async (route) => {
+    await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ detail: "workflow_unavailable" }) });
+  });
+  await page.route(`**/file-projects/${fixture.encodedId}/generation-jobs`, async (route) => {
+    generationCalls += 1;
+    await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ detail: "must_not_run" }) });
+  });
+
+  await page.goto(`/projects/${fixture.encodedId}/write?chapter=1`);
+  await expect(page.getByLabel("下一章准备状态")).toContainText("卷纲状态读取失败");
+  await expect(page.getByRole("button", { name: "生成下一章" })).toBeDisabled();
   expect(generationCalls).toBe(0);
 });
 
@@ -2785,6 +2872,21 @@ test("file project outline edits three levels and runs outline generation", asyn
       }),
     });
   });
+  await page.route("**/file-projects/file%3Aoutline-fixture/outline/volume-workflow?target_chapter=21", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        schema_version: "volume-workflow/v1",
+        target_chapter: 21,
+        status: "detail_complete",
+        detail_status: "detail_complete",
+        next_action: "generate_prose",
+        volume_id: "opening",
+        volume_range: [1, 30],
+      }),
+    });
+  });
   await page.route("**/file-projects/file%3Aoutline-fixture/story-core", async (route) => {
     storyCoreRequestCount += 1;
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(storyCore) });
@@ -2869,11 +2971,10 @@ test("file project outline edits three levels and runs outline generation", asyn
   expect(storyCoreRequestCount).toBe(0);
   savedBody = null;
   await expect(page.getByText("章节计划还剩 10 章，请补充下一批。", { exact: true })).toBeHidden();
-  await expect(page.getByRole("button", { name: "补充后续章节" })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "补充后续章节" })).toHaveAttribute(
-    "title",
-    "后续大纲已规划到第 30 章，写到接近末尾时再补充。",
-  );
+  await expect(page.getByLabel("当前卷写作流程")).toContainText("第 1-30 章");
+  await expect(page.getByLabel("当前卷写作流程")).toContainText("章节细纲已完成 30/30 章");
+  await expect(page.getByRole("link", { name: "开始写第 21 章" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "补充后续章节" })).toHaveCount(0);
   await expect(page.getByRole("tab", { name: "总纲", exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "阶段大纲", exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "章节大纲", exact: true })).toBeVisible();

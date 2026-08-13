@@ -17,6 +17,7 @@ import {
   fetchFileProjectCandidates,
   fetchGenerationJob,
   fetchProjectWritingPacket,
+  fetchVolumeWorkflow,
   startFileProjectRegenerationJob,
   startFileProjectExpansionJob,
   startGenerationJob,
@@ -24,6 +25,7 @@ import {
   type CandidateDraft,
   type CodexWritingPacket,
   type GenerationJobStep,
+  type VolumeWorkflowResponse,
 } from "../../../../lib/api";
 
 const PAGE_SIZE = 80;
@@ -143,6 +145,9 @@ export default function WritePage() {
   const [regenerateError, setRegenerateError] = useState<string | null>(null);
   const [temporaryGuidance, setTemporaryGuidance] = useState("");
   const [nextWritingPacket, setNextWritingPacket] = useState<CodexWritingPacket | null>(null);
+  const [volumeWorkflow, setVolumeWorkflow] = useState<VolumeWorkflowResponse | null>(null);
+  const [volumeWorkflowLoading, setVolumeWorkflowLoading] = useState(true);
+  const [volumeWorkflowError, setVolumeWorkflowError] = useState("");
   const [copyStatus, setCopyStatus] = useState<CopyStatus>("idle");
   const [pendingCandidate, setPendingCandidate] = useState<CandidateDraft | null>(null);
   const [nextPendingCandidate, setNextPendingCandidate] = useState<CandidateDraft | null>(null);
@@ -225,6 +230,37 @@ export default function WritePage() {
   useEffect(() => {
     let cancelled = false;
     if (!isFileProject || !projectId) {
+      setVolumeWorkflow(null);
+      setVolumeWorkflowLoading(false);
+      setVolumeWorkflowError("");
+      return;
+    }
+    setVolumeWorkflowLoading(true);
+    setVolumeWorkflowError("");
+    fetchVolumeWorkflow(projectId, nextChapterNumber)
+      .then((response) => {
+        if (!cancelled) {
+          setVolumeWorkflow(response);
+          setVolumeWorkflowError("");
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setVolumeWorkflow(null);
+          setVolumeWorkflowError(err instanceof Error ? err.message : String(err));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setVolumeWorkflowLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isFileProject, nextChapterNumber, projectId, refreshVersion]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!isFileProject || !projectId) {
       setNextWritingPacket(null);
       return;
     }
@@ -299,9 +335,14 @@ export default function WritePage() {
   const nextChapterOutlineSource = nextWritingPacket?.next_chapter_outline_source ?? null;
   const rollingFill = nextWritingPacket?.rolling_fill ?? null;
   const nextChapterNeedsOutline = isFileProject
-    && rollingFill !== null
-    && rollingFill.status !== "present"
-    && rollingFill.status !== "legacy";
+    && (volumeWorkflowLoading || Boolean(volumeWorkflowError) || volumeWorkflow?.status !== "detail_complete");
+  const nextChapterActionLabel = volumeWorkflow?.status === "volume_missing"
+    ? "先设计下一卷"
+    : volumeWorkflow?.status === "volume_plan_ready"
+      ? "先生成本卷细纲"
+      : volumeWorkflow?.status === "detail_partial"
+        ? "继续生成本卷细纲"
+        : "生成下一章";
   const writingReview = chapter?.quality_report?.writing_review;
   const downstreamNotice = downstreamRewriteNotice(chapter?.quality_report);
   const lengthReview = chapter?.quality_report?.length_review ?? writingReview?.length_review;
@@ -404,7 +445,11 @@ export default function WritePage() {
   async function handleGenerateNextChapter() {
     if (!generationTargetId || !canGenerateNext) return;
     if (nextChapterNeedsOutline) {
-      router.push(`/projects/${encodedProjectId}/outline?tab=chapters&chapter=${nextChapterNumber}`);
+      const reason = volumeWorkflow?.status === "volume_missing"
+        ? "volume_missing"
+        : "volume_detail_required";
+      const tab = volumeWorkflow?.status === "volume_missing" ? "arcs" : "chapters";
+      router.push(`/projects/${encodedProjectId}/outline?tab=${tab}&chapter=${nextChapterNumber}&reason=${reason}`);
       return;
     }
     const operationToken = ++operationTokenRef.current;
@@ -439,8 +484,19 @@ export default function WritePage() {
       router.push(`/projects/${encodedProjectId}/write?chapter=${generatedChapterNumber}`);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
-      if (operationIsActive() && detail.includes("chapter_outline_required")) {
-        router.push(`/projects/${encodedProjectId}/outline?tab=chapters&chapter=${nextChapterNumber}`);
+      if (
+        operationIsActive()
+        && (
+          detail.includes("chapter_outline_required")
+          || detail.includes("next_volume_required")
+          || detail.includes("volume_detail_required")
+          || detail.includes("volume_detail_incomplete")
+        )
+      ) {
+        const needsVolume = detail.includes("next_volume_required");
+        router.push(
+          `/projects/${encodedProjectId}/outline?tab=${needsVolume ? "arcs" : "chapters"}&chapter=${nextChapterNumber}&reason=${needsVolume ? "volume_missing" : "volume_detail_required"}`,
+        );
       } else if (operationIsActive()) {
         setRegenerateError(detail);
       }
@@ -613,10 +669,10 @@ export default function WritePage() {
                 <button
                   className="ws-btn ws-btn--sm ws-btn--primary"
                   type="button"
-                  disabled={!canGenerateNext || expanding || regenerating || generatingNext}
+                  disabled={!canGenerateNext || expanding || regenerating || generatingNext || nextChapterNeedsOutline}
                   onClick={() => void handleGenerateNextChapter()}
                 >
-                  {generatingNext ? "生成中..." : nextChapterNeedsOutline ? "先补细纲" : "生成下一章"}
+                  {generatingNext ? "生成中..." : "生成下一章"}
                 </button>
                 <button
                   className="ws-btn ws-btn--sm"
@@ -685,6 +741,30 @@ export default function WritePage() {
                 filledChapterNumbers={rollingFill.filled_chapter_numbers ?? []}
                 outlineHref={`/projects/${encodedProjectId}/outline?tab=chapters&chapter=${nextChapterNumber}`}
               />
+            ) : null}
+            {isFileProject && (volumeWorkflowLoading || volumeWorkflowError || (volumeWorkflow && volumeWorkflow.status !== "detail_complete")) ? (
+              <section className="ws-card" aria-label="下一章准备状态">
+                <p className="ws-card__title">第 {nextChapterNumber} 章还不能生成</p>
+                <p className="ws-card__hint">
+                  {volumeWorkflowLoading
+                    ? "正在检查下一章所在卷和章节细纲。"
+                    : volumeWorkflowError
+                      ? `卷纲状态读取失败：${volumeWorkflowError}`
+                      : volumeWorkflow?.status === "volume_missing"
+                    ? "上一卷已经结束，请先设计下一卷。新卷确定后，再生成这一整卷的章节细纲。"
+                    : volumeWorkflow?.status === "detail_partial"
+                      ? `本卷细纲只完成了一部分，请先补完第 ${volumeWorkflow.volume_range?.[0]}-${volumeWorkflow.volume_range?.[1]} 章。`
+                      : `本卷已经设计好，请先生成第 ${volumeWorkflow?.volume_range?.[0]}-${volumeWorkflow?.volume_range?.[1]} 章的完整细纲。`}
+                </p>
+                {!volumeWorkflowLoading && !volumeWorkflowError && volumeWorkflow ? (
+                  <Link
+                    className="ws-btn ws-btn--sm ws-btn--primary"
+                    href={`/projects/${encodedProjectId}/outline?tab=${volumeWorkflow.status === "volume_missing" ? "arcs" : "chapters"}&chapter=${nextChapterNumber}&reason=${volumeWorkflow.status === "volume_missing" ? "volume_missing" : "volume_detail_required"}`}
+                  >
+                    {nextChapterActionLabel}
+                  </Link>
+                ) : null}
+              </section>
             ) : null}
             {temporaryGuidance ? (
               <section className="ws-card">
@@ -756,11 +836,30 @@ export default function WritePage() {
           <button
             className="ws-btn ws-btn--primary"
             type="button"
-            disabled={!canGenerateNext || generatingNext}
+            disabled={!canGenerateNext || generatingNext || nextChapterNeedsOutline}
             onClick={() => void handleGenerateNextChapter()}
           >
-            {generatingNext ? "生成中..." : nextChapterNeedsOutline ? "先补细纲" : "生成第一章"}
+            {generatingNext ? "生成中..." : "生成第一章"}
           </button>
+          {isFileProject && (volumeWorkflowLoading || volumeWorkflowError || (volumeWorkflow && volumeWorkflow.status !== "detail_complete")) ? (
+            <section className="ws-card" aria-label="第一章准备状态">
+              <p className="ws-card__hint">
+                {volumeWorkflowLoading
+                  ? "正在检查第一卷细纲。"
+                  : volumeWorkflowError
+                    ? `卷纲状态读取失败：${volumeWorkflowError}`
+                    : "请先在大纲页完成第一卷设计和整卷章节细纲。"}
+              </p>
+              {!volumeWorkflowLoading && !volumeWorkflowError && volumeWorkflow ? (
+                <Link
+                  className="ws-btn ws-btn--sm ws-btn--primary"
+                  href={`/projects/${encodedProjectId}/outline?tab=${volumeWorkflow.status === "volume_missing" ? "arcs" : "chapters"}&chapter=${nextChapterNumber}`}
+                >
+                  {nextChapterActionLabel}
+                </Link>
+              ) : null}
+            </section>
+          ) : null}
           {(generatingNext || generationSteps.length > 0) ? (
             <WritingProgressRow
               status={regenerateStatus || generationSteps[generationSteps.length - 1]?.message || "准备中"}

@@ -1393,6 +1393,16 @@ export type ProjectOutlineArc = {
   foreshadowing_in: string[];
   foreshadowing_out: string[];
   next_arc_entry: string;
+  is_final_arc?: boolean;
+  story_nodes?: Array<{
+    start_chapter: number;
+    end_chapter: number;
+    objective: string;
+    pressure: string;
+    turn: string;
+    payoff: string;
+    next_effect: string;
+  }>;
 };
 
 export type CharacterIdentityProfile = {
@@ -1488,6 +1498,51 @@ export type RollingOutlineChapter = {
 export type RollingOutline = {
   schema_version: "rolling-outline/v1";
   chapters: RollingOutlineChapter[];
+};
+
+export type VolumeWorkflowStatus =
+  | "volume_missing"
+  | "volume_plan_ready"
+  | "detail_partial"
+  | "detail_complete";
+
+export type VolumeWorkflowResponse = {
+  schema_version: "volume-workflow/v1";
+  target_chapter: number;
+  status: VolumeWorkflowStatus;
+  detail_status: string;
+  next_action:
+    | "design_next_volume"
+    | "generate_volume_detail"
+    | "generate_prose";
+  volume_id: string | null;
+  volume_range: [number, number] | null;
+};
+
+export type VolumeDetailGenerationResponse = {
+  schema_version: "volume-detail-generation/v1";
+  volume_id: string;
+  volume_range: [number, number];
+  detail_status: "complete" | "partial";
+  completed_chapters: number;
+  total_chapters: number;
+  batches: Array<{
+    id: string;
+    start_chapter: number;
+    end_chapter: number;
+    status: string;
+    error?: string;
+  }>;
+};
+
+export type VolumeDesignResponse = {
+  schema_version: "volume-design/v1";
+  status: "volume_plan_ready";
+  next_action: "generate_volume_detail";
+  volume_id: string;
+  volume_range: [number, number];
+  created: boolean;
+  outline?: ProjectOutline;
 };
 
 export type ProjectOutline = {
@@ -4460,6 +4515,56 @@ export async function fetchProjectRollingOutline(projectId: string): Promise<Rol
     `${fileProjectPath(projectId)}/outline/rolling`,
     { method: "GET" },
   )) as RollingOutline;
+}
+
+export async function fetchVolumeWorkflow(
+  projectId: string,
+  targetChapter: number,
+): Promise<VolumeWorkflowResponse> {
+  if (!isFileProjectId(projectId)) {
+    throw new Error("volume_workflow_requires_file_project");
+  }
+  return (await tryFetchJson(
+    `${fileProjectPath(projectId)}/outline/volume-workflow?target_chapter=${encodeURIComponent(String(targetChapter))}`,
+    { method: "GET" },
+  )) as VolumeWorkflowResponse;
+}
+
+export async function designNextVolume(
+  projectId: string,
+  guidance = "",
+): Promise<VolumeDesignResponse> {
+  if (!isFileProjectId(projectId)) {
+    throw new Error("volume_workflow_requires_file_project");
+  }
+  return (await tryFetchJson(
+    `${fileProjectPath(projectId)}/outline/volumes/next`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ guidance }),
+    },
+    420000,
+  )) as VolumeDesignResponse;
+}
+
+export async function generateVolumeDetail(
+  projectId: string,
+  volumeId: string,
+  guidance = "",
+): Promise<VolumeDetailGenerationResponse> {
+  if (!isFileProjectId(projectId)) {
+    throw new Error("volume_workflow_requires_file_project");
+  }
+  return (await tryFetchJson(
+    `${fileProjectPath(projectId)}/outline/volumes/${encodeURIComponent(volumeId)}/detail`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ guidance }),
+    },
+    420000,
+  )) as VolumeDetailGenerationResponse;
 }
 
 export async function updateProjectOutline(projectId: string, payload: ProjectOutlineUpdate): Promise<ProjectOutline> {
