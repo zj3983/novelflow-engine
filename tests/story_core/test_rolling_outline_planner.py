@@ -25,6 +25,7 @@ import pytest
 
 from packages.story_core.outline_rolling import (
     RollingPlanError,
+    plan_volume_detail_batches,
     plan_rolling_window,
 )
 from packages.story_core.outline_rolling_planner import (
@@ -111,6 +112,13 @@ def _seed_outline(
 
 
 # --- Happy paths ------------------------------------------------------------
+
+
+def test_detail_batches_never_cross_volume_boundary() -> None:
+    assert plan_volume_detail_batches(
+        (153, 212),
+        existing=range(153, 208),
+    ) == [list(range(208, 213))]
 
 
 def test_planner_returns_present_when_target_outline_already_exists(

@@ -36,42 +36,84 @@ def _outline(*, strategy: str = "observe", last_chapter: int = 30) -> dict:
     }
 
 
-def test_window_status_warns_with_three_or_fewer_planned_chapters() -> None:
-    status = outline_window_status(_outline(last_chapter=20), current_chapter=17)
-    assert status == {
-        "last_planned_chapter": 20,
-        "remaining_detailed_chapters": 3,
-        "target_last_chapter": 27,
-        "needs_extension": True,
-        "next_chapter_numbers": list(range(21, 28)),
+def _volume_outline(
+    start_chapter: int,
+    end_chapter: int,
+    *,
+    detailed: range,
+) -> dict:
+    return {
+        "overall": {
+            "core_ending_chapter": end_chapter,
+            "extension_ceiling_chapter": end_chapter,
+        },
+        "arcs": [
+            {
+                "id": "active-volume",
+                "start_chapter": start_chapter,
+                "end_chapter": end_chapter,
+                "is_final_arc": True,
+            }
+        ],
+        "chapters": [
+            {"chapter_number": number}
+            for number in detailed
+        ],
     }
 
 
-def test_full_window_does_not_request_more_chapters() -> None:
+def test_missing_detail_targets_the_whole_active_volume() -> None:
+    status = outline_window_status(
+        _volume_outline(153, 212, detailed=range(153, 163)),
+        current_chapter=152,
+    )
+
+    assert status["target_volume_id"] == "active-volume"
+    assert status["target_volume_range"] == [153, 212]
+    assert status["missing_chapter_numbers"] == list(range(163, 213))
+    assert status["next_chapter_numbers"] == list(range(163, 213))
+    assert status["detail_batches"][0] == list(range(163, 168))
+    assert status["detail_batches"][1] == list(range(168, 183))
+    assert status["detail_status"] == "partial"
+
+
+def test_window_status_warns_with_three_or_fewer_planned_chapters() -> None:
+    status = outline_window_status(_outline(last_chapter=20), current_chapter=17)
+    assert status["last_planned_chapter"] == 20
+    assert status["remaining_detailed_chapters"] == 3
+    assert status["target_volume_range"] == [1, 30]
+    assert status["target_last_chapter"] == 30
+    assert status["needs_extension"] is True
+    assert status["next_chapter_numbers"] == list(range(21, 31))
+
+
+def test_partial_volume_requests_all_remaining_chapters() -> None:
     status = outline_window_status(_outline(last_chapter=20), current_chapter=10)
     assert status["remaining_detailed_chapters"] == 10
-    assert status["needs_extension"] is False
-    assert status["next_chapter_numbers"] == []
+    assert status["needs_extension"] is True
+    assert status["next_chapter_numbers"] == list(range(21, 31))
 
 
-def test_window_does_not_expose_missing_numbers_before_warning_threshold() -> None:
+def test_volume_exposes_missing_numbers_without_warning_threshold() -> None:
     status = outline_window_status(_outline(last_chapter=18), current_chapter=10)
     assert status["remaining_detailed_chapters"] == 8
-    assert status["needs_extension"] is False
-    assert status["next_chapter_numbers"] == []
+    assert status["needs_extension"] is True
+    assert status["next_chapter_numbers"] == list(range(19, 31))
 
 
 def test_window_exposes_missing_numbers_after_progress_reaches_threshold() -> None:
     status = outline_window_status(_outline(last_chapter=20), current_chapter=18)
     assert status["remaining_detailed_chapters"] == 2
     assert status["needs_extension"] is True
-    assert status["next_chapter_numbers"] == list(range(21, 29))
+    assert status["next_chapter_numbers"] == list(range(21, 31))
 
 
-def test_window_target_stops_at_extension_ceiling() -> None:
+def test_missing_volume_does_not_fabricate_window_to_extension_ceiling() -> None:
     status = outline_window_status(_outline(last_chapter=490), current_chapter=490)
-    assert status["target_last_chapter"] == 500
-    assert status["next_chapter_numbers"] == list(range(491, 501))
+    assert status["detail_status"] == "volume_missing"
+    assert status["target_volume_range"] is None
+    assert status["target_last_chapter"] == 490
+    assert status["next_chapter_numbers"] == []
 
 
 def test_window_at_ceiling_does_not_request_committed_chapters() -> None:
@@ -80,10 +122,9 @@ def test_window_at_ceiling_does_not_request_committed_chapters() -> None:
     assert status["next_chapter_numbers"] == []
 
 
-def test_window_extension_starts_after_current_when_outline_is_behind() -> None:
+def test_volume_extension_includes_every_missing_detail_in_active_volume() -> None:
     status = outline_window_status(_outline(last_chapter=20), current_chapter=25)
-    assert status["next_chapter_numbers"] == list(range(26, 36))
-    assert all(number > 25 for number in status["next_chapter_numbers"])
+    assert status["next_chapter_numbers"] == list(range(21, 31))
 
 
 def test_sparse_window_requests_every_missing_chapter_in_target_window() -> None:

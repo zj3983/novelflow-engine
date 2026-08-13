@@ -83,6 +83,32 @@ def volume_detail_batches(start: int, end: int) -> list[list[int]]:
     ]
 
 
+def volume_detail_batches_for_missing(
+    start: int,
+    end: int,
+    *,
+    existing: Iterable[int] = (),
+) -> list[list[int]]:
+    existing_numbers: set[int] = set()
+    for index, chapter in enumerate(existing):
+        if (
+            not isinstance(chapter, int)
+            or isinstance(chapter, bool)
+            or chapter < 1
+        ):
+            raise ValueError(f"invalid_detail_chapter_number:{index}")
+        existing_numbers.add(chapter)
+
+    missing_batches: list[list[int]] = []
+    for batch in volume_detail_batches(start, end):
+        missing = [
+            chapter for chapter in batch if chapter not in existing_numbers
+        ]
+        if missing:
+            missing_batches.append(missing)
+    return missing_batches
+
+
 def validate_volume_structure(
     volumes: Sequence[object],
     *,

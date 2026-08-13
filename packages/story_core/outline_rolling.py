@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Any, Iterable
 
 from packages.story_core.outline_planning import apply_chapter_contract_policy
+from packages.story_core.volume_outline import volume_detail_batches_for_missing
 
 
 class RollingPlanError(ValueError):
@@ -302,6 +303,23 @@ def plan_rolling_window(
     return missing
 
 
+def plan_volume_detail_batches(
+    volume_range: tuple[int, int],
+    *,
+    existing: Iterable[int] = (),
+) -> list[list[int]]:
+    """Return every missing chapter in one volume, grouped by 15 chapters."""
+    start, end = _coerce_volume_range(volume_range)
+    try:
+        return volume_detail_batches_for_missing(
+            start,
+            end,
+            existing=existing,
+        )
+    except ValueError as exc:
+        raise RollingPlanError(str(exc)) from exc
+
+
 def validate_rolling_chapter(
     payload: Any,
     *,
@@ -502,6 +520,7 @@ __all__ = [
     "RollingPlanError",
     "RollingValidationError",
     "plan_rolling_window",
+    "plan_volume_detail_batches",
     "rolling_chapter_to_outline_entry",
     "validate_rolling_batch",
     "validate_rolling_chapter",
