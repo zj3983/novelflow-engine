@@ -613,8 +613,7 @@ class LLMOutlinePlanningGenerator:
             raise ValueError("runtime_unavailable")
         overall = deepcopy(validated.overall_context)
         strategy = str(overall.get("current_strategy") or "observe")
-        core_ending = int(overall.get("core_ending_chapter") or 0)
-        allow_short_final = strategy == "close" or validated.current_chapter >= core_ending
+        allow_short_final = strategy == "close"
         context = {
             "generation_phase": "next_volume",
             "title": validated.title,
@@ -626,6 +625,19 @@ class LLMOutlinePlanningGenerator:
                 else []
             ),
             "committed_facts": deepcopy(validated.committed_facts),
+            "world_facts": deepcopy(validated.world_facts),
+            "continuity_facts": deepcopy(validated.continuity_facts),
+            "recent_chapter_summaries": deepcopy(
+                validated.recent_chapter_summaries
+            ),
+            "historical_chapter_summaries": deepcopy(
+                validated.historical_chapter_summaries
+            ),
+            "power_system_spec": deepcopy(validated.power_system_spec),
+            "opening_direction": validated.opening_direction.model_dump(mode="json"),
+            "author_constraints": list(validated.author_constraints),
+            "existing_characters": deepcopy(validated.existing_characters),
+            "existing_character_names": list(validated.existing_character_names),
             "unresolved_foreshadowing": deepcopy(
                 validated.unresolved_foreshadowing
             ),

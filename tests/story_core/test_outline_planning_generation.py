@@ -426,6 +426,28 @@ def _next_volume_brief(*, strategy: str = "expand", current_chapter: int = 50) -
         "chapters": [],
     }
     payload["committed_facts"] = ["The first repair license was revoked."]
+    payload["world_facts"] = ["Repair licenses are issued by the guild."]
+    payload["continuity_facts"] = [
+        {"text": "The old workshop was sealed.", "chapter_number": 50}
+    ]
+    payload["recent_chapter_summaries"] = [
+        {"chapter_number": 50, "summary": "The first guild license was revoked."}
+    ]
+    payload["historical_chapter_summaries"] = [
+        {"chapter_number": 20, "summary": "The second signature first appeared."}
+    ]
+    payload["power_system_spec"] = {
+        "name": "Repair authority",
+        "boundaries": ["Authority cannot be used without a verified object."],
+    }
+    payload["existing_characters"] = [
+        {
+            "name": "Lin Xiu",
+            "role": "protagonist",
+            "story_drive": {"immediate_goal": "Open an independent workshop."},
+        }
+    ]
+    payload["existing_character_names"] = ["Lin Xiu"]
     payload["unresolved_foreshadowing"] = [
         {"text": "The old guild seal contains a second signature.", "status": "open"}
     ]
@@ -464,6 +486,15 @@ def test_generate_next_volume_uses_complete_committed_context() -> None:
     assert captured["overall"] == brief.overall_context
     assert captured["existing_volumes"] == brief.existing_outline["arcs"]
     assert captured["committed_facts"] == brief.committed_facts
+    assert captured["world_facts"] == brief.world_facts
+    assert captured["continuity_facts"] == brief.continuity_facts
+    assert captured["recent_chapter_summaries"] == brief.recent_chapter_summaries
+    assert captured["historical_chapter_summaries"] == brief.historical_chapter_summaries
+    assert captured["power_system_spec"] == brief.power_system_spec
+    assert captured["opening_direction"] == brief.opening_direction.model_dump(mode="json")
+    assert captured["author_constraints"] == brief.author_constraints
+    assert captured["existing_characters"] == brief.existing_characters
+    assert captured["existing_character_names"] == brief.existing_character_names
     assert captured["unresolved_foreshadowing"] == brief.unresolved_foreshadowing
     assert captured["character_current_states"] == brief.character_current_states
     assert captured["previous_volume_end_state"] == previous["end_state"]
@@ -528,7 +559,10 @@ def test_generate_next_volume_allows_short_final_only_for_closing_strategy() -> 
         )
 
 
-def test_generate_next_volume_allows_short_final_after_core_ending_is_reached() -> None:
+@pytest.mark.parametrize("strategy", ["expand", "observe"])
+def test_generate_next_volume_rejects_short_final_after_core_ending_without_close(
+    strategy,
+) -> None:
     final_arc = _next_volume_arc(is_final_arc=True, end_chapter=220)
     final_arc.update(
         start_chapter=201,
@@ -542,7 +576,7 @@ def test_generate_next_volume_allows_short_final_after_core_ending_is_reached() 
         post_json=fake_post,
         runtime_resolver=RecordingRuntime().resolve,
     )
-    brief = _next_volume_brief(strategy="expand", current_chapter=200)
+    brief = _next_volume_brief(strategy=strategy, current_chapter=200)
     previous = deepcopy(brief.existing_outline["arcs"][-1])
     previous.update(
         end_chapter=200,
@@ -550,11 +584,8 @@ def test_generate_next_volume_allows_short_final_after_core_ending_is_reached() 
         end_state="The core ending has been reached.",
     )
 
-    result = generator.generate_next_volume(brief, previous_volume=previous)
-
-    assert result.is_final_arc is True
-    assert result.start_chapter == 201
-    assert result.end_chapter == 220
+    with pytest.raises(ValueError, match="^unexpected_final_volume$"):
+        generator.generate_next_volume(brief, previous_volume=previous)
 
 
 def _skill_enabled_brief(module_ids: list[str]) -> OutlinePlanningBrief:

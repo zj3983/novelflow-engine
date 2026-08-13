@@ -6687,10 +6687,11 @@ class FileProjectStore:
             and not isinstance(item.get("chapter_number"), bool)
             and start <= int(item["chapter_number"]) <= end
         )
-        if target_chapter in detailed:
-            status = "ready"
+        expected = set(range(start, end + 1))
+        if detailed == expected:
+            status = "detail_complete"
             detail_status = "detail_complete"
-            next_action = "write_chapter"
+            next_action = "generate_prose"
         elif detailed:
             status = "detail_partial"
             detail_status = "partial"
@@ -6761,7 +6762,6 @@ class FileProjectStore:
         overall = original.get("overall") if isinstance(original.get("overall"), dict) else {}
         allow_short_final = (
             str(overall.get("current_strategy") or "observe") == "close"
-            or current_chapter >= int(overall.get("core_ending_chapter") or 0)
         )
         volume = validate_next_volume(
             generated,

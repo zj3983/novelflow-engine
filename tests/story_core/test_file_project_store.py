@@ -4571,13 +4571,19 @@ def test_volume_workflow_status_reports_missing_plan_partial_and_ready(tmp_path)
     template = _generated_opening_plan().outline.chapters[0].model_dump(mode="json")
     outline["chapters"] = [{**template, "chapter_number": 51}]
     store.update_project_outline(outline)
-    ready = store.volume_workflow_status(51)
-    assert ready["status"] == "ready"
-    assert ready["detail_status"] == "detail_complete"
-    assert ready["next_action"] == "write_chapter"
-    partial = store.volume_workflow_status(52)
+    partial = store.volume_workflow_status(51)
     assert partial["status"] == "detail_partial"
     assert partial["next_action"] == "generate_volume_detail"
+
+    outline["chapters"] = [
+        {**template, "chapter_number": number}
+        for number in range(51, 101)
+    ]
+    store.update_project_outline(outline)
+    complete = store.volume_workflow_status(51)
+    assert complete["status"] == "detail_complete"
+    assert complete["detail_status"] == "detail_complete"
+    assert complete["next_action"] == "generate_prose"
 
 
 def test_design_next_volume_appends_plan_without_writing_detail(tmp_path) -> None:
@@ -4683,6 +4689,39 @@ def test_design_next_volume_allows_short_final_for_close_strategy(tmp_path) -> N
     assert saved["arcs"][-1]["is_final_arc"] is True
     assert saved["overall"]["core_ending_chapter"] == 70
     assert RollingOutlineStore(store.root).read_rolling_outline() is None
+
+
+@pytest.mark.parametrize("strategy", ["expand", "observe"])
+def test_design_next_volume_rejects_short_final_at_core_ending_without_close(
+    tmp_path,
+    strategy,
+) -> None:
+    store = _prepare_next_volume_design_project(tmp_path)
+    outline = store.project_outline()
+    outline.pop("source", None)
+    outline["overall"].update(
+        current_strategy=strategy,
+        core_ending_chapter=200,
+        extension_ceiling_chapter=300,
+    )
+    outline["arcs"][0].update(
+        end_chapter=200,
+        story_nodes=_story_nodes(1, 200),
+    )
+    store._write_json_atomic(store.webnovel_dir / "outline.json", outline)
+    state = store.state()
+    state["current_chapter"] = 200
+    store._write_json_atomic(store.webnovel_dir / "state.json", state)
+    candidate = _designed_next_volume(
+        start_chapter=201,
+        end_chapter=220,
+        is_final_arc=True,
+    )
+
+    with pytest.raises(ValueError, match="^unexpected_final_volume$"):
+        store.design_next_volume(_NextVolumeGenerator(result=candidate))
+
+    assert len(store.project_outline()["arcs"]) == 1
 
 
 def test_foundation_save_allows_unchanged_committed_legacy_short_volume(
