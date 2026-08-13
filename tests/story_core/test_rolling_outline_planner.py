@@ -29,7 +29,6 @@ from packages.story_core.outline_rolling import (
     plan_rolling_window,
 )
 from packages.story_core.outline_rolling_planner import (
-    RollingOutlineFailed,
     RollingOutlinePlanner,
     RollingOutlineStatus,
 )
@@ -134,6 +133,24 @@ def test_detail_batches_do_not_merge_separate_sparse_gaps() -> None:
     ) == [[160], [180]]
 
 
+def test_real_planner_does_not_silently_generate_a_five_chapter_window(
+    tmp_path: Path,
+) -> None:
+    _seed_outline(tmp_path, chapters=[])
+    generator = _RecordingGenerator()
+    planner = RollingOutlinePlanner(generator=generator)
+
+    status = planner.ensure_rolling_outline(
+        project_root=tmp_path,
+        target_chapter=148,
+        volume_range=(140, 160),
+    )
+
+    assert status.kind == "volume_detail_required"
+    assert status.chapter_numbers == list(range(140, 155))
+    assert generator.requests == []
+
+
 def test_planner_returns_present_when_target_outline_already_exists(
     tmp_path: Path,
 ) -> None:
@@ -185,9 +202,9 @@ def test_planner_fills_window_when_target_outline_missing(tmp_path: Path) -> Non
         volume_range=(140, 160),
     )
 
-    assert status.kind == "filled"
-    assert sorted(status.chapter_numbers) == [148, 149, 150, 151, 152]
-    assert generator.requests == [148, 149, 150, 151, 152]
+    assert status.kind == "volume_detail_required"
+    assert status.chapter_numbers == list(range(140, 155))
+    assert generator.requests == []
     # The rolling outline lives in a separate file
     # under ``.story-system/outline-generation/`` so the
     # legacy ``.webnovel/outline.json`` stays untouched.
@@ -197,9 +214,7 @@ def test_planner_fills_window_when_target_outline_missing(tmp_path: Path) -> Non
         / "outline-generation"
         / "rolling_outline.json"
     )
-    on_disk = json.loads(rolling_path.read_text(encoding="utf-8"))
-    numbers = [int(c["chapter_number"]) for c in on_disk["chapters"]]
-    assert numbers == [148, 149, 150, 151, 152]
+    assert not rolling_path.exists()
     # The legacy outline is NOT modified by the rolling
     # fill — the file may pre-exist (empty chapters) but
     # its content is byte-identical to the pre-call
@@ -236,11 +251,11 @@ def test_planner_extends_partial_window_to_full(tmp_path: Path) -> None:
         volume_range=(140, 160),
     )
 
-    assert status.kind == "filled"
-    assert status.chapter_numbers == [151, 152]
+    assert status.kind == "present"
+    assert status.chapter_numbers == []
     # The generator must only be invoked for the missing
     # chapters, not for the ones already on disk.
-    assert generator.requests == [151, 152]
+    assert generator.requests == []
 
 
 # --- Failure modes ----------------------------------------------------------
@@ -278,12 +293,13 @@ def test_planner_raises_when_generator_returns_invalid_payload(
 
     generator = _RecordingGenerator(payload_factory=_bad_generator)
     planner = RollingOutlinePlanner(generator=generator)
-    with pytest.raises(RollingOutlineFailed):
-        planner.ensure_rolling_outline(
-            project_root=tmp_path,
-            target_chapter=148,
-            volume_range=(140, 160),
-        )
+    status = planner.ensure_rolling_outline(
+        project_root=tmp_path,
+        target_chapter=148,
+        volume_range=(140, 160),
+    )
+    assert status.kind == "volume_detail_required"
+    assert generator.requests == []
     # No outline was written.
     on_disk = json.loads(
         (tmp_path / ".webnovel" / "outline.json").read_text(encoding="utf-8")
@@ -305,12 +321,13 @@ def test_planner_raises_when_generator_returns_wrong_chapter_number(
 
     generator = _RecordingGenerator(payload_factory=_wrong_number)
     planner = RollingOutlinePlanner(generator=generator)
-    with pytest.raises(RollingOutlineFailed):
-        planner.ensure_rolling_outline(
-            project_root=tmp_path,
-            target_chapter=148,
-            volume_range=(140, 160),
-        )
+    status = planner.ensure_rolling_outline(
+        project_root=tmp_path,
+        target_chapter=148,
+        volume_range=(140, 160),
+    )
+    assert status.kind == "volume_detail_required"
+    assert generator.requests == []
 
 
 def test_planner_raises_when_target_outside_volume(tmp_path: Path) -> None:
@@ -345,8 +362,9 @@ def test_planner_truncates_window_at_volume_end(tmp_path: Path) -> None:
         target_chapter=158,
         volume_range=(140, 160),
     )
-    assert status.chapter_numbers == [158, 159, 160]
-    assert generator.requests == [158, 159, 160]
+    assert status.kind == "volume_detail_required"
+    assert status.chapter_numbers == list(range(140, 155))
+    assert generator.requests == []
 
 
 # --- Status envelope ------------------------------------------------------
@@ -368,3 +386,4 @@ def test_planner_status_envelope_carries_volume_range(tmp_path: Path) -> None:
     )
     assert status.volume_range == (140, 160)
     assert status.target_chapter == 148
+    assert status.kind == "volume_detail_required"

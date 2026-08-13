@@ -518,6 +518,201 @@ class LLMOutlinePlanningGenerator:
             post_json, cached_runtime_resolver
         )
 
+    def generate_chapter_batch(
+        self,
+        brief: OutlinePlanningBrief,
+        *,
+        volume: dict[str, Any],
+        chapter_numbers: list[int],
+        previous_batches: list[dict[str, Any]],
+        guidance: str = "",
+    ) -> GeneratedChapterWindow:
+        """Generate one resumable chapter-detail batch inside a fixed volume."""
+
+        validated = OutlinePlanningBrief.model_validate(brief)
+        if not isinstance(volume, dict):
+            raise ValueError("invalid_volume")
+        volume_id = str(volume.get("id") or "").strip()
+        start = volume.get("start_chapter")
+        end = volume.get("end_chapter")
+        if (
+            not volume_id
+            or not isinstance(start, int)
+            or isinstance(start, bool)
+            or not isinstance(end, int)
+            or isinstance(end, bool)
+            or start < 1
+            or end < start
+        ):
+            raise ValueError("invalid_volume")
+        if (
+            not isinstance(chapter_numbers, list)
+            or not chapter_numbers
+            or len(chapter_numbers) > 15
+            or any(
+                not isinstance(number, int)
+                or isinstance(number, bool)
+                or number < start
+                or number > end
+                for number in chapter_numbers
+            )
+            or chapter_numbers != sorted(set(chapter_numbers))
+        ):
+            raise ValueError("invalid_chapter_batch")
+        normalized_guidance = str(guidance or "").strip()
+        if len(normalized_guidance) > 1000:
+            raise ValueError("regeneration_guidance_too_long")
+
+        runtime = self._runtime_resolver("planner")
+        if runtime.provider not in {"codexcli", "antigravity"} and not runtime.api_key:
+            raise ValueError("runtime_unavailable")
+        genre = runtime_novel_type(validated.novel_type_id)
+        if genre is None:
+            raise ValueError("invalid_novel_type")
+        genre_context = novel_type_prompt_context(genre)
+        outline_template = genre_context.get("genre_outline_template")
+        if not isinstance(outline_template, dict) or not outline_template:
+            raise ValueError("outline_template_missing")
+        genre_id = canonical_novel_type_id(
+            getattr(genre, "id", None) or validated.novel_type_id
+        )
+
+        all_nodes = [
+            dict(node)
+            for node in volume.get("story_nodes", [])
+            if isinstance(node, dict)
+        ]
+        current_nodes = [
+            node
+            for node in all_nodes
+            if int(node.get("start_chapter") or 0) <= chapter_numbers[-1]
+            and int(node.get("end_chapter") or 0) >= chapter_numbers[0]
+        ]
+        previous_endings: list[dict[str, Any]] = []
+        for batch in previous_batches:
+            chapters = batch.get("chapters") if isinstance(batch, dict) else None
+            if not isinstance(chapters, list) or not chapters:
+                continue
+            last = chapters[-1]
+            if not isinstance(last, dict):
+                continue
+            previous_endings.append(
+                {
+                    key: last.get(key)
+                    for key in (
+                        "chapter_number",
+                        "title",
+                        "ending_hook",
+                        "state_delta_summary",
+                    )
+                    if last.get(key) not in (None, "")
+                }
+            )
+        existing_chapters = [
+            dict(chapter)
+            for chapter in validated.existing_outline.get("chapters", [])
+            if isinstance(chapter, dict)
+        ]
+        previous_titles = select_previous_chapter_titles(
+            [*existing_chapters, *previous_endings],
+            target_start=chapter_numbers[0],
+        )
+        known_titles = select_adjacent_chapter_titles(
+            existing_chapters,
+            generated_chapter_numbers=chapter_numbers,
+        )
+        contracts_enabled = (
+            validated.enabled_skill_module_ids is None
+            and CHAPTER_SOP_MODULE_ID.split("::", 1)[0]
+            in validated.enabled_skill_ids
+        ) or CHAPTER_SOP_MODULE_ID in {
+            str(module_id).strip()
+            for module_id in (validated.enabled_skill_module_ids or [])
+        }
+        context = {
+            "generation_phase": "volume_chapter_batch",
+            "title": validated.title,
+            "novel_type_id": genre_id,
+            "volume": deepcopy(volume),
+            "target_chapter_numbers": list(chapter_numbers),
+            "current_batch_story_nodes": current_nodes,
+            "previous_batch_endings": previous_endings,
+            "committed_context": {
+                "overall": deepcopy(validated.overall_context),
+                "recent_chapter_summaries": deepcopy(
+                    validated.recent_chapter_summaries
+                ),
+                "historical_chapter_summaries": deepcopy(
+                    validated.historical_chapter_summaries
+                ),
+                "existing_characters": deepcopy(validated.existing_characters),
+                "known_character_names": list(validated.existing_character_names),
+                "power_system": deepcopy(validated.power_system_spec),
+            },
+            "required_volume_ending": str(
+                volume.get("climax")
+                or volume.get("end_state")
+                or volume.get("payoff")
+                or ""
+            ).strip(),
+            "guidance": normalized_guidance,
+            "chapter_outline_template": outline_template.get("chapter", {}),
+            "chapter_title_strategy": build_chapter_title_guidance(genre_id),
+            "previous_chapter_titles": previous_titles,
+            "existing_window_chapter_titles": known_titles,
+            "output_schema": chapter_output_schema(
+                GeneratedChapterWindow,
+                require_chapter_contracts=contracts_enabled,
+            ),
+            "validation_rules": [
+                "Return exactly the target_chapter_numbers in order.",
+                "Use the fixed volume and story nodes; do not redesign arcs or volume boundaries.",
+                "Carry forward previous_batch_endings and committed_context.",
+                "The final batch must satisfy required_volume_ending.",
+            ],
+        }
+        payload = {
+            "model": runtime.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Generate only one Chinese webnovel chapter-detail batch. "
+                        "The supplied volume structure is fixed: you must not redesign, "
+                        "replace, resize, or reorder the volume or its story nodes. "
+                        "Return JSON with the single root field chapters. Follow "
+                        "prompt_context.output_schema and target_chapter_numbers exactly."
+                    ),
+                },
+                {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": float(runtime.temperature),
+        }
+        response = _complete_payload(
+            self._model_gateway,
+            payload,
+            operation="outline_planning_chapter_batch",
+        )
+        data = parse_json_message_content(response)
+        if data is None:
+            raise ValueError("invalid_chapter_batch_json")
+        result = GeneratedChapterWindow.model_validate(data)
+        actual = [chapter.chapter_number for chapter in result.chapters]
+        if actual != chapter_numbers:
+            raise ValueError("generated_chapters_do_not_match_target_batch")
+        if contracts_enabled:
+            for chapter in result.chapters:
+                validate_concrete_chapter_contract(chapter)
+        validate_chapter_title_window(
+            [chapter.model_dump(mode="python") for chapter in result.chapters],
+            genre_id=genre_id,
+            previous_chapters=previous_titles,
+            known_chapters=known_titles,
+            generated_chapter_numbers=chapter_numbers,
+        )
+        return result
+
     def generate(
         self,
         brief: OutlinePlanningBrief,
@@ -577,7 +772,11 @@ class LLMOutlinePlanningGenerator:
                     target_last_chapter = (
                         validated.current_chapter + INITIAL_OUTLINE_CHAPTER_COUNT
                         if validated.continuation_start_chapter is not None
-                        else window["target_last_chapter"]
+                        else min(
+                            validated.current_chapter
+                            + INITIAL_OUTLINE_CHAPTER_COUNT,
+                            window["target_last_chapter"],
+                        )
                     )
                     target_chapter_numbers = list(
                         range(validated.current_chapter + 1, target_last_chapter + 1)
@@ -586,7 +785,10 @@ class LLMOutlinePlanningGenerator:
                     raise ValueError("outline_window_already_full")
             else:
                 assert window is not None
-                target_chapter_numbers = window["next_chapter_numbers"]
+                detail_batches = window.get("detail_batches") or []
+                target_chapter_numbers = (
+                    list(detail_batches[0]) if detail_batches else []
+                )
                 if not target_chapter_numbers:
                     raise ValueError("outline_window_already_full")
 

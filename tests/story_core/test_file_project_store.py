@@ -22,6 +22,8 @@ from packages.story_core.file_project_store import (
     _project_legacy_review,
     _regeneration_quality_blocking,
 )
+from packages.story_core.outline_planning_generation import GeneratedChapterWindow
+from packages.story_core.outline_rolling_store import RollingOutlineStore
 
 
 def _seed_generation_outline(root: Path, chapter_number: int) -> None:
@@ -4194,6 +4196,182 @@ def test_extend_allows_unchanged_committed_legacy_short_volume(tmp_path) -> None
     assert saved["outline"]["arcs"][0]["story_nodes"] == []
 
 
+def _volume_detail_generated_chapter(chapter_number: int) -> dict:
+    return {
+        "chapter_number": chapter_number,
+        "title": f"Detail {chapter_number}",
+        "goal": f"Advance {chapter_number}",
+        "obstacle": "Evidence is sealed.",
+        "action": "The protagonist verifies the seal.",
+        "turn": "A second signature appears.",
+        "payoff": "The next witness is identified.",
+        "ending_hook": "The witness has vanished.",
+        "trope_beat": None,
+        "cast": ["Lin Xiu"],
+        "core_conflict": "The archive closes before the proof is copied.",
+        "gain": "A verifiable signature.",
+        "cost": "The keeper notices the search.",
+        "foreshadowing": ["The second signature"],
+        "state_delta_summary": "The investigation moves to the missing witness.",
+        "scene_chain": [
+            {
+                "location": "Archive",
+                "pov": "Lin Xiu",
+                "goal": "Copy the proof.",
+                "obstacle": "The archive is closing.",
+                "action": "Compare the seals.",
+                "change": "Find the second signature.",
+                "next": "Question the witness.",
+                "state_delta": {"clue": 1},
+            },
+            {
+                "location": "Courtyard",
+                "pov": "Lin Xiu",
+                "goal": "Find the witness.",
+                "obstacle": "The witness is gone.",
+                "action": "Check the departure register.",
+                "change": "Learn the witness left early.",
+                "next": "Follow the route.",
+                "state_delta": {"lead": 1},
+            },
+        ],
+    }
+
+
+def _prepare_volume_detail_project(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "volume-detail")
+    outline = _generated_opening_plan().outline.model_dump(mode="json")
+    outline["overall"].update(
+        core_ending_chapter=60,
+        extension_ceiling_chapter=60,
+    )
+    outline["arcs"] = [
+        {
+            **outline["arcs"][0],
+            "id": "v3",
+            "start_chapter": 1,
+            "end_chapter": 60,
+            "goal": "Finish the repair hearing.",
+            "obstacle": "The guild seals the evidence.",
+            "payoff": "Win archive access.",
+            "climax": "Expose the forged seal.",
+            "is_final_arc": True,
+            "story_nodes": _story_nodes(1, 60),
+        }
+    ]
+    outline["chapters"] = []
+    store.update_project_outline(outline)
+    return store
+
+
+class _RecordingVolumeDetailGenerator:
+    def __init__(self, *, fail_batch_start: int | None = None):
+        self.calls: list[tuple[int, ...]] = []
+        self.fail_batch_start = fail_batch_start
+        self.failed = False
+
+    def generate_chapter_batch(
+        self,
+        brief,
+        *,
+        volume,
+        chapter_numbers,
+        previous_batches,
+        guidance="",
+    ):
+        self.calls.append(tuple(chapter_numbers))
+        if self.fail_batch_start == chapter_numbers[0] and not self.failed:
+            self.failed = True
+            raise ValueError("temporary model failure")
+        return GeneratedChapterWindow.model_validate(
+            {
+                "chapters": [
+                    _volume_detail_generated_chapter(number)
+                    for number in chapter_numbers
+                ]
+            }
+        )
+
+
+def test_generate_volume_detail_calls_model_once_per_fifteen_chapter_batch(tmp_path) -> None:
+    store = _prepare_volume_detail_project(tmp_path)
+    generator = _RecordingVolumeDetailGenerator()
+
+    result = store.generate_volume_detail(generator, volume_id="v3")
+
+    assert generator.calls == [
+        tuple(range(1, 16)),
+        tuple(range(16, 31)),
+        tuple(range(31, 46)),
+        tuple(range(46, 61)),
+    ]
+    assert result["schema_version"] == "volume-detail-generation/v1"
+    assert result["detail_status"] == "complete"
+    assert result["completed_chapters"] == result["total_chapters"] == 60
+    rolling = RollingOutlineStore(store.root).read_rolling_outline()
+    assert [chapter["chapter_number"] for chapter in rolling["chapters"]] == list(range(1, 61))
+
+
+def test_failed_second_batch_keeps_first_and_retry_starts_at_second(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = _prepare_volume_detail_project(tmp_path)
+    generator = _RecordingVolumeDetailGenerator(fail_batch_start=16)
+    publish_calls: list[list[int]] = []
+    original_apply = RollingOutlineStore.apply_rolling_batch
+
+    def recording_apply(self, **kwargs):
+        publish_calls.append(list(kwargs["expected_chapter_numbers"]))
+        return original_apply(self, **kwargs)
+
+    monkeypatch.setattr(RollingOutlineStore, "apply_rolling_batch", recording_apply)
+
+    with pytest.raises(ValueError, match="^volume_detail_generation_failed:0016-0030"):
+        store.generate_volume_detail(generator, volume_id="v3")
+
+    assert RollingOutlineStore(store.root).read_rolling_outline() is None
+    result = store.generate_volume_detail(generator, volume_id="v3")
+
+    assert generator.calls.count(tuple(range(1, 16))) == 1
+    assert generator.calls.count(tuple(range(16, 31))) == 2
+    assert publish_calls == [list(range(1, 61))]
+    assert result["detail_status"] == "complete"
+
+
+def test_generate_volume_detail_handles_sparse_gaps_without_overwriting_existing(
+    tmp_path,
+) -> None:
+    store = _prepare_volume_detail_project(tmp_path)
+    outline = store.project_outline()
+    outline.pop("source", None)
+    template = _generated_opening_plan().outline.chapters[0].model_dump(mode="json")
+    outline["chapters"] = [
+        {**template, "chapter_number": number, "title": f"Existing {number}"}
+        for number in range(1, 61)
+        if number not in {10, 30}
+    ]
+    store.update_project_outline(outline)
+    generator = _RecordingVolumeDetailGenerator()
+
+    result = store.generate_volume_detail(generator, volume_id="v3")
+
+    assert generator.calls == [(10,), (30,)]
+    assert result["completed_chapters"] == result["total_chapters"] == 60
+    rolling = RollingOutlineStore(store.root).read_rolling_outline()
+    assert [chapter["chapter_number"] for chapter in rolling["chapters"]] == [10, 30]
+
+
+def test_generate_volume_detail_rejects_unknown_volume_without_model_call(tmp_path) -> None:
+    store = _prepare_volume_detail_project(tmp_path)
+    generator = _RecordingVolumeDetailGenerator()
+
+    with pytest.raises(ValueError, match="^volume_detail_volume_missing:next-volume$"):
+        store.generate_volume_detail(generator, volume_id="next-volume")
+
+    assert generator.calls == []
+
+
 def test_foundation_save_allows_unchanged_committed_legacy_short_volume(
     tmp_path,
 ) -> None:
@@ -4462,7 +4640,7 @@ def test_outline_extension_readiness_reports_missing_prerequisites(tmp_path) -> 
         "protagonist_card_required",
         "world_context_required",
     }
-    assert readiness["next_chapter_numbers"] == list(range(11, 21))
+    assert readiness["next_chapter_numbers"] == list(range(11, 26))
 
 
 def test_outline_extension_readiness_accepts_complete_materials(tmp_path) -> None:
@@ -4478,7 +4656,7 @@ def test_outline_extension_readiness_accepts_complete_materials(tmp_path) -> Non
 
     assert readiness["ready"] is True
     assert readiness["blockers"] == []
-    assert readiness["next_chapter_numbers"] == list(range(11, 21))
+    assert readiness["next_chapter_numbers"] == list(range(11, 26))
 
 
 def test_extend_does_not_call_model_when_prerequisites_are_missing(tmp_path) -> None:

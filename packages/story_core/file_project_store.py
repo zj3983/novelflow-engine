@@ -133,7 +133,11 @@ from packages.story_core.outline_planning import (
     validate_generated_trope_selection,
 )
 from packages.story_core.outline_planning_generation import OutlinePlanningBrief
-from packages.story_core.volume_outline import validate_volume_structure
+from packages.story_core.volume_detail_checkpoints import VolumeDetailCheckpointStore
+from packages.story_core.volume_outline import (
+    validate_volume_structure,
+    volume_detail_batches_for_missing,
+)
 from packages.story_core.outline_extension_readiness import (
     inspect_outline_extension_readiness,
 )
@@ -5852,13 +5856,25 @@ class FileProjectStore:
         current = normalize_project_outline(current)
         addition = normalize_project_outline(addition)
         added_numbers = [int(item["chapter_number"]) for item in addition["chapters"]]
-        expected = outline_window_status(
+        window_status = outline_window_status(
             current,
             current_chapter=current_chapter,
-        )["next_chapter_numbers"]
+        )
+        detail_batches = window_status.get("detail_batches") or []
+        expected = list(detail_batches[0]) if detail_batches else []
         if not expected:
-            raise ValueError("outline_window_already_full")
-        if added_numbers != expected:
+            legacy_expected = list(
+                range(
+                    current_chapter + 1,
+                    current_chapter + INITIAL_OUTLINE_CHAPTER_COUNT + 1,
+                )
+            )
+            if added_numbers == legacy_expected:
+                expected = legacy_expected
+            elif added_numbers:
+                raise ValueError("outline_window_already_full")
+        legacy_prefix = expected[:INITIAL_OUTLINE_CHAPTER_COUNT]
+        if added_numbers not in (expected, legacy_prefix):
             raise ValueError("generated_chapters_do_not_match_target_window")
         arcs = {str(item["id"]): dict(item) for item in current["arcs"]}
         for arc in addition["arcs"]:
@@ -6071,12 +6087,36 @@ class FileProjectStore:
             if not expected_chapter_numbers:
                 raise ValueError("outline_window_already_full")
         else:
-            expected_chapter_numbers = outline_window_status(
+            window_status = outline_window_status(
                 current_outline,
                 current_chapter=current_chapter,
-            )["next_chapter_numbers"]
+            )
+            detail_batches = window_status.get("detail_batches") or []
+            expected_chapter_numbers = (
+                list(detail_batches[0]) if detail_batches else []
+            )
             if not expected_chapter_numbers:
-                raise ValueError("outline_window_already_full")
+                direct_numbers = [
+                    chapter.chapter_number for chapter in validated.outline.chapters
+                ]
+                legacy_expected = list(
+                    range(
+                        current_chapter + 1,
+                        current_chapter + INITIAL_OUTLINE_CHAPTER_COUNT + 1,
+                    )
+                )
+                if direct_numbers == legacy_expected:
+                    expected_chapter_numbers = legacy_expected
+                elif direct_numbers:
+                    raise ValueError("outline_window_already_full")
+            direct_numbers = [
+                chapter.chapter_number for chapter in validated.outline.chapters
+            ]
+            legacy_prefix = expected_chapter_numbers[
+                :INITIAL_OUTLINE_CHAPTER_COUNT
+            ]
+            if direct_numbers == legacy_prefix:
+                expected_chapter_numbers = legacy_prefix
         if mode in {"initial", "regenerate"}:
             validated = validate_generated_opening_plan(
                 validated.model_dump(mode="json"),
@@ -6412,14 +6452,297 @@ class FileProjectStore:
             persist_chapter_window=persist_chapter_window,
         )
 
-    def outline_extension_readiness(self) -> dict[str, Any]:
+    @staticmethod
+    def _generated_detail_to_rolling_chapter(chapter: Any) -> dict[str, Any]:
+        payload = (
+            chapter.model_dump(mode="json")
+            if hasattr(chapter, "model_dump")
+            else dict(chapter)
+        )
+        cast = [
+            {
+                "name": str(name).strip(),
+                "role": "character",
+                "this_chapter_role": "participates in the chapter action",
+            }
+            for name in payload.get("cast", [])
+            if str(name).strip()
+        ]
+        scenes = []
+        for scene in payload.get("scene_chain", []):
+            if not isinstance(scene, dict):
+                continue
+            result = str(
+                scene.get("change") or scene.get("next") or ""
+            ).strip()
+            scenes.append(
+                {
+                    "location": str(scene.get("location") or "").strip(),
+                    "action": str(scene.get("action") or "").strip(),
+                    "result": result,
+                }
+            )
+        rolling = {
+            "chapter_number": int(payload["chapter_number"]),
+            "title": str(payload.get("title") or "").strip(),
+            "chapter_goal": str(payload.get("goal") or "").strip(),
+            "core_conflict": str(payload.get("core_conflict") or "").strip(),
+            "cast": cast,
+            "scenes": scenes,
+            "gain": str(payload.get("gain") or "").strip(),
+            "cost": str(payload.get("cost") or "").strip(),
+            "foreshadowing": list(payload.get("foreshadowing") or []),
+            "hook": str(payload.get("ending_hook") or "").strip(),
+            "state_delta": str(
+                payload.get("state_delta_summary") or ""
+            ).strip(),
+        }
+        for optional in ("payoff_contract", "chapter_sop"):
+            if isinstance(payload.get(optional), dict):
+                rolling[optional] = dict(payload[optional])
+        return rolling
+
+    @_with_project_update_lock
+    def generate_volume_detail(
+        self,
+        generator: Any,
+        *,
+        volume_id: str,
+        guidance: str = "",
+    ) -> dict[str, Any]:
+        """Generate every missing detail row in one volume, then publish once."""
+
+        if not hasattr(generator, "generate_chapter_batch"):
+            raise ValueError("volume_detail_generator_required")
+        normalized_volume_id = str(volume_id or "").strip()
         outline = dict(self.project_outline())
         outline.pop("source", None)
-        return inspect_outline_extension_readiness(
+        volume = next(
+            (
+                dict(arc)
+                for arc in outline.get("arcs", [])
+                if isinstance(arc, dict)
+                and str(arc.get("id") or "").strip() == normalized_volume_id
+            ),
+            None,
+        )
+        if volume is None:
+            raise ValueError(
+                f"volume_detail_volume_missing:{normalized_volume_id or volume_id}"
+            )
+        start = int(volume["start_chapter"])
+        end = int(volume["end_chapter"])
+        volume_range = (start, end)
+
+        legacy_numbers = {
+            int(chapter["chapter_number"])
+            for chapter in outline.get("chapters", [])
+            if isinstance(chapter, dict)
+            and isinstance(chapter.get("chapter_number"), int)
+            and not isinstance(chapter.get("chapter_number"), bool)
+            and start <= int(chapter["chapter_number"]) <= end
+        }
+        rolling_store = RollingOutlineStore(self.root)
+        rolling_outline = rolling_store.read_rolling_outline() or {}
+        rolling_numbers = {
+            int(chapter["chapter_number"])
+            for chapter in rolling_outline.get("chapters", [])
+            if isinstance(chapter, dict)
+            and isinstance(chapter.get("chapter_number"), int)
+            and not isinstance(chapter.get("chapter_number"), bool)
+            and start <= int(chapter["chapter_number"]) <= end
+        }
+        existing_numbers = legacy_numbers | rolling_numbers
+        missing_batches = volume_detail_batches_for_missing(
+            start,
+            end,
+            existing=sorted(existing_numbers),
+        )
+        total_chapters = end - start + 1
+        if not missing_batches:
+            return {
+                "schema_version": "volume-detail-generation/v1",
+                "volume_id": normalized_volume_id,
+                "volume_range": [start, end],
+                "detail_status": "complete",
+                "completed_chapters": total_chapters,
+                "total_chapters": total_chapters,
+                "batches": [],
+            }
+
+        normalized_guidance = str(guidance or "").strip()
+        outline_version = sha256(
+            json.dumps(
+                {
+                    "overall": outline.get("overall", {}),
+                    "arcs": outline.get("arcs", []),
+                    "existing_chapter_numbers": sorted(existing_numbers),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        checkpoints = VolumeDetailCheckpointStore(
+            self.story_system_dir / "volume-detail"
+        )
+        manifest = checkpoints.prepare(
+            volume_id=normalized_volume_id,
+            batches=[[batch[0], batch[-1]] for batch in missing_batches],
+            volume_range=[start, end],
+            story_nodes=volume.get("story_nodes", []),
+            existing_outline_version=outline_version,
+            user_guidance=normalized_guidance,
+        )
+        completed_payloads = checkpoints.completed_payloads()
+        previous_batches = [
+            completed_payloads[batch["id"]]
+            for batch in manifest["batches"]
+            if batch["id"] in completed_payloads
+        ]
+        brief = self._planning_brief()
+
+        while True:
+            batch = checkpoints.next_incomplete_batch()
+            if batch is None:
+                break
+            batch_id = str(batch["id"])
+            chapter_numbers = list(
+                range(batch["start_chapter"], batch["end_chapter"] + 1)
+            )
+            checkpoints.running(batch_id)
+            try:
+                generated = generator.generate_chapter_batch(
+                    brief,
+                    volume=deepcopy(volume),
+                    chapter_numbers=chapter_numbers,
+                    previous_batches=deepcopy(previous_batches),
+                    guidance=normalized_guidance,
+                )
+                generated_chapters = list(getattr(generated, "chapters", []))
+                actual_numbers = [
+                    int(chapter.chapter_number)
+                    for chapter in generated_chapters
+                ]
+                if actual_numbers != chapter_numbers:
+                    raise ValueError("generated_chapters_do_not_match_target_batch")
+                payload = {
+                    "chapters": [
+                        self._generated_detail_to_rolling_chapter(chapter)
+                        for chapter in generated_chapters
+                    ]
+                }
+                checkpoints.complete(batch_id, payload)
+                previous_batches.append(payload)
+            except Exception as exc:
+                detail = re.sub(r"\s+", " ", str(exc)).strip()[:500]
+                checkpoints.fail(
+                    batch_id,
+                    f"{type(exc).__name__}:{detail or 'no_detail'}",
+                )
+                raise ValueError(
+                    f"volume_detail_generation_failed:{batch_id}:"
+                    f"{type(exc).__name__}:{detail or 'no_detail'}"
+                ) from exc
+
+        manifest = checkpoints.load(normalized_volume_id)
+        completed_payloads = checkpoints.completed_payloads()
+        generated_chapters: list[dict[str, Any]] = []
+        expected_missing: list[int] = []
+        for batch in manifest["batches"]:
+            payload = completed_payloads.get(batch["id"])
+            if payload is None:
+                raise ValueError(
+                    f"volume_detail_checkpoint_incomplete:{batch['id']}"
+                )
+            expected_missing.extend(
+                range(batch["start_chapter"], batch["end_chapter"] + 1)
+            )
+            generated_chapters.extend(payload["chapters"])
+        actual_missing = [
+            int(chapter.get("chapter_number") or 0)
+            for chapter in generated_chapters
+        ]
+        if (
+            actual_missing != expected_missing
+            or len(actual_missing) != len(set(actual_missing))
+            or any(number < start or number > end for number in actual_missing)
+        ):
+            raise ValueError("volume_detail_publish_validation_failed")
+
+        enabled_module_ids = resolve_enabled_skill_module_ids(
+            self.project(), self.state()
+        )
+        enabled_skill_ids = resolve_enabled_skill_ids(self.project(), self.state())
+        require_chapter_contracts = (
+            enabled_module_ids is None
+            and CHAPTER_SOP_MODULE_ID.split("::", 1)[0] in enabled_skill_ids
+        ) or CHAPTER_SOP_MODULE_ID in {
+            str(module_id).strip()
+            for module_id in (enabled_module_ids or [])
+        }
+        rolling_store.apply_rolling_batch(
+            chapters=generated_chapters,
+            expected_chapter_numbers=expected_missing,
+            volume_range=volume_range,
+            require_chapter_contracts=require_chapter_contracts,
+        )
+        return {
+            "schema_version": "volume-detail-generation/v1",
+            "volume_id": normalized_volume_id,
+            "volume_range": [start, end],
+            "detail_status": "complete",
+            "completed_chapters": total_chapters,
+            "total_chapters": total_chapters,
+            "batches": manifest["batches"],
+        }
+
+    def outline_extension_readiness(self) -> dict[str, Any]:
+        outline = dict(
+            self._read_json(self.webnovel_dir / "outline.json", {})
+            or self.project_outline()
+        )
+        outline.pop("source", None)
+        readiness = inspect_outline_extension_readiness(
             project=dict(self.project()),
             state=dict(self._read_json(self.webnovel_dir / "state.json", {}) or {}),
             outline=outline,
         )
+        raw_arcs = outline.get("arcs") if isinstance(outline.get("arcs"), list) else []
+        has_actionable_arc = any(
+            isinstance(arc, dict)
+            and all(str(arc.get(field) or "").strip() for field in ("goal", "obstacle", "payoff"))
+            for arc in raw_arcs
+        )
+        if not has_actionable_arc and not any(
+            item.get("code") == "stage_arc_required"
+            for item in readiness.get("blockers", [])
+            if isinstance(item, dict)
+        ):
+            readiness.setdefault("blockers", []).append(
+                {
+                    "code": "stage_arc_required",
+                    "message": "阶段大纲缺少可执行的目标、阻力和兑现。",
+                    "section": "arcs",
+                }
+            )
+            readiness["ready"] = False
+        window = outline_window_status(
+            outline,
+            current_chapter=int(readiness.get("current_chapter") or 0),
+        )
+        detail_batches = window.get("detail_batches") or []
+        readiness["next_chapter_numbers"] = (
+            list(detail_batches[0])
+            if detail_batches
+            else list(
+                range(
+                    int(readiness.get("current_chapter") or 0) + 1,
+                    int(readiness.get("current_chapter") or 0) + 16,
+                )
+            )
+        )
+        return readiness
 
     def outline_generation_checkpoints(self) -> dict[str, Any]:
         checkpoints = OutlineCheckpointStore(

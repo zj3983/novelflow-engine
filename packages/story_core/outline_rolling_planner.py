@@ -23,16 +23,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable
 
 from .outline_rolling import (
     RollingPlanError,
-    RollingValidationError,
+    plan_volume_detail_batches,
     plan_rolling_window,
-)
-from .outline_rolling_store import (
-    RollingOutlineStore,
-    RollingOutlineStoreError,
 )
 
 
@@ -117,40 +113,6 @@ def _read_existing_outline_chapters(
     return chapters
 
 
-def _build_payloads_from_generator(
-    *,
-    chapter_numbers: list[int],
-    generator: Callable[[int], dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Invoke ``generator`` once per chapter number and
-    return the payloads in order.
-
-    The generator is responsible for producing a payload
-    whose ``chapter_number`` matches the requested
-    number; the planner validates the claim through
-    :func:`validate_rolling_batch`. A generator
-    exception is re-raised as
-    :class:`RollingOutlineFailed` so the caller sees a
-    single error class for all generation failures.
-    """
-    payloads: list[dict[str, Any]] = []
-    for number in chapter_numbers:
-        try:
-            payload = generator(number)
-        except Exception as exc:  # noqa: BLE001
-            raise RollingOutlineFailed(
-                f"rolling_outline_generator_failed: "
-                f"chapter={number} {type(exc).__name__}: {exc}"
-            ) from exc
-        if not isinstance(payload, dict):
-            raise RollingOutlineFailed(
-                f"rolling_outline_generator_returned_non_dict: "
-                f"chapter={number}"
-            )
-        payloads.append(payload)
-    return payloads
-
-
 @dataclass
 class RollingOutlinePlanner:
     """The high-level rolling-fill entry point.
@@ -196,50 +158,45 @@ class RollingOutlinePlanner:
         root = Path(project_root)
         existing_chapters = _read_existing_outline_chapters(root)
 
-        gap = plan_rolling_window(
+        # Preserve input validation for legacy callers, but do not use the
+        # five-chapter result as a generation plan. Chapter detail is now an
+        # all-volume checkpointed operation owned by FileProjectStore.
+        plan_rolling_window(
             target_chapter=target_chapter,
             existing_chapters=existing_chapters,
             volume_range=volume_range,
             window=window,
         )
-        if not gap:
+        existing_numbers = [
+            int(chapter["chapter_number"])
+            for chapter in existing_chapters
+            if isinstance(chapter, dict)
+            and isinstance(chapter.get("chapter_number"), int)
+            and not isinstance(chapter.get("chapter_number"), bool)
+        ]
+        if target_chapter in existing_numbers:
             return RollingOutlineStatus(
                 kind="present",
                 target_chapter=target_chapter,
                 volume_range=volume_range,
                 chapter_numbers=[],
             )
-
-        # Build the batch from the generator. The
-        # ``RollingOutlineStore`` validates the batch
-        # before writing so a single bad chapter aborts
-        # the whole write.
-        payloads = _build_payloads_from_generator(
-            chapter_numbers=gap,
-            generator=self.generator,
+        detail_batches = plan_volume_detail_batches(
+            volume_range,
+            existing=existing_numbers,
         )
-
-        store = RollingOutlineStore(root)
-        try:
-            written = store.apply_rolling_batch(
-                chapters=payloads,
-                expected_chapter_numbers=gap,
+        if not detail_batches:
+            return RollingOutlineStatus(
+                kind="present",
+                target_chapter=target_chapter,
                 volume_range=volume_range,
-                require_chapter_contracts=self.require_chapter_contracts,
+                chapter_numbers=[],
             )
-        except RollingValidationError as exc:
-            raise RollingOutlineFailed(
-                f"rolling_outline_validation_failed: {exc}"
-            ) from exc
-        except RollingOutlineStoreError as exc:
-            raise RollingOutlineFailed(
-                f"rolling_outline_write_failed: {exc}"
-            ) from exc
         return RollingOutlineStatus(
-            kind="filled",
+            kind="volume_detail_required",
             target_chapter=target_chapter,
             volume_range=volume_range,
-            chapter_numbers=written,
+            chapter_numbers=list(detail_batches[0]),
         )
 
 

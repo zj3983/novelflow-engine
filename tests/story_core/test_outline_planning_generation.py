@@ -4,6 +4,7 @@ import json
 from copy import deepcopy
 import inspect
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -916,6 +917,126 @@ def test_outline_generation_routes_through_planner_gateway() -> None:
     assert calls[0][1].json_mode is True
 
 
+def test_generate_chapter_batch_uses_complete_volume_context_and_exact_numbers() -> None:
+    captured: dict[str, Any] = {}
+
+    class Gateway:
+        def complete_stage(self, stage, request):
+            captured["stage"] = stage
+            captured["request"] = request
+            prompt = json.loads(request.messages[1]["content"])
+            template = _valid_plan()["outline"]["chapters"][0]
+            chapters = [
+                {
+                    **template,
+                    **_detailed_chapter_template(),
+                    "chapter_number": number,
+                    "title": f"Batch {number}",
+                    "trope_beat": None,
+                }
+                for number in prompt["target_chapter_numbers"]
+            ]
+            return ModelResponse.success(
+                request,
+                text=json.dumps({"chapters": chapters}, ensure_ascii=False),
+            )
+
+    runtime = StageRuntimeSettings(
+        provider_id="deepseek",
+        protocol="openai_compatible",
+        model="deepseek-chat",
+        api_key="test-key",
+        base_url="https://api.deepseek.test",
+    )
+    brief_payload = _brief().model_dump(mode="json")
+    brief_payload["recent_chapter_summaries"] = [
+        {"chapter_number": 152, "summary": "Committed ending fact."}
+    ]
+    volume = {
+        **_valid_plan()["outline"]["arcs"][0],
+        "id": "v3",
+        "start_chapter": 153,
+        "end_chapter": 212,
+        "goal": "Finish the repair hearing.",
+        "obstacle": "The guild seals the evidence.",
+        "payoff": "Win the right to inspect the archive.",
+        "climax": "Expose the forged seal before the hearing ends.",
+        "story_nodes": _story_nodes(153, 212),
+    }
+    result = LLMOutlinePlanningGenerator(
+        runtime_resolver=lambda _stage: runtime,
+        model_gateway=Gateway(),
+    ).generate_chapter_batch(
+        OutlinePlanningBrief.model_validate(brief_payload),
+        volume=volume,
+        chapter_numbers=list(range(168, 183)),
+        previous_batches=[
+            {
+                "chapters": [
+                    {"chapter_number": 167, "title": "Previous", "ending_hook": "The seal breaks."}
+                ]
+            }
+        ],
+        guidance="Keep the hearing continuous.",
+    )
+
+    assert [chapter.chapter_number for chapter in result.chapters] == list(range(168, 183))
+    assert captured["stage"] == "planner"
+    assert captured["request"].operation == "outline_planning_chapter_batch"
+    context = json.loads(captured["request"].messages[1]["content"])
+    assert context["volume"]["goal"] == "Finish the repair hearing."
+    assert context["volume"]["story_nodes"] == volume["story_nodes"]
+    assert context["current_batch_story_nodes"] == volume["story_nodes"][1:2]
+    assert context["previous_batch_endings"][0]["chapter_number"] == 167
+    assert context["committed_context"]["recent_chapter_summaries"][0]["chapter_number"] == 152
+    assert context["required_volume_ending"] == volume["climax"]
+    assert context["guidance"] == "Keep the hearing continuous."
+    assert "must not redesign" in captured["request"].messages[0]["content"].lower()
+
+
+def test_generate_chapter_batch_rejects_wrong_chapter_numbers() -> None:
+    class Gateway:
+        def complete_stage(self, _stage, request):
+            template = _valid_plan()["outline"]["chapters"][0]
+            chapter = {
+                **template,
+                **_detailed_chapter_template(),
+                "chapter_number": 154,
+                "title": "Wrong number",
+                "trope_beat": None,
+            }
+            return ModelResponse.success(
+                request,
+                text=json.dumps({"chapters": [chapter]}, ensure_ascii=False),
+            )
+
+    runtime = StageRuntimeSettings(
+        provider_id="deepseek",
+        protocol="openai_compatible",
+        model="deepseek-chat",
+        api_key="test-key",
+        base_url="https://api.deepseek.test",
+    )
+    volume = {
+        **_valid_plan()["outline"]["arcs"][0],
+        "id": "v3",
+        "start_chapter": 153,
+        "end_chapter": 212,
+        "story_nodes": _story_nodes(153, 212),
+    }
+
+    with pytest.raises(ValueError, match="^generated_chapters_do_not_match_target_batch$"):
+        LLMOutlinePlanningGenerator(
+            runtime_resolver=lambda _stage: runtime,
+            model_gateway=Gateway(),
+        ).generate_chapter_batch(
+            _brief(),
+            volume=volume,
+            chapter_numbers=[153],
+            previous_batches=[],
+        )
+
+
 def test_planning_brief_has_one_overall_source_instead_of_three_story_core_copies() -> None:
     payload = _brief().model_dump(mode="json")
 
@@ -1564,11 +1685,7 @@ def test_extend_sparse_window_does_not_treat_14_16_17_as_consecutive() -> None:
     )
 
     assert attempts == 1
-    assert [chapter.chapter_number for chapter in plan.outline.chapters[:3]] == [
-        14,
-        16,
-        17,
-    ]
+    assert [chapter.chapter_number for chapter in plan.outline.chapters] == [14]
     assert prompts[0]["existing_window_chapter_titles"] == [
         {"chapter_number": 12, "title": "历史标题12"},
         {"chapter_number": 13, "title": "历史标题13"},
@@ -1621,16 +1738,13 @@ def test_extend_sparse_window_uses_existing_15_to_repair_14_15_16() -> None:
         mode="extend",
     )
 
-    assert attempts == 2
+    assert attempts == 1
     assert prompts[0]["existing_window_chapter_titles"] == [
         {"chapter_number": 12, "title": "历史标题12"},
         {"chapter_number": 13, "title": "历史标题13"},
         {"chapter_number": 15, "title": "第十五章发生了什么？"}
     ]
-    assert any(
-        "repeated_chapter_title_shape:question:14-16" in message
-        for message in retry_messages
-    )
+    assert retry_messages == []
 
 
 def test_extend_single_missing_chapter_uses_right_neighbors_for_title_repair() -> None:
@@ -2663,7 +2777,7 @@ def test_extend_prompt_requests_only_missing_window_chapters(generator_fixture) 
 
     generator_fixture.generator().generate(brief, mode="extend")
 
-    assert generator_fixture.prompt_context["target_chapter_numbers"] == list(range(11, 21))
+    assert generator_fixture.prompt_context["target_chapter_numbers"] == list(range(11, 26))
     assert generator_fixture.prompt_context["current_strategy"] == "expand"
 
 
@@ -2748,11 +2862,12 @@ def test_initial_requires_unstarted_project(generator_fixture) -> None:
         generator_fixture.generator().generate(brief, mode="initial")
 
 
-def test_extend_rejects_full_window(generator_fixture) -> None:
+def test_extend_moves_to_next_batch_when_first_detail_rows_exist(generator_fixture) -> None:
     brief = generator_fixture.brief(current_chapter=10, existing_chapters=list(range(1, 21)))
 
-    with pytest.raises(ValueError, match="^outline_window_already_full$"):
-        generator_fixture.generator().generate(brief, mode="extend")
+    generator_fixture.generator().generate(brief, mode="extend")
+
+    assert generator_fixture.prompt_context["target_chapter_numbers"] == list(range(21, 36))
 
 
 def test_extend_prompt_includes_sparse_window_holes(generator_fixture) -> None:
@@ -2765,7 +2880,6 @@ def test_extend_prompt_includes_sparse_window_holes(generator_fixture) -> None:
 
     assert generator_fixture.prompt_context["target_chapter_numbers"] == [
         *range(11, 15),
-        *range(16, 21),
     ]
 
 
@@ -2775,9 +2889,8 @@ def test_regenerate_stops_at_extension_ceiling(generator_fixture) -> None:
     payload["existing_outline"]["overall"]["extension_ceiling_chapter"] = 500
     brief = OutlinePlanningBrief.model_validate(payload)
 
-    generator_fixture.generator().generate(brief, mode="regenerate")
-
-    assert generator_fixture.prompt_context["target_chapter_numbers"] == list(range(491, 501))
+    with pytest.raises(ValueError, match="^outline_window_already_full$"):
+        generator_fixture.generator().generate(brief, mode="regenerate")
 
 
 def test_regenerate_at_extension_ceiling_rejects_before_model_call(generator_fixture) -> None:
