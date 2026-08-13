@@ -11,11 +11,46 @@ from packages.story_core.project_outline import (
     ChapterPlan,
     OverallOutline,
     ProjectOutline,
+    StoryNode,
     normalize_project_outline,
     normalize_outline_for_story_type,
     outline_from_legacy_project,
     select_outline_context,
 )
+
+
+def test_arc_outline_persists_volume_fields_and_story_nodes() -> None:
+    arc = ArcOutline(
+        id="finale",
+        start_chapter=101,
+        end_chapter=115,
+        is_final_arc=True,
+        story_nodes=[
+            StoryNode(
+                start_chapter=101,
+                end_chapter=115,
+                objective="逼近终局真相",
+                pressure="旧盟友倒戈",
+                turn="主角主动公开证据",
+                payoff="真相得到确认",
+                next_effect="全书收束",
+            )
+        ],
+    )
+
+    payload = arc.model_dump()
+
+    assert payload["is_final_arc"] is True
+    assert payload["story_nodes"][0]["next_effect"] == "全书收束"
+
+
+def test_legacy_arc_normalization_supplies_empty_volume_fields() -> None:
+    normalized = normalize_project_outline(
+        {"arcs": [{"id": "legacy", "start_chapter": 1, "end_chapter": 10}]}
+    )
+
+    assert normalized["arcs"][0]["is_final_arc"] is False
+    assert normalized["arcs"][0]["story_nodes"] == []
 
 
 def test_non_game_outline_discards_game_only_arc_payoffs() -> None:
@@ -211,6 +246,8 @@ def test_models_expose_the_canonical_outline_fields() -> None:
         "foreshadowing_in",
         "foreshadowing_out",
         "next_arc_entry",
+        "is_final_arc",
+        "story_nodes",
     }
     assert payload["arcs"][0]["id"]
     assert set(payload["chapters"][0]) == {
@@ -713,6 +750,8 @@ def test_legacy_project_projects_into_three_levels_without_mutation() -> None:
                 "foreshadowing_in": [],
                 "foreshadowing_out": [],
                 "next_arc_entry": "",
+                "is_final_arc": False,
+                "story_nodes": [],
         }
     ]
     assert [chapter["chapter_number"] for chapter in outline["chapters"]] == [2, 4]

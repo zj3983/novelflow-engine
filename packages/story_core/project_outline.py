@@ -87,6 +87,16 @@ class OverallOutline(_OutlineModel):
     central_mystery: OutlineCentralMystery = Field(default_factory=OutlineCentralMystery)
 
 
+class StoryNode(_OutlineModel):
+    start_chapter: int = Field(ge=1, strict=True)
+    end_chapter: int = Field(ge=1, strict=True)
+    objective: str = ""
+    pressure: str = ""
+    turn: str = ""
+    payoff: str = ""
+    next_effect: str = ""
+
+
 class ArcOutline(_OutlineModel):
     id: str = Field(strict=True)
     title: str = ""
@@ -116,6 +126,8 @@ class ArcOutline(_OutlineModel):
     foreshadowing_in: list[str] = Field(default_factory=list)
     foreshadowing_out: list[str] = Field(default_factory=list)
     next_arc_entry: str = ""
+    is_final_arc: bool = False
+    story_nodes: list[StoryNode] = Field(default_factory=list)
 
     @field_validator("id")
     @classmethod
@@ -369,6 +381,8 @@ def _with_elastic_defaults(payload: Any) -> Any:
         arc.setdefault("foreshadowing_in", [])
         arc.setdefault("foreshadowing_out", [])
         arc.setdefault("next_arc_entry", "")
+        arc.setdefault("is_final_arc", False)
+        arc.setdefault("story_nodes", [])
     return prepared
 
 
