@@ -260,6 +260,38 @@ def test_body_generation_job_uses_precise_volume_gate_before_job_creation(
     assert not jobs_dir.exists() or not list(jobs_dir.glob("fgj-*.json"))
 
 
+def test_existing_chapter_rewrite_does_not_require_next_volume_detail(
+    volume_api,
+    monkeypatch,
+) -> None:
+    client, export_root = volume_api
+    project_id = _seed_project(export_root, current_chapter=50)
+
+    def reject_gate(self, chapter_number):
+        pytest.fail(
+            f"existing chapter rewrite must not check volume detail: {chapter_number}"
+        )
+
+    monkeypatch.setattr(
+        FileProjectStore,
+        "require_volume_detail_for_prose",
+        reject_gate,
+    )
+    monkeypatch.setattr(
+        file_project_routes._file_generation_executor,
+        "submit",
+        lambda *args, **kwargs: None,
+    )
+
+    response = client.post(
+        f"/file-projects/{project_id}/generation-jobs",
+        json={"chapter_number": 50},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "queued"
+
+
 def test_legacy_generate_next_uses_same_precise_volume_gate(volume_api, monkeypatch) -> None:
     client, export_root = volume_api
     project_id = _seed_project(export_root)
