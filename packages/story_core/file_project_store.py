@@ -6273,6 +6273,16 @@ class FileProjectStore:
             current_chapter=current_chapter,
             immutable_arc_through=immutable_arc_through,
         )
+        volume_arcs, volume_ending = _volume_validation_input(
+            generated_outline["arcs"],
+            core_ending_chapter=generated_outline["overall"][
+                "core_ending_chapter"
+            ],
+            fallback_outline=current_outline,
+            committed_through_chapter=current_chapter,
+            require_future_coverage=True,
+        )
+        validate_volume_structure(volume_arcs, core_ending_chapter=volume_ending)
         cards = [
             dict(card)
             for card in project.get("character_profiles", [])

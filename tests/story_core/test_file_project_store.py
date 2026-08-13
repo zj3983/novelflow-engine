@@ -1591,6 +1591,42 @@ def test_save_generated_outline_rejects_invalid_volume_structure_without_writes(
     assert _file_snapshot(root) == before
 
 
+@pytest.mark.parametrize(
+    ("invalidity", "error"),
+    [
+        ("short_non_final", "volume_too_short:opening"),
+        ("node_gap", "story_node_gap:opening"),
+    ],
+)
+def test_save_generated_outline_foundation_rejects_invalid_volume_without_writes(
+    tmp_path,
+    invalidity: str,
+    error: str,
+) -> None:
+    root = tmp_path / f"foundation-{invalidity}"
+    store = _make_minimal_file_project(root)
+    payload = _generated_opening_plan().model_dump(mode="json")
+    if invalidity == "short_non_final":
+        payload["outline"]["overall"].update(
+            core_ending_chapter=10,
+            extension_ceiling_chapter=10,
+        )
+        payload["outline"]["arcs"][0].update(
+            end_chapter=10,
+            is_final_arc=False,
+            story_nodes=_story_nodes(1, 10),
+        )
+    else:
+        payload["outline"]["arcs"][0]["story_nodes"].pop()
+    plan = GeneratedOutlinePlan.model_validate(payload)
+    before = _file_snapshot(root)
+
+    with pytest.raises(ValueError, match=f"^{error}$"):
+        store._save_generated_outline_foundation(plan, mode="regenerate")
+
+    assert _file_snapshot(root) == before
+
+
 def _shenyu_world_blueprint() -> dict:
     return {
         "premise": "神域中的稀缺资源可以通过受限渠道影响现实生活。",
@@ -4152,6 +4188,28 @@ def test_extend_allows_unchanged_committed_legacy_short_volume(tmp_path) -> None
     saved = store.save_generated_outline_plan(
         _extension_plan(legacy_outline),
         mode="extend",
+    )
+
+    assert saved["outline"]["arcs"][0]["end_chapter"] == 10
+    assert saved["outline"]["arcs"][0]["story_nodes"] == []
+
+
+def test_foundation_save_allows_unchanged_committed_legacy_short_volume(
+    tmp_path,
+) -> None:
+    _, store, current_outline = _prepare_extendable_outline(tmp_path)
+    current_outline["arcs"][0].update(
+        end_chapter=10,
+        is_final_arc=False,
+        story_nodes=[],
+    )
+    store.update_project_outline(current_outline)
+    legacy_outline = store.project_outline()
+    legacy_outline.pop("source", None)
+
+    saved = store._save_generated_outline_foundation(
+        _regeneration_plan_from_current(legacy_outline),
+        mode="regenerate",
     )
 
     assert saved["outline"]["arcs"][0]["end_chapter"] == 10
