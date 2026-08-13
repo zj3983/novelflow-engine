@@ -23,6 +23,7 @@ from packages.story_core.file_project_store import (
     _regeneration_quality_blocking,
 )
 from packages.story_core.outline_planning_generation import GeneratedChapterWindow
+from packages.story_core.project_outline import ArcOutline
 from packages.story_core.outline_rolling_store import RollingOutlineStore
 from packages.story_core.volume_detail_checkpoints import VolumeDetailCheckpointStore
 
@@ -4457,6 +4458,231 @@ def test_generate_volume_detail_rejects_unknown_volume_without_model_call(tmp_pa
         store.generate_volume_detail(generator, volume_id="next-volume")
 
     assert generator.calls == []
+
+
+def _prepare_next_volume_design_project(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "next-volume-design")
+    outline = _generated_opening_plan().outline.model_dump(mode="json")
+    outline["overall"].update(
+        current_strategy="expand",
+        core_ending_chapter=200,
+        extension_ceiling_chapter=300,
+        planned_length=200,
+        planned_arc_count=1,
+    )
+    outline["arcs"] = [
+        {
+            **outline["arcs"][0],
+            "id": "volume-1",
+            "start_chapter": 1,
+            "end_chapter": 50,
+            "is_final_arc": False,
+            "story_nodes": _story_nodes(1, 50),
+            "extension_gate": {
+                "continue_route": "Open the independent workshop.",
+                "close_route": "Publish the first ledger.",
+            },
+            "end_state": "The first guild license is revoked.",
+        }
+    ]
+    outline["chapters"] = []
+    store.update_project_outline(outline)
+    state = store.state()
+    state["current_chapter"] = 50
+    state["world_facts"] = ["The first guild license is revoked."]
+    state["foreshadowing"] = [
+        {
+            "id": "seal-signature",
+            "text": "The old guild seal contains a second signature.",
+            "status": "open",
+            "introduced_chapter": 40,
+        }
+    ]
+    state["characters"] = [
+        {
+            **_planning_card("Lin Xiu", "protagonist"),
+            "current_life_profile": {"immediate_problem": "The guild sealed the workshop."},
+            "real_state": {"current_goal": "Open an independent workshop."},
+        }
+    ]
+    store._write_json(store.webnovel_dir / "state.json", state)
+    return store
+
+
+def _designed_next_volume(*, start_chapter=51, end_chapter=100, is_final_arc=False):
+    return ArcOutline.model_validate(
+        {
+            "id": "volume-2",
+            "title": "Independent workshop",
+            "start_chapter": start_chapter,
+            "end_chapter": end_chapter,
+            "goal": "Recover the missing repair ledger.",
+            "obstacle": "The guild controls every legal repair channel.",
+            "payoff": "Win an independent repair license.",
+            "emotional_curve": "The protagonist loses the old workshop as the price.",
+            "key_results": ["Gain the license.", "Cost: lose the old workshop."],
+            "hook_plan": "The ledger points to the capital.",
+            "irreversible_change": "The protagonist leaves the guild permanently.",
+            "end_state": "The independent workshop opens.",
+            "extension_gate": {
+                "continue_route": "Follow the ledger to the capital.",
+                "close_route": "Publish the ledger locally.",
+            },
+            "midpoint_turn": "The witness forged the ledger.",
+            "climax": "Expose the hidden record in public.",
+            "next_arc_entry": "A capital inspector arrives.",
+            "is_final_arc": is_final_arc,
+            "story_nodes": _story_nodes(start_chapter, end_chapter),
+        }
+    )
+
+
+class _NextVolumeGenerator:
+    def __init__(self, result=None, *, mutate=None):
+        self.result = result or _designed_next_volume()
+        self.mutate = mutate
+        self.calls = []
+
+    def generate_next_volume(self, brief, *, previous_volume, guidance=""):
+        self.calls.append(
+            {
+                "brief": brief,
+                "previous_volume": previous_volume,
+                "guidance": guidance,
+            }
+        )
+        if self.mutate is not None:
+            self.mutate()
+        return self.result
+
+
+def test_volume_workflow_status_reports_missing_plan_partial_and_ready(tmp_path) -> None:
+    store = _prepare_next_volume_design_project(tmp_path)
+    assert store.volume_workflow_status(51)["status"] == "volume_missing"
+    assert store.volume_workflow_status(51)["next_action"] == "design_next_volume"
+
+    store.design_next_volume(_NextVolumeGenerator())
+    planned = store.volume_workflow_status(51)
+    assert planned["status"] == "volume_plan_ready"
+    assert planned["next_action"] == "generate_volume_detail"
+
+    outline = store.project_outline()
+    outline.pop("source", None)
+    template = _generated_opening_plan().outline.chapters[0].model_dump(mode="json")
+    outline["chapters"] = [{**template, "chapter_number": 51}]
+    store.update_project_outline(outline)
+    ready = store.volume_workflow_status(51)
+    assert ready["status"] == "ready"
+    assert ready["detail_status"] == "detail_complete"
+    assert ready["next_action"] == "write_chapter"
+    partial = store.volume_workflow_status(52)
+    assert partial["status"] == "detail_partial"
+    assert partial["next_action"] == "generate_volume_detail"
+
+
+def test_design_next_volume_appends_plan_without_writing_detail(tmp_path) -> None:
+    store = _prepare_next_volume_design_project(tmp_path)
+    generator = _NextVolumeGenerator()
+
+    result = store.design_next_volume(generator, guidance="Keep the conflict local.")
+
+    assert result["status"] == "volume_plan_ready"
+    assert result["volume_id"] == "volume-2"
+    assert generator.calls[0]["previous_volume"]["id"] == "volume-1"
+    assert generator.calls[0]["guidance"] == "Keep the conflict local."
+    outline = store.project_outline()
+    assert [arc["id"] for arc in outline["arcs"]] == ["volume-1", "volume-2"]
+    assert outline["chapters"] == []
+    assert RollingOutlineStore(store.root).read_rolling_outline() is None
+
+
+def test_design_next_volume_is_idempotent_when_successor_exists(tmp_path) -> None:
+    store = _prepare_next_volume_design_project(tmp_path)
+    store.design_next_volume(_NextVolumeGenerator())
+    generator = _NextVolumeGenerator(result=_designed_next_volume(start_chapter=101, end_chapter=150))
+
+    result = store.design_next_volume(generator)
+
+    assert result["status"] == "volume_plan_ready"
+    assert result["volume_id"] == "volume-2"
+    assert generator.calls == []
+
+
+def test_design_next_volume_detects_optimistic_conflict_without_writing_result(tmp_path) -> None:
+    store = _prepare_next_volume_design_project(tmp_path)
+
+    def mutate_outline():
+        changed = store.project_outline()
+        changed.pop("source", None)
+        changed["overall"]["theme_statement"] = "A concurrent edit."
+        store._write_json_atomic(store.webnovel_dir / "outline.json", changed)
+
+    generator = _NextVolumeGenerator(mutate=mutate_outline)
+
+    with pytest.raises(ValueError, match="^outline_changed_during_volume_design$"):
+        store.design_next_volume(generator)
+
+    outline = store.project_outline()
+    assert [arc["id"] for arc in outline["arcs"]] == ["volume-1"]
+    assert outline["overall"]["theme_statement"] == "A concurrent edit."
+
+
+def test_design_next_volume_passes_current_state_context(tmp_path) -> None:
+    store = _prepare_next_volume_design_project(tmp_path)
+    generator = _NextVolumeGenerator()
+
+    store.design_next_volume(generator)
+
+    brief = generator.calls[0]["brief"]
+    assert brief.world_facts == ["The first guild license is revoked."]
+    assert brief.unresolved_foreshadowing[0]["text"] == "The old guild seal contains a second signature."
+    assert brief.character_current_states[0]["name"] == "Lin Xiu"
+    assert brief.character_current_states[0]["real_state"]["current_goal"] == "Open an independent workshop."
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    [
+        ({"start_chapter": 52}, "next_volume_start_mismatch"),
+        ({"end_chapter": 80}, "volume_too_short:volume-2"),
+        ({"story_nodes": _story_nodes(51, 85)}, "story_node_gap:volume-2"),
+    ],
+)
+def test_design_next_volume_revalidates_model_output_without_writing(
+    tmp_path,
+    mutation,
+    error,
+) -> None:
+    store = _prepare_next_volume_design_project(tmp_path)
+    candidate = _designed_next_volume().model_dump(mode="json")
+    candidate.update(mutation)
+    before = (store.webnovel_dir / "outline.json").read_bytes()
+
+    with pytest.raises(ValueError, match=f"^{error}$"):
+        store.design_next_volume(_NextVolumeGenerator(result=candidate))
+
+    assert (store.webnovel_dir / "outline.json").read_bytes() == before
+    assert RollingOutlineStore(store.root).read_rolling_outline() is None
+
+
+def test_design_next_volume_allows_short_final_for_close_strategy(tmp_path) -> None:
+    store = _prepare_next_volume_design_project(tmp_path)
+    outline = store.project_outline()
+    outline.pop("source", None)
+    outline["overall"]["current_strategy"] = "close"
+    store._write_json_atomic(store.webnovel_dir / "outline.json", outline)
+
+    result = store.design_next_volume(
+        _NextVolumeGenerator(
+            result=_designed_next_volume(end_chapter=70, is_final_arc=True)
+        )
+    )
+
+    assert result["volume_range"] == [51, 70]
+    saved = store.project_outline()
+    assert saved["arcs"][-1]["is_final_arc"] is True
+    assert saved["overall"]["core_ending_chapter"] == 70
+    assert RollingOutlineStore(store.root).read_rolling_outline() is None
 
 
 def test_foundation_save_allows_unchanged_committed_legacy_short_volume(

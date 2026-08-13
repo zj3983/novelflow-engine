@@ -24,6 +24,7 @@ from packages.story_core.outline_planning_generation import (
     _expand_character_seed,
 )
 from packages.story_core.runtime_config import StageRuntimeSettings
+from packages.story_core.project_outline import ArcOutline
 
 
 PACKS_DIR = Path(__file__).resolve().parents[2] / "data" / "skill-packs"
@@ -374,6 +375,186 @@ def _brief() -> OutlinePlanningBrief:
         },
         author_constraints=["白描，对话完整自然。"],
     )
+
+
+def _next_volume_arc(*, is_final_arc: bool = False, end_chapter: int = 100) -> dict:
+    return {
+        "id": "volume-2",
+        "title": "The second volume",
+        "start_chapter": 51,
+        "end_chapter": end_chapter,
+        "goal": "Recover the missing repair ledger.",
+        "obstacle": "The guild controls every legal repair channel.",
+        "payoff": "Win an independent repair license.",
+        "emotional_curve": "The protagonist pays by losing the old workshop and must rebuild trust.",
+        "key_results": ["Gain the license.", "Cost: lose the old workshop."],
+        "hook_plan": "The ledger points to a higher-level repair monopoly.",
+        "irreversible_change": "The protagonist can no longer work under the guild name.",
+        "end_state": "The new workshop opens under the protagonist's own name.",
+        "extension_gate": {
+            "continue_route": "Follow the monopoly ledger into the capital.",
+            "close_route": "Publish the ledger and keep the local workshop.",
+        },
+        "midpoint_turn": "The apparent witness is the person who forged the ledger.",
+        "climax": "Repair the guild seal in public and expose its hidden record.",
+        "next_arc_entry": "A capital inspector arrives with the same broken seal.",
+        "is_final_arc": is_final_arc,
+        "story_nodes": _story_nodes(51, end_chapter),
+    }
+
+
+def _next_volume_brief(*, strategy: str = "expand", current_chapter: int = 50) -> OutlinePlanningBrief:
+    payload = _brief().model_dump(mode="json")
+    previous = deepcopy(_next_volume_arc())
+    previous.update(
+        id="volume-1",
+        title="The first volume",
+        start_chapter=1,
+        end_chapter=50,
+        story_nodes=_story_nodes(1, 50),
+    )
+    payload["current_chapter"] = current_chapter
+    payload["overall_context"].update(
+        current_strategy=strategy,
+        core_ending_chapter=200,
+        extension_ceiling_chapter=300,
+    )
+    payload["existing_outline"] = {
+        "schema_version": "project-outline/v1",
+        "overall": deepcopy(payload["overall_context"]),
+        "arcs": [previous],
+        "chapters": [],
+    }
+    payload["committed_facts"] = ["The first repair license was revoked."]
+    payload["unresolved_foreshadowing"] = [
+        {"text": "The old guild seal contains a second signature.", "status": "open"}
+    ]
+    payload["character_current_states"] = [
+        {"name": "Lin Xiu", "current_goal": "Open an independent workshop."}
+    ]
+    return OutlinePlanningBrief.model_validate(payload)
+
+
+def test_generate_next_volume_uses_complete_committed_context() -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        captured.update(json.loads(payload["messages"][1]["content"]))
+        return {
+            "choices": [
+                {"message": {"content": json.dumps(_next_volume_arc())}}
+            ]
+        }
+
+    generator = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=RecordingRuntime().resolve,
+    )
+    brief = _next_volume_brief()
+    previous = brief.existing_outline["arcs"][-1]
+
+    result = generator.generate_next_volume(
+        brief,
+        previous_volume=previous,
+        guidance="Keep the workshop conflict concrete.",
+    )
+
+    assert isinstance(result, ArcOutline)
+    assert result.start_chapter == 51
+    assert captured["overall"] == brief.overall_context
+    assert captured["existing_volumes"] == brief.existing_outline["arcs"]
+    assert captured["committed_facts"] == brief.committed_facts
+    assert captured["unresolved_foreshadowing"] == brief.unresolved_foreshadowing
+    assert captured["character_current_states"] == brief.character_current_states
+    assert captured["previous_volume_end_state"] == previous["end_state"]
+    assert captured["guidance"] == "Keep the workshop conflict concrete."
+    assert "chapters" not in captured["output_schema"].get("properties", {})
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    [
+        ({"start_chapter": 52}, "next_volume_start_mismatch"),
+        ({"end_chapter": 80}, "volume_too_short:volume-2"),
+        (
+            {"story_nodes": [{**_story_nodes(51, 100)[0], "start_chapter": 52}]},
+            "story_node_gap:volume-2",
+        ),
+    ],
+)
+def test_generate_next_volume_rejects_invalid_structure(mutation, error) -> None:
+    arc = _next_volume_arc()
+    arc.update(mutation)
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        return {"choices": [{"message": {"content": json.dumps(arc)}}]}
+
+    generator = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=RecordingRuntime().resolve,
+    )
+    brief = _next_volume_brief()
+
+    with pytest.raises(ValueError, match=f"^{error}$"):
+        generator.generate_next_volume(
+            brief,
+            previous_volume=brief.existing_outline["arcs"][-1],
+        )
+
+
+def test_generate_next_volume_allows_short_final_only_for_closing_strategy() -> None:
+    final_arc = _next_volume_arc(is_final_arc=True, end_chapter=70)
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        return {"choices": [{"message": {"content": json.dumps(final_arc)}}]}
+
+    generator = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=RecordingRuntime().resolve,
+    )
+    closing = _next_volume_brief(strategy="close")
+    result = generator.generate_next_volume(
+        closing,
+        previous_volume=closing.existing_outline["arcs"][-1],
+    )
+    assert result.is_final_arc is True
+    assert result.end_chapter == 70
+
+    expanding = _next_volume_brief(strategy="expand")
+    with pytest.raises(ValueError, match="^unexpected_final_volume$"):
+        generator.generate_next_volume(
+            expanding,
+            previous_volume=expanding.existing_outline["arcs"][-1],
+        )
+
+
+def test_generate_next_volume_allows_short_final_after_core_ending_is_reached() -> None:
+    final_arc = _next_volume_arc(is_final_arc=True, end_chapter=220)
+    final_arc.update(
+        start_chapter=201,
+        story_nodes=_story_nodes(201, 220),
+    )
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        return {"choices": [{"message": {"content": json.dumps(final_arc)}}]}
+
+    generator = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=RecordingRuntime().resolve,
+    )
+    brief = _next_volume_brief(strategy="expand", current_chapter=200)
+    previous = deepcopy(brief.existing_outline["arcs"][-1])
+    previous.update(
+        end_chapter=200,
+        story_nodes=_story_nodes(1, 200),
+        end_state="The core ending has been reached.",
+    )
+
+    result = generator.generate_next_volume(brief, previous_volume=previous)
+
+    assert result.is_final_arc is True
+    assert result.start_chapter == 201
+    assert result.end_chapter == 220
 
 
 def _skill_enabled_brief(module_ids: list[str]) -> OutlinePlanningBrief:

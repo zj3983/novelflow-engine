@@ -132,9 +132,13 @@ from packages.story_core.outline_planning import (
     validate_generated_opening_plan,
     validate_generated_trope_selection,
 )
-from packages.story_core.outline_planning_generation import OutlinePlanningBrief
+from packages.story_core.outline_planning_generation import (
+    OutlinePlanningBrief,
+    validate_next_volume,
+)
 from packages.story_core.volume_detail_checkpoints import VolumeDetailCheckpointStore
 from packages.story_core.volume_outline import (
+    find_volume_for_chapter,
     validate_volume_structure,
     volume_detail_batches_for_missing,
 )
@@ -5792,6 +5796,42 @@ class FileProjectStore:
                     else []
                 )
             ),
+            unresolved_foreshadowing=deepcopy(
+                [
+                    item
+                    for item in (
+                        state.get("foreshadowing")
+                        if isinstance(state.get("foreshadowing"), list)
+                        else []
+                    )
+                    if isinstance(item, dict)
+                    and str(item.get("status") or "open")
+                    in {"open", "reinforced"}
+                ]
+            ),
+            character_current_states=deepcopy(
+                [
+                    {
+                        key: item.get(key)
+                        for key in (
+                            "name",
+                            "role",
+                            "current_life_profile",
+                            "story_drive",
+                            "real_state",
+                            "game_state",
+                            "status",
+                        )
+                        if item.get(key) not in (None, "", [], {})
+                    }
+                    for item in (
+                        state.get("characters")
+                        if isinstance(state.get("characters"), list)
+                        else []
+                    )
+                    if isinstance(item, dict) and str(item.get("name") or "").strip()
+                ]
+            ),
             enabled_skill_ids=resolve_enabled_skill_ids(project, state),
             enabled_skill_module_ids=resolve_enabled_skill_module_ids(project, state),
         )
@@ -6590,6 +6630,187 @@ class FileProjectStore:
         return {
             "previous_batch_ending": previous_ending,
             "adjacent_chapters": list(adjacent_by_number.values()),
+        }
+
+    @staticmethod
+    def _volume_design_outline_hash(outline: dict[str, Any]) -> str:
+        payload = deepcopy(outline)
+        payload.pop("source", None)
+        return sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
+    def volume_workflow_status(self, target_chapter: int) -> dict[str, Any]:
+        """Return the stable plan/detail gate for one requested chapter."""
+
+        if (
+            not isinstance(target_chapter, int)
+            or isinstance(target_chapter, bool)
+            or target_chapter < 1
+        ):
+            raise ValueError("invalid_chapter_number")
+        outline = dict(self.project_outline())
+        outline.pop("source", None)
+        volume = find_volume_for_chapter(outline.get("arcs", []), target_chapter)
+        if volume is None:
+            return {
+                "schema_version": "volume-workflow/v1",
+                "target_chapter": target_chapter,
+                "status": "volume_missing",
+                "detail_status": "volume_missing",
+                "next_action": "design_next_volume",
+                "volume_id": None,
+                "volume_range": None,
+            }
+
+        start = int(volume["start_chapter"])
+        end = int(volume["end_chapter"])
+        detailed = {
+            int(item["chapter_number"])
+            for item in outline.get("chapters", [])
+            if isinstance(item, dict)
+            and isinstance(item.get("chapter_number"), int)
+            and not isinstance(item.get("chapter_number"), bool)
+            and start <= int(item["chapter_number"]) <= end
+        }
+        rolling = RollingOutlineStore(self.root).read_rolling_outline() or {}
+        detailed.update(
+            int(item["chapter_number"])
+            for item in rolling.get("chapters", [])
+            if isinstance(item, dict)
+            and isinstance(item.get("chapter_number"), int)
+            and not isinstance(item.get("chapter_number"), bool)
+            and start <= int(item["chapter_number"]) <= end
+        )
+        if target_chapter in detailed:
+            status = "ready"
+            detail_status = "detail_complete"
+            next_action = "write_chapter"
+        elif detailed:
+            status = "detail_partial"
+            detail_status = "partial"
+            next_action = "generate_volume_detail"
+        else:
+            status = "volume_plan_ready"
+            detail_status = "missing"
+            next_action = "generate_volume_detail"
+        return {
+            "schema_version": "volume-workflow/v1",
+            "target_chapter": target_chapter,
+            "status": status,
+            "detail_status": detail_status,
+            "next_action": next_action,
+            "volume_id": str(volume["id"]),
+            "volume_range": [start, end],
+        }
+
+    @_with_project_update_lock
+    def design_next_volume(
+        self,
+        generator: Any,
+        *,
+        guidance: str = "",
+    ) -> dict[str, Any]:
+        """Append one successor volume, leaving chapter detail untouched."""
+
+        if not hasattr(generator, "generate_next_volume"):
+            raise ValueError("next_volume_generator_required")
+        state = dict(self._read_json(self.webnovel_dir / "state.json", {}) or {})
+        current_chapter = int(state.get("current_chapter") or 0)
+        target_chapter = current_chapter + 1
+        original = dict(self.project_outline())
+        original.pop("source", None)
+        existing = find_volume_for_chapter(original.get("arcs", []), target_chapter)
+        if existing is not None:
+            return {
+                "schema_version": "volume-design/v1",
+                "status": "volume_plan_ready",
+                "next_action": "generate_volume_detail",
+                "volume_id": str(existing["id"]),
+                "volume_range": [
+                    int(existing["start_chapter"]),
+                    int(existing["end_chapter"]),
+                ],
+                "created": False,
+            }
+
+        previous_candidates = [
+            dict(arc)
+            for arc in original.get("arcs", [])
+            if isinstance(arc, dict)
+            and int(arc.get("end_chapter") or 0) < target_chapter
+        ]
+        if not previous_candidates:
+            raise ValueError("previous_volume_missing")
+        previous = max(previous_candidates, key=lambda arc: int(arc["end_chapter"]))
+        if int(previous["end_chapter"]) + 1 != target_chapter:
+            raise ValueError("next_volume_start_gap")
+
+        version_before = self._volume_design_outline_hash(original)
+        brief = self._planning_brief()
+        generated = generator.generate_next_volume(
+            brief,
+            previous_volume=deepcopy(previous),
+            guidance=str(guidance or "").strip(),
+        )
+        overall = original.get("overall") if isinstance(original.get("overall"), dict) else {}
+        allow_short_final = (
+            str(overall.get("current_strategy") or "observe") == "close"
+            or current_chapter >= int(overall.get("core_ending_chapter") or 0)
+        )
+        volume = validate_next_volume(
+            generated,
+            previous_volume=previous,
+            allow_short_final=allow_short_final,
+        )
+
+        latest = dict(self.project_outline())
+        latest.pop("source", None)
+        if self._volume_design_outline_hash(latest) != version_before:
+            raise ValueError("outline_changed_during_volume_design")
+
+        updated = deepcopy(latest)
+        arcs = [dict(arc) for arc in updated.get("arcs", [])]
+        if any(str(arc.get("id") or "") == volume.id for arc in arcs):
+            raise ValueError(f"duplicate_arc_id:{volume.id}")
+        for arc in arcs:
+            if arc.get("is_final_arc") is True:
+                arc["is_final_arc"] = False
+        arcs.append(volume.model_dump(mode="json"))
+        updated["arcs"] = arcs
+        updated_overall = dict(updated.get("overall") or {})
+        if volume.is_final_arc:
+            updated_overall["core_ending_chapter"] = volume.end_chapter
+        else:
+            updated_overall["core_ending_chapter"] = max(
+                int(updated_overall.get("core_ending_chapter") or 1),
+                volume.end_chapter,
+            )
+        updated_overall["extension_ceiling_chapter"] = max(
+            int(updated_overall.get("extension_ceiling_chapter") or 1),
+            int(updated_overall["core_ending_chapter"]),
+            volume.end_chapter,
+        )
+        updated_overall["planned_arc_count"] = len(arcs)
+        updated_overall["planned_length"] = max(
+            int(updated_overall.get("planned_length") or 0),
+            volume.end_chapter,
+        )
+        updated["overall"] = updated_overall
+        saved = self.update_project_outline(updated)
+        return {
+            "schema_version": "volume-design/v1",
+            "status": "volume_plan_ready",
+            "next_action": "generate_volume_detail",
+            "volume_id": volume.id,
+            "volume_range": [volume.start_chapter, volume.end_chapter],
+            "created": True,
+            "outline": saved,
         }
 
     @_with_project_update_lock

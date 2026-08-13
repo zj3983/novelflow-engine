@@ -38,10 +38,15 @@ from packages.story_core.title_strategy import (
     validate_chapter_title_window,
 )
 from packages.story_core.project_outline import (
+    ArcOutline,
     ChapterPlan,
     ChapterScenePlan,
     ProjectOutline,
     select_outline_context,
+)
+from packages.story_core.volume_outline import (
+    MIN_VOLUME_CHAPTERS,
+    validate_volume_structure,
 )
 from packages.story_core.world_blueprint_context import outline_power_system_context
 
@@ -152,6 +157,71 @@ def _drop_chapter_contracts_from_outline(outline: Any) -> None:
 def _drop_disabled_chapter_contracts(payload: Any) -> None:
     if isinstance(payload, dict):
         _drop_chapter_contracts_from_outline(payload.get("outline"))
+
+
+def validate_next_volume(
+    candidate: ArcOutline | dict[str, Any],
+    *,
+    previous_volume: ArcOutline | dict[str, Any],
+    allow_short_final: bool,
+) -> ArcOutline:
+    """Validate a single open-ended successor with the shared volume rules."""
+
+    previous = (
+        previous_volume
+        if isinstance(previous_volume, ArcOutline)
+        else ArcOutline.model_validate(previous_volume)
+    )
+    volume = candidate if isinstance(candidate, ArcOutline) else ArcOutline.model_validate(candidate)
+    expected_start = previous.end_chapter + 1
+    if volume.start_chapter != expected_start:
+        raise ValueError("next_volume_start_mismatch")
+    if volume.is_final_arc and not allow_short_final:
+        raise ValueError("unexpected_final_volume")
+    if not volume.is_final_arc and volume.end_chapter - volume.start_chapter + 1 < MIN_VOLUME_CHAPTERS:
+        raise ValueError(f"volume_too_short:{volume.id}")
+
+    required_text = {
+        "goal": volume.goal,
+        "obstacle": volume.obstacle,
+        "midpoint_turn": volume.midpoint_turn,
+        "climax": volume.climax,
+        "payoff": volume.payoff,
+        "irreversible_change": volume.irreversible_change,
+        "end_state": volume.end_state,
+    }
+    for field, value in required_text.items():
+        if not value.strip():
+            raise ValueError(f"next_volume_content_missing:{volume.id}:{field}")
+    if not any(
+        "cost" in str(item).lower() or "代价" in str(item)
+        for item in volume.key_results
+    ):
+        raise ValueError(f"next_volume_content_missing:{volume.id}:cost")
+    if not volume.is_final_arc and not volume.extension_gate.continue_route.strip():
+        raise ValueError(f"next_volume_entry_missing:{volume.id}")
+
+    # The shared validator models a closed whole-book outline. A newly designed
+    # non-final volume is intentionally open-ended, so validate an offset copy as
+    # the temporary last volume while preserving the real final marker above.
+    offset = volume.start_chapter - 1
+    projected = volume.model_dump(mode="json")
+    projected["start_chapter"] = 1
+    projected["end_chapter"] = volume.end_chapter - offset
+    projected["is_final_arc"] = True
+    projected["story_nodes"] = [
+        {
+            **node,
+            "start_chapter": int(node["start_chapter"]) - offset,
+            "end_chapter": int(node["end_chapter"]) - offset,
+        }
+        for node in projected["story_nodes"]
+    ]
+    validate_volume_structure(
+        [projected],
+        core_ending_chapter=int(projected["end_chapter"]),
+    )
+    return volume
 
 
 def _runtime_gateway_for_legacy_injection(
@@ -282,6 +352,8 @@ class OutlinePlanningBrief(_PlanningInput):
     world_facts: list[Any] = Field(default_factory=list)
     continuity_facts: list[Any] = Field(default_factory=list)
     committed_facts: list[Any] = Field(default_factory=list)
+    unresolved_foreshadowing: list[Any] = Field(default_factory=list)
+    character_current_states: list[dict[str, Any]] = Field(default_factory=list)
     enabled_skill_ids: list[str] = Field(default_factory=list)
     enabled_skill_module_ids: list[str] | None = None
 
@@ -519,6 +591,91 @@ class LLMOutlinePlanningGenerator:
         self._runtime_resolver = cached_runtime_resolver
         self._model_gateway = model_gateway or _runtime_gateway_for_legacy_injection(
             post_json, cached_runtime_resolver
+        )
+
+    def generate_next_volume(
+        self,
+        brief: OutlinePlanningBrief,
+        *,
+        previous_volume: dict[str, Any],
+        guidance: str = "",
+    ) -> ArcOutline:
+        """Design one successor volume without generating chapter detail."""
+
+        validated = OutlinePlanningBrief.model_validate(brief)
+        previous = ArcOutline.model_validate(previous_volume)
+        normalized_guidance = str(guidance or "").strip()
+        if len(normalized_guidance) > 1000:
+            raise ValueError("regeneration_guidance_too_long")
+
+        runtime = self._runtime_resolver("planner")
+        if runtime.provider not in {"codexcli", "antigravity"} and not runtime.api_key:
+            raise ValueError("runtime_unavailable")
+        overall = deepcopy(validated.overall_context)
+        strategy = str(overall.get("current_strategy") or "observe")
+        core_ending = int(overall.get("core_ending_chapter") or 0)
+        allow_short_final = strategy == "close" or validated.current_chapter >= core_ending
+        context = {
+            "generation_phase": "next_volume",
+            "title": validated.title,
+            "novel_type_id": validated.novel_type_id,
+            "overall": overall,
+            "existing_volumes": deepcopy(
+                validated.existing_outline.get("arcs", [])
+                if isinstance(validated.existing_outline, dict)
+                else []
+            ),
+            "committed_facts": deepcopy(validated.committed_facts),
+            "unresolved_foreshadowing": deepcopy(
+                validated.unresolved_foreshadowing
+            ),
+            "character_current_states": deepcopy(
+                validated.character_current_states
+            ),
+            "previous_volume": previous.model_dump(mode="json"),
+            "previous_volume_end_state": previous.end_state,
+            "required_start_chapter": previous.end_chapter + 1,
+            "allow_short_final_volume": allow_short_final,
+            "guidance": normalized_guidance,
+            "output_schema": ArcOutline.model_json_schema(),
+            "validation_rules": [
+                "Return exactly one volume object; do not return chapters or character cards.",
+                "start_chapter must equal required_start_chapter.",
+                "A non-final volume must cover at least 50 chapters.",
+                "story_nodes must cover the whole volume continuously in blocks of at most 15 chapters.",
+                "The volume must provide goal, obstacle, midpoint turn, climax, payoff, explicit cost, irreversible change, and end_state.",
+                "A non-final volume must leave a concrete extension_gate.continue_route and next-effect entry.",
+                "Set is_final_arc only when allow_short_final_volume is true and the story is actually closing.",
+            ],
+        }
+        payload = {
+            "model": runtime.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Design exactly one successor volume for a Chinese long-form webnovel. "
+                        "Use only the supplied canon and return one ArcOutline JSON object. "
+                        "Do not generate chapter detail, prose, or character cards."
+                    ),
+                },
+                {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": float(runtime.temperature),
+        }
+        response = _complete_payload(
+            self._model_gateway,
+            payload,
+            operation="outline_planning_next_volume",
+        )
+        data = parse_json_message_content(response)
+        if data is None:
+            raise ValueError("invalid_next_volume_json")
+        return validate_next_volume(
+            data,
+            previous_volume=previous,
+            allow_short_final=allow_short_final,
         )
 
     def generate_chapter_batch(
