@@ -13,8 +13,15 @@ from typing import Any
 
 SCHEMA_VERSION = "volume-detail-checkpoints/v1"
 CHECKPOINT_STATUSES = frozenset({"waiting", "running", "completed", "failed"})
+MAX_BATCH_CHAPTERS = 15
 
 _VOLUME_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{number}" for number in range(1, 10)}
+    | {f"LPT{number}" for number in range(1, 10)}
+)
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
 
 
 def _positive_integer(value: object, *, error: str) -> int:
@@ -51,9 +58,38 @@ def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
             temporary_path = Path(handle.name)
         os.replace(temporary_path, path)
         temporary_path = None
+        _fsync_directory(path.parent)
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Best-effort directory sync; Windows may not expose a syncable handle."""
+
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        descriptor = os.open(directory, flags)
+    except OSError:
+        return
+    try:
+        try:
+            os.fsync(descriptor)
+        except OSError:
+            pass
+    finally:
+        os.close(descriptor)
+
+
+def _is_reparse_target(path: Path) -> bool:
+    if not os.path.lexists(path):
+        return False
+    try:
+        stat_result = os.lstat(path)
+    except OSError:
+        return True
+    attributes = getattr(stat_result, "st_file_attributes", 0)
+    return path.is_symlink() or bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
 
 
 class VolumeDetailCheckpointStore:
@@ -69,14 +105,27 @@ class VolumeDetailCheckpointStore:
         if (
             not isinstance(volume_id, str)
             or volume_id in {"", ".", ".."}
+            or volume_id.endswith((".", " "))
             or _VOLUME_ID_PATTERN.fullmatch(volume_id) is None
         ):
+            raise ValueError("invalid_volume_id")
+        device_name = volume_id.split(".", 1)[0].upper()
+        if device_name in _WINDOWS_RESERVED_NAMES:
             raise ValueError("invalid_volume_id")
         return volume_id
 
     def _volume_directory(self, volume_id: str) -> Path:
         validated = self._validate_volume_id(volume_id)
-        return self.root / validated
+        root = self.root.resolve(strict=False)
+        candidate = self.root / validated
+        if _is_reparse_target(candidate):
+            raise ValueError("invalid_volume_id")
+        resolved_candidate = candidate.resolve(strict=False)
+        try:
+            resolved_candidate.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("invalid_volume_id") from exc
+        return candidate
 
     @staticmethod
     def _normalize_volume_range(volume_range: object) -> list[int]:
@@ -117,6 +166,8 @@ class VolumeDetailCheckpointStore:
             end = _positive_integer(raw_batch[1], error="invalid_batch")
             if end < start:
                 raise ValueError("invalid_batch")
+            if end - start + 1 > MAX_BATCH_CHAPTERS:
+                raise ValueError("batch_too_large")
             if start < volume_start or end > volume_end:
                 raise ValueError("batch_outside_volume_range")
             if previous_end is not None and start <= previous_end:
@@ -192,10 +243,29 @@ class VolumeDetailCheckpointStore:
 
         existing: dict[str, Any] | None = None
         if manifest_path.is_file():
-            existing = self._read_manifest(manifest_path)
-            if existing.get("volume_id") != validated_volume_id:
-                raise ValueError("invalid_checkpoint_manifest")
-        if existing is not None and existing.get("fingerprint") == fingerprint:
+            try:
+                existing = self._read_manifest(manifest_path)
+            except ValueError:
+                existing = None
+        expected_layout = [
+            (item["id"], item["start_chapter"], item["end_chapter"])
+            for item in normalized_batches
+        ]
+        existing_layout = (
+            [
+                (item["id"], item["start_chapter"], item["end_chapter"])
+                for item in existing["batches"]
+            ]
+            if existing is not None
+            else None
+        )
+        if (
+            existing is not None
+            and existing.get("fingerprint") == fingerprint
+            and existing.get("volume_id") == validated_volume_id
+            and existing.get("volume_range") == normalized_range
+            and existing_layout == expected_layout
+        ):
             manifest = existing
         else:
             manifest = {
@@ -209,10 +279,12 @@ class VolumeDetailCheckpointStore:
             for payload_path in volume_directory.glob("*.json"):
                 if payload_path.name != "manifest.json":
                     payload_path.unlink(missing_ok=True)
+            _fsync_directory(volume_directory)
 
         self._volume_id = validated_volume_id
         self._manifest = copy.deepcopy(manifest)
-        return copy.deepcopy(manifest)
+        self._recover_completed_payloads()
+        return copy.deepcopy(self._manifest)
 
     def load(self, volume_id: str) -> dict[str, Any]:
         validated_volume_id = self._validate_volume_id(volume_id)
@@ -223,7 +295,8 @@ class VolumeDetailCheckpointStore:
             raise ValueError("invalid_checkpoint_manifest")
         self._volume_id = validated_volume_id
         self._manifest = copy.deepcopy(manifest)
-        return copy.deepcopy(manifest)
+        self._recover_completed_payloads()
+        return copy.deepcopy(self._manifest)
 
     @staticmethod
     def _read_manifest(path: Path) -> dict[str, Any]:
@@ -352,22 +425,31 @@ class VolumeDetailCheckpointStore:
         return self._update_batch(batch_id, status="completed")
 
     def completed_payloads(self) -> dict[str, dict[str, Any]]:
+        return self._recover_completed_payloads()
+
+    def _recover_completed_payloads(self) -> dict[str, dict[str, Any]]:
         _, manifest, volume_directory = self._active()
         completed: dict[str, dict[str, Any]] = {}
-        for batch in manifest["batches"]:
+        updated = copy.deepcopy(manifest)
+        changed = False
+        for index, batch in enumerate(manifest["batches"]):
             if batch["status"] != "completed":
                 continue
             payload_path = volume_directory / f"{batch['id']}.json"
             try:
                 payload = json.loads(payload_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                raise ValueError(f"invalid_completed_payload:{batch['id']}") from exc
-            try:
                 completed[batch["id"]] = self._validate_completed_payload(
                     batch, payload
                 )
-            except ValueError as exc:
-                raise ValueError(f"invalid_completed_payload:{batch['id']}") from exc
+            except (OSError, json.JSONDecodeError, ValueError):
+                changed = True
+                completed.pop(batch["id"], None)
+                updated_batch = updated["batches"][index]
+                updated_batch["status"] = "failed"
+                updated_batch["error"] = "completed_payload_unavailable"
+        if changed:
+            _atomic_write_json(volume_directory / "manifest.json", updated)
+            self._manifest = updated
         return completed
 
     def next_incomplete_batch(self) -> dict[str, Any] | None:
