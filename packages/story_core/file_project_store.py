@@ -6710,6 +6710,22 @@ class FileProjectStore:
             "volume_range": [start, end],
         }
 
+    def require_volume_detail_for_prose(self, target_chapter: int) -> dict[str, Any]:
+        """Require a complete volume detail outline before any prose model call."""
+
+        workflow = self.volume_workflow_status(target_chapter)
+        status = str(workflow.get("status") or "")
+        volume_id = str(workflow.get("volume_id") or "").strip()
+        if status == "detail_complete":
+            return workflow
+        if status == "volume_missing":
+            raise ValueError(f"next_volume_required:{target_chapter}")
+        if status == "volume_plan_ready":
+            raise ValueError(f"volume_detail_required:{volume_id}")
+        if status == "detail_partial":
+            raise ValueError(f"volume_detail_incomplete:{volume_id}")
+        raise ValueError(f"invalid_volume_workflow_status:{status or 'missing'}")
+
     @_with_project_update_lock
     def design_next_volume(
         self,
@@ -8528,6 +8544,7 @@ class FileProjectStore:
         state = self._generation_state(self.state())
         project = self.project()
         target_chapter = int(state.get("current_chapter") or 0) + 1
+        self.require_volume_detail_for_prose(target_chapter)
         outline_status = self.rolling_fill_status(target_chapter)
         if outline_status.get("status") not in {"present", "legacy"}:
             raise ValueError(f"chapter_outline_required:{target_chapter}")
@@ -8609,6 +8626,7 @@ class FileProjectStore:
 
         if chapter_number < 1:
             raise ValueError("chapter_number_must_be_positive")
+        self.require_volume_detail_for_prose(chapter_number)
         chapter = self.chapter(chapter_number)
         source_body = str(chapter.get("body") or "")
         if not source_body.strip():
@@ -9455,6 +9473,7 @@ class FileProjectStore:
 
         if chapter_number < 1:
             raise ValueError("chapter_number_must_be_positive")
+        self.require_volume_detail_for_prose(chapter_number)
         self._assert_chapter_not_frozen(chapter_number, "regenerate")
         self._assert_opening_preflight(chapter_number)
 

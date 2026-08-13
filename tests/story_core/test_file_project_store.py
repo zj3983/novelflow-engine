@@ -29,6 +29,26 @@ from packages.story_core.volume_detail_checkpoints import VolumeDetailCheckpoint
 
 
 def _seed_generation_outline(root: Path, chapter_number: int) -> None:
+    volume_start = ((chapter_number - 1) // 50) * 50 + 1
+    volume_end = volume_start + 49
+    outline = _generated_opening_plan().outline.model_dump(mode="json")
+    base_arc = dict(outline["arcs"][0])
+    base_arc.update(
+        {
+            "id": f"volume-{volume_start}",
+            "start_chapter": volume_start,
+            "end_chapter": volume_end,
+            "is_final_arc": False,
+            "story_nodes": _story_nodes(volume_start, volume_end),
+        }
+    )
+    outline["arcs"] = [base_arc]
+    outline["chapters"] = []
+    outline_path = root / ".webnovel" / "outline.json"
+    outline_path.write_text(
+        json.dumps(outline, ensure_ascii=False),
+        encoding="utf-8",
+    )
     path = root / ".story-system" / "outline-generation" / "rolling_outline.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -37,8 +57,8 @@ def _seed_generation_outline(root: Path, chapter_number: int) -> None:
                 "schema_version": "rolling-outline/v1",
                 "chapters": [
                     {
-                        "chapter_number": chapter_number,
-                        "title": f"Chapter {chapter_number}",
+                        "chapter_number": number,
+                        "title": f"Chapter {number}",
                         "chapter_goal": "Advance the test chapter.",
                         "core_conflict": "Resolve the test conflict.",
                         "cast": [{"name": "Lead", "role": "protagonist", "this_chapter_role": "act"}],
@@ -50,6 +70,7 @@ def _seed_generation_outline(root: Path, chapter_number: int) -> None:
                         "state_delta": "test state advances",
                         "source": "manual",
                     }
+                    for number in range(volume_start, volume_end + 1)
                 ],
             },
             ensure_ascii=False,
@@ -4586,6 +4607,90 @@ def test_volume_workflow_status_reports_missing_plan_partial_and_ready(tmp_path)
     assert complete["next_action"] == "generate_prose"
 
 
+@pytest.mark.parametrize(
+    ("status", "volume_id", "expected"),
+    [
+        ("volume_missing", None, "next_volume_required:51"),
+        ("volume_plan_ready", "volume-2", "volume_detail_required:volume-2"),
+        ("detail_partial", "volume-2", "volume_detail_incomplete:volume-2"),
+    ],
+)
+def test_generate_next_chapter_uses_precise_volume_workflow_gate(
+    tmp_path,
+    monkeypatch,
+    status,
+    volume_id,
+    expected,
+) -> None:
+    store = _make_minimal_file_project(
+        tmp_path / f"prose-gate-{status}",
+        state={"story_id": "s-file", "current_chapter": 50, "world_facts": []},
+    )
+    called = False
+
+    class FakeEngine:
+        def generate_next_chapter(self, story):
+            nonlocal called
+            called = True
+            raise AssertionError("body generator must not run before the volume gate passes")
+
+    monkeypatch.setattr(
+        store,
+        "volume_workflow_status",
+        lambda target_chapter: {
+            "schema_version": "volume-workflow/v1",
+            "target_chapter": target_chapter,
+            "status": status,
+            "detail_status": "missing",
+            "next_action": "design_next_volume",
+            "volume_id": volume_id,
+            "volume_range": None if volume_id is None else [51, 100],
+        },
+    )
+
+    with pytest.raises(ValueError, match=f"^{re.escape(expected)}$"):
+        store.generate_next_chapter(engine=FakeEngine())
+
+    assert called is False
+
+
+@pytest.mark.parametrize("operation", ["regenerate", "expand"])
+def test_existing_chapter_prose_operations_do_not_bypass_incomplete_volume_gate(
+    tmp_path,
+    monkeypatch,
+    operation,
+) -> None:
+    store = _make_minimal_file_project(
+        tmp_path / f"existing-prose-gate-{operation}",
+        state={"story_id": "s-file", "current_chapter": 1, "world_facts": []},
+    )
+    store.write_chapter(
+        chapter_number=1,
+        title="Existing",
+        body="Existing confirmed body. " * 200,
+        summary="Existing chapter.",
+    )
+    monkeypatch.setattr(
+        store,
+        "volume_workflow_status",
+        lambda target_chapter: {
+            "schema_version": "volume-workflow/v1",
+            "target_chapter": target_chapter,
+            "status": "detail_partial",
+            "detail_status": "partial",
+            "next_action": "generate_volume_detail",
+            "volume_id": "volume-1",
+            "volume_range": [1, 50],
+        },
+    )
+
+    with pytest.raises(ValueError, match="^volume_detail_incomplete:volume-1$"):
+        if operation == "regenerate":
+            store.regenerate_chapter(1, engine=object())
+        else:
+            store.expand_chapter(1, orchestrator=object())
+
+
 def test_design_next_volume_appends_plan_without_writing_detail(tmp_path) -> None:
     store = _prepare_next_volume_design_project(tmp_path)
     generator = _NextVolumeGenerator()
@@ -8503,6 +8608,7 @@ def test_regenerate_historical_chapter_rebases_structured_attribute_ledger_throu
         ],
     }
     store = _make_minimal_file_project(root, project=project, state=state)
+    _seed_generation_outline(root, 2)
 
     def snapshot(number, protagonist, *, currency, quest, scene_time):
         return {
@@ -8811,6 +8917,7 @@ def _historical_rebase_transaction_case(root):
         "characters": [{"name": "Ari", "role": "protagonist"}],
     }
     store = _make_minimal_file_project(root, project=project, state=state)
+    _seed_generation_outline(root, 2)
 
     def story(chapter, protagonist):
         return {
@@ -9347,6 +9454,8 @@ def test_regenerate_blocks_frozen_chapter(tmp_path):
         },
     )
 
+    _seed_generation_outline(root, 1)
+
     try:
         store.regenerate_chapter(1, engine=SimpleNamespace(generate_next_chapter=lambda story: None))
     except ValueError as exc:
@@ -9525,7 +9634,7 @@ def test_sync_project_after_chapter_applies_relationship_state_changes(tmp_path)
     assert edge["changes"][-1]["chapter_number"] == 3
 
 
-def test_file_project_store_regenerates_target_chapter_with_rotating_variant(tmp_path):
+def test_file_project_store_regenerates_target_chapter_with_rotating_variant(tmp_path, monkeypatch):
     root = tmp_path / "novel"
     (root / ".story-system" / "chapters").mkdir(parents=True)
     (root / ".story-system" / "reviews").mkdir(parents=True)
@@ -9585,6 +9694,14 @@ def test_file_project_store_regenerates_target_chapter_with_rotating_variant(tmp
     store = FileProjectStore(root)
     store.write_chapter(chapter_number=1, title="旧第一章", body="旧正文。", summary="旧版。")
 
+    monkeypatch.setattr(
+        store,
+        "require_volume_detail_for_prose",
+        lambda target_chapter: {
+            "status": "detail_complete",
+            "target_chapter": target_chapter,
+        },
+    )
     seen_variants: list[str] = []
 
     class FakeEngine:
@@ -9669,6 +9786,7 @@ def test_regenerate_uses_complete_runtime_story_payload_for_project_genre(monkey
             "characters": [{"name": "苏叶", "role": "protagonist", "game_id": "夜烬"}],
         },
     )
+    _seed_generation_outline(root, 1)
     captured = {}
 
     class FakeEngine:
@@ -9716,6 +9834,8 @@ def test_regenerate_first_chapter_can_save_candidate_without_existing_chapters(t
         },
     )
 
+    _seed_generation_outline(root, 1)
+
     class FakeEngine:
         def generate_next_chapter(self, story):
             return SimpleNamespace(
@@ -9762,6 +9882,7 @@ def test_regenerate_first_chapter_uses_master_opening_state_instead_of_old_chapt
             "chapter_summaries": [{"chapter_number": 1, "summary": "旧第一章"}],
         },
     )
+    _seed_generation_outline(root, 1)
     master = store.master_setting()
     master["state"] = {
         "story_id": "s-opening-state",
@@ -9923,6 +10044,7 @@ def test_regenerate_second_chapter_uses_previous_snapshot_for_attribute_realloca
         "characters": [{"name": "Ari", "role": "protagonist", "current_emotion": "chapter-one-ready"}],
         "chapter_summaries": [{"chapter_number": 1, "summary": "Ari earns five points."}],
     }
+    _seed_generation_outline(root, 2)
     store._write_json(
         store.story_system_dir / "chapters" / "0001.json",
         {
@@ -10014,6 +10136,7 @@ def test_regenerate_without_previous_snapshot_does_not_reuse_completed_chapter_s
             "characters": [{"name": "Ari", "role": "protagonist"}],
         },
     )
+    _seed_generation_outline(root, 2)
     store._write_json(
         store.story_system_dir / "chapters" / "0001.json",
         {
@@ -10085,6 +10208,8 @@ def test_regenerate_without_snapshot_whitelists_stable_state_only(monkeypatch, t
             "body": _long_test_body("The first chapter establishes a clean baseline."),
         },
     )
+
+    _seed_generation_outline(root, 2)
 
     class FakeEngine:
         def generate_next_chapter(self, story):
@@ -10167,6 +10292,8 @@ def test_regenerate_without_snapshot_uses_static_standard_character_profiles(mon
         },
     )
 
+    _seed_generation_outline(root, 2)
+
     class FakeEngine:
         def generate_next_chapter(self, story):
             by_name = {character.name: character for character in story.characters}
@@ -10220,6 +10347,7 @@ def test_file_project_store_passes_temporary_guidance_to_regeneration(tmp_path):
         },
     )
     store.write_chapter(chapter_number=1, title="Old One", body="Old body kept costs visible.", summary="Old summary.")
+    _seed_generation_outline(root, 1)
     guidance = "Use the dissection report: keep exp 30/100 and do not jump to class change."
     seen_guidance: list[dict] = []
 
@@ -10278,6 +10406,7 @@ def test_file_project_store_regenerate_does_not_fail_on_continuity_quality_field
             "world_facts": [],
         },
     )
+    _seed_generation_outline(root, 1)
     store.write_chapter(
         chapter_number=1,
         title="Old One",
@@ -10350,6 +10479,7 @@ def test_file_project_store_regenerate_replaces_import_placeholder_summary(tmp_p
             "timeline": [{"chapter_number": 1, "summary": "continue", "impact": "continue"}],
         },
     )
+    _seed_generation_outline(root, 1)
     store.write_chapter(
         chapter_number=1,
         title="Imported One",
@@ -10502,6 +10632,7 @@ def test_file_project_store_expands_short_chapter_as_candidate(tmp_path):
             "world_facts": ["The repair shop is still open."],
         },
     )
+    _seed_generation_outline(root, 1)
     source_body = "The customer waits beside the counter. " * 30
     store.write_chapter(
         chapter_number=1,
@@ -10544,6 +10675,7 @@ def test_file_project_store_expands_full_length_chapter_as_candidate(tmp_path):
             "world_facts": [],
         },
     )
+    _seed_generation_outline(root, 1)
     store.write_chapter(
         chapter_number=1,
         title="Full Chapter",
@@ -10590,6 +10722,7 @@ def test_file_project_store_rejects_invalid_manual_expansion_output(
             "world_facts": [],
         },
     )
+    _seed_generation_outline(root, 1)
     store.write_chapter(
         chapter_number=1,
         title="Short Chapter",
@@ -10727,6 +10860,7 @@ def test_file_project_store_preserves_rejected_regeneration_as_failed_draft(tmp_
             "world_facts": [],
         },
     )
+    _seed_generation_outline(root, 1)
     store.write_chapter(chapter_number=1, title="Old One", body="Old accepted body.", summary="Old summary.")
 
     class FakeEngine:

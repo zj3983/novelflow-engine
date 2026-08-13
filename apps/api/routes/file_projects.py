@@ -118,6 +118,17 @@ class OutlinePlanGenerationRequest(BaseModel):
         return value.strip() if isinstance(value, str) else value
 
 
+class VolumeWorkflowGenerationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    guidance: str = Field(default="", max_length=1000)
+
+    @field_validator("guidance", mode="before")
+    @classmethod
+    def trim_guidance(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+
 class FileProjectGenerationJobRequest(BaseModel):
     chapter_number: int | None = None
     operation: Literal["expand"] | None = None
@@ -526,9 +537,40 @@ def _file_project_lifecycle_payload(store: FileProjectStore) -> dict[str, Any]:
 
 def _raise_file_project_error(exc: ValueError) -> None:
     detail = str(exc)
-    if detail.startswith("chapter_frozen:"):
+    if detail.startswith(
+        (
+            "chapter_frozen:",
+            "next_volume_required:",
+            "volume_detail_required:",
+            "volume_detail_incomplete:",
+        )
+    ):
         raise HTTPException(status_code=409, detail=detail) from exc
     raise HTTPException(status_code=400, detail=detail) from exc
+
+
+def _raise_volume_workflow_write_error(exc: Exception, *, operation: str) -> None:
+    if not isinstance(exc, ValueError):
+        detail = re.sub(r"\s+", " ", str(exc)).strip()[:500]
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"{operation}_generation_failed:{type(exc).__name__}:"
+                f"{detail or 'no_detail'}"
+            ),
+        ) from exc
+    detail = str(exc)
+    if detail in {
+        "outline_changed_during_volume_design",
+        "project_generation_in_progress",
+    }:
+        raise HTTPException(status_code=409, detail=detail) from exc
+    if "generation_failed" in detail or detail in {
+        "runtime_unavailable",
+        "invalid_next_volume_json",
+    }:
+        raise HTTPException(status_code=502, detail=detail) from exc
+    raise HTTPException(status_code=422, detail=detail) from exc
 
 
 def _raise_file_project_lifecycle_error(exc: FileProjectLifecycleError) -> None:
@@ -1065,12 +1107,15 @@ def start_file_generation_job(
         )
     if target_chapter is None:
         next_chapter = int(store.summary().get("current_chapter") or 0) + 1
-        outline_status = store.rolling_fill_status(next_chapter)
-        if outline_status.get("status") not in {"present", "legacy"}:
-            raise HTTPException(
-                status_code=409,
-                detail=f"chapter_outline_required:{next_chapter}",
-            )
+        try:
+            store.require_volume_detail_for_prose(next_chapter)
+        except ValueError as exc:
+            _raise_file_project_error(exc)
+    elif isinstance(target_chapter, int) and target_chapter > 0:
+        try:
+            store.require_volume_detail_for_prose(target_chapter)
+        except ValueError as exc:
+            _raise_file_project_error(exc)
     variant = payload.variant if payload else None
     guidance = payload.guidance if payload else None
     chapter_direction_id = payload.chapter_direction_id if payload else None
@@ -1684,6 +1729,49 @@ def init_file_project_routes() -> APIRouter:
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    @router.get("/file-projects/{project_id}/outline/volume-workflow")
+    def get_file_project_volume_workflow(
+        project_id: str,
+        target_chapter: int,
+    ) -> dict[str, Any]:
+        store = _store_for(project_id)
+        try:
+            return store.volume_workflow_status(target_chapter)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.post("/file-projects/{project_id}/outline/volumes/next")
+    def design_file_project_next_volume(
+        project_id: str,
+        payload: VolumeWorkflowGenerationRequest | None = None,
+    ) -> dict[str, Any]:
+        store = _store_for(project_id)
+        try:
+            return store.design_next_volume(
+                outline_planning_generator,
+                guidance=payload.guidance if payload else "",
+            )
+        except Exception as exc:
+            _raise_volume_workflow_write_error(exc, operation="next_volume")
+
+    @router.post(
+        "/file-projects/{project_id}/outline/volumes/{volume_id}/detail"
+    )
+    def generate_file_project_volume_detail(
+        project_id: str,
+        volume_id: str,
+        payload: VolumeWorkflowGenerationRequest | None = None,
+    ) -> dict[str, Any]:
+        store = _store_for(project_id)
+        try:
+            return store.generate_volume_detail(
+                outline_planning_generator,
+                volume_id=volume_id,
+                guidance=payload.guidance if payload else "",
+            )
+        except Exception as exc:
+            _raise_volume_workflow_write_error(exc, operation="volume_detail")
+
     @router.get("/file-projects/{project_id}/outline/extension-readiness")
     def get_file_project_outline_extension_readiness(
         project_id: str,
@@ -2105,14 +2193,12 @@ def init_file_project_routes() -> APIRouter:
     @router.post("/file-projects/{project_id}/generate-next")
     def generate_file_project_next(project_id: str, payload: FileProjectGenerateNextRequest | None = None) -> dict[str, Any]:
         store = _store_for(project_id)
-        next_chapter = int(store.summary().get("current_chapter") or 0) + 1
-        outline_status = store.rolling_fill_status(next_chapter)
-        if outline_status.get("status") not in {"present", "legacy"}:
-            raise HTTPException(
-                status_code=409,
-                detail=f"chapter_outline_required:{next_chapter}",
+        try:
+            generated = store.generate_next_chapter(
+                chapter_direction_id=payload.chapter_direction_id if payload else None
             )
-        generated = store.generate_next_chapter(chapter_direction_id=payload.chapter_direction_id if payload else None)
+        except ValueError as exc:
+            _raise_file_project_error(exc)
         return {
             "schema_version": "file-project-generate-next-response/v1",
             "project": _project_payload(store),
