@@ -279,6 +279,9 @@ class OutlinePlanningBrief(_PlanningInput):
     continuation_start_chapter: int | None = Field(default=None, ge=1)
     historical_chapter_summaries: list[dict[str, Any]] = Field(default_factory=list)
     power_system_spec: dict[str, Any] = Field(default_factory=dict)
+    world_facts: list[Any] = Field(default_factory=list)
+    continuity_facts: list[Any] = Field(default_factory=list)
+    committed_facts: list[Any] = Field(default_factory=list)
     enabled_skill_ids: list[str] = Field(default_factory=list)
     enabled_skill_module_ids: list[str] | None = None
 
@@ -525,6 +528,8 @@ class LLMOutlinePlanningGenerator:
         volume: dict[str, Any],
         chapter_numbers: list[int],
         previous_batches: list[dict[str, Any]],
+        adjacent_chapters: list[dict[str, Any]] | None = None,
+        committed_context: dict[str, Any] | None = None,
         guidance: str = "",
     ) -> GeneratedChapterWindow:
         """Generate one resumable chapter-detail batch inside a fixed volume."""
@@ -598,14 +603,12 @@ class LLMOutlinePlanningGenerator:
                 continue
             previous_endings.append(
                 {
-                    key: last.get(key)
-                    for key in (
-                        "chapter_number",
-                        "title",
-                        "ending_hook",
-                        "state_delta_summary",
-                    )
-                    if last.get(key) not in (None, "")
+                    "chapter_number": last.get("chapter_number"),
+                    "title": last.get("title"),
+                    "ending_hook": last.get("ending_hook") or last.get("hook"),
+                    "state_delta_summary": (
+                        last.get("state_delta_summary") or last.get("state_delta")
+                    ),
                 }
             )
         existing_chapters = [
@@ -637,6 +640,7 @@ class LLMOutlinePlanningGenerator:
             "target_chapter_numbers": list(chapter_numbers),
             "current_batch_story_nodes": current_nodes,
             "previous_batch_endings": previous_endings,
+            "adjacent_chapters": deepcopy(adjacent_chapters or []),
             "committed_context": {
                 "overall": deepcopy(validated.overall_context),
                 "recent_chapter_summaries": deepcopy(
@@ -648,6 +652,10 @@ class LLMOutlinePlanningGenerator:
                 "existing_characters": deepcopy(validated.existing_characters),
                 "known_character_names": list(validated.existing_character_names),
                 "power_system": deepcopy(validated.power_system_spec),
+                "world_facts": deepcopy(validated.world_facts),
+                "continuity_facts": deepcopy(validated.continuity_facts),
+                "committed_facts": deepcopy(validated.committed_facts),
+                **deepcopy(committed_context or {}),
             },
             "required_volume_ending": str(
                 volume.get("climax")
@@ -668,6 +676,7 @@ class LLMOutlinePlanningGenerator:
                 "Return exactly the target_chapter_numbers in order.",
                 "Use the fixed volume and story nodes; do not redesign arcs or volume boundaries.",
                 "Carry forward previous_batch_endings and committed_context.",
+                "Use adjacent_chapters as fixed handoff context for sparse gaps.",
                 "The final batch must satisfy required_volume_ending.",
             ],
         }

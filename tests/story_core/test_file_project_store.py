@@ -24,6 +24,7 @@ from packages.story_core.file_project_store import (
 )
 from packages.story_core.outline_planning_generation import GeneratedChapterWindow
 from packages.story_core.outline_rolling_store import RollingOutlineStore
+from packages.story_core.volume_detail_checkpoints import VolumeDetailCheckpointStore
 
 
 def _seed_generation_outline(root: Path, chapter_number: int) -> None:
@@ -4267,6 +4268,7 @@ def _prepare_volume_detail_project(tmp_path):
 class _RecordingVolumeDetailGenerator:
     def __init__(self, *, fail_batch_start: int | None = None):
         self.calls: list[tuple[int, ...]] = []
+        self.contexts: list[dict] = []
         self.fail_batch_start = fail_batch_start
         self.failed = False
 
@@ -4277,9 +4279,18 @@ class _RecordingVolumeDetailGenerator:
         volume,
         chapter_numbers,
         previous_batches,
+        adjacent_chapters=None,
+        committed_context=None,
         guidance="",
     ):
         self.calls.append(tuple(chapter_numbers))
+        self.contexts.append(
+            {
+                "previous_batches": previous_batches,
+                "adjacent_chapters": adjacent_chapters or [],
+                "committed_context": committed_context or {},
+            }
+        )
         if self.fail_batch_start == chapter_numbers[0] and not self.failed:
             self.failed = True
             raise ValueError("temporary model failure")
@@ -4360,6 +4371,82 @@ def test_generate_volume_detail_handles_sparse_gaps_without_overwriting_existing
     assert result["completed_chapters"] == result["total_chapters"] == 60
     rolling = RollingOutlineStore(store.root).read_rolling_outline()
     assert [chapter["chapter_number"] for chapter in rolling["chapters"]] == [10, 30]
+
+
+def test_sparse_volume_detail_passes_real_neighbors_and_committed_facts(tmp_path) -> None:
+    store = _prepare_volume_detail_project(tmp_path)
+    outline = store.project_outline()
+    outline.pop("source", None)
+    template = _generated_opening_plan().outline.chapters[0].model_dump(mode="json")
+    outline["chapters"] = [
+        {**template, "chapter_number": number, "title": f"Existing {number}"}
+        for number in range(1, 61)
+        if number != 30
+    ]
+    store.update_project_outline(outline)
+    state = store.state()
+    state["world_facts"] = ["The archive seal is forged."]
+    state["continuity_facts"] = [
+        {"text": "The witness left before chapter 30.", "chapter_number": 29}
+    ]
+    store._write_json(store.webnovel_dir / "state.json", state)
+    generator = _RecordingVolumeDetailGenerator()
+
+    store.generate_volume_detail(generator, volume_id="v3")
+
+    context = generator.contexts[0]
+    assert [item["chapter_number"] for item in context["adjacent_chapters"]] == [29, 31]
+    assert context["committed_context"]["world_facts"] == ["The archive seal is forged."]
+    assert context["committed_context"]["continuity_facts"][0]["chapter_number"] == 29
+
+
+def test_volume_detail_handoff_rejects_empty_previous_ending() -> None:
+    with pytest.raises(ValueError, match="^volume_detail_continuity_invalid:0001-0015$"):
+        FileProjectStore._validate_volume_detail_handoff(
+            batch_id="0001-0015",
+            chapter_numbers=list(range(1, 16)),
+            generated_chapters=[
+                {**_volume_detail_generated_chapter(number), "ending_hook": "" if number == 15 else "Next"}
+                for number in range(1, 16)
+            ],
+            previous_batch=None,
+            adjacent_chapters=[],
+            volume_range=(1, 60),
+            previous_missing_batch=None,
+            next_missing_batch=(16, 30),
+        )
+
+
+def test_volume_detail_handoff_requires_sparse_gap_neighbors() -> None:
+    with pytest.raises(ValueError, match="^volume_detail_continuity_invalid:0030-0030$"):
+        FileProjectStore._validate_volume_detail_handoff(
+            batch_id="0030-0030",
+            chapter_numbers=[30],
+            generated_chapters=[_volume_detail_generated_chapter(30)],
+            previous_batch=None,
+            adjacent_chapters=[{"chapter_number": 29, "title": "Before"}],
+            volume_range=(1, 60),
+            previous_missing_batch=(10, 10),
+            next_missing_batch=None,
+        )
+
+
+def test_volume_detail_continuity_failure_does_not_complete_or_publish(tmp_path) -> None:
+    store = _prepare_volume_detail_project(tmp_path)
+
+    class MissingEndingGenerator(_RecordingVolumeDetailGenerator):
+        def generate_chapter_batch(self, *args, **kwargs):
+            result = super().generate_chapter_batch(*args, **kwargs)
+            result.chapters[-1].ending_hook = ""
+            return result
+
+    with pytest.raises(ValueError, match="volume_detail_continuity_invalid:0001-0015"):
+        store.generate_volume_detail(MissingEndingGenerator(), volume_id="v3")
+
+    checkpoints = VolumeDetailCheckpointStore(store.story_system_dir / "volume-detail")
+    status = checkpoints.load("v3")
+    assert status["batches"][0]["status"] == "failed"
+    assert RollingOutlineStore(store.root).read_rolling_outline() is None
 
 
 def test_generate_volume_detail_rejects_unknown_volume_without_model_call(tmp_path) -> None:

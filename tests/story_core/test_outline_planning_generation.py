@@ -952,6 +952,10 @@ def test_generate_chapter_batch_uses_complete_volume_context_and_exact_numbers()
     brief_payload["recent_chapter_summaries"] = [
         {"chapter_number": 152, "summary": "Committed ending fact."}
     ]
+    brief_payload["world_facts"] = ["The archive seal is forged."]
+    brief_payload["continuity_facts"] = [
+        {"chapter_number": 167, "text": "The witness is missing."}
+    ]
     volume = {
         **_valid_plan()["outline"]["arcs"][0],
         "id": "v3",
@@ -977,6 +981,10 @@ def test_generate_chapter_batch_uses_complete_volume_context_and_exact_numbers()
                 ]
             }
         ],
+        adjacent_chapters=[
+            {"chapter_number": 167, "title": "Previous"},
+            {"chapter_number": 183, "title": "Next"},
+        ],
         guidance="Keep the hearing continuous.",
     )
 
@@ -988,7 +996,10 @@ def test_generate_chapter_batch_uses_complete_volume_context_and_exact_numbers()
     assert context["volume"]["story_nodes"] == volume["story_nodes"]
     assert context["current_batch_story_nodes"] == volume["story_nodes"][1:2]
     assert context["previous_batch_endings"][0]["chapter_number"] == 167
+    assert [item["chapter_number"] for item in context["adjacent_chapters"]] == [167, 183]
     assert context["committed_context"]["recent_chapter_summaries"][0]["chapter_number"] == 152
+    assert context["committed_context"]["world_facts"] == ["The archive seal is forged."]
+    assert context["committed_context"]["continuity_facts"][0]["chapter_number"] == 167
     assert context["required_volume_ending"] == volume["climax"]
     assert context["guidance"] == "Keep the hearing continuous."
     assert "must not redesign" in captured["request"].messages[0]["content"].lower()

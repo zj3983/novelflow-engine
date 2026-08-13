@@ -5775,6 +5775,23 @@ class FileProjectStore:
                 if isinstance(blueprint.get("power_system_spec"), dict)
                 else {}
             ),
+            world_facts=deepcopy(
+                state.get("world_facts") if isinstance(state.get("world_facts"), list) else []
+            ),
+            continuity_facts=deepcopy(
+                state.get("continuity_facts")
+                if isinstance(state.get("continuity_facts"), list)
+                else []
+            ),
+            committed_facts=deepcopy(
+                state.get("committed_facts")
+                if isinstance(state.get("committed_facts"), list)
+                else (
+                    blueprint.get("continuity_state", {}).get("chapter_facts", [])
+                    if isinstance(blueprint.get("continuity_state"), dict)
+                    else []
+                )
+            ),
             enabled_skill_ids=resolve_enabled_skill_ids(project, state),
             enabled_skill_module_ids=resolve_enabled_skill_module_ids(project, state),
         )
@@ -6502,6 +6519,79 @@ class FileProjectStore:
                 rolling[optional] = dict(payload[optional])
         return rolling
 
+    @staticmethod
+    def _validate_volume_detail_handoff(
+        *,
+        batch_id: str,
+        chapter_numbers: list[int],
+        generated_chapters: list[Any],
+        previous_batch: dict[str, Any] | None,
+        adjacent_chapters: list[dict[str, Any]],
+        volume_range: tuple[int, int],
+        previous_missing_batch: tuple[int, int] | None,
+        next_missing_batch: tuple[int, int] | None,
+    ) -> dict[str, Any]:
+        def payload(item: Any) -> dict[str, Any]:
+            if hasattr(item, "model_dump"):
+                return item.model_dump(mode="json")
+            return dict(item) if isinstance(item, dict) else {}
+
+        def hook_and_delta(item: dict[str, Any]) -> tuple[str, str]:
+            return (
+                str(item.get("ending_hook") or item.get("hook") or "").strip(),
+                str(
+                    item.get("state_delta_summary")
+                    or item.get("state_delta")
+                    or ""
+                ).strip(),
+            )
+
+        rows = [payload(item) for item in generated_chapters]
+        actual = [int(item.get("chapter_number") or 0) for item in rows]
+        invalid = actual != chapter_numbers or not rows
+        if rows:
+            first = rows[0]
+            invalid = invalid or not str(
+                first.get("goal") or first.get("chapter_goal") or ""
+            ).strip()
+            invalid = invalid or not str(first.get("core_conflict") or "").strip()
+            ending_hook, ending_delta = hook_and_delta(rows[-1])
+            invalid = invalid or not ending_hook or not ending_delta
+
+        previous_ending: dict[str, Any] | None = None
+        if previous_batch:
+            previous_rows = previous_batch.get("chapters")
+            if isinstance(previous_rows, list) and previous_rows:
+                previous_ending = payload(previous_rows[-1])
+                previous_number = int(previous_ending.get("chapter_number") or 0)
+                if previous_number + 1 == chapter_numbers[0]:
+                    previous_hook, previous_delta = hook_and_delta(previous_ending)
+                    invalid = invalid or not previous_hook or not previous_delta
+
+        adjacent_by_number = {
+            int(item.get("chapter_number") or 0): dict(item)
+            for item in adjacent_chapters
+            if isinstance(item, dict) and int(item.get("chapter_number") or 0) > 0
+        }
+        start, end = chapter_numbers[0], chapter_numbers[-1]
+        volume_start, volume_end = volume_range
+        previous_is_contiguous = bool(
+            previous_missing_batch and previous_missing_batch[1] + 1 == start
+        )
+        next_is_contiguous = bool(
+            next_missing_batch and end + 1 == next_missing_batch[0]
+        )
+        if start > volume_start and not previous_is_contiguous:
+            invalid = invalid or start - 1 not in adjacent_by_number
+        if end < volume_end and not next_is_contiguous:
+            invalid = invalid or end + 1 not in adjacent_by_number
+        if invalid:
+            raise ValueError(f"volume_detail_continuity_invalid:{batch_id}")
+        return {
+            "previous_batch_ending": previous_ending,
+            "adjacent_chapters": list(adjacent_by_number.values()),
+        }
+
     @_with_project_update_lock
     def generate_volume_detail(
         self,
@@ -6534,8 +6624,8 @@ class FileProjectStore:
         end = int(volume["end_chapter"])
         volume_range = (start, end)
 
-        legacy_numbers = {
-            int(chapter["chapter_number"])
+        legacy_chapter_map = {
+            int(chapter["chapter_number"]): dict(chapter)
             for chapter in outline.get("chapters", [])
             if isinstance(chapter, dict)
             and isinstance(chapter.get("chapter_number"), int)
@@ -6544,15 +6634,16 @@ class FileProjectStore:
         }
         rolling_store = RollingOutlineStore(self.root)
         rolling_outline = rolling_store.read_rolling_outline() or {}
-        rolling_numbers = {
-            int(chapter["chapter_number"])
+        rolling_chapter_map = {
+            int(chapter["chapter_number"]): dict(chapter)
             for chapter in rolling_outline.get("chapters", [])
             if isinstance(chapter, dict)
             and isinstance(chapter.get("chapter_number"), int)
             and not isinstance(chapter.get("chapter_number"), bool)
             and start <= int(chapter["chapter_number"]) <= end
         }
-        existing_numbers = legacy_numbers | rolling_numbers
+        existing_chapter_map = {**legacy_chapter_map, **rolling_chapter_map}
+        existing_numbers = set(existing_chapter_map)
         missing_batches = volume_detail_batches_for_missing(
             start,
             end,
@@ -6601,14 +6692,42 @@ class FileProjectStore:
             if batch["id"] in completed_payloads
         ]
         brief = self._planning_brief()
+        committed_context = {
+            "world_facts": deepcopy(brief.world_facts),
+            "continuity_facts": deepcopy(brief.continuity_facts),
+            "committed_facts": deepcopy(brief.committed_facts),
+        }
 
         while True:
             batch = checkpoints.next_incomplete_batch()
             if batch is None:
                 break
             batch_id = str(batch["id"])
+            batch_index = next(
+                index
+                for index, item in enumerate(manifest["batches"])
+                if item["id"] == batch_id
+            )
             chapter_numbers = list(
                 range(batch["start_chapter"], batch["end_chapter"] + 1)
+            )
+            adjacent_chapters = [
+                deepcopy(existing_chapter_map[number])
+                for number in (chapter_numbers[0] - 1, chapter_numbers[-1] + 1)
+                if number in existing_chapter_map
+            ]
+            previous_manifest_batch = (
+                manifest["batches"][batch_index - 1] if batch_index > 0 else None
+            )
+            next_manifest_batch = (
+                manifest["batches"][batch_index + 1]
+                if batch_index + 1 < len(manifest["batches"])
+                else None
+            )
+            previous_payload = (
+                completed_payloads.get(previous_manifest_batch["id"])
+                if previous_manifest_batch
+                else None
             )
             checkpoints.running(batch_id)
             try:
@@ -6617,6 +6736,8 @@ class FileProjectStore:
                     volume=deepcopy(volume),
                     chapter_numbers=chapter_numbers,
                     previous_batches=deepcopy(previous_batches),
+                    adjacent_chapters=deepcopy(adjacent_chapters),
+                    committed_context=deepcopy(committed_context),
                     guidance=normalized_guidance,
                 )
                 generated_chapters = list(getattr(generated, "chapters", []))
@@ -6626,13 +6747,39 @@ class FileProjectStore:
                 ]
                 if actual_numbers != chapter_numbers:
                     raise ValueError("generated_chapters_do_not_match_target_batch")
+                handoff = self._validate_volume_detail_handoff(
+                    batch_id=batch_id,
+                    chapter_numbers=chapter_numbers,
+                    generated_chapters=generated_chapters,
+                    previous_batch=previous_payload,
+                    adjacent_chapters=adjacent_chapters,
+                    volume_range=volume_range,
+                    previous_missing_batch=(
+                        (
+                            int(previous_manifest_batch["start_chapter"]),
+                            int(previous_manifest_batch["end_chapter"]),
+                        )
+                        if previous_manifest_batch
+                        else None
+                    ),
+                    next_missing_batch=(
+                        (
+                            int(next_manifest_batch["start_chapter"]),
+                            int(next_manifest_batch["end_chapter"]),
+                        )
+                        if next_manifest_batch
+                        else None
+                    ),
+                )
                 payload = {
                     "chapters": [
                         self._generated_detail_to_rolling_chapter(chapter)
                         for chapter in generated_chapters
-                    ]
+                    ],
+                    "handoff_context": handoff,
                 }
                 checkpoints.complete(batch_id, payload)
+                completed_payloads[batch_id] = payload
                 previous_batches.append(payload)
             except Exception as exc:
                 detail = re.sub(r"\s+", " ", str(exc)).strip()[:500]
@@ -6640,6 +6787,8 @@ class FileProjectStore:
                     batch_id,
                     f"{type(exc).__name__}:{detail or 'no_detail'}",
                 )
+                if detail.startswith("volume_detail_continuity_invalid:"):
+                    raise ValueError(detail) from exc
                 raise ValueError(
                     f"volume_detail_generation_failed:{batch_id}:"
                     f"{type(exc).__name__}:{detail or 'no_detail'}"
@@ -6649,7 +6798,8 @@ class FileProjectStore:
         completed_payloads = checkpoints.completed_payloads()
         generated_chapters: list[dict[str, Any]] = []
         expected_missing: list[int] = []
-        for batch in manifest["batches"]:
+        previous_payload = None
+        for batch_index, batch in enumerate(manifest["batches"]):
             payload = completed_payloads.get(batch["id"])
             if payload is None:
                 raise ValueError(
@@ -6658,7 +6808,55 @@ class FileProjectStore:
             expected_missing.extend(
                 range(batch["start_chapter"], batch["end_chapter"] + 1)
             )
+            handoff = payload.get("handoff_context")
+            if not isinstance(handoff, dict):
+                checkpoints.fail(
+                    str(batch["id"]),
+                    f"volume_detail_continuity_invalid:{batch['id']}",
+                )
+                raise ValueError(
+                    f"volume_detail_continuity_invalid:{batch['id']}"
+                )
+            previous_manifest_batch = (
+                manifest["batches"][batch_index - 1] if batch_index > 0 else None
+            )
+            next_manifest_batch = (
+                manifest["batches"][batch_index + 1]
+                if batch_index + 1 < len(manifest["batches"])
+                else None
+            )
+            try:
+                self._validate_volume_detail_handoff(
+                    batch_id=str(batch["id"]),
+                    chapter_numbers=list(
+                        range(batch["start_chapter"], batch["end_chapter"] + 1)
+                    ),
+                    generated_chapters=list(payload["chapters"]),
+                    previous_batch=previous_payload,
+                    adjacent_chapters=list(handoff.get("adjacent_chapters") or []),
+                    volume_range=volume_range,
+                    previous_missing_batch=(
+                        (
+                            int(previous_manifest_batch["start_chapter"]),
+                            int(previous_manifest_batch["end_chapter"]),
+                        )
+                        if previous_manifest_batch
+                        else None
+                    ),
+                    next_missing_batch=(
+                        (
+                            int(next_manifest_batch["start_chapter"]),
+                            int(next_manifest_batch["end_chapter"]),
+                        )
+                        if next_manifest_batch
+                        else None
+                    ),
+                )
+            except ValueError as exc:
+                checkpoints.fail(str(batch["id"]), str(exc))
+                raise
             generated_chapters.extend(payload["chapters"])
+            previous_payload = payload
         actual_missing = [
             int(chapter.get("chapter_number") or 0)
             for chapter in generated_chapters
