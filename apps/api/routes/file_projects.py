@@ -1105,13 +1105,18 @@ def start_file_generation_job(
             status_code=422,
             detail="chapter_number_required_for_expansion",
         )
-    if target_chapter is None:
+    requires_new_chapter_outline = operation not in {"expand", "regenerate"}
+    if target_chapter is None and requires_new_chapter_outline:
         next_chapter = int(store.summary().get("current_chapter") or 0) + 1
         try:
             store.require_volume_detail_for_prose(next_chapter)
         except ValueError as exc:
             _raise_file_project_error(exc)
-    elif isinstance(target_chapter, int) and target_chapter > 0:
+    elif (
+        requires_new_chapter_outline
+        and isinstance(target_chapter, int)
+        and target_chapter > 0
+    ):
         try:
             store.require_volume_detail_for_prose(target_chapter)
         except ValueError as exc:

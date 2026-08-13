@@ -8626,7 +8626,6 @@ class FileProjectStore:
 
         if chapter_number < 1:
             raise ValueError("chapter_number_must_be_positive")
-        self.require_volume_detail_for_prose(chapter_number)
         chapter = self.chapter(chapter_number)
         source_body = str(chapter.get("body") or "")
         if not source_body.strip():
@@ -9473,7 +9472,6 @@ class FileProjectStore:
 
         if chapter_number < 1:
             raise ValueError("chapter_number_must_be_positive")
-        self.require_volume_detail_for_prose(chapter_number)
         self._assert_chapter_not_frozen(chapter_number, "regenerate")
         self._assert_opening_preflight(chapter_number)
 

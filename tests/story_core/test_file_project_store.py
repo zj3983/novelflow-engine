@@ -4654,43 +4654,6 @@ def test_generate_next_chapter_uses_precise_volume_workflow_gate(
     assert called is False
 
 
-@pytest.mark.parametrize("operation", ["regenerate", "expand"])
-def test_existing_chapter_prose_operations_do_not_bypass_incomplete_volume_gate(
-    tmp_path,
-    monkeypatch,
-    operation,
-) -> None:
-    store = _make_minimal_file_project(
-        tmp_path / f"existing-prose-gate-{operation}",
-        state={"story_id": "s-file", "current_chapter": 1, "world_facts": []},
-    )
-    store.write_chapter(
-        chapter_number=1,
-        title="Existing",
-        body="Existing confirmed body. " * 200,
-        summary="Existing chapter.",
-    )
-    monkeypatch.setattr(
-        store,
-        "volume_workflow_status",
-        lambda target_chapter: {
-            "schema_version": "volume-workflow/v1",
-            "target_chapter": target_chapter,
-            "status": "detail_partial",
-            "detail_status": "partial",
-            "next_action": "generate_volume_detail",
-            "volume_id": "volume-1",
-            "volume_range": [1, 50],
-        },
-    )
-
-    with pytest.raises(ValueError, match="^volume_detail_incomplete:volume-1$"):
-        if operation == "regenerate":
-            store.regenerate_chapter(1, engine=object())
-        else:
-            store.expand_chapter(1, orchestrator=object())
-
-
 def test_design_next_volume_appends_plan_without_writing_detail(tmp_path) -> None:
     store = _prepare_next_volume_design_project(tmp_path)
     generator = _NextVolumeGenerator()
