@@ -72,8 +72,8 @@ def test_missing_detail_targets_the_whole_active_volume() -> None:
     assert status["target_volume_range"] == [153, 212]
     assert status["missing_chapter_numbers"] == list(range(163, 213))
     assert status["next_chapter_numbers"] == list(range(163, 213))
-    assert status["detail_batches"][0] == list(range(163, 168))
-    assert status["detail_batches"][1] == list(range(168, 183))
+    assert status["detail_batches"][0] == list(range(163, 178))
+    assert status["detail_batches"][1] == list(range(178, 193))
     assert status["detail_status"] == "partial"
 
 

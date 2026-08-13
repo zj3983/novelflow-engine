@@ -99,14 +99,23 @@ def volume_detail_batches_for_missing(
             raise ValueError(f"invalid_detail_chapter_number:{index}")
         existing_numbers.add(chapter)
 
-    missing_batches: list[list[int]] = []
-    for batch in volume_detail_batches(start, end):
-        missing = [
-            chapter for chapter in batch if chapter not in existing_numbers
-        ]
-        if missing:
-            missing_batches.append(missing)
-    return missing_batches
+    missing = [
+        chapter
+        for batch in volume_detail_batches(start, end)
+        for chapter in batch
+        if chapter not in existing_numbers
+    ]
+    runs: list[list[int]] = []
+    for chapter in missing:
+        if not runs or chapter != runs[-1][-1] + 1:
+            runs.append([chapter])
+        else:
+            runs[-1].append(chapter)
+    return [
+        run[index : index + DETAIL_BATCH_SIZE]
+        for run in runs
+        for index in range(0, len(run), DETAIL_BATCH_SIZE)
+    ]
 
 
 def validate_volume_structure(

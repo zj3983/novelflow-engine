@@ -121,6 +121,19 @@ def test_detail_batches_never_cross_volume_boundary() -> None:
     ) == [list(range(208, 213))]
 
 
+def test_detail_batches_do_not_merge_separate_sparse_gaps() -> None:
+    existing = [
+        number
+        for number in range(153, 213)
+        if number not in {160, 180}
+    ]
+
+    assert plan_volume_detail_batches(
+        (153, 212),
+        existing=existing,
+    ) == [[160], [180]]
+
+
 def test_planner_returns_present_when_target_outline_already_exists(
     tmp_path: Path,
 ) -> None:
