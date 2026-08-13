@@ -44,6 +44,17 @@ def test_arc_outline_persists_volume_fields_and_story_nodes() -> None:
     assert payload["story_nodes"][0]["next_effect"] == "全书收束"
 
 
+@pytest.mark.parametrize("value", [1, 0, "true", "false"])
+def test_arc_outline_rejects_non_boolean_final_marker(value: object) -> None:
+    with pytest.raises(ValidationError):
+        ArcOutline(
+            id="opening",
+            start_chapter=1,
+            end_chapter=60,
+            is_final_arc=value,
+        )
+
+
 def test_legacy_arc_normalization_supplies_empty_volume_fields() -> None:
     normalized = normalize_project_outline(
         {"arcs": [{"id": "legacy", "start_chapter": 1, "end_chapter": 10}]}

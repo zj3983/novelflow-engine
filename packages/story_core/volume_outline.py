@@ -48,6 +48,29 @@ def _normalized_volumes(volumes: Sequence[object]) -> list[dict[str, Any]]:
     return [dict(_as_mapping(volume)) for volume in volumes]
 
 
+def _validated_detail_chapter_numbers(numbers: Iterable[int]) -> list[int]:
+    validated: list[int] = []
+    seen: set[int] = set()
+    previous: int | None = None
+    for index, chapter in enumerate(numbers):
+        if (
+            not isinstance(chapter, int)
+            or isinstance(chapter, bool)
+            or chapter < 1
+        ):
+            raise ValueError(f"invalid_detail_chapter_number:{index}")
+        if chapter in seen:
+            raise ValueError(f"duplicate_detail_chapter_number:{chapter}")
+        if previous is not None and chapter < previous:
+            raise ValueError(
+                f"detail_chapter_numbers_out_of_order:{previous}:{chapter}"
+            )
+        validated.append(chapter)
+        seen.add(chapter)
+        previous = chapter
+    return validated
+
+
 def volume_detail_batches(start: int, end: int) -> list[list[int]]:
     start_chapter = _positive_chapter(start, error="invalid_volume_range")
     end_chapter = _positive_chapter(end, error="invalid_volume_range")
@@ -87,6 +110,8 @@ def validate_volume_structure(
         )
         if end < start:
             raise ValueError(f"invalid_volume_range:{volume_id}")
+        if index == 0 and start != 1:
+            raise ValueError(f"volume_first_chapter_must_be_one:{volume_id}")
 
         if previous is not None:
             previous_id, previous_end = previous
@@ -193,6 +218,7 @@ def derive_volume_workflow(
         or confirmed_chapter_max < 0
     ):
         raise ValueError("invalid_confirmed_chapter_max")
+    detail_chapters = _validated_detail_chapter_numbers(detail_chapter_numbers)
 
     normalized = _normalized_volumes(volumes)
     volume = find_volume_for_chapter(normalized, target)
@@ -224,10 +250,8 @@ def derive_volume_workflow(
 
     detailed = {
         chapter
-        for chapter in detail_chapter_numbers
-        if isinstance(chapter, int)
-        and not isinstance(chapter, bool)
-        and start <= chapter <= end
+        for chapter in detail_chapters
+        if start <= chapter <= end
     }
     if not detailed:
         return "volume_plan_ready"

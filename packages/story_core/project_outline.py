@@ -126,7 +126,7 @@ class ArcOutline(_OutlineModel):
     foreshadowing_in: list[str] = Field(default_factory=list)
     foreshadowing_out: list[str] = Field(default_factory=list)
     next_arc_entry: str = ""
-    is_final_arc: bool = False
+    is_final_arc: bool = Field(default=False, strict=True)
     story_nodes: list[StoryNode] = Field(default_factory=list)
 
     @field_validator("id")

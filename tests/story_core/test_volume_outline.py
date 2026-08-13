@@ -76,12 +76,25 @@ def test_non_final_volume_must_have_at_least_fifty_chapters() -> None:
 
 def test_final_volume_may_be_shorter_than_fifty_chapters() -> None:
     arc = arc_payload(
+        start_chapter=1,
+        end_chapter=20,
+        is_final_arc=True,
+    )
+
+    assert validate_volume_structure([arc], core_ending_chapter=20)[0]["id"] == "opening"
+
+
+def test_first_volume_must_start_at_chapter_one() -> None:
+    arc = arc_payload(
         start_chapter=101,
         end_chapter=120,
         is_final_arc=True,
     )
 
-    assert validate_volume_structure([arc], core_ending_chapter=120)[0]["id"] == "opening"
+    with pytest.raises(
+        ValueError, match="volume_first_chapter_must_be_one:opening"
+    ):
+        validate_volume_structure([arc], core_ending_chapter=120)
 
 
 def test_story_nodes_cover_volume_without_more_than_fifteen_chapter_gap() -> None:
@@ -173,7 +186,7 @@ def test_final_volume_must_be_last_and_end_at_the_core_ending() -> None:
     with pytest.raises(ValueError, match="final_volume_not_last:opening"):
         validate_volume_structure(arcs, core_ending_chapter=120)
 
-    final = arc_payload(start_chapter=101, end_chapter=119, is_final_arc=True)
+    final = arc_payload(start_chapter=1, end_chapter=119, is_final_arc=True)
     with pytest.raises(ValueError, match="final_volume_end_mismatch:opening"):
         validate_volume_structure([final], core_ending_chapter=120)
 
@@ -261,3 +274,58 @@ def test_derive_volume_workflow_covers_every_status(
         detail_chapter_numbers=detail_chapters,
         confirmed_chapter_max=confirmed_max,
     ) == expected
+
+
+@pytest.mark.parametrize("value", [0, -1, True, "1"])
+def test_derive_volume_workflow_rejects_invalid_detail_chapter_values(
+    value: object,
+) -> None:
+    details: list[object] = list(range(1, 61))
+    details[30] = value
+
+    with pytest.raises(ValueError, match="invalid_detail_chapter_number:30"):
+        derive_volume_workflow(
+            [arc_payload(end_chapter=60)],
+            target_chapter=1,
+            detail_chapter_numbers=details,
+            confirmed_chapter_max=0,
+        )
+
+
+def test_derive_volume_workflow_rejects_duplicate_detail_chapters() -> None:
+    details = [*range(1, 61), 60]
+
+    with pytest.raises(ValueError, match="duplicate_detail_chapter_number:60"):
+        derive_volume_workflow(
+            [arc_payload(end_chapter=60)],
+            target_chapter=1,
+            detail_chapter_numbers=details,
+            confirmed_chapter_max=0,
+        )
+
+
+def test_derive_volume_workflow_rejects_out_of_order_detail_chapters() -> None:
+    details = [*range(1, 31), 32, 31, *range(33, 61)]
+
+    with pytest.raises(
+        ValueError, match="detail_chapter_numbers_out_of_order:32:31"
+    ):
+        derive_volume_workflow(
+            [arc_payload(end_chapter=60)],
+            target_chapter=1,
+            detail_chapter_numbers=details,
+            confirmed_chapter_max=0,
+        )
+
+
+@pytest.mark.parametrize("value", [-1, True, 1.5, "1"])
+def test_derive_volume_workflow_rejects_invalid_confirmed_chapter_max(
+    value: object,
+) -> None:
+    with pytest.raises(ValueError, match="invalid_confirmed_chapter_max"):
+        derive_volume_workflow(
+            [arc_payload(end_chapter=60)],
+            target_chapter=1,
+            detail_chapter_numbers=[],
+            confirmed_chapter_max=value,
+        )
