@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from copy import deepcopy
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -16,8 +17,14 @@ from packages.story_core.character_profiles import (
 )
 from packages.story_core.elastic_outline import DETAIL_WINDOW
 from packages.story_core.models import CharacterPerformanceProfile
-from packages.story_core.project_outline import ProjectOutline, normalize_project_outline, select_outline_context
+from packages.story_core.project_outline import (
+    ArcOutline,
+    ProjectOutline,
+    normalize_project_outline,
+    select_outline_context,
+)
 from packages.story_core.trope_runtime import compact_trope_candidates
+from packages.story_core.volume_outline import MIN_VOLUME_CHAPTERS, validate_volume_structure
 
 
 CharacterTier = Literal[
@@ -28,6 +35,107 @@ CharacterTier = Literal[
 ]
 
 INITIAL_OUTLINE_CHAPTER_COUNT = DETAIL_WINDOW
+
+
+def _volume_validation_input(
+    arcs: list[Any],
+    *,
+    core_ending_chapter: int,
+    fallback_outline: dict[str, Any] | None = None,
+    committed_through_chapter: int | None = None,
+    require_future_coverage: bool = False,
+) -> tuple[list[dict[str, Any]], int]:
+    generated = [
+        ArcOutline.model_validate(arc).model_dump(mode="json") for arc in arcs
+    ]
+    if not fallback_outline or not committed_through_chapter:
+        return generated, core_ending_chapter
+
+    fallback_arcs = {
+        arc.id: arc.model_dump(mode="json")
+        for arc in ProjectOutline.model_validate(
+            {
+                "overall": fallback_outline.get("overall", {}),
+                "arcs": fallback_outline.get("arcs", []),
+                "chapters": [],
+            }
+        ).arcs
+    }
+    immutable_ids = {
+        str(arc.get("id"))
+        for arc in generated
+        if int(arc.get("end_chapter") or 0) <= committed_through_chapter
+        and fallback_arcs.get(str(arc.get("id"))) == arc
+    }
+    mutable = [arc for arc in generated if str(arc.get("id")) not in immutable_ids]
+    if not mutable:
+        if require_future_coverage and any(
+            int(arc.get("end_chapter") or 0) > committed_through_chapter
+            for arc in fallback_arcs.values()
+        ):
+            return generated, core_ending_chapter
+        return [
+            {
+                "id": "committed-history",
+                "start_chapter": 1,
+                "end_chapter": 1,
+                "is_final_arc": True,
+                "story_nodes": [
+                    {
+                        "start_chapter": 1,
+                        "end_chapter": 1,
+                        "objective": "Preserve committed history.",
+                        "pressure": "Preserve committed history.",
+                        "turn": "Preserve committed history.",
+                        "payoff": "Preserve committed history.",
+                        "next_effect": "Preserve committed history.",
+                    }
+                ],
+            }
+        ], 1
+
+    immutable_end = max(
+        (
+            int(arc["end_chapter"])
+            for arc in generated
+            if str(arc.get("id")) in immutable_ids
+        ),
+        default=0,
+    )
+    if immutable_end == 0:
+        return mutable, core_ending_chapter
+
+    anchor_end = MIN_VOLUME_CHAPTERS
+    offset = anchor_end - immutable_end
+    projected = [
+        {
+            "id": "committed-history",
+            "start_chapter": 1,
+            "end_chapter": anchor_end,
+            "is_final_arc": False,
+            "story_nodes": [
+                {
+                    "start_chapter": start,
+                    "end_chapter": min(start + 14, anchor_end),
+                    "objective": "Preserve committed history.",
+                    "pressure": "Preserve committed history.",
+                    "turn": "Preserve committed history.",
+                    "payoff": "Preserve committed history.",
+                    "next_effect": "Preserve committed history.",
+                }
+                for start in range(1, anchor_end + 1, 15)
+            ],
+        }
+    ]
+    for arc in mutable:
+        shifted = deepcopy(arc)
+        shifted["start_chapter"] = int(shifted["start_chapter"]) + offset
+        shifted["end_chapter"] = int(shifted["end_chapter"]) + offset
+        for node in shifted.get("story_nodes", []):
+            node["start_chapter"] = int(node["start_chapter"]) + offset
+            node["end_chapter"] = int(node["end_chapter"]) + offset
+        projected.append(shifted)
+    return projected, core_ending_chapter + offset
 
 
 class _PlanningModel(BaseModel):
@@ -572,6 +680,17 @@ def validate_generated_opening_plan(
 
     plan = GeneratedOutlinePlan.model_validate(payload)
     _validate_generated_outline_amounts(plan)
+    volume_arcs, volume_ending = _volume_validation_input(
+        plan.outline.arcs,
+        core_ending_chapter=plan.outline.overall.core_ending_chapter,
+        fallback_outline=fallback_outline,
+        committed_through_chapter=(
+            committed_through_chapter
+            if committed_through_chapter is not None
+            else (expected_chapter_numbers or [1])[0] - 1
+        ),
+    )
+    validate_volume_structure(volume_arcs, core_ending_chapter=volume_ending)
     if require_chapter_contracts:
         _validate_generated_chapter_contracts(plan)
     overall = plan.outline.overall
@@ -683,6 +802,17 @@ def validate_generated_continuation_plan(
 
     plan = GeneratedOutlinePlan.model_validate(payload)
     _validate_generated_outline_amounts(plan)
+    volume_arcs, volume_ending = _volume_validation_input(
+        plan.outline.arcs,
+        core_ending_chapter=plan.outline.overall.core_ending_chapter,
+        fallback_outline=fallback_outline,
+        committed_through_chapter=(
+            committed_through_chapter
+            if committed_through_chapter is not None
+            else (expected_chapter_numbers or [1])[0] - 1
+        ),
+    )
+    validate_volume_structure(volume_arcs, core_ending_chapter=volume_ending)
     if require_chapter_contracts:
         _validate_generated_chapter_contracts(plan)
     chapter_numbers = [chapter.chapter_number for chapter in plan.outline.chapters]

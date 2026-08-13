@@ -92,6 +92,21 @@ def _card(name: str, tier: str) -> dict:
     }
 
 
+def _story_nodes(start: int, end: int) -> list[dict]:
+    return [
+        {
+            "start_chapter": node_start,
+            "end_chapter": min(node_start + 14, end),
+            "objective": f"Advance the volume from chapter {node_start}.",
+            "pressure": "Opposition closes in.",
+            "turn": "A decisive clue changes the route.",
+            "payoff": "The current objective is resolved.",
+            "next_effect": "The result drives the next node.",
+        }
+        for node_start in range(start, end + 1, 15)
+    ]
+
+
 def _valid_plan() -> dict:
     return {
         "outline": {
@@ -107,12 +122,16 @@ def _valid_plan() -> dict:
                 "growth_path": "从守祠杂役成长为能调用宗门规则的人。",
                 "ending_direction": "旧案公开。",
                 "primary_trope_id": "low_status_reversal",
+                "core_ending_chapter": 150,
+                "extension_ceiling_chapter": 150,
             },
             "arcs": [{
                 "id": "opening",
                 "title": "祖祠旧案",
                 "start_chapter": 1,
-                "end_chapter": 10,
+                "end_chapter": 150,
+                "is_final_arc": True,
+                "story_nodes": _story_nodes(1, 150),
                 "goal": "找到换名册的人",
                 "obstacle": "赵衡控制清点权",
                 "payoff": "取得查档资格",
@@ -148,6 +167,120 @@ def _valid_plan() -> dict:
             _card("顾长老", "long_term_antagonist"),
         ],
     }
+
+
+def test_generated_opening_rejects_non_final_short_volume() -> None:
+    plan = _valid_plan()
+    plan["outline"]["overall"]["core_ending_chapter"] = 10
+    plan["outline"]["overall"]["extension_ceiling_chapter"] = 10
+    plan["outline"]["arcs"][0]["end_chapter"] = 10
+    plan["outline"]["arcs"][0]["story_nodes"] = _story_nodes(1, 10)
+    plan["outline"]["arcs"][0]["is_final_arc"] = False
+
+    with pytest.raises(ValueError, match="^volume_too_short:opening$"):
+        validate_generated_opening_plan(
+            plan,
+            expected_chapter_numbers=list(
+                range(1, INITIAL_OUTLINE_CHAPTER_COUNT + 1)
+            ),
+        )
+
+
+def _plan_with_short_final_volume() -> dict:
+    plan = _valid_plan()
+    opening = plan["outline"]["arcs"][0]
+    opening.update(
+        end_chapter=50,
+        is_final_arc=False,
+        story_nodes=_story_nodes(1, 50),
+    )
+    final = deepcopy(opening)
+    final.update(
+        id="ending",
+        title="Ending",
+        start_chapter=51,
+        end_chapter=70,
+        is_final_arc=True,
+        story_nodes=_story_nodes(51, 70),
+    )
+    plan["outline"]["arcs"] = [opening, final]
+    plan["outline"]["overall"].update(
+        core_ending_chapter=70,
+        extension_ceiling_chapter=70,
+    )
+    return plan
+
+
+def test_generated_opening_allows_short_final_volume() -> None:
+    validate_generated_opening_plan(
+        _plan_with_short_final_volume(),
+        expected_chapter_numbers=list(
+            range(1, INITIAL_OUTLINE_CHAPTER_COUNT + 1)
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("invalidity", "error"),
+    [
+        ("overlap", "volume_overlap:opening:ending"),
+        ("gap", "volume_gap:opening:ending"),
+        ("node_gap", "story_node_gap:opening"),
+    ],
+)
+def test_generated_opening_rejects_invalid_volume_structure(
+    invalidity: str,
+    error: str,
+) -> None:
+    plan = _plan_with_short_final_volume()
+    if invalidity == "overlap":
+        plan["outline"]["arcs"][1].update(
+            start_chapter=50,
+            story_nodes=_story_nodes(50, 70),
+        )
+    elif invalidity == "gap":
+        plan["outline"]["arcs"][1].update(
+            start_chapter=52,
+            story_nodes=_story_nodes(52, 70),
+        )
+    else:
+        plan["outline"]["arcs"][0]["story_nodes"].pop()
+
+    with pytest.raises(ValueError, match=f"^{error}$"):
+        validate_generated_opening_plan(
+            plan,
+            expected_chapter_numbers=list(
+                range(1, INITIAL_OUTLINE_CHAPTER_COUNT + 1)
+            ),
+        )
+
+
+def test_generated_continuation_rejects_invalid_volume_structure() -> None:
+    plan = _plan_with_short_final_volume()
+    plan["outline"]["arcs"][1].update(
+        start_chapter=52,
+        story_nodes=_story_nodes(52, 70),
+    )
+
+    with pytest.raises(ValueError, match="^volume_gap:opening:ending$"):
+        validate_generated_continuation_plan(
+            plan,
+            expected_chapter_numbers=list(
+                range(1, INITIAL_OUTLINE_CHAPTER_COUNT + 1)
+            ),
+            existing_character_names=set(),
+        )
+
+
+def test_generated_continuation_allows_empty_target_for_valid_final_volume() -> None:
+    plan = _valid_plan()
+    plan["outline"]["chapters"] = []
+
+    validate_generated_continuation_plan(
+        plan,
+        expected_chapter_numbers=[],
+        existing_character_names=set(),
+    )
 
 
 def _detailed_chapter_template() -> dict:
@@ -1821,6 +1954,10 @@ def test_codexcli_retries_a_phase_after_schema_validation_failure() -> None:
                     "expansion_route": "继续追查下一宗旧案",
                     "closing_route": "公开现有证据并收束旧案",
                 }
+            )
+            plan["outline"]["arcs"][0].update(
+                end_chapter=10,
+                story_nodes=_story_nodes(1, 10),
             )
             if outline_attempts > 1:
                 plan["outline"]["arcs"][0]["extension_gate"] = {

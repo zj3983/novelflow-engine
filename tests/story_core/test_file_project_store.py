@@ -1393,6 +1393,21 @@ def _planning_card(name: str, tier: str, *, age: int = 30) -> dict:
     }
 
 
+def _story_nodes(start: int, end: int) -> list[dict]:
+    return [
+        {
+            "start_chapter": node_start,
+            "end_chapter": min(node_start + 14, end),
+            "objective": f"Advance the volume from chapter {node_start}.",
+            "pressure": "Opposition closes in.",
+            "turn": "A decisive clue changes the route.",
+            "payoff": "The current objective is resolved.",
+            "next_effect": "The result drives the next node.",
+        }
+        for node_start in range(start, end + 1, 15)
+    ]
+
+
 def _generated_opening_plan() -> GeneratedOutlinePlan:
     return GeneratedOutlinePlan.model_validate(
         {
@@ -1409,13 +1424,17 @@ def _generated_opening_plan() -> GeneratedOutlinePlan:
                     "growth_path": "逐步取得调查旧档的权力。",
                     "ending_direction": "旧案公开。",
                     "primary_trope_id": "low_status_reversal",
+                    "core_ending_chapter": 150,
+                    "extension_ceiling_chapter": 150,
                 },
                 "arcs": [
                     {
                         "id": "opening",
                         "title": "祖祠旧案",
                         "start_chapter": 1,
-                        "end_chapter": 10,
+                        "end_chapter": 150,
+                        "is_final_arc": True,
+                        "story_nodes": _story_nodes(1, 150),
                         "goal": "找到换名册的人",
                         "obstacle": "赵衡控制清点权",
                         "payoff": "取得查档资格",
@@ -1453,6 +1472,123 @@ def _generated_opening_plan() -> GeneratedOutlinePlan:
             ],
         }
     )
+
+
+def test_save_generated_outline_rejects_non_final_short_volume_without_writes(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "short-volume"
+    store = _make_minimal_file_project(root)
+    payload = _generated_opening_plan().model_dump(mode="json")
+    payload["outline"]["overall"].update(
+        core_ending_chapter=10,
+        extension_ceiling_chapter=10,
+    )
+    payload["outline"]["arcs"][0].update(
+        end_chapter=10,
+        is_final_arc=False,
+        story_nodes=_story_nodes(1, 10),
+    )
+    plan = GeneratedOutlinePlan.model_validate(payload)
+    before = _file_snapshot(root)
+    monkeypatch.setattr(
+        file_project_store_module,
+        "validate_generated_opening_plan",
+        lambda candidate, **_kwargs: GeneratedOutlinePlan.model_validate(candidate),
+    )
+
+    with pytest.raises(ValueError, match="^volume_too_short:opening$"):
+        store.save_generated_outline_plan(plan, mode="initial")
+
+    assert _file_snapshot(root) == before
+
+
+def _plan_with_short_final_volume() -> GeneratedOutlinePlan:
+    payload = _generated_opening_plan().model_dump(mode="json")
+    opening = payload["outline"]["arcs"][0]
+    opening.update(
+        end_chapter=50,
+        is_final_arc=False,
+        story_nodes=_story_nodes(1, 50),
+    )
+    final = deepcopy(opening)
+    final.update(
+        id="ending",
+        title="Ending",
+        start_chapter=51,
+        end_chapter=70,
+        is_final_arc=True,
+        story_nodes=_story_nodes(51, 70),
+    )
+    payload["outline"]["arcs"] = [opening, final]
+    payload["outline"]["overall"].update(
+        core_ending_chapter=70,
+        extension_ceiling_chapter=70,
+    )
+    return GeneratedOutlinePlan.model_validate(payload)
+
+
+def _bypass_generated_volume_validation(monkeypatch) -> None:
+    monkeypatch.setattr(
+        file_project_store_module,
+        "validate_generated_opening_plan",
+        lambda candidate, **_kwargs: GeneratedOutlinePlan.model_validate(candidate),
+    )
+
+
+def test_save_generated_outline_allows_short_final_volume(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = _make_minimal_file_project(tmp_path / "short-final-volume")
+    _bypass_generated_volume_validation(monkeypatch)
+
+    saved = store.save_generated_outline_plan(
+        _plan_with_short_final_volume(),
+        mode="initial",
+    )
+
+    assert saved["outline"]["arcs"][-1]["end_chapter"] == 70
+
+
+@pytest.mark.parametrize(
+    ("invalidity", "error"),
+    [
+        ("overlap", "volume_overlap:opening:ending"),
+        ("gap", "volume_gap:opening:ending"),
+        ("node_gap", "story_node_gap:opening"),
+    ],
+)
+def test_save_generated_outline_rejects_invalid_volume_structure_without_writes(
+    tmp_path,
+    monkeypatch,
+    invalidity: str,
+    error: str,
+) -> None:
+    root = tmp_path / invalidity
+    store = _make_minimal_file_project(root)
+    payload = _plan_with_short_final_volume().model_dump(mode="json")
+    if invalidity == "overlap":
+        payload["outline"]["arcs"][1].update(
+            start_chapter=50,
+            story_nodes=_story_nodes(50, 70),
+        )
+    elif invalidity == "gap":
+        payload["outline"]["arcs"][1].update(
+            start_chapter=52,
+            story_nodes=_story_nodes(52, 70),
+        )
+    else:
+        payload["outline"]["arcs"][0]["story_nodes"].pop()
+    plan = GeneratedOutlinePlan.model_validate(payload)
+    before = _file_snapshot(root)
+    _bypass_generated_volume_validation(monkeypatch)
+
+    with pytest.raises(ValueError, match=f"^{error}$"):
+        store.save_generated_outline_plan(plan, mode="initial")
+
+    assert _file_snapshot(root) == before
 
 
 def _shenyu_world_blueprint() -> dict:
@@ -3943,15 +4079,26 @@ def _prepare_extendable_outline(tmp_path, *, locked_inner_arc: bool = False):
         extension_gate={"continue_route": "Enter the city.", "close_route": "Close the case."},
     )
     if locked_inner_arc:
+        current_outline["overall"].update(
+            core_ending_chapter=60,
+            extension_ceiling_chapter=500,
+        )
+        current_outline["arcs"][0].update(
+            end_chapter=10,
+            is_final_arc=False,
+            story_nodes=[],
+        )
         current_outline["arcs"].append(
             {
                 **current_outline["arcs"][0],
                 "id": "locked-inner",
                 "title": "Locked inner",
                 "start_chapter": 11,
-                "end_chapter": 20,
+                "end_chapter": 60,
                 "trope_id": "golden_finger_first_test",
                 "goal": "Test the anomaly",
+                "is_final_arc": True,
+                "story_nodes": _story_nodes(11, 60),
             }
         )
     store.update_project_outline(current_outline)
@@ -3989,6 +4136,26 @@ def _extension_plan(
             "characters": [_planning_card("New", "supporting")],
         }
     )
+
+
+def test_extend_allows_unchanged_committed_legacy_short_volume(tmp_path) -> None:
+    _, store, current_outline = _prepare_extendable_outline(tmp_path)
+    current_outline["arcs"][0].update(
+        end_chapter=10,
+        is_final_arc=False,
+        story_nodes=[],
+    )
+    store.update_project_outline(current_outline)
+    legacy_outline = store.project_outline()
+    legacy_outline.pop("source", None)
+
+    saved = store.save_generated_outline_plan(
+        _extension_plan(legacy_outline),
+        mode="extend",
+    )
+
+    assert saved["outline"]["arcs"][0]["end_chapter"] == 10
+    assert saved["outline"]["arcs"][0]["story_nodes"] == []
 
 
 def test_extend_generated_outline_plan_fills_missing_rolling_window_chapters(tmp_path):
@@ -4090,6 +4257,7 @@ def test_extend_direct_save_revalidates_cast_and_new_cards_without_writes(
     addition = GeneratedOutlinePlan.model_validate(
         {
             "outline": {
+                "overall": current_outline["overall"],
                 "arcs": [current_outline["arcs"][0]],
                 "chapters": [
                     {
@@ -4303,6 +4471,13 @@ def test_deleted_trope_locks_do_not_block_future_outline_saves(
     candidate_state: str,
 ) -> None:
     _, store, current_outline = _prepare_extendable_outline(tmp_path)
+    current_outline["overall"]["core_ending_chapter"] = 60
+    current_outline["arcs"][0].update(
+        end_chapter=10,
+        is_final_arc=False,
+        story_nodes=[],
+    )
+    store.update_project_outline(current_outline)
     current_candidates = store._current_project_trope_candidates(
         store.project(),
         store.state(),
@@ -4320,8 +4495,10 @@ def test_deleted_trope_locks_do_not_block_future_outline_saves(
         "id": "new-volume",
         "title": "New volume",
         "start_chapter": 11,
-        "end_chapter": 20,
+        "end_chapter": 60,
         "trope_id": new_trope_id,
+        "is_final_arc": True,
+        "story_nodes": _story_nodes(11, 60),
     }
     plan = (
         _extension_plan(current_outline, arcs=[*current_outline["arcs"], new_arc])
@@ -4348,14 +4525,23 @@ def test_deleted_trope_library_still_rejects_unknown_new_arc_id(
     mode: str,
 ) -> None:
     root, store, current_outline = _prepare_extendable_outline(tmp_path)
+    current_outline["overall"]["core_ending_chapter"] = 60
+    current_outline["arcs"][0].update(
+        end_chapter=10,
+        is_final_arc=False,
+        story_nodes=[],
+    )
+    store.update_project_outline(current_outline)
     monkeypatch.setattr(store, "_current_project_trope_candidates", lambda *_: [])
     new_arc = {
         **current_outline["arcs"][0],
         "id": "new-volume",
         "title": "New volume",
         "start_chapter": 11,
-        "end_chapter": 20,
+        "end_chapter": 60,
         "trope_id": "unknown-new-trope",
+        "is_final_arc": True,
+        "story_nodes": _story_nodes(11, 60),
     }
     plan = (
         _extension_plan(current_outline, arcs=[*current_outline["arcs"], new_arc])
@@ -4450,6 +4636,12 @@ def test_generated_outline_handles_omitted_future_arc_by_mode(
         if mode == "extend"
         else _regeneration_plan_from_current(current_outline, arcs=generated_arcs)
     )
+    if mode == "regenerate":
+        before = _file_snapshot(root)
+        with pytest.raises(ValueError, match="^volume_too_short:opening$"):
+            store.save_generated_outline_plan(plan, mode=mode)
+        assert _file_snapshot(root) == before
+        return
 
     saved = store.save_generated_outline_plan(plan, mode=mode)
 
@@ -4462,7 +4654,7 @@ def test_generated_outline_handles_omitted_future_arc_by_mode(
 
 
 @pytest.mark.parametrize("mode", ["extend", "regenerate"])
-def test_generated_outline_accepts_future_nested_arc_inside_locked_arc(
+def test_generated_outline_rejects_future_nested_arc_inside_locked_arc(
     tmp_path,
     mode: str,
 ) -> None:
@@ -4481,11 +4673,15 @@ def test_generated_outline_accepts_future_nested_arc_inside_locked_arc(
         if mode == "extend"
         else _regeneration_plan_from_current(current_outline, arcs=[*current_outline["arcs"], nested])
     )
+    before = _file_snapshot(root)
 
-    saved = store.save_generated_outline_plan(plan, mode=mode)
+    with pytest.raises(
+        ValueError,
+        match="^volume_overlap:opening:future-nested$",
+    ):
+        store.save_generated_outline_plan(plan, mode=mode)
 
-    assert any(arc["id"] == "future-nested" for arc in saved["outline"]["arcs"])
-    assert _file_snapshot(root)
+    assert _file_snapshot(root) == before
 
 
 @pytest.mark.parametrize("mode", ["extend", "regenerate"])
@@ -4502,7 +4698,10 @@ def test_generated_outline_rejects_renamed_arc_overlapping_committed_locked_rang
     )
     before = _file_snapshot(root)
 
-    with pytest.raises(ValueError, match="^locked_arc_overlap:renamed-opening$"):
+    with pytest.raises(
+        ValueError,
+        match="^(volume_first_chapter_must_be_one:renamed-opening|volume_overlap:opening:renamed-opening)$",
+    ):
         store.save_generated_outline_plan(plan, mode=mode)
 
     assert _file_snapshot(root) == before
@@ -4595,11 +4794,6 @@ def test_generated_outline_rejects_invalid_beat_after_locked_arc_context_merge(
                 chapter["trope_beat"] = "低位压力"
         plan = GeneratedOutlinePlan.model_validate(payload)
     before = _file_snapshot(root)
-
-    if mode == "regenerate":
-        saved = store.save_generated_outline_plan(plan, mode=mode)
-        assert "locked-inner" not in {arc["id"] for arc in saved["outline"]["arcs"]}
-        return
 
     with pytest.raises(ValueError, match="^invalid_chapter_trope_beat:11$"):
         store.save_generated_outline_plan(plan, mode=mode)

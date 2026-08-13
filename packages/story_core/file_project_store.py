@@ -127,11 +127,13 @@ from packages.story_core.outline_planning import (
     CHAPTER_SOP_MODULE_ID,
     GeneratedOutlinePlan,
     INITIAL_OUTLINE_CHAPTER_COUNT,
+    _volume_validation_input,
     validate_generated_continuation_plan,
     validate_generated_opening_plan,
     validate_generated_trope_selection,
 )
 from packages.story_core.outline_planning_generation import OutlinePlanningBrief
+from packages.story_core.volume_outline import validate_volume_structure
 from packages.story_core.outline_extension_readiness import (
     inspect_outline_extension_readiness,
 )
@@ -6141,6 +6143,20 @@ class FileProjectStore:
                 current_chapter=current_chapter,
                 immutable_arc_through=continuation_start,
             )
+        volume_arcs, volume_ending = _volume_validation_input(
+            generated_outline["arcs"],
+            core_ending_chapter=generated_outline["overall"][
+                "core_ending_chapter"
+            ],
+            fallback_outline=(
+                current_outline if mode in {"extend", "regenerate"} else None
+            ),
+            committed_through_chapter=(
+                current_chapter if mode in {"extend", "regenerate"} else None
+            ),
+            require_future_coverage=mode == "regenerate",
+        )
+        validate_volume_structure(volume_arcs, core_ending_chapter=volume_ending)
         final_validation_payload = validated.model_dump(mode="json")
         final_validation_payload["outline"] = generated_outline
         validate_generated_trope_selection(
