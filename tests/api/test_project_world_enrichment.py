@@ -239,7 +239,7 @@ def test_world_enrichment_prompt_requests_canonical_spec_and_carries_template_an
         assert field in prompt
 
 
-def test_game_world_enrichment_prompt_spells_out_advancement_node_contracts():
+def test_level_less_game_prompt_keeps_machine_contract_without_fixed_class_levels():
     prompt = world_enrichment._build_prompt(game_project())
 
     assert (
@@ -247,13 +247,16 @@ def test_game_world_enrichment_prompt_spells_out_advancement_node_contracts():
         "[{level,name,purpose,common_requirements,failure_rule}]"
     ) in prompt
     assert "advancement_tree: [{level,tier_name,options}]" in prompt
-    assert "level 生成时请输出 JSON 整数 10/30/60" in prompt
-    assert "level 必须是整数" not in prompt
-    assert "options 中 name、transfer_task、ability_changes 是校验必填" in prompt
-    assert (
-        "requirements、new_resources、equipment_permissions、failure_consequence、"
-        "next_options 建议完整输出"
-    ) in prompt
+    assert "机器可读 JSON 契约" in prompt
+    for fixed_assumption in (
+        "Lv.10",
+        "Lv.30",
+        "Lv.60",
+        "基础职业",
+        "隐藏职业",
+        "转职任务",
+    ):
+        assert fixed_assumption not in prompt
 
 
 def test_generic_world_enrichment_prompt_omits_game_only_world_contracts():
@@ -658,6 +661,95 @@ def test_default_game_volume_is_a_complete_non_final_volume():
     assert plan["phase_beats"][-1]["range"].endswith(str(plan["target_chapters"]))
 
 
+def test_saved_short_non_final_game_volume_is_extended_to_fifty_chapters():
+    project = game_project()
+    current_world = {
+        "volume_plan": {
+            "volume_title": "旧版首卷",
+            "target_chapters": 30,
+            "phase_beats": [{"range": "1-30", "purpose": "完成旧版首卷目标"}],
+        }
+    }
+
+    plan = world_enrichment._merge_volume_plan(
+        project, {}, current_world, [{"id": "game_webnovel"}]
+    )
+
+    assert plan["target_chapters"] == 50
+    assert plan["phase_beats"][0] == {
+        "range": "1-30",
+        "purpose": "完成旧版首卷目标",
+    }
+    assert plan["phase_beats"][-1]["range"] == "31-50"
+
+
+def test_saved_short_final_game_volume_remains_short():
+    project = game_project()
+    current_world = {
+        "volume_plan": {
+            "volume_title": "终卷",
+            "target_chapters": 30,
+            "is_final_arc": True,
+            "phase_beats": [{"range": "1-30", "purpose": "完成全书收尾"}],
+        }
+    }
+
+    plan = world_enrichment._merge_volume_plan(
+        project, {}, current_world, [{"id": "game_webnovel"}]
+    )
+
+    assert plan["target_chapters"] == 30
+    assert plan["is_final_arc"] is True
+    assert plan["phase_beats"] == [{"range": "1-30", "purpose": "完成全书收尾"}]
+
+
+def test_relationship_graph_merges_by_stable_identity_with_saved_values_first():
+    saved = [
+        {
+            "source": "周行",
+            "target": "顾遥",
+            "bond": "旧日同伴",
+            "tension": "",
+            "trust": 70,
+        }
+    ]
+    incoming = [
+        {
+            "source": "周行",
+            "target": "顾遥",
+            "bond": "模型改写",
+            "tension": 25,
+            "trust": 10,
+        },
+        {"source": "顾遥", "target": "雾港议会", "bond": "观察对象", "trust": 15},
+    ]
+
+    project = game_project(power_system_spec=complete_game_power_spec())
+    project.relationship_graph = saved
+    enriched = world_enrichment._merge_enrichment(
+        project,
+        {"world_blueprint": {"relationship_graph": incoming}},
+        rules_only=True,
+    )
+
+    assert enriched.relationship_graph == [
+        {
+            "source": "周行",
+            "target": "顾遥",
+            "bond": "旧日同伴",
+            "tension": 25.0,
+            "trust": 70.0,
+        },
+        {
+            "source": "顾遥",
+            "target": "雾港议会",
+            "bond": "观察对象",
+            "tension": 0.0,
+            "trust": 15.0,
+        },
+    ]
+
+
 def test_neutral_game_fallbacks_do_not_assume_levels_markets_reality_or_classic_maps():
     project = NovelProject(
         project_id="p-neutral-game-shape",
@@ -792,7 +884,7 @@ def test_world_enrichment_prompt_uses_explicit_custom_runtime_power_template(
     assert template["minimum_path_count"] == 4
 
 
-def test_world_enrichment_prompt_uses_persisted_builtin_runtime_template_override(
+def test_level_less_game_prompt_neutralizes_persisted_builtin_template_assumptions(
     isolated_novel_type_storage,
 ):
     template_override = copy_power_system_template("game_webnovel")
@@ -812,9 +904,12 @@ def test_world_enrichment_prompt_uses_persisted_builtin_runtime_template_overrid
     template = prompt_power_template(world_enrichment._build_prompt(project))
 
     assert persisted is not None
-    assert template == compact_power_system_template(persisted.power_system_template)
-    assert template["system_form"] == "运行时覆盖职业体系"
-    assert template["minimum_path_count"] == 8
+    assert template["required_sections"] == compact_power_system_template(
+        persisted.power_system_template
+    )["required_sections"]
+    assert template["system_form"] == "项目自定义的游戏成长或行动体系"
+    assert template["minimum_path_count"] == 1
+    assert template["fixed_milestones"] == []
 
 
 def test_world_enrichment_prompt_budgets_persisted_huge_custom_template(

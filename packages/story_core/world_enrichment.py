@@ -266,6 +266,42 @@ def _runtime_power_template(selected_plugin: Any) -> dict[str, Any]:
     return compact_power_system_template(selected_plugin.power_system_template)
 
 
+def _has_traditional_game_advancement(project: NovelProject) -> bool:
+    blueprint = _as_dict(project.world_blueprint)
+    spec = _as_dict(blueprint.get("power_system_spec"))
+    tiers = spec.get("class_advancement_tiers")
+    if isinstance(tiers, list) and any(isinstance(tier, dict) for tier in tiers):
+        return True
+    paths = spec.get("paths")
+    if isinstance(paths, list) and any(
+        isinstance(path, dict) and isinstance(path.get("advancement_tree"), list)
+        and bool(path["advancement_tree"])
+        for path in paths
+    ):
+        return True
+    stages = spec.get("stages")
+    return isinstance(stages, list) and any(
+        isinstance(stage, dict) and _as_int(stage.get("level"), 0) > 0
+        for stage in stages
+    )
+
+
+def _neutral_game_power_template(template: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "system_form": "项目自定义的游戏成长或行动体系",
+        "required_sections": deepcopy(list(template.get("required_sections", []))),
+        "progression_shape": {"stages": []},
+        "branching_rules": ["路线与分支只依据当前项目已明确的玩法和成长方式定义。"],
+        "resource_rules": ["资源类型、产出和消耗只依据当前项目设定定义。"],
+        "cost_rules": ["失败代价和行动限制只依据当前项目设定定义。"],
+        "conflict_rules": ["冲突边界只依据当前项目的玩法、目标和规则定义。"],
+        "ledger_fields": ["项目已明确需要持续追踪的状态"],
+        "quality_checks": ["结构可执行且不引入项目未声明的成长机制"],
+        "minimum_path_count": 1,
+        "fixed_milestones": [],
+    }
+
+
 def _core_power_template(template: Mapping[str, Any], budget: int) -> dict[str, Any]:
     serialized = _serialized_json(template)
     if len(serialized) <= budget:
@@ -317,6 +353,11 @@ def _build_prompt(project: NovelProject, *, rules_only: bool = False) -> str:
     power_template = _runtime_power_template(selected_plugin)
     requires_power_system = _requires_structured_power_system(selected_plugin.plugin_id)
     uses_game_modules = _uses_game_world_modules(selected_plugin.plugin_id)
+    uses_traditional_game_advancement = (
+        uses_game_modules and _has_traditional_game_advancement(project)
+    )
+    if uses_game_modules and not uses_traditional_game_advancement:
+        power_template = _neutral_game_power_template(power_template)
     world_fields = [
         "premise", "world_rules", "locations", "factions",
         "current_arc", "constraints", "relationship_graph", "progression_rules",
@@ -331,9 +372,14 @@ def _build_prompt(project: NovelProject, *, rules_only: bool = False) -> str:
     path_schema = (
         "paths: [{name, role, core_resource, core_attributes, weapons, armor, combat_loop, strengths, weaknesses, skill_categories, branches, transfer_task, advancement}]，"
         "逐职业写明定位、核心资源、属性、武器护甲、战斗循环、强弱项、技能类别、至少两个分支、转职任务和晋升；"
-        if uses_game_modules
+        if uses_traditional_game_advancement
         else "paths: [{name, role, core_resource, core_attributes, strengths, weaknesses, skill_categories, branches, advancement}]，"
-        "逐成长路线写明路线定位、力量来源、关键条件、强弱项、能力类别、至少两个分支和晋升条件；只使用上述字段；"
+        "逐成长路线写明路线定位、力量来源、关键条件、强弱项、能力类别、分支和推进条件；只使用上述字段；"
+    )
+    stage_schema = (
+        "stages: [{name, level, entry, change, failure}]，按顺序写明阶段名、等级里程碑、进入条件、能力变化和失败后果；"
+        if uses_traditional_game_advancement
+        else "stages: [{name, level, entry, change, failure}]，按项目自身规则写阶段或行动里程碑；无等级项目不得虚构等级，level 可留空；"
     )
     mode_line = (
         "请在不重写已有剧情的前提下，补强中文长篇网文项目的世界规则手册，只返回 JSON。"
@@ -349,7 +395,7 @@ def _build_prompt(project: NovelProject, *, rules_only: bool = False) -> str:
             "power_system_spec 必须是完整具体的结构化力量体系，禁止使用待定、略、同上或其他模糊占位符。规范字段：",
             "name: 体系名称字符串；origin: 力量来源与获得方式字符串数组；attributes: [{name, effect}] 属性名与具体效果；",
             path_schema,
-            "stages: [{name, level, entry, change, failure}]，按顺序写明阶段名、等级里程碑、进入条件、能力变化和失败后果；",
+            stage_schema,
             "skills: 技能获得与使用规则；equipment: 装备类别与限制；resources: 资源产出、转化与消耗；advancement: 晋升条件与流程；",
             "costs: 使用和突破代价；counters: 路线或机制克制；boundaries: 越级与能力硬边界；social_impact: 对组织、职业和秩序的影响；visibility: 角色可观察到的信息；continuity_ledger: 后续逐章必须追踪的状态字段。以上字段除 name 外均使用数组，paths/stages/attributes 使用前述对象数组。",
             f"selected_novel_type: {selected_plugin.plugin_id}",
@@ -364,8 +410,17 @@ def _build_prompt(project: NovelProject, *, rules_only: bool = False) -> str:
                 "requirements、new_resources、equipment_permissions、failure_consequence、"
                 "next_options 建议完整输出。"
                 "隐藏职业只能作为相同等级节点内的特殊选项，不得改变转职等级。"
-                if selected_plugin.plugin_id == "game_webnovel"
-                else "game_class_advancement_rule: not_applicable"
+                if uses_traditional_game_advancement
+                else (
+                    "game_progression_contract: 机器可读 JSON 契约："
+                    "power_system_spec.class_advancement_tiers: "
+                    "[{level,name,purpose,common_requirements,failure_rule}]；"
+                    "paths 可包含 advancement_tree: [{level,tier_name,options}]。"
+                    "仅当当前项目明确职业与等级晋升时填充这些数组，否则返回空数组；"
+                    "不得自行添加项目未声明的职业路线或晋升机制。"
+                    if selected_plugin.plugin_id == "game_webnovel"
+                    else "game_class_advancement_rule: not_applicable"
+                )
             ),
             f"genre_power_system_template: {_serialized_json(power_template)}",
             "character_profiles: [{name, role, motivation, current_state, personality, speech_style, goals, secrets, conflict_hooks}]",
@@ -1049,14 +1104,28 @@ def _merge_volume_plan(project: NovelProject, incoming_world: dict[str, Any], cu
     defaults = _default_volume_plan(project, genre_plugins)
     current_target = _as_int(current.get("target_chapters"), 0)
     proposed_target = _as_int(incoming.get("target_chapters"), int(defaults["target_chapters"]))
-    target = current_target or max(50 if _has_game_plugin(genre_plugins) else 10, proposed_target)
-    return {
+    is_final_arc = (
+        current.get("is_final_arc") is True
+        or ("is_final_arc" not in current and incoming.get("is_final_arc") is True)
+    )
+    minimum_chapters = 10 if is_final_arc else 50 if _has_game_plugin(genre_plugins) else 10
+    target = max(minimum_chapters, current_target or proposed_target)
+    phase_beats = _merge_phase_beats(
+        current.get("phase_beats"), incoming.get("phase_beats"), limit=8,
+    ) or _merge_phase_beats(defaults.get("phase_beats"), limit=8)
+    source_target = current_target or proposed_target
+    if phase_beats and not is_final_arc and 0 < source_target < target and len(phase_beats) < 8:
+        phase_beats.append(
+            {
+                "range": f"{source_target + 1}-{target}",
+                "purpose": "补足本卷中后段推进，完成阶段目标并形成卷末转折。",
+            }
+        )
+    plan = {
         "volume_title": compact_text(str(current.get("volume_title") or incoming.get("volume_title") or defaults["volume_title"]), 80),
         "target_chapters": max(10, target),
         "core_goal": compact_text(str(current.get("core_goal") or incoming.get("core_goal") or defaults["core_goal"]), 260),
-        "phase_beats": _merge_phase_beats(
-            current.get("phase_beats"), incoming.get("phase_beats"), limit=8,
-        ) or _merge_phase_beats(defaults.get("phase_beats"), limit=8),
+        "phase_beats": phase_beats,
         "long_threads": _merge_string_lists_with_fallback(
             current.get("long_threads"), incoming.get("long_threads"), defaults.get("long_threads"),
             limit=10, item_limit=220,
@@ -1066,6 +1135,9 @@ def _merge_volume_plan(project: NovelProject, incoming_world: dict[str, Any], cu
             limit=10, item_limit=180,
         ),
     }
+    if "is_final_arc" in current or "is_final_arc" in incoming:
+        plan["is_final_arc"] = is_final_arc
+    return plan
 
 
 def _default_longform_framework(project: NovelProject, genre_plugins: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1236,6 +1308,48 @@ def _as_relationships(value: Any, limit: int) -> list[dict[str, Any]]:
         if len(result) >= limit:
             break
     return result
+
+
+def _merge_relationships(current: Any, incoming: Any, *, limit: int) -> list[dict[str, Any]]:
+    current_items = current if isinstance(current, list) else []
+    incoming_items = incoming if isinstance(incoming, list) else []
+    merged: list[dict[str, Any]] = []
+    positions: dict[tuple[str, str], int] = {}
+
+    for item in current_items:
+        if not isinstance(item, dict):
+            continue
+        source = compact_text(str(item.get("source", "")), 80)
+        target = compact_text(str(item.get("target", "")), 80)
+        if not source or not target:
+            continue
+        identity = (source, target)
+        if identity not in positions:
+            positions[identity] = len(merged)
+            merged.append(deepcopy(item))
+        if len(merged) >= limit:
+            break
+
+    for item in incoming_items:
+        if not isinstance(item, dict):
+            continue
+        source = compact_text(str(item.get("source", "")), 80)
+        target = compact_text(str(item.get("target", "")), 80)
+        if not source or not target:
+            continue
+        identity = (source, target)
+        index = positions.get(identity)
+        if index is None:
+            if len(merged) >= limit:
+                break
+            positions[identity] = len(merged)
+            merged.append(deepcopy(item))
+            continue
+        saved = merged[index]
+        for field in ("bond", "tension", "trust"):
+            if saved.get(field) in (None, "", [], {}) and item.get(field) not in (None, "", [], {}):
+                saved[field] = deepcopy(item[field])
+    return _as_relationships(merged, limit)
 
 
 def _as_character_profiles(value: Any, fallback: list[dict], limit: int = 24) -> list[dict[str, Any]]:
@@ -1539,9 +1653,23 @@ def _merge_enrichment(
     selected_plugin = _selected_novel_type_plugin(project)
     requires_power_system = _requires_structured_power_system(selected_plugin.plugin_id)
 
-    relationships = _as_relationships(
-        project.relationship_graph or incoming_world.get("relationship_graph") or parsed.get("relationship_graph"),
-        48,
+    saved_relationships = project.relationship_graph or current_world.get("relationship_graph")
+    incoming_relationships = [
+        *(
+            incoming_world.get("relationship_graph")
+            if isinstance(incoming_world.get("relationship_graph"), list)
+            else []
+        ),
+        *(
+            parsed.get("relationship_graph")
+            if isinstance(parsed.get("relationship_graph"), list)
+            else []
+        ),
+    ]
+    relationships = _merge_relationships(
+        saved_relationships,
+        incoming_relationships,
+        limit=48,
     )
     world_blueprint: dict[str, Any] = {
         "premise": compact_text(str(current_world.get("premise") or incoming_world.get("premise") or project.world_summary), 360),
