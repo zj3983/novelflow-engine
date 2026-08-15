@@ -246,12 +246,13 @@ def test_game_world_enrichment_prompt_spells_out_advancement_node_contracts():
         "class_advancement_tiers: "
         "[{level,name,purpose,common_requirements,failure_rule}]"
     ) in prompt
-    assert "class_advancement_tiers 的 level 必须是整数，且固定为 10/30/60" in prompt
     assert "advancement_tree: [{level,tier_name,options}]" in prompt
-    assert "advancement_tree 的 level 必须是整数" in prompt
+    assert "level 生成时请输出 JSON 整数 10/30/60" in prompt
+    assert "level 必须是整数" not in prompt
+    assert "options 中 name、transfer_task、ability_changes 是校验必填" in prompt
     assert (
-        "options: [{name,requirements,transfer_task,ability_changes,new_resources,"
-        "equipment_permissions,failure_consequence,next_options}]"
+        "requirements、new_resources、equipment_permissions、failure_consequence、"
+        "next_options 建议完整输出"
     ) in prompt
 
 
