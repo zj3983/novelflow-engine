@@ -1575,6 +1575,9 @@ def _validated_power_system_merge(
         except PowerSystemValidationError:
             current_validated = None
 
+    if current_validated is not None:
+        return deepcopy(current_validated), False
+
     if incoming_supplied:
         try:
             incoming_validated = validate_power_system_spec(
@@ -1588,12 +1591,8 @@ def _validated_power_system_merge(
             )
         except PowerSystemValidationError as error:
             raise _power_system_validation_error(error) from error
-        if current_validated is not None:
-            return deepcopy(current_validated), False
         return deepcopy(incoming_validated), True
 
-    if current_validated is not None:
-        return deepcopy(current_validated), False
     if rules_only is not False:
         return None, False
 

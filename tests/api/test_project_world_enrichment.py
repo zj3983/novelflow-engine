@@ -275,6 +275,39 @@ def test_traditional_game_power_spec_still_requires_advancement():
         )
 
 
+def test_valid_saved_custom_game_spec_ignores_invalid_incoming_spec():
+    current_spec = complete_custom_game_power_spec()
+    invalid_incoming = complete_game_power_spec()
+    invalid_incoming["stages"] = invalid_incoming["stages"][:2]
+    project = game_project(power_system_spec=current_spec)
+
+    enriched = world_enrichment._merge_enrichment(
+        project,
+        {"world_blueprint": {"power_system_spec": invalid_incoming}},
+        rules_only=False,
+    )
+
+    assert enriched.world_blueprint["power_system_spec"] == validate_power_system_spec(
+        current_spec,
+        novel_type_id="game_webnovel",
+    )
+
+
+def test_invalid_saved_game_spec_does_not_hide_invalid_incoming_spec():
+    invalid_current = complete_custom_game_power_spec()
+    invalid_current["stages"] = invalid_current["stages"][:2]
+    invalid_incoming = complete_game_power_spec()
+    invalid_incoming["stages"] = invalid_incoming["stages"][:2]
+    project = game_project(power_system_spec=invalid_current)
+
+    with pytest.raises(ValueError, match="stages.minimum_count"):
+        world_enrichment._merge_enrichment(
+            project,
+            {"world_blueprint": {"power_system_spec": invalid_incoming}},
+            rules_only=False,
+        )
+
+
 def test_traditional_game_merge_still_rejects_missing_advancement_nodes():
     spec = complete_game_power_spec()
     spec["paths"][0]["advancement_tree"] = spec["paths"][0]["advancement_tree"][:-1]
@@ -1190,17 +1223,18 @@ def test_unchanged_incoming_spec_preserves_current_legacy_list_verbatim():
     assert enriched.world_blueprint["power_system"] == legacy
 
 
-def test_invalid_incoming_spec_does_not_overwrite_valid_current_spec():
+def test_invalid_incoming_spec_is_ignored_when_current_spec_is_valid():
     current_spec = complete_game_power_spec()
     project = game_project(power_system_spec=current_spec, power_system=["当前摘要"])
 
-    with pytest.raises(ValueError, match=r"^invalid_power_system_spec:"):
-        world_enrichment._merge_enrichment(
-            project,
-            {"world_blueprint": {"power_system_spec": {"name": "残缺体系"}}},
-            rules_only=False,
-        )
+    enriched = world_enrichment._merge_enrichment(
+        project,
+        {"world_blueprint": {"power_system_spec": {"name": "残缺体系"}}},
+        rules_only=False,
+    )
 
+    assert enriched.world_blueprint["power_system_spec"] == current_spec
+    assert enriched.world_blueprint["power_system"] == ["当前摘要"]
     assert project.world_blueprint["power_system_spec"] == current_spec
     assert project.world_blueprint["power_system"] == ["当前摘要"]
 
