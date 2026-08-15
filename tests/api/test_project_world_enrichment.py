@@ -472,6 +472,229 @@ def test_game_world_enrichment_leaves_characters_empty_when_no_cards_are_availab
     assert enriched.character_profiles == []
 
 
+def test_complete_model_game_entities_do_not_receive_default_entries():
+    power_spec = complete_game_power_spec()
+    project = NovelProject(
+        project_id="p-game-model-entities",
+        title="雾海漫游",
+        world_blueprint={
+            "genre_plugin_ids": ["game_webnovel"],
+            "premise": "玩家驾驶纸舟探索雾海。",
+            "power_system_spec": power_spec,
+        },
+    )
+
+    enriched = world_enrichment._merge_enrichment(
+        project,
+        {
+            "world_blueprint": {
+                "premise": "玩家驾驶纸舟探索雾海。",
+                "power_system_spec": deepcopy(power_spec),
+                "npc_system": {
+                    "npcs": [{"name": "摆渡人", "role": "航路见证者"}],
+                    "rules": ["角色只知道亲眼见过的航路。"],
+                },
+                "quest_network": {
+                    "quest_types": ["航路委托"],
+                    "active_chains": [{"name": "雾钟回响", "description": "追踪雾中钟声。"}],
+                    "reward_rules": ["奖励只提供新航路信息。"],
+                    "failure_costs": ["错过潮汐窗口。"],
+                },
+                "map_ecology": {
+                    "zones": [{"name": "纸舟码头", "description": "探索者停靠处。"}],
+                    "rules": ["地点变化由潮汐驱动。"],
+                },
+            },
+        },
+        rules_only=False,
+    )
+
+    assert [item["name"] for item in enriched.world_blueprint["npc_system"]["npcs"]] == ["摆渡人"]
+    assert [item["name"] for item in enriched.world_blueprint["quest_network"]["active_chains"]] == ["雾钟回响"]
+    assert [item["name"] for item in enriched.world_blueprint["map_ecology"]["zones"]] == ["纸舟码头"]
+
+
+def test_saved_game_world_values_win_model_conflicts_and_ledger_does_not_regress():
+    power_spec = complete_game_power_spec()
+    project = NovelProject(
+        project_id="p-game-current-priority",
+        title="雾海漫游",
+        world_summary="已保存世界摘要",
+        current_focus="已保存当前目标",
+        world_blueprint={
+            "genre_plugin_ids": ["game_webnovel"],
+            "premise": "已保存世界前提",
+            "power_system_spec": power_spec,
+            "server_runtime": {"phase": "已保存服务器阶段"},
+            "volume_plan": {"volume_title": "第一卷 雾海", "target_chapters": 60},
+            "world_systems": {"material_base": ["已保存资源规则"]},
+            "opening_arc": {
+                "golden_three_chapters": {
+                    "chapter_1": {"purpose": "已保存开篇目标"},
+                },
+            },
+            "progression_ledger": {
+                "protagonist": {"level": 7, "location": "雾海深处"},
+                "economy": {"inventory": ["潮汐罗盘"]},
+                "skills": {"active": []},
+            },
+        },
+    )
+
+    enriched = world_enrichment._merge_enrichment(
+        project,
+        {
+            "world_summary": "模型新摘要",
+            "current_focus": "模型新目标",
+            "world_blueprint": {
+                "premise": "模型新前提",
+                "power_system_spec": deepcopy(power_spec),
+                "server_runtime": {"phase": "模型阶段"},
+                "volume_plan": {"volume_title": "模型卷名", "target_chapters": 50},
+                "world_systems": {"material_base": ["模型资源规则"]},
+                "opening_arc": {
+                    "golden_three_chapters": {
+                        "chapter_1": {
+                            "purpose": "模型改写开篇目标",
+                            "ending_hook": "模型补充的雾钟钩子",
+                        },
+                    },
+                },
+                "progression_ledger": {
+                    "protagonist": {"level": 1, "location": "模型起点"},
+                    "economy": {"inventory": []},
+                    "skills": {"active": ["模型新增能力"]},
+                },
+            },
+        },
+        rules_only=False,
+    )
+
+    assert enriched.world_summary == "已保存世界摘要"
+    assert enriched.current_focus == "已保存当前目标"
+    assert enriched.world_blueprint["premise"] == "已保存世界前提"
+    assert enriched.world_blueprint["server_runtime"]["phase"] == "已保存服务器阶段"
+    assert enriched.world_blueprint["volume_plan"]["volume_title"] == "第一卷 雾海"
+    assert enriched.world_blueprint["volume_plan"]["target_chapters"] == 60
+    assert enriched.world_blueprint["world_systems"]["material_base"][0] == "已保存资源规则"
+    chapter_1 = enriched.world_blueprint["opening_arc"]["golden_three_chapters"]["chapter_1"]
+    assert chapter_1["purpose"] == "已保存开篇目标"
+    assert chapter_1["ending_hook"] == "模型补充的雾钟钩子"
+    assert enriched.world_blueprint["progression_ledger"]["protagonist"]["level"] == 7
+    assert enriched.world_blueprint["progression_ledger"]["protagonist"]["location"] == "雾海深处"
+    assert enriched.world_blueprint["progression_ledger"]["economy"]["inventory"] == ["潮汐罗盘"]
+    assert enriched.world_blueprint["progression_ledger"]["skills"]["active"] == []
+
+
+def test_saved_character_fields_win_while_model_fills_missing_fields_by_identity():
+    power_spec = complete_game_power_spec()
+    project = NovelProject(
+        project_id="p-game-character-merge",
+        title="雾海漫游",
+        world_blueprint={
+            "genre_plugin_ids": ["game_webnovel"],
+            "premise": "玩家驾驶纸舟探索雾海。",
+            "power_system_spec": power_spec,
+        },
+        character_profiles=[
+            {
+                "name": "周行",
+                "game_id": "行舟",
+                "role": "主角",
+                "motivation": "寻找失踪航路",
+            }
+        ],
+    )
+
+    enriched = world_enrichment._merge_enrichment(
+        project,
+        {
+            "world_blueprint": {
+                "premise": "玩家驾驶纸舟探索雾海。",
+                "power_system_spec": deepcopy(power_spec),
+            },
+            "character_profiles": [
+                {
+                    "name": "模型改名",
+                    "game_id": "行舟",
+                    "role": "模型角色",
+                    "motivation": "模型改写动机",
+                    "current_state": "刚刚听见雾钟",
+                },
+                {"name": "顾遥", "game_id": "望潮", "role": "同行者"},
+            ],
+        },
+        rules_only=False,
+    )
+
+    assert len(enriched.character_profiles) == 2
+    assert enriched.character_profiles[0]["name"] == "周行"
+    assert enriched.character_profiles[0]["game_id"] == "行舟"
+    assert enriched.character_profiles[0]["role"] == "主角"
+    assert enriched.character_profiles[0]["motivation"] == "寻找失踪航路"
+    assert enriched.character_profiles[0]["current_state"] == "刚刚听见雾钟"
+    assert enriched.character_profiles[1]["name"] == "顾遥"
+
+
+def test_character_merge_matches_saved_name_when_model_adds_game_id():
+    current = [{"name": "周行", "role": "主角", "motivation": "探索雾海"}]
+    incoming = [{"name": "周行", "game_id": "行舟", "motivation": "模型改写"}]
+
+    merged = world_enrichment._merge_character_profiles(current, incoming)
+
+    assert len(merged) == 1
+    assert merged[0]["name"] == "周行"
+    assert merged[0]["game_id"] == "行舟"
+    assert merged[0]["motivation"] == "探索雾海"
+
+
+def test_default_game_volume_is_a_complete_non_final_volume():
+    plan = world_enrichment._default_volume_plan(
+        NovelProject(project_id="p-game-volume-default", title="雾海漫游"),
+        [{"id": "game_webnovel"}],
+    )
+
+    assert plan["target_chapters"] >= 50
+    assert plan["phase_beats"][-1]["range"].endswith(str(plan["target_chapters"]))
+
+
+def test_neutral_game_fallbacks_do_not_assume_levels_markets_reality_or_classic_maps():
+    project = NovelProject(
+        project_id="p-neutral-game-shape",
+        title="雾海漫游",
+        world_blueprint={
+            "genre_plugin_ids": ["game_webnovel"],
+            "premise": "周行驾驶纸舟探索不断变化的雾海。",
+        },
+        character_profiles=[{"name": "周行", "game_id": "行舟", "role": "主角"}],
+    )
+
+    enriched = world_enrichment._merge_enrichment(
+        project,
+        {"world_blueprint": {"premise": "周行驾驶纸舟探索不断变化的雾海。"}},
+        rules_only=True,
+    )
+
+    serialized = json.dumps(enriched.world_blueprint, ensure_ascii=False)
+    for assumption in (
+        "10级",
+        "铜币",
+        "银币",
+        "法杖",
+        "兽皮",
+        "铁匠铺",
+        "新手村",
+        "主城",
+        "清场",
+        "跨服裂隙",
+        "现实资本",
+        "虚拟文明",
+        "交易行",
+        "现实线",
+    ):
+        assert assumption not in serialized
+
+
 def test_world_enrichment_prompt_bounds_hostile_maximum_project_context():
     class Hostile:
         def __str__(self):
@@ -669,7 +892,7 @@ def test_world_enrichment_prompt_rejects_fixed_instructions_over_budget(monkeypa
         world_enrichment._build_prompt(project)
 
 
-def test_valid_game_spec_replaces_structured_module_and_derives_legacy_summary():
+def test_valid_game_spec_initializes_structured_module_without_replacing_saved_premise():
     incoming_spec = complete_game_power_spec()
     project = game_project(power_system=["旧版摘要原文"])
 
@@ -681,7 +904,7 @@ def test_valid_game_spec_replaces_structured_module_and_derives_legacy_summary()
 
     assert enriched.world_blueprint["power_system_spec"] == incoming_spec
     assert enriched.world_blueprint["power_system"] == legacy_power_summary(incoming_spec)
-    assert enriched.world_blueprint["premise"] == "新世界"
+    assert enriched.world_blueprint["premise"] == "旧世界"
 
 
 def test_invalid_incoming_spec_rejects_before_any_partial_world_change():

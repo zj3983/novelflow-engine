@@ -29,7 +29,6 @@ from packages.story_core.power_systems import (
     validate_power_system_spec,
 )
 from packages.story_core.runtime_config import resolve_stage_runtime
-from packages.story_core.web_game_economy import appraisal_rules, exchange_rules, market_rules
 
 
 class WorldEnrichmentError(RuntimeError):
@@ -380,11 +379,11 @@ def _build_prompt(project: NovelProject, *, rules_only: bool = False) -> str:
             "longform_framework 必须包含：target_words, series_premise, volume_ladder, progression_ladder, faction_ladder, economy_ladder, mystery_ladder, map_ladder, npc_evolution_ladder, simulation_rules；只有存在现实/虚拟双线时才添加 reality_ladder。",
             "longform_framework 不写死每章剧情，只规定百万字长篇的解锁顺序、压力上限、真相揭露节奏、势力升级路径和每卷推演边界。",
             "opening_arc 必须包含 golden_three_chapters，分别规划第1章、第2章、第3章的 purpose、must_include、exposition_beats、background_budget、ending_hook。",
-            "黄金三章要回答：第1章如何立世界/立主角/立金手指/立风险，第2章如何扩大收益并让压力逼近，第3章如何形成第一个小高潮并确立长期路线。",
+            "黄金三章要回答：第1章如何立世界/立主角/立项目既定规则/立风险，第2章如何扩大行动空间并让压力逼近，第3章如何形成第一个小高潮并确立长期路线。",
             "background_budget 必须包含 required_layers、allowed_layers、forbidden_layers，用于限制每章能展开多少世界背景，防止第一章堆设定。",
             "living_world 必须包含：daily_routines, economy, power_structure, information_network, player_ecology, information_visibility_rules, world_reaction_ladder, location_functions, timeline, reaction_rules。",
             "living_world 要回答：普通人每天在做什么，资源如何流动，谁控制秩序，消息如何传播，地点有什么功能，时间如何推进，主角行动会造成什么连锁反应。",
-            "如果是网游/游戏经济题材，必须明确币制和低级物价尺度，并严格复用题材插件提供的交易行与官方兑换统一边界。",
+            "网游项目只能使用当前项目已经明确的等级、交换、现实关联和地图结构；缺失时保持中性，不得自行套用传统网游模板。",
             f"已识别题材插件：{_world_plugin_prompt_guide(plugins, uses_game_modules=uses_game_modules)}",
             "请根据题材插件补齐可泛化的类型规则；若是复合题材，主题材负责主线逻辑，副题材提供钩子、规则或爽点。",
         ]
@@ -477,6 +476,18 @@ def _merge_string_lists(*values: Any, limit: int, item_limit: int = 240) -> list
     return merged
 
 
+def _merge_string_lists_with_fallback(
+    current: Any,
+    incoming: Any,
+    fallback: Any,
+    *,
+    limit: int,
+    item_limit: int = 240,
+) -> list[str]:
+    merged = _merge_string_lists(current, incoming, limit=limit, item_limit=item_limit)
+    return merged or _as_string_list(fallback, limit, item_limit=item_limit)
+
+
 def _as_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
@@ -504,303 +515,189 @@ def _as_entry_list(value: Any, limit: int) -> list[dict[str, str]]:
     return result
 
 
+def _merge_entry_lists_with_fallback(
+    current: Any,
+    incoming: Any,
+    fallback: Any,
+    *,
+    limit: int,
+) -> list[dict[str, str]]:
+    merged: list[dict[str, str]] = []
+    by_name: dict[str, dict[str, str]] = {}
+    for value in (current, incoming):
+        for entry in _as_entry_list(value, limit):
+            name = entry["name"]
+            existing = by_name.get(name)
+            if existing is None:
+                existing = entry
+                by_name[name] = existing
+                merged.append(existing)
+            elif not existing.get("description") and entry.get("description"):
+                existing["description"] = entry["description"]
+            if len(merged) >= limit:
+                return merged
+    return merged or _as_entry_list(fallback, limit)
+
+
 def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
 def _default_living_world(project: NovelProject, genre_plugins: list[dict[str, Any]]) -> dict[str, Any]:
-    plugin_ids = {str(plugin.get("id", "")) for plugin in genre_plugins}
-    if "game_webnovel" in plugin_ids:
-        return {
-            "daily_routines": [
-                "普通玩家在起始区域抢怪、组队、捡材料，靠基础任务积累第一阶段装备与资源。",
-                "商人玩家盯交易行价差，低级材料只能记录价格、数量和时间戳，不能直接知道卖家身份或刷怪坐标。",
-                "公会外围成员巡逻资源点、拉拢新人、驱赶散人玩家。",
-            ],
-            "economy": {
-                "resource_flow": [
-                    *market_rules(),
-                    *exchange_rules(),
-                    "低级材料从刷怪点流入交易行，再被生活职业玩家、公会仓库和倒卖商吸收。",
-                    "大量低价材料会压低短期价格并形成弱线索，但不会单次暴露卖家身份、现实身份或精确刷怪点。",
-                ],
-                "pressure_points": ["匿名寄售轨迹", "材料价格波动", "兑换价波动", "公会集中收购", "散人跟风刷点"],
-            },
-            "power_structure": {
-                "dominant_groups": ["区域玩家组织", "交易市场商人", "成长导师与任务NPC"],
-                "control_methods": ["包场资源点", "压价收购", "新人招募", "攻略信息垄断"],
-            },
-            "information_network": {
-                "channels": ["交易行价格榜", "玩家闲聊", "公会频道", "攻略贩子", "职业大厅传闻"],
-                "rumors": ["有人掌握高效资源路线", "首次阶段晋升需要额外条件"],
-            },
-            "player_ecology": [
-                "散人玩家靠组队、蹭任务和低级材料维持发育，最怕被公会清场或商人压价。",
-                "搬砖党关注稳定产出和出货安全，不追求首杀，但会放大材料价格波动。",
-                "攻略贩子、商人玩家和公会外围共享部分公开信息，却各自隐瞒货源、路线和名单。",
-                "生活职业玩家需要稳定材料供应，会让药剂、修理、仓储和制造需求持续反推市场。",
-            ],
-            "information_visibility_rules": [
-                "交易行默认只公开物品、价格、数量、批次、手续费和时间戳，不公开卖家坐标、现实身份或隐藏天赋。",
-                "论坛和玩家频道只能传播截图、传闻和推测；没有连续证据前，不能直接得出主角拥有未公开机制。",
-                "公会内部可以记录资源点目击、价格曲线和成员汇报，但需要多源交叉后才会形成观察名单。",
-                "NPC只能根据自身服务数据判断异常，例如库存、任务反馈、寄售流水、装备耐久和声望变化。",
-            ],
-            "world_reaction_ladder": [
-                "第1层：价格、库存、玩家闲聊或系统记录出现轻微异常。",
-                "第2层：商人玩家和搬砖党记录时间戳、批次和资源点传闻。",
-                "第3层：公会外围或NPC服务节点提出试探、压价、任务门槛或路线限制。",
-                "第4层：多源线索反复出现后，主角才进入观察名单或被设计拉拢。",
-            ],
-            "location_functions": [
-                {"name": "起始区域公共区", "function": "早期交易、招募、冲突和消息扩散中心"},
-                {"name": "交易行", "function": "资源变现与市场弱线索来源，低级材料只暴露价格/数量/时间戳，不能直接暴露坐标"},
-                {"name": "近郊资源区", "function": "初期材料产地和散人争夺区"},
-                {"name": "职业大厅", "function": "10级职业试炼线索入口"},
-            ],
-            "timeline": [
-                "开服初期：玩家摸索基础玩法，材料价格尚不稳定。",
-                "第一批异常收益出现后：主角先在任务、装备和路线进度上领先；外部关注要等稀有物、榜单或多源记录后才升级。",
-                "10级临近前：职业试炼攻略和资源垄断会成为新冲突。",
-            ],
-            "reaction_rules": [
-                "主角大量出售低级材料只会引发价格波动、商人脚本注意和时间戳弱线索，不会单次暴露身份或精确坐标。",
-                "主角越低调处理收益，越需要付出时间、手续费、拆单或绕路成本。",
-                "公会不会立刻知道真相；只有重复出货模式、稀有物品、榜单公告、资源点目击、NPC任务异常或多处线索汇总后，才会逐步缩小范围。",
-                "任何罕见收益都必须产生至少一个外部反应：商人注意、散人跟风、公会试探或NPC线索变化。",
-            ],
-        }
     return {
         "daily_routines": [
-            "普通角色有自己的工作、欲望、恐惧和信息来源，不应只在主角需要时出现。",
-            "配角和势力会围绕资源、关系、名声或安全感做出日常选择。",
+            "玩家与非玩家角色围绕各自目标持续行动，世界不会只在主角出现时运转。",
+            "资源、信息与关系的变化会影响后续选择，并留下可追踪的结果。",
         ],
         "economy": {
-            "resource_flow": ["资源从产出者流向中间人、组织和最终使用者，价格会随稀缺度和风险变化。"],
-            "pressure_points": ["资源短缺", "信息差", "身份风险", "组织垄断"],
+            "resource_flow": ["资源必须有明确来源、用途与消耗方式，具体形式服从当前项目设定。"],
+            "pressure_points": ["资源稀缺", "信息差", "行动成本", "身份风险"],
         },
         "power_structure": {
-            "dominant_groups": ["地方强势者", "资源控制者", "信息中介"],
-            "control_methods": ["规则制定", "资源分配", "舆论影响", "暴力或关系压迫"],
+            "dominant_groups": [],
+            "control_methods": ["规则权限", "资源分配", "信息控制", "关系影响"],
         },
-            "information_network": {
-                "channels": ["公开传闻", "私下交易", "组织内部消息", "现场目击"],
-                "rumors": [],
-            },
-            "player_ecology": [],
-            "information_visibility_rules": [
-                "公开渠道只能传播可观察痕迹，不能替角色全知全能地揭露秘密。",
-                "组织内部消息需要来源、延迟和误判空间。",
-            ],
-            "world_reaction_ladder": [
-                "轻微异常先变成传闻或价格波动，再升级为试探、压迫和正面冲突。",
-            ],
-            "location_functions": [],
-            "timeline": ["世界在主角行动之外持续推进，势力和普通人会对变化做出延迟反应。"],
-            "reaction_rules": [
-            "主角的收益、冲突或异常行为必须引起世界中至少一个群体的后续反应。",
-            "世界反应不应全知全能，要通过可观察痕迹逐步逼近真相。",
+        "information_network": {
+            "channels": ["公开信息", "私下沟通", "组织内部消息", "现场观察"],
+            "rumors": [],
+        },
+        "player_ecology": [
+            "不同玩家根据目标、能力、资源和风险偏好形成合作或竞争关系。",
+        ],
+        "information_visibility_rules": [
+            "角色只能依据可观察事实和可靠来源行动，不能无条件知道他人秘密。",
+            "信息传播必须保留来源、延迟、误差和误判空间。",
+        ],
+        "world_reaction_ladder": [
+            "异常先形成局部痕迹，再经过观察、验证和多源汇总升级为明确反应。",
+        ],
+        "location_functions": [],
+        "timeline": ["世界状态随角色行动和时间推进而变化。"],
+        "reaction_rules": [
+            "关键行动必须产生与其规模相称的后续反应。",
+            "外部反应必须来自可观察痕迹，不能全知全能。",
         ],
     }
-
-
 def _merge_living_world(project: NovelProject, incoming_world: dict[str, Any], current_world: dict[str, Any], genre_plugins: list[dict[str, Any]]) -> dict[str, Any]:
     incoming = _as_dict(incoming_world.get("living_world"))
     current = _as_dict(current_world.get("living_world"))
     defaults = _default_living_world(project, genre_plugins)
-    incoming_resource_flow = _as_dict(incoming.get("economy")).get("resource_flow")
-    current_resource_flow = _as_dict(current.get("economy")).get("resource_flow")
-    default_resource_flow = _as_dict(defaults.get("economy")).get("resource_flow")
-    plugin_ids = {str(plugin.get("id", "")) for plugin in genre_plugins}
-    resource_flow_sources = (
-        ([*market_rules(), *exchange_rules()], current_resource_flow, incoming_resource_flow, default_resource_flow)
-        if "game_webnovel" in plugin_ids
-        else (incoming_resource_flow, current_resource_flow, default_resource_flow)
-    )
+
+    def nested(source: dict[str, Any], section: str, field: str) -> Any:
+        return _as_dict(source.get(section)).get(field)
+
     return {
-        "daily_routines": _merge_string_lists(
-            incoming.get("daily_routines"),
-            current.get("daily_routines"),
-            defaults.get("daily_routines"),
-            limit=12,
-            item_limit=220,
+        "daily_routines": _merge_string_lists_with_fallback(
+            current.get("daily_routines"), incoming.get("daily_routines"), defaults.get("daily_routines"),
+            limit=12, item_limit=220,
         ),
         "economy": {
-            "resource_flow": _merge_string_lists(
-                *resource_flow_sources,
+            "resource_flow": _merge_string_lists_with_fallback(
+                nested(current, "economy", "resource_flow"),
+                nested(incoming, "economy", "resource_flow"),
+                nested(defaults, "economy", "resource_flow"),
                 limit=10,
-                item_limit=240,
             ),
-            "pressure_points": _merge_string_lists(
-                _as_dict(incoming.get("economy")).get("pressure_points"),
-                _as_dict(current.get("economy")).get("pressure_points"),
-                _as_dict(defaults.get("economy")).get("pressure_points"),
-                limit=10,
-                item_limit=160,
+            "pressure_points": _merge_string_lists_with_fallback(
+                nested(current, "economy", "pressure_points"),
+                nested(incoming, "economy", "pressure_points"),
+                nested(defaults, "economy", "pressure_points"),
+                limit=10, item_limit=160,
             ),
         },
         "power_structure": {
-            "dominant_groups": _merge_string_lists(
-                _as_dict(incoming.get("power_structure")).get("dominant_groups"),
-                _as_dict(current.get("power_structure")).get("dominant_groups"),
-                _as_dict(defaults.get("power_structure")).get("dominant_groups"),
-                limit=10,
-                item_limit=120,
+            "dominant_groups": _merge_string_lists_with_fallback(
+                nested(current, "power_structure", "dominant_groups"),
+                nested(incoming, "power_structure", "dominant_groups"),
+                nested(defaults, "power_structure", "dominant_groups"),
+                limit=10, item_limit=120,
             ),
-            "control_methods": _merge_string_lists(
-                _as_dict(incoming.get("power_structure")).get("control_methods"),
-                _as_dict(current.get("power_structure")).get("control_methods"),
-                _as_dict(defaults.get("power_structure")).get("control_methods"),
-                limit=10,
-                item_limit=180,
+            "control_methods": _merge_string_lists_with_fallback(
+                nested(current, "power_structure", "control_methods"),
+                nested(incoming, "power_structure", "control_methods"),
+                nested(defaults, "power_structure", "control_methods"),
+                limit=10, item_limit=180,
             ),
         },
         "information_network": {
-            "channels": _merge_string_lists(
-                _as_dict(incoming.get("information_network")).get("channels"),
-                _as_dict(current.get("information_network")).get("channels"),
-                _as_dict(defaults.get("information_network")).get("channels"),
-                limit=10,
-                item_limit=120,
+            "channels": _merge_string_lists_with_fallback(
+                nested(current, "information_network", "channels"),
+                nested(incoming, "information_network", "channels"),
+                nested(defaults, "information_network", "channels"),
+                limit=10, item_limit=120,
             ),
-            "rumors": _merge_string_lists(
-                _as_dict(incoming.get("information_network")).get("rumors"),
-                _as_dict(current.get("information_network")).get("rumors"),
-                _as_dict(defaults.get("information_network")).get("rumors"),
-                limit=10,
-                item_limit=220,
+            "rumors": _merge_string_lists_with_fallback(
+                nested(current, "information_network", "rumors"),
+                nested(incoming, "information_network", "rumors"),
+                nested(defaults, "information_network", "rumors"),
+                limit=10, item_limit=220,
             ),
         },
-        "player_ecology": _merge_string_lists(
-            incoming.get("player_ecology"),
-            current.get("player_ecology"),
-            defaults.get("player_ecology"),
-            limit=12,
-            item_limit=220,
+        "player_ecology": _merge_string_lists_with_fallback(
+            current.get("player_ecology"), incoming.get("player_ecology"), defaults.get("player_ecology"),
+            limit=12, item_limit=220,
         ),
-        "information_visibility_rules": _merge_string_lists(
-            incoming.get("information_visibility_rules"),
-            current.get("information_visibility_rules"),
-            defaults.get("information_visibility_rules"),
-            limit=12,
-            item_limit=240,
+        "information_visibility_rules": _merge_string_lists_with_fallback(
+            current.get("information_visibility_rules"), incoming.get("information_visibility_rules"),
+            defaults.get("information_visibility_rules"), limit=12,
         ),
-        "world_reaction_ladder": _merge_string_lists(
-            incoming.get("world_reaction_ladder"),
-            current.get("world_reaction_ladder"),
-            defaults.get("world_reaction_ladder"),
-            limit=10,
-            item_limit=220,
+        "world_reaction_ladder": _merge_string_lists_with_fallback(
+            current.get("world_reaction_ladder"), incoming.get("world_reaction_ladder"),
+            defaults.get("world_reaction_ladder"), limit=10, item_limit=220,
         ),
-        "location_functions": _as_entry_list(
-            incoming.get("location_functions") or current.get("location_functions") or defaults.get("location_functions"),
-            16,
+        "location_functions": _merge_entry_lists_with_fallback(
+            current.get("location_functions"), incoming.get("location_functions"),
+            defaults.get("location_functions"), limit=16,
         ),
-        "timeline": _merge_string_lists(incoming.get("timeline"), current.get("timeline"), defaults.get("timeline"), limit=12, item_limit=240),
-        "reaction_rules": _merge_string_lists(
-            incoming.get("reaction_rules"),
-            current.get("reaction_rules"),
-            defaults.get("reaction_rules"),
-            limit=12,
-            item_limit=240,
+        "timeline": _merge_string_lists_with_fallback(
+            current.get("timeline"), incoming.get("timeline"), defaults.get("timeline"), limit=12,
+        ),
+        "reaction_rules": _merge_string_lists_with_fallback(
+            current.get("reaction_rules"), incoming.get("reaction_rules"),
+            defaults.get("reaction_rules"), limit=12,
         ),
     }
-
-
 def _default_world_systems(project: NovelProject, genre_plugins: list[dict[str, Any]]) -> dict[str, Any]:
-    plugin_ids = {str(plugin.get("id", "")) for plugin in genre_plugins}
-    if "game_webnovel" in plugin_ids:
-        return {
-            "material_base": [
-                "起始区域经济依赖基础产出、任务奖励、生活职业消耗和交易手续费形成闭环。",
-                "基础资源按项目设定的币制和稀缺度计价，低阶产出不能直接等同于高阶财富。",
-                "开服初期信息差比等级更值钱，攻略、刷新点、隐藏触发条件都会被商人和公会快速定价。",
-                "稀有掉落可以制造暴利，但大规模流入市场会留下价格、数量和上架时间的异常痕迹。",
-            ],
-            "institutions": [
-                {"name": "交易行", "description": "负责资源变现和价格发现；低级材料交易只提供价格、数量、时间戳等弱线索，商人可盯盘但不能直接定位玩家坐标或现实身份。"},
-                {"name": "区域玩家组织", "description": "通过资源点管理、新人招募和集中收购建立影响力，并对异常收益保持有限关注。"},
-                {"name": "成长服务机构", "description": "掌握阶段晋升入口，导师、公告板和玩家闲聊会提前释放门槛线索。"},
-            ],
-            "social_order": [
-                "普通玩家靠组队抢怪和任务奖励缓慢上升，散人想出头必须依赖信息差或稀缺资源。",
-                "商人玩家不直接战斗，却通过账本、价格曲线和寄售记录影响资源分配。",
-                "公会外围不一定知道真相，但会根据资源异常、传闻和利益变化逐步缩小怀疑范围。",
-            ],
-            "conflict_engines": [
-                "项目已设定的核心优势可以带来成长节奏领先，但必须同时产生资源、行动或暴露成本。",
-                "主角越想保持领先，就越需要处理补给、耐久、背包、路线选择和玩家目击带来的行动成本。",
-                "现实兑换渠道尚未稳定时，主角的收益先体现为游戏内进度、任务奖励、装备储备和路线权限，而不是立刻折算成现实暴富。",
-                "10级职业试炼临近后，攻略垄断、材料囤积和队伍名额会自然升级为阶段冲突。",
-            ],
-            "causal_loops": [
-                {"name": "领先滚雪球", "description": "主角提高行动效率 -> 更快完成任务或达到成长门槛 -> 多章累积后才形成可观察的进度差。"},
-                {"name": "路线分化", "description": "项目既定机制改变成长选择 -> 系统反馈出现差异 -> 阶段门槛被重新解释 -> 新风险随之出现。"},
-                {"name": "散人跟风", "description": "某个刷怪点收益变高的传闻扩散 -> 普通玩家涌入 -> 公会清场 -> 主角必须更换行动路径。"},
-            ],
-        }
     return {
         "material_base": [
-            "世界必须有可追踪的资源来源、分配方式和消耗出口，不能只有抽象设定。",
-            "稀缺资源、信息差和身份风险共同决定角色选择，而不是所有人围着主角静止等待。",
+            "世界中的资源、能力与信息必须有明确来源、用途、限制和消耗。",
         ],
-        "institutions": [
-            {"name": "秩序维护者", "description": "通过规则、资源或暴力维持现有秩序。"},
-            {"name": "资源中介", "description": "连接生产者、使用者和消息渠道，从流通中获利。"},
-            {"name": "边缘群体", "description": "在制度缝隙中寻找上升机会，也最容易被主角行动影响。"},
-        ],
+        "institutions": [],
         "social_order": [
-            "普通人有日常目标、恐惧和上升路径，配角的行动应能从身份与利益中解释。",
-            "权力结构会通过奖惩、舆论、资源分配或准入门槛对异常者产生反应。",
+            "角色与组织根据自身权限、目标和风险承受能力作出选择。",
         ],
         "conflict_engines": [
-            "主角获得收益会改变既有利益分配，并引发至少一个群体的后续反应。",
-            "每个阶段冲突应同时包含外部压力、内部代价和下一步门槛。",
+            "主角推进目标会改变既有关系或资源分配，并形成新的行动门槛。",
+            "每个阶段冲突应同时包含外部压力、内部代价和下一步选择。",
         ],
         "causal_loops": [
-            {"name": "收益反应", "description": "主角获得资源 -> 既有秩序感到异常 -> 信息通过可观察痕迹传播 -> 新压力逼近。"},
-            {"name": "身份风险", "description": "主角隐藏优势 -> 行动选择变窄 -> 成本上升 -> 必须在收益和暴露之间做取舍。"},
+            {"name": "行动反馈", "description": "角色行动 -> 世界状态变化 -> 其他角色反应 -> 新选择出现。"},
+            {"name": "信息反馈", "description": "可观察痕迹出现 -> 信息传播与误判 -> 试探或合作 -> 认知更新。"},
         ],
     }
-
-
 def _merge_world_systems(project: NovelProject, incoming_world: dict[str, Any], current_world: dict[str, Any], genre_plugins: list[dict[str, Any]]) -> dict[str, Any]:
     incoming = _as_dict(incoming_world.get("world_systems"))
     current = _as_dict(current_world.get("world_systems"))
     defaults = _default_world_systems(project, genre_plugins)
     return {
-        "material_base": _merge_string_lists(
-            incoming.get("material_base"),
-            current.get("material_base"),
-            defaults.get("material_base"),
+        "material_base": _merge_string_lists_with_fallback(
+            current.get("material_base"), incoming.get("material_base"), defaults.get("material_base"),
             limit=10,
-            item_limit=240,
         ),
-        "institutions": _as_entry_list(
-            incoming.get("institutions") or current.get("institutions") or defaults.get("institutions"),
-            12,
+        "institutions": _merge_entry_lists_with_fallback(
+            current.get("institutions"), incoming.get("institutions"), defaults.get("institutions"), limit=12,
         ),
-        "social_order": _merge_string_lists(
-            incoming.get("social_order"),
-            current.get("social_order"),
-            defaults.get("social_order"),
-            limit=10,
-            item_limit=240,
+        "social_order": _merge_string_lists_with_fallback(
+            current.get("social_order"), incoming.get("social_order"), defaults.get("social_order"), limit=10,
         ),
-        "conflict_engines": _merge_string_lists(
-            incoming.get("conflict_engines"),
-            current.get("conflict_engines"),
-            defaults.get("conflict_engines"),
-            limit=10,
-            item_limit=260,
+        "conflict_engines": _merge_string_lists_with_fallback(
+            current.get("conflict_engines"), incoming.get("conflict_engines"),
+            defaults.get("conflict_engines"), limit=10, item_limit=260,
         ),
-        "causal_loops": _as_entry_list(
-            incoming.get("causal_loops") or current.get("causal_loops") or defaults.get("causal_loops"),
-            12,
+        "causal_loops": _merge_entry_lists_with_fallback(
+            current.get("causal_loops"), incoming.get("causal_loops"), defaults.get("causal_loops"), limit=12,
         ),
     }
-
-
 def _has_game_plugin(genre_plugins: list[dict[str, Any]]) -> bool:
     return any(str(plugin.get("id", "")) == "game_webnovel" for plugin in genre_plugins)
 
@@ -839,415 +736,187 @@ def _as_rich_entry_list(value: Any, limit: int, *, allowed_keys: tuple[str, ...]
 
 def _merge_rich_entry_lists(*values: Any, limit: int, allowed_keys: tuple[str, ...]) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    by_name: dict[str, dict[str, Any]] = {}
     for value in values:
         for entry in _as_rich_entry_list(value, limit, allowed_keys=allowed_keys):
             name = str(entry.get("name", "")).strip()
-            if name and name not in seen:
+            existing = by_name.get(name)
+            if name and existing is None:
                 merged.append(entry)
-                seen.add(name)
+                by_name[name] = entry
+            elif existing is not None:
+                for key, item in entry.items():
+                    if key != "name" and existing.get(key) in (None, "", [], {}):
+                        existing[key] = item
             if len(merged) >= limit:
                 return merged
     return merged
 
 
 def _default_npc_system(project: NovelProject, genre_plugins: list[dict[str, Any]]) -> dict[str, Any]:
-    if not _has_game_plugin(genre_plugins):
-        return {
-            "npcs": [],
-            "rules": ["NPC 不是背景板：每个关键 NPC 都有服务、信息边界、利益倾向和能改变任务链的反馈。"],
-        }
     return {
-        "npcs": [
-            {
-                "name": "任务管理员",
-                "role": "起始区域任务与声望服务节点",
-                "location": "起始区域公共服务点",
-                "services": ["基础任务", "声望任务", "区域异常登记"],
-                "agenda": "维持区域任务秩序，把玩家引向符合当前阶段的目标。",
-                "knowledge_limit": "只知道区域异常和任务反馈，不知道玩家未公开状态。",
-                "quest_hooks": ["区域清理", "公共设施维护"],
-                "voice": "官腔、谨慎、习惯用系统规章压住玩家争执。",
-            },
-            {
-                "name": "补给商",
-                "role": "消耗品与材料回收 NPC",
-                "location": "补给点",
-                "services": ["出售基础补给", "回收常见材料", "发布补给支线"],
-                "agenda": "稳定基础补给供应，并用价格策略保护自己的利润。",
-                "knowledge_limit": "能从库存和需求缺口察觉区域异常，但看不到玩家私有状态。",
-                "quest_hooks": ["收集补给材料", "库存断供预警"],
-                "voice": "絮叨、会压价，但对守规矩的玩家留一点情面。",
-            },
-            {
-                "name": "成长导师",
-                "role": "成长导师与阶段门槛守门人",
-                "location": "成长服务机构",
-                "services": ["技能学习", "阶段晋升登记", "成长路线线索"],
-                "agenda": "筛选满足条件的玩家，维护成长体系的门槛权威。",
-                "knowledge_limit": "能看出公开状态波动异常，但不能确认未公开机制。",
-                "quest_hooks": ["基础能力考核", "晋升材料前置", "首次阶段试炼"],
-                "voice": "冷淡、重规则，讲话像在宣读试炼条款。",
-            },
-            {
-                "name": "仓储管理员",
-                "role": "仓库、邮件与流水记录节点",
-                "location": "仓库",
-                "services": ["仓库格扩展", "邮件转寄", "寄售流水查询"],
-                "agenda": "按系统规章记录异常存取，避免仓库成为洗货点。",
-                "knowledge_limit": "只看见物流和寄存频率，不知道玩家战斗过程。",
-                "quest_hooks": ["遗失包裹", "异常寄存记录", "匿名寄售追踪"],
-                "voice": "机械、守规、每句话都像盖章。",
-            },
-            {
-                "name": "装备修理师",
-                "role": "装备耐久与金币消耗点",
-                "location": "铁匠铺",
-                "services": ["修理装备", "低级装备制作", "矿石和兽皮回收"],
-                "agenda": "低价收购矿石和兽皮，同时从修理频率判断谁在高强度刷怪。",
-                "knowledge_limit": "能判断装备磨损和战斗强度，不能知道隐藏爆率来源。",
-                "quest_hooks": ["损坏法杖修复", "铁矿短缺", "耐久异常报告"],
-                "voice": "粗粝、务实，只认材料和手艺。",
-            },
-        ],
+        "npcs": [],
         "rules": [
-            "NPC 必须有服务窗口、价格或门槛，主角每次利用 NPC 都会留下交易、任务或声望痕迹。",
-            "NPC 不全知：他们只能根据任务反馈、库存、寄售流水、装备磨损和玩家传闻逐步逼近真相。",
-            "NPC 线索要能推动任务链、职业试炼、地图开放或市场风险，而不是只负责讲设定。",
+            "关键 NPC 应有独立目标、可提供的功能、信息边界和对玩家行动的反馈。",
+            "NPC 只能依据自身经历、权限和可观察记录作出判断。",
         ],
     }
-
-
 def _merge_npc_system(project: NovelProject, incoming_world: dict[str, Any], current_world: dict[str, Any], genre_plugins: list[dict[str, Any]]) -> dict[str, Any]:
     incoming = _as_dict(incoming_world.get("npc_system"))
     current = _as_dict(current_world.get("npc_system"))
     defaults = _default_npc_system(project, genre_plugins)
+    allowed = ("role", "location", "services", "agenda", "knowledge_limit", "quest_hooks", "voice", "description")
+    npcs = _merge_rich_entry_lists(current.get("npcs"), incoming.get("npcs"), limit=16, allowed_keys=allowed)
+    if not npcs:
+        npcs = _as_rich_entry_list(defaults.get("npcs"), 16, allowed_keys=allowed)
     return {
-        "npcs": _merge_rich_entry_lists(
-            incoming.get("npcs"),
-            current.get("npcs"),
-            defaults.get("npcs"),
-            limit=16,
-            allowed_keys=("role", "location", "services", "agenda", "knowledge_limit", "quest_hooks", "voice", "description"),
+        "npcs": npcs,
+        "rules": _merge_string_lists_with_fallback(
+            current.get("rules"), incoming.get("rules"), defaults.get("rules"), limit=10, item_limit=220,
         ),
-        "rules": _merge_string_lists(incoming.get("rules"), current.get("rules"), defaults.get("rules"), limit=10, item_limit=220),
     }
-
-
 def _default_quest_network(project: NovelProject, genre_plugins: list[dict[str, Any]]) -> dict[str, Any]:
-    if not _has_game_plugin(genre_plugins):
-        return {"quest_types": [], "active_chains": [], "reward_rules": [], "failure_costs": []}
     return {
-        "quest_types": ["击杀任务", "采集任务", "跑腿任务", "职业试炼", "隐藏触发", "日常委托", "声望任务"],
-        "active_chains": [
-            {
-                "name": "阶段晋升前置",
-                "description": "从基础任务、导师登记和材料准备逐步接入项目设定的首次晋升考核。",
-                "stages": ["满足基础条件", "提交所需资源", "完成阶段考核"],
-                "npc_links": ["成长导师", "任务管理员"],
-            },
-            {
-                "name": "区域资源链",
-                "description": "补给需求联动服务点、交易市场和玩家行动路线，并让异常资源流入留下有限痕迹。",
-                "stages": ["发现供需缺口", "收集或护送资源", "处理区域异常"],
-                "npc_links": ["补给商", "仓储管理员"],
-            },
-        ],
+        "quest_types": ["主线目标", "支线目标", "探索目标"],
+        "active_chains": [],
         "reward_rules": [
-            "新手任务奖励以经验、铜币、低级消耗品和声望为主，稀有装备必须有明确门槛或代价。",
-            "隐藏任务可以给出路线优势，但不能直接跳过等级、职业试炼或市场风险。",
+            "目标收益必须与难度、投入和风险相称，具体奖励服从当前项目规则。",
         ],
-        "failure_costs": ["任务超时会降低 NPC 信任或声望。", "异常刷取会提升公会、商人和 NPC 记录节点的关注。"],
+        "failure_costs": [
+            "失败应改变时间、资源、关系或后续机会中的至少一项。",
+        ],
     }
-
-
 def _merge_quest_network(project: NovelProject, incoming_world: dict[str, Any], current_world: dict[str, Any], genre_plugins: list[dict[str, Any]]) -> dict[str, Any]:
     incoming = _as_dict(incoming_world.get("quest_network"))
     current = _as_dict(current_world.get("quest_network"))
     defaults = _default_quest_network(project, genre_plugins)
+    allowed = ("description", "stages", "npc_links", "risk", "reward")
+    chains = _merge_rich_entry_lists(
+        current.get("active_chains"), incoming.get("active_chains"), limit=12, allowed_keys=allowed,
+    )
+    if not chains:
+        chains = _as_rich_entry_list(defaults.get("active_chains"), 12, allowed_keys=allowed)
     return {
-        "quest_types": _merge_string_lists(incoming.get("quest_types"), current.get("quest_types"), defaults.get("quest_types"), limit=12, item_limit=80),
-        "active_chains": _merge_rich_entry_lists(
-            incoming.get("active_chains"),
-            current.get("active_chains"),
-            defaults.get("active_chains"),
-            limit=12,
-            allowed_keys=("description", "stages", "npc_links", "risk", "reward"),
+        "quest_types": _merge_string_lists_with_fallback(
+            current.get("quest_types"), incoming.get("quest_types"), defaults.get("quest_types"),
+            limit=12, item_limit=80,
         ),
-        "reward_rules": _merge_string_lists(incoming.get("reward_rules"), current.get("reward_rules"), defaults.get("reward_rules"), limit=10, item_limit=220),
-        "failure_costs": _merge_string_lists(incoming.get("failure_costs"), current.get("failure_costs"), defaults.get("failure_costs"), limit=8, item_limit=180),
+        "active_chains": chains,
+        "reward_rules": _merge_string_lists_with_fallback(
+            current.get("reward_rules"), incoming.get("reward_rules"), defaults.get("reward_rules"),
+            limit=10, item_limit=220,
+        ),
+        "failure_costs": _merge_string_lists_with_fallback(
+            current.get("failure_costs"), incoming.get("failure_costs"), defaults.get("failure_costs"),
+            limit=8, item_limit=180,
+        ),
     }
-
-
 def _default_server_runtime(project: NovelProject, genre_plugins: list[dict[str, Any]]) -> dict[str, Any]:
-    if not _has_game_plugin(genre_plugins):
-        return {"phase": "", "channels": [], "announcement_rules": [], "gm_rules": [], "anti_cheat_rules": [], "instance_rules": []}
     return {
-        "phase": "开服或新阶段初期，起始区域玩家密集，价格体系尚未稳定，玩家仍在摸索成长路线。",
-        "channels": ["系统公告", "世界频道", "区域频道", "公会频道", "交易行寄售记录", "论坛热帖"],
-        "announcement_rules": [
-            "首杀、首通、隐藏区域开启和大型市场异常会形成公告或论坛热帖。",
-            "普通玩家不知道完整真相，只能根据公告、掉落、价格和传闻拼图。",
-        ],
+        "phase": "",
+        "channels": [],
+        "announcement_rules": [],
         "gm_rules": [
-            "系统不会主动解释隐藏天赋，只会用任务、面板、异常提示和限制条件反馈。",
-            "GM 或系统监管只处理明显破坏平衡的异常，不会替主角解决叙事压力。",
+            "系统或运营边界只执行当前项目已经确立的规则，不替角色解释未知真相。",
         ],
         "anti_cheat_rules": [
-            "连续异常掉落、异常寄售和不合理升级速度会提高系统记录异常或玩家举报概率。",
-            "低级材料的单次匿名寄售不会暴露坐标；只有连续重复、稀有物、首杀公告、任务异常或举报汇总才会升级为系统/公会级追踪。",
-            "主角必须通过拆单、绕路、控制节奏和使用 NPC 服务来降低暴露。",
+            "异常行为的识别必须依据项目已有监测规则与可验证记录。",
         ],
-        "instance_rules": ["副本、职业试炼和隐藏地图需要等级、物品、声望或 NPC 信任作为门槛。"],
+        "instance_rules": [
+            "独立场景或挑战的进入条件、失败后果与重复规则必须明确。",
+        ],
     }
-
-
 def _merge_server_runtime(project: NovelProject, incoming_world: dict[str, Any], current_world: dict[str, Any], genre_plugins: list[dict[str, Any]]) -> dict[str, Any]:
     incoming = _as_dict(incoming_world.get("server_runtime"))
     current = _as_dict(current_world.get("server_runtime"))
     defaults = _default_server_runtime(project, genre_plugins)
     return {
-        "phase": compact_text(str(incoming.get("phase") or current.get("phase") or defaults.get("phase") or ""), 220),
-        "channels": _merge_string_lists(incoming.get("channels"), current.get("channels"), defaults.get("channels"), limit=12, item_limit=80),
-        "announcement_rules": _merge_string_lists(incoming.get("announcement_rules"), current.get("announcement_rules"), defaults.get("announcement_rules"), limit=8, item_limit=200),
-        "gm_rules": _merge_string_lists(incoming.get("gm_rules"), current.get("gm_rules"), defaults.get("gm_rules"), limit=8, item_limit=200),
-        "anti_cheat_rules": _merge_string_lists(incoming.get("anti_cheat_rules"), current.get("anti_cheat_rules"), defaults.get("anti_cheat_rules"), limit=8, item_limit=200),
-        "instance_rules": _merge_string_lists(incoming.get("instance_rules"), current.get("instance_rules"), defaults.get("instance_rules"), limit=8, item_limit=200),
+        "phase": compact_text(str(current.get("phase") or incoming.get("phase") or defaults.get("phase") or ""), 220),
+        "channels": _merge_string_lists_with_fallback(
+            current.get("channels"), incoming.get("channels"), defaults.get("channels"), limit=12, item_limit=80,
+        ),
+        "announcement_rules": _merge_string_lists_with_fallback(
+            current.get("announcement_rules"), incoming.get("announcement_rules"),
+            defaults.get("announcement_rules"), limit=8, item_limit=200,
+        ),
+        "gm_rules": _merge_string_lists_with_fallback(
+            current.get("gm_rules"), incoming.get("gm_rules"), defaults.get("gm_rules"), limit=8, item_limit=200,
+        ),
+        "anti_cheat_rules": _merge_string_lists_with_fallback(
+            current.get("anti_cheat_rules"), incoming.get("anti_cheat_rules"),
+            defaults.get("anti_cheat_rules"), limit=8, item_limit=200,
+        ),
+        "instance_rules": _merge_string_lists_with_fallback(
+            current.get("instance_rules"), incoming.get("instance_rules"),
+            defaults.get("instance_rules"), limit=8, item_limit=200,
+        ),
     }
-
-
 def _default_map_ecology(project: NovelProject, genre_plugins: list[dict[str, Any]]) -> dict[str, Any]:
-    if not _has_game_plugin(genre_plugins):
-        return {"zones": [], "rules": []}
     return {
-        "zones": [
-            {
-                "name": "起始区域",
-                "description": "玩家早期活动的相对安全区，承担任务发布、补给、交易、成长登记和社交。",
-                "resources": ["基础任务", "基础补给", "交易入口", "成长服务"],
-                "npcs": ["任务管理员", "仓储管理员", "成长导师", "补给商", "装备修理师"],
-                "player_density": "高",
-                "risk": "信息暴露、价格波动、被公会外围盯上。",
-                "outputs": ["任务链", "交易流水", "声望变化", "论坛传闻"],
-            },
-            {
-                "name": "近郊资源区",
-                "description": "提供基础战斗、采集和任务产出，也是散人与组织成员发生摩擦的早期区域。",
-                "resources": ["常见材料", "基础经验", "初级装备或制作资源"],
-                "npcs": [],
-                "player_density": "中高",
-                "risk": "刷怪路线被观察、资源点被清场。",
-                "outputs": ["低级材料", "战斗磨损", "玩家传闻"],
-            },
-            {
-                "name": "进阶探索区",
-                "description": "风险和收益高于近郊，连接补给需求、区域事件和后续任务链。",
-                "resources": ["进阶材料", "任务物品", "区域情报"],
-                "npcs": ["补给商"],
-                "player_density": "中",
-                "risk": "环境伤害、补给消耗、材料异常引发服务节点关注。",
-                "outputs": ["区域支线", "材料价格波动", "寄售记录"],
-            },
-            {
-                "name": "阶段考核区",
-                "description": "连接晋升材料和阶段考核前置的危险地点，不是安全教学区。",
-                "resources": ["晋升材料", "能力痕迹", "条件触发点"],
-                "npcs": ["成长导师"],
-                "player_density": "低",
-                "risk": "试炼门槛、隐藏路线暴露、怪物强度跳变。",
-                "outputs": ["阶段晋升线索", "试炼资格", "组织试探"],
-            },
-        ],
+        "zones": [],
         "rules": [
-            "地图不是背景：每个地点都要提供资源、风险、玩家密度、NPC 服务或信息痕迹。",
-            "主角移动路线要改变成本：补给、耐久、时间、被观察概率和任务窗口都会变化。",
+            "地点必须承担行动、资源、关系或信息功能，并具有与之匹配的风险。",
+            "角色移动会改变时间成本、可用机会和被观察范围。",
         ],
     }
-
-
 def _merge_map_ecology(project: NovelProject, incoming_world: dict[str, Any], current_world: dict[str, Any], genre_plugins: list[dict[str, Any]]) -> dict[str, Any]:
     incoming = _as_dict(incoming_world.get("map_ecology"))
     current = _as_dict(current_world.get("map_ecology"))
     defaults = _default_map_ecology(project, genre_plugins)
+    allowed = ("description", "resources", "npcs", "player_density", "risk", "outputs")
+    zones = _merge_rich_entry_lists(current.get("zones"), incoming.get("zones"), limit=16, allowed_keys=allowed)
+    if not zones:
+        zones = _as_rich_entry_list(defaults.get("zones"), 16, allowed_keys=allowed)
     return {
-        "zones": _merge_rich_entry_lists(
-            incoming.get("zones"),
-            current.get("zones"),
-            defaults.get("zones"),
-            limit=16,
-            allowed_keys=("description", "resources", "npcs", "player_density", "risk", "outputs"),
+        "zones": zones,
+        "rules": _merge_string_lists_with_fallback(
+            current.get("rules"), incoming.get("rules"), defaults.get("rules"), limit=8, item_limit=220,
         ),
-        "rules": _merge_string_lists(incoming.get("rules"), current.get("rules"), defaults.get("rules"), limit=8, item_limit=220),
     }
-
-
 def _default_opening_arc(project: NovelProject, genre_plugins: list[dict[str, Any]]) -> dict[str, Any]:
-    plugin_ids = {str(plugin.get("id", "")) for plugin in genre_plugins}
-    if "game_webnovel" in plugin_ids:
-        return {
-            "golden_three_chapters": {
-                "chapter_1": {
-                    "purpose": "立世界、立主角、立项目既定核心机制、立风险，并完成第一次有效行动。",
-                    "conflict_modes": [
-                        "动机压力：从当前角色卡、大纲或开书方向提取主角必须行动的直接原因。",
-                        "规则压力：只验证当前项目已经设定的机制、能力或策略优势，不得另造触发器。",
-                        "进度压力：低级材料只是新手噪音，真正的爽点是主角更快完成任务、凑齐装备/技能门槛。",
-                        "NPC压力：村长、导师、药剂师、仓库或修理节点通过任务门槛、服务费用、声望记录留下痕迹。",
-                    ],
-                    "forbidden_conflicts": [
-                        "禁止第一章让公会或商人精准锁定主角坐标、现实身份或刷怪点。",
-                        "禁止第一章写成商人玩家或区域组织与主角正面争夺核心资源、围杀或杀人夺宝。",
-                        "禁止第一章直接进入高阶副本、世界BOSS、主城大战或卷级大决战。",
-                    ],
-                    "must_include": [
-                        "使用项目设定的游戏名与运行形态，交代当前阶段、玩家生态和主角进入游戏的原因。",
-                        "从当前项目角色卡与大纲交代主角的现实处境、技能来源和进入游戏的直接目标，不得另行编造固定背景。",
-                        "角色创建或登录阶段应按当前项目设定交代游戏ID、初始身份与基础能力选择。",
-                        "第一章必须出现一次简短角色面板，写清游戏ID、等级、职业/路线、经验、主武器或基础技能、货币/背包关键项。",
-                        "只有项目明确设定特殊能力时才铺垫其既有触发条件；未设定时以操作、情报或策略形成优势。",
-                        "当前项目已设定核心机制的首次验证，必须同时展示收益和具体代价；项目未设定时不得凭空添加外挂。",
-                        "第一章是否完成实际交易必须服从项目大纲；未授权时，交易行只作为背景入口、价牌或后续处理材料的弱钩子。",
-                        "大型服务器尺度与公会生态：低级材料不会引发关注，公会只以公告、队伍秩序、资源点传闻或玩家闲聊露出存在感，不正面追查主角。",
-                        "公会生态应按当前项目已命名势力展开；没有已命名势力时只露出区域组织、商会或散人群体。",
-                    ],
-                    "exposition_beats": [
-                        "通过登录界面、系统公告或玩家频道交代项目设定的游戏名、运行形态和当前阶段。",
-                        "通过角色创建或登录界面写出当前项目已设定的初始身份、装备与基础能力选择。",
-                        "通过角色面板把项目已有的职业或路线、等级、经验、装备、技能和资源写进可追踪账本。",
-                        "通过与当前项目一致的现实细节交代主角动机，不得固定为缺钱、停职或特定职业经历。",
-                        "只有当前项目明确设定特殊机制时，才通过既有触发条件铺垫其首次生效。",
-                        "通过论坛热帖或玩家闲聊展示当前项目已有势力，或以未命名区域组织表现资源竞争。",
-                        "通过交易行界面自然说明匿名寄售、手续费、流水记录和寄售限制。",
-                    ],
-                    "background_budget": {
-                        "required_layers": [
-                            "现实入口：现实职业/账单压力必须在可感细节中出现。",
-                            "游戏入口：游戏名、开服状态、游戏ID、登录/建号界面和初始身份必须清楚。",
-                            "角色入口：第一章应有一次短角色面板，只写当前项目已经设定的身份、装备和基础能力。",
-                            "规则入口：只展开当前项目核心机制的首次验证和下一步成长目标。",
-                        ],
-                        "allowed_layers": [
-                            "一个命名NPC服务节点完整出场，其余NPC只作窗口、队列或公告板一笔带过。",
-                            "公会、商会、散人和搬砖党只通过论坛热帖、玩家闲聊或资源点秩序露出存在感。",
-                            "章末只留下任务、装备、技能或地图路线上的下一步领先目标。",
-                        ],
-                        "forbidden_layers": [
-                            "禁止多个命名NPC、多个服务地点和多个公会视角连续完整展开。",
-                            "禁止第一章写完整公会追查、商人正面谈判、职业试炼全规则或主城级世界观。",
-                            "禁止把游戏背景、经济体系、NPC制度和势力历史写成百科说明段落。",
-                        ],
-                    },
-                    "ending_hook": "商人从低价批次和时间戳察觉可疑货源，但公会只能收到模糊市场波动或玩家传闻，主角的低调路线第一次出现间接风险。",
-                },
-                "chapter_2": {
-                    "purpose": "扩大收益，验证规则，让市场、商人和公会压力明显逼近。",
-                    "conflict_modes": [
-                        "资源路线压力：刷怪点拥挤、补给消耗、装备耐久、背包容量和路上来回限制主角效率。",
-                        "任务链压力：NPC发布前置任务、材料需求、声望门槛或职业试炼线索，让收益和风险绑定。",
-                        "市场批次压力：重复出货、价格波动、商人账本和寄售时间戳让可疑货源画像逐步成形。",
-                        "公会外围压力：公会只能通过清场、拉拢、压价、论坛传闻或外围盯点间接试探。",
-                    ],
-                    "forbidden_conflicts": [
-                        "禁止第二章让公会直接发现主角未公开机制或隐藏能力的真相。",
-                        "禁止单次交易、单次掉落或一句传闻就让敌人精准定位主角。",
-                        "禁止公会会长亲自围杀新手村散人，压力应来自外围秩序和资源控制。",
-                    ],
-                    "must_include": [
-                        "更高效率的刷怪或任务选择，但必须付出时间、路线或身份成本。",
-                        "交易行价格波动与商人玩家追踪线索进一步成形，但必须遵守弱线索递进，不能单次精准定位。",
-                        "公会外围开始试探、清场或拉拢，主角主动规避而不是正面莽撞。",
-                        "自然铺垫当前项目首次阶段晋升的材料、情报或入场条件。",
-                    ],
-                    "exposition_beats": [
-                        "用交易记录和倒卖商反应展示市场如何发现异常。",
-                        "用公会频道、巡逻队或玩家投诉展示资源点秩序。",
-                        "用攻略帖、导师提示或任务公告露出阶段晋升门槛。",
-                    ],
-                    "background_budget": {
-                        "required_layers": ["补给/耐久/背包成本", "NPC任务前置", "交易批次异常"],
-                        "allowed_layers": ["商人正面试探", "公会外围清场或拉拢", "一个职业试炼线索"],
-                        "forbidden_layers": ["公会直接知道隐藏天赋", "服务器级通缉", "完整主城势力史"],
-                    },
-                    "ending_hook": "主角被某个商人或区域组织列入观察名单，或触发阶段晋升的前置线索。",
-                },
-                "chapter_3": {
-                    "purpose": "形成第一个小高潮，明确敌对压力和长期成长路线。",
-                    "conflict_modes": [
-                        "具体试探：商人、外围公会或NPC记录节点拿到不完整证据，尝试压价、拉拢或设局。",
-                        "成长门槛：等级、队伍资格、材料提交、导师评估或副本前置形成阶段目标。",
-                        "低调反制：主角用拆单、绕路、借NPC服务、借论坛噪音或换资源点化解压力。",
-                        "长期路线：安全升到10级、完成职业试炼、建立隐蔽供货渠道，而不是马上称霸服务器。",
-                    ],
-                    "forbidden_conflicts": [
-                        "禁止第三章提前写成服务器级大决战或公会全面战争。",
-                        "禁止NPC无理由送神装、跳过职业试炼或替主角解释全部隐藏机制。",
-                        "禁止反派突然降智，只因主角需要爽点就暴露破绽。",
-                    ],
-                    "must_include": [
-                        "公会、商人或NPC势力对主角形成一次具体试探。",
-                        "主角用低调策略反制，证明核心性格和生存路线。",
-                        "当前项目已设定的核心机制与常规成长路线出现明确差异；若未设定特殊机制，则突出策略或资源差异。",
-                        "确立第一卷阶段目标：达到首次晋升门槛、完成阶段考核并建立稳定资源渠道。",
-                    ],
-                    "exposition_beats": [
-                        "用一次冲突展示公会规则和散人处境。",
-                        "用技能/面板异常展示隐藏路线的长期悬念。",
-                        "用章末新线索把短期收益推向职业试炼主线。",
-                    ],
-                    "background_budget": {
-                        "required_layers": ["一次具体试探", "一次低调反制", "第一卷长期路线"],
-                        "allowed_layers": ["职业试炼门槛", "商人压价", "公会外围设局"],
-                        "forbidden_layers": ["服务器级大战", "NPC无理由送神装", "隐藏机制全解释"],
-                    },
-                    "ending_hook": "阶段考核或成长分支露出真正门槛，主角必须在暴露风险和成长速度之间选择。",
-                },
-            }
-        }
     return {
         "golden_three_chapters": {
             "chapter_1": {
-                "purpose": "立世界、立主角、立核心优势、立风险，并给读者一个可感知的第一爽点。",
-                "conflict_modes": ["当下困境", "核心机制初次验证", "行动后果向外扩散"],
-                "forbidden_conflicts": ["禁止无铺垫正面对决", "禁止核心秘密立刻暴露"],
-                "must_include": ["具体场景入口", "主角当前处境与眼前目标", "核心能力首次验证", "首次收益与代价", "外部压力钩子"],
-                "exposition_beats": ["用行动及结果交代世界规则", "用具体细节交代主角动机", "用对话或传闻交代外部势力"],
+                "purpose": "建立世界入口、主角目标、行动规则与第一次有效反馈。",
+                "conflict_modes": ["当下目标", "行动条件", "首次反馈"],
+                "forbidden_conflicts": ["禁止无铺垫升级为全局冲突", "禁止凭空增加项目未设定的能力或背景"],
+                "must_include": ["具体场景入口", "主角当前目标", "一次有效行动", "行动结果与代价"],
+                "exposition_beats": ["通过行动结果交代规则", "通过角色选择交代动机"],
                 "background_budget": {
-                    "required_layers": ["主角处境", "世界入口", "核心能力首次验证"],
-                    "allowed_layers": ["一个外部势力弱反应", "一个有明确用途的地点"],
-                    "forbidden_layers": ["连续堆设定", "多势力完整视角"],
+                    "required_layers": ["主角目标", "世界入口", "行动规则"],
+                    "allowed_layers": ["一个外部角色或群体的有限反应"],
+                    "forbidden_layers": ["连续堆叠设定", "多个组织完整视角"],
                 },
-                "ending_hook": "外部世界开始注意到主角造成的异常。",
+                "ending_hook": "第一次行动结果打开下一步选择。",
             },
             "chapter_2": {
-                "purpose": "扩大收益，验证规则，让外部压力逼近。",
-                "conflict_modes": ["资源选择", "行动条件", "外部观察"],
-                "forbidden_conflicts": ["禁止敌人一步到位知道真相"],
-                "must_include": ["能力第二次验证", "资源或关系收益", "外部势力反应", "下一阶段门槛"],
-                "exposition_beats": ["用交换、差事或冲突补充制度", "用配角反应展示世界不是静止背景"],
+                "purpose": "扩展行动空间，验证规则，并让外部反应逐步形成。",
+                "conflict_modes": ["资源选择", "行动成本", "外部观察"],
+                "forbidden_conflicts": ["禁止其他角色无证据掌握主角秘密"],
+                "must_include": ["规则再次验证", "新收益或新信息", "外部反应", "下一阶段条件"],
+                "exposition_beats": ["用交换、协作或冲突补充世界规则", "用配角反应展示世界持续运转"],
                 "background_budget": {
-                    "required_layers": ["规则代价", "外部反应"],
+                    "required_layers": ["行动代价", "外部反应"],
                     "allowed_layers": ["一个新地点或新关系"],
-                    "forbidden_layers": ["敌人一步到位知道真相"],
+                    "forbidden_layers": ["无依据的全知反应"],
                 },
-                "ending_hook": "主角进入观察名单或触发下一阶段线索。",
+                "ending_hook": "新的条件或线索使主角必须调整计划。",
             },
             "chapter_3": {
-                "purpose": "形成第一个小高潮，明确长期路线。",
-                "conflict_modes": ["具体试探", "策略反制", "长期路线"],
-                "forbidden_conflicts": ["禁止提前卷级决战"],
-                "must_include": ["具体对抗", "主角策略反制", "长期目标", "卷级压力"],
-                "exposition_beats": ["用冲突展示势力规则", "用选择展示主角路线"],
+                "purpose": "形成首个阶段高潮，明确长期目标与持续压力。",
+                "conflict_modes": ["具体试探", "策略应对", "长期选择"],
+                "forbidden_conflicts": ["禁止提前进入全书终局"],
+                "must_include": ["具体对抗或考验", "主角主动选择", "阶段目标", "持续压力"],
+                "exposition_beats": ["用冲突展示秩序", "用选择展示主角路线"],
                 "background_budget": {
-                    "required_layers": ["具体试探", "长期路线"],
+                    "required_layers": ["具体考验", "长期目标"],
                     "allowed_layers": ["阶段小高潮"],
-                    "forbidden_layers": ["提前卷级决战"],
+                    "forbidden_layers": ["提前终局化"],
                 },
-                "ending_hook": "更高层级的门槛或敌人露头。",
+                "ending_hook": "更高阶段的条件或对手开始显现。",
             },
         }
     }
-
-
 def _as_opening_chapter(value: Any) -> dict[str, Any]:
     raw = _as_dict(value)
     return {
@@ -1307,7 +976,12 @@ def _merge_opening_arc(project: NovelProject, incoming_world: dict[str, Any], cu
 
     golden_three: dict[str, Any] = {}
     for key in ("chapter_1", "chapter_2", "chapter_3"):
-        merged = _as_opening_chapter(incoming_golden.get(key) or current_golden.get(key) or default_golden.get(key))
+        combined = _deep_merge_dicts(
+            _as_dict(incoming_golden.get(key)),
+            _as_dict(current_golden.get(key)),
+            preserve_empty=True,
+        )
+        merged = _as_opening_chapter(combined or default_golden.get(key))
         fallback = _as_opening_chapter(default_golden.get(key))
         golden_three[key] = {
             "purpose": merged["purpose"] or fallback["purpose"],
@@ -1326,47 +1000,29 @@ def _merge_opening_arc(project: NovelProject, incoming_world: dict[str, Any], cu
 
 
 def _default_volume_plan(project: NovelProject, genre_plugins: list[dict[str, Any]]) -> dict[str, Any]:
-    if _has_game_plugin(genre_plugins):
-        return {
-            "volume_title": "第一卷 起始区域",
-            "target_chapters": 30,
-            "core_goal": "主角在控制信息暴露的前提下达到首次阶段晋升门槛，并建立稳定的成长与资源渠道。",
-            "phase_beats": [
-                {"range": "1-3", "purpose": "立住起始区域、主角目标、项目核心机制、市场弱线索和区域组织秩序。"},
-                {"range": "4-8", "purpose": "围绕近郊资源区和进阶探索区扩大收益，补足NPC任务、补给消耗、耐久和市场批次异常。"},
-                {"range": "9-15", "purpose": "推进首次阶段晋升，利用导师、补给和仓储流水形成前置任务链。"},
-                {"range": "16-24", "purpose": "商人和公会外围拿到不完整证据，开始压价、拉拢、清场和论坛试探。"},
-                {"range": "25-30", "purpose": "完成第一卷小高潮：阶段晋升门槛兑现，主角建立稳定资源渠道并留下更高阶地图钩子。"},
-            ],
-            "long_threads": [
-                "达到首次阶段晋升门槛并取得考核资格。",
-                "控制核心机制的信息暴露，避免交易记录、NPC记录和组织观察形成多源汇总。",
-                "建立低调变现渠道，从铜币/银币收益逐步过渡到稀有材料议价权。",
-                "让区域组织、商人玩家、散人玩家和NPC服务节点持续反应，但不能全知全能。",
-            ],
-            "chapter_anchors": [
-                "第1章完成首次收益闭环。",
-                "第3章形成第一次具体试探。",
-                "第10章前后触达职业试炼门槛。",
-                "第20章前后形成公会外围和商人联合压力。",
-                "第30章完成第一卷阶段目标并开启主城/高阶地图线。",
-            ],
-        }
     return {
         "volume_title": "第一卷 起势",
-        "target_chapters": 30,
-        "core_goal": "完成主角能力验证、外部压力成形和第一阶段目标兑现。",
+        "target_chapters": 50,
+        "core_goal": "完成世界入口、主角行动路线、阶段矛盾与首卷目标的完整建立和兑现。",
         "phase_beats": [
-            {"range": "1-3", "purpose": "立世界、立主角、立核心优势和风险。"},
-            {"range": "4-10", "purpose": "扩大收益并让外部压力逐步逼近。"},
-            {"range": "11-20", "purpose": "推进中段任务、关系和势力冲突。"},
-            {"range": "21-30", "purpose": "兑现第一卷小高潮并打开下一卷钩子。"},
+            {"range": "1-5", "purpose": "建立世界入口、主角目标、关键规则与第一次有效反馈。"},
+            {"range": "6-20", "purpose": "扩展行动空间，形成稳定推进方式与持续代价。"},
+            {"range": "21-40", "purpose": "让关系、信息和外部压力升级，并迫使主角调整策略。"},
+            {"range": "41-50", "purpose": "完成首卷高潮与阶段目标，同时留下下一卷的具体入口。"},
         ],
-        "long_threads": ["核心能力成长线。", "外部势力压力线。", "主角长期目标线。"],
-        "chapter_anchors": ["第1章首次闭环。", "第3章小钩子兑现。", "第30章卷末阶段兑现。"],
+        "long_threads": [
+            "主角长期目标线。",
+            "世界规则与行动代价线。",
+            "关系和外部压力演变线。",
+        ],
+        "chapter_anchors": [
+            "第1章完成世界入口与首次行动。",
+            "第5章形成稳定推进目标。",
+            "第20章兑现第一次阶段转折。",
+            "第40章进入首卷高潮准备。",
+            "第50章完成首卷目标并打开后续路线。",
+        ],
     }
-
-
 def _merge_phase_beats(*values: Any, limit: int = 8) -> list[dict[str, str]]:
     result: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -1391,121 +1047,60 @@ def _merge_volume_plan(project: NovelProject, incoming_world: dict[str, Any], cu
     incoming = _as_dict(incoming_world.get("volume_plan"))
     current = _as_dict(current_world.get("volume_plan"))
     defaults = _default_volume_plan(project, genre_plugins)
-    target = _as_int(incoming.get("target_chapters") or current.get("target_chapters"), int(defaults["target_chapters"]))
+    current_target = _as_int(current.get("target_chapters"), 0)
+    proposed_target = _as_int(incoming.get("target_chapters"), int(defaults["target_chapters"]))
+    target = current_target or max(50 if _has_game_plugin(genre_plugins) else 10, proposed_target)
     return {
-        "volume_title": compact_text(str(incoming.get("volume_title") or current.get("volume_title") or defaults["volume_title"]), 80),
+        "volume_title": compact_text(str(current.get("volume_title") or incoming.get("volume_title") or defaults["volume_title"]), 80),
         "target_chapters": max(10, target),
-        "core_goal": compact_text(str(incoming.get("core_goal") or current.get("core_goal") or defaults["core_goal"]), 260),
-        "phase_beats": _merge_phase_beats(incoming.get("phase_beats"), current.get("phase_beats"), defaults.get("phase_beats"), limit=8),
-        "long_threads": _merge_string_lists(incoming.get("long_threads"), current.get("long_threads"), defaults.get("long_threads"), limit=10, item_limit=220),
-        "chapter_anchors": _merge_string_lists(incoming.get("chapter_anchors"), current.get("chapter_anchors"), defaults.get("chapter_anchors"), limit=10, item_limit=180),
+        "core_goal": compact_text(str(current.get("core_goal") or incoming.get("core_goal") or defaults["core_goal"]), 260),
+        "phase_beats": _merge_phase_beats(
+            current.get("phase_beats"), incoming.get("phase_beats"), limit=8,
+        ) or _merge_phase_beats(defaults.get("phase_beats"), limit=8),
+        "long_threads": _merge_string_lists_with_fallback(
+            current.get("long_threads"), incoming.get("long_threads"), defaults.get("long_threads"),
+            limit=10, item_limit=220,
+        ),
+        "chapter_anchors": _merge_string_lists_with_fallback(
+            current.get("chapter_anchors"), incoming.get("chapter_anchors"), defaults.get("chapter_anchors"),
+            limit=10, item_limit=180,
+        ),
     }
 
 
 def _default_longform_framework(project: NovelProject, genre_plugins: list[dict[str, Any]]) -> dict[str, Any]:
-    if _has_game_plugin(genre_plugins):
-        return {
-            "target_words": 1000000,
-            "series_premise": (
-                "主角从项目设定的起始区域出发，逐步掌握游戏资源、规则和成长路线，"
-                "并在多卷推进中揭开当前项目已经确立的核心谜团。"
-            ),
-            "volume_ladder": [
-                {"range": "1-30", "title": "起步", "unlock": "基础等级、核心机制验证、第一条任务/装备/路线优势", "pressure_cap": "普通玩家误读和资源点弱目击"},
-                {"range": "31-80", "title": "主城暗流", "unlock": "10-30级、主城交易行、职业大厅、商会玩家", "pressure_cap": "商会询价、公会招募、职业门槛"},
-                {"range": "81-150", "title": "组织竞争", "unlock": "中期等级、区域资源点、团队副本、组织核心队伍", "pressure_cap": "区域围猎和资源封锁，但不能服务器级通缉"},
-                {"range": "151-240", "title": "路线进阶", "unlock": "职业或能力进阶、阶段副本、核心机制的新表现", "pressure_cap": "成长机构和副本资格审查"},
-                {"range": "241-380", "title": "服务器榜单", "unlock": "排行榜、拍卖会、区域副本首通、隐形资源节点身份", "pressure_cap": "榜单曝光和商会联盟经济战"},
-                {"range": "381-560", "title": "跨服裂隙", "unlock": "跨服战场、阵营声望、世界碎片、NPC异常自主行为", "pressure_cap": "阵营战争和跨服追踪"},
-                {"range": "561-760", "title": "现实资本入场", "unlock": "账号合同、黑市行情、线下身份风险、现实公司博弈", "pressure_cap": "现实资本围猎但不能直接抹除游戏规则"},
-                {"range": "761-1000", "title": "终局规则", "unlock": "世界权限、项目核心真相、终局规则争夺", "pressure_cap": "世界级规则战争"},
-            ],
-            "progression_ladder": [
-                "1-10级：只允许新手村装备、基础技能、铜币/银币收益和职业前置线索。",
-                "10-30级：开放主城、进阶技能、稳定银币/少量金币收益和主城商会。",
-                "30-50级：开放团队副本、区域资源点、装备套装和公会战术压迫。",
-                "50-70级：开放职业或能力分支、阶段副本深层、稀有材料议价权。",
-                "70-90级：开放服务器榜单、拍卖行高价资源和区域首通影响力。",
-                "90级以后：开放跨服阵营、世界碎片、隐藏权限和现实资本冲突。",
-            ],
-            "faction_ladder": [
-                "商人玩家：负责开局价格、批次、拆单和供货关系压力。",
-                "区域组织外围：负责起始资源点清场、拉拢、论坛传闻和弱试探。",
-                "区域组织核心：进入主城或中心区后介入区域围猎、队伍资格和副本资源封锁。",
-                "商会联盟：服务器榜单前后介入拍卖、压价、合同和经济战。",
-                "成长机构/导师体系：负责阶段门槛、考核资格和成长路线审查。",
-                "官方运营/系统记录：现实资本卷之前只做规则记录和异常排查，不直接下场解释真相。",
-                "现实资本：中后期通过账号合同、黑市和线下身份风险介入。",
-                "世界权限持有者：终局阶段才揭示为真正对手。"
-            ],
-            "economy_ladder": [
-                "第1卷：铜币/银币、低级材料、任务奖励、基础装备和路线权限；低级交易只是背景，不能现实暴富。",
-                "第2卷：主城商会询价、少量金币、稳定供货关系；现实汇率仍不稳定。",
-                "第3卷：区域资源点、团队副本材料、公会垄断和供货合同。",
-                "第4-5卷：稀有材料、拍卖会、榜单经济、商会联盟压价。",
-                "第6卷后：跨服资源、阵营货币、现实黑市和资本合约逐步出现。",
-            ],
-            "reality_ladder": [
-                "第1卷现实线负责压力、主角技能来源和阶段性账单变化；是否解决急账服从总纲节点，长期生存压力不能一次清空。",
-                "第2-3卷现实线表现为玩家论坛、外包旧同事、账号价值传闻。",
-                "第4-5卷现实线出现黑市报价、合同试探和现实身份擦边风险。",
-                "第6-7卷现实资本正式入场，线下压力与游戏资产绑定。",
-                "第8卷现实与游戏边界反转，揭示游戏世界的真实性质。",
-            ],
-            "mystery_ladder": [
-                "第1卷：只展示当前项目核心谜团的首个可观察现象。",
-                "第2卷：核心谜团开始影响成长路线或资源选择。",
-                "第3卷：系统记录到无法解释的收益结构，但没有真相。",
-                "第4卷：阶段考核揭示核心谜团并非普通系统现象。",
-                "第5卷：榜单与拍卖暴露世界权限碎片线索。",
-                "第6卷：跨服裂隙证明NPC和世界碎片具备自主反应。",
-                "第7卷：现实资本知道部分真相并争夺账号权限。",
-                "第8卷：揭开当前项目已经确立的终局真相。",
-            ],
-            "map_ladder": [
-                "起始区域/近郊资源区/进阶探索区：早期资源、NPC服务和弱市场线索。",
-                "主城/职业大厅/主城交易行：职业进阶、商会、主城公会规则。",
-                "区域资源带/团队副本：公会围猎、材料垄断、队伍资格。",
-                "阶段考核区：职业或能力进阶副本和成长路线门槛。",
-                "跨服裂隙/阵营战场：世界碎片和阵营战争。",
-                "终局区域：最终规则与权限争夺。",
-            ],
-            "npc_evolution_ladder": [
-                "第1卷NPC是服务节点：任务、价格、库存、职业提示和信息边界。",
-                "第2-3卷NPC开始记录声望、异常服务流水和职业评价。",
-                "第4卷职业导师体系发现主角路线异常，但只能通过规则审查施压。",
-                "第6卷后部分NPC出现超出普通脚本的记忆和选择。",
-                "终局NPC成为虚拟文明与世界权限真相的一部分。",
-            ],
-            "simulation_rules": [
-                "每章只允许解锁当前卷范围内的世界层级，不能提前写服务器级、跨服级或终局规则冲突。",
-                "长期真相必须分阶段揭露：先现象，再证据，再误判，再局部真相，最后总真相。",
-                "势力升级必须经过弱线索、多源汇总、试探、围猎、正面冲突，不得一步全知。",
-                "经济收益必须跟随阶段上限升级，不能让新手材料直接造成现实暴富或全服崩盘。",
-                "现实线必须先作为压力和技能来源，再升级为黑市、合同、身份风险和资本博弈。",
-            ],
-        }
+    premise = compact_text(
+        str(
+            _as_dict(project.world_blueprint).get("premise")
+            or project.world_summary
+            or project.seed_outline
+            or "主角从局部目标出发，在持续行动中进入更大的世界层级。"
+        ),
+        420,
+    )
     return {
         "target_words": 1000000,
-        "series_premise": "主角从局部困境出发，逐步进入更大世界层级，并在多卷推进中揭开核心真相。",
+        "series_premise": premise,
         "volume_ladder": [
-            {"range": "1-30", "title": "起势", "unlock": "核心能力与第一阶段目标", "pressure_cap": "局部势力压力"},
-            {"range": "31-100", "title": "扩张", "unlock": "更大地图与组织关系", "pressure_cap": "区域级压力"},
-            {"range": "101-250", "title": "对抗", "unlock": "主要敌对结构", "pressure_cap": "组织级压力"},
-            {"range": "251-500", "title": "真相", "unlock": "世界核心谜团", "pressure_cap": "世界级压力"},
-            {"range": "501-1000", "title": "终局", "unlock": "最终规则与终局对手", "pressure_cap": "终局压力"},
+            {"range": "1-50", "title": "起势", "unlock": "核心规则与第一阶段目标", "pressure_cap": "局部压力"},
+            {"range": "51-150", "title": "扩展", "unlock": "更大行动空间与关系网络", "pressure_cap": "区域压力"},
+            {"range": "151-300", "title": "对抗", "unlock": "主要矛盾与关键选择", "pressure_cap": "组织压力"},
+            {"range": "301-600", "title": "转折", "unlock": "核心谜团与世界变化", "pressure_cap": "世界压力"},
+            {"range": "601-1000", "title": "终局", "unlock": "最终规则与核心目标", "pressure_cap": "终局压力"},
         ],
-        "progression_ladder": ["能力、资源、关系和信息必须分阶段解锁。"],
-        "faction_ladder": ["敌对压力必须从局部角色升级到组织，再升级到世界级对手。"],
-        "economy_ladder": ["收益规模必须随世界层级扩张，不能开局暴富解决所有问题。"],
-        "reality_ladder": ["现实线先提供压力，再逐步进入核心冲突。"],
-        "mystery_ladder": ["核心谜团必须分阶段揭露，不能一次解释完。"],
-        "map_ladder": ["地图必须按阶段开放，每个地图承担不同冲突功能。"],
-        "npc_evolution_ladder": ["配角和NPC必须随阶段获得新职责、新信息和新关系。"],
-        "simulation_rules": ["章节推演必须遵守当前阶段上限，不能提前终局化。"],
+        "progression_ladder": ["能力、资源、关系和信息必须按项目规则分阶段变化。"],
+        "faction_ladder": ["外部压力从个体或局部群体逐步扩展，具体组织由项目定义。"],
+        "economy_ladder": ["资源收益与消耗必须匹配当前阶段，具体交换机制由项目定义。"],
+        "reality_ladder": [],
+        "mystery_ladder": ["核心谜团按现象、证据、误判、局部真相和总真相分阶段揭露。"],
+        "map_ladder": ["行动空间按阶段开放，每个地点承担不同叙事功能。"],
+        "npc_evolution_ladder": ["配角随事件获得新目标、新信息和新关系。"],
+        "simulation_rules": [
+            "章节推进必须遵守当前阶段上限，不能提前终局化。",
+            "角色反应必须依据其掌握的信息、权限与利益。",
+            "任何成长与收益都必须记录来源、代价和后续影响。",
+        ],
     }
-
-
 def _merge_ladder_entries(*values: Any, limit: int = 12) -> list[dict[str, str]]:
     result: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -1537,9 +1132,9 @@ def _merge_longform_framework(project: NovelProject, incoming_world: dict[str, A
     incoming = _as_dict(incoming_world.get("longform_framework"))
     current = _as_dict(current_world.get("longform_framework"))
     defaults = _default_longform_framework(project, genre_plugins)
-    target_words = _as_int(incoming.get("target_words") or current.get("target_words"), int(defaults["target_words"]))
+    target_words = _as_int(current.get("target_words") or incoming.get("target_words"), int(defaults["target_words"]))
     def preferred(field: str) -> Any:
-        for source in (incoming, current, defaults):
+        for source in (current, incoming, defaults):
             value = source.get(field)
             if value not in (None, "", [], {}):
                 if source is not defaults and isinstance(value, list):
@@ -1557,7 +1152,7 @@ def _merge_longform_framework(project: NovelProject, incoming_world: dict[str, A
 
     return {
         "target_words": max(100000, target_words),
-        "series_premise": compact_text(str(incoming.get("series_premise") or current.get("series_premise") or defaults["series_premise"]), 420),
+        "series_premise": compact_text(str(current.get("series_premise") or incoming.get("series_premise") or defaults["series_premise"]), 420),
         "volume_ladder": _merge_ladder_entries(preferred("volume_ladder"), limit=12),
         "progression_ladder": _merge_string_lists(preferred("progression_ladder"), limit=12, item_limit=240),
         "faction_ladder": _merge_string_lists(preferred("faction_ladder"), limit=12, item_limit=240),
@@ -1571,32 +1166,29 @@ def _merge_longform_framework(project: NovelProject, incoming_world: dict[str, A
 
 
 def _default_progression_ledger(project: NovelProject, genre_plugins: list[dict[str, Any]]) -> dict[str, Any]:
-    if _has_game_plugin(genre_plugins):
-        return {
-            "protagonist": {"level": 1, "exp": "0/100", "class_path": "初始路线", "location": "起始区域"},
-            "economy": {"currency": "0", "inventory": [], "market_anomaly": 0},
-            "equipment": {"weapon": "", "armor": "", "durability": "正常"},
-            "skills": {"active": [], "locked": []},
-            "quests": {"active": [], "completed": []},
-            "relations": {"npc": {}, "players": {}},
-            "pressure": {"guild_attention": 0, "goldfinger_exposure": 0, "system_risk": 0},
-        }
     return {
         "protagonist": {"stage": "起步", "location": ""},
-        "economy": {"resources": [], "risk": 0},
+        "economy": {"inventory": []},
+        "equipment": {},
+        "skills": {"active": [], "locked": []},
         "quests": {"active": [], "completed": []},
         "relations": {},
-        "pressure": {"external_attention": 0},
+        "pressure": {"external_attention": 0, "system_risk": 0},
     }
-
-
-def _deep_merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+def _deep_merge_dicts(
+    base: dict[str, Any],
+    override: dict[str, Any],
+    *,
+    preserve_empty: bool = False,
+) -> dict[str, Any]:
     result = deepcopy(base)
     for key, value in override.items():
         if isinstance(value, dict) and isinstance(result.get(key), dict):
-            result[key] = _deep_merge_dicts(result[key], value)
-        elif value not in (None, "", [], {}):
-            result[key] = value
+            result[key] = _deep_merge_dicts(
+                result[key], value, preserve_empty=preserve_empty
+            )
+        elif preserve_empty or value not in (None, "", [], {}):
+            result[key] = deepcopy(value)
     return result
 
 
@@ -1604,7 +1196,11 @@ def _merge_progression_ledger(project: NovelProject, incoming_world: dict[str, A
     defaults = _default_progression_ledger(project, genre_plugins)
     current = _as_dict(current_world.get("progression_ledger"))
     incoming = _as_dict(incoming_world.get("progression_ledger"))
-    return _deep_merge_dicts(_deep_merge_dicts(defaults, current), incoming)
+    return _deep_merge_dicts(
+        _deep_merge_dicts(defaults, incoming),
+        current,
+        preserve_empty=True,
+    )
 
 
 def _relationship_score(value: Any) -> float:
@@ -1673,6 +1269,47 @@ def _as_character_profiles(value: Any, fallback: list[dict], limit: int = 24) ->
     return profiles
 
 
+def _merge_character_profiles(current: Any, incoming: Any, limit: int = 24) -> list[dict[str, Any]]:
+    current_profiles = _as_character_profiles(current, [], limit)
+    incoming_profiles = _as_character_profiles(incoming, [], limit)
+    merged = deepcopy(current_profiles)
+
+    positions_by_game_id = {
+        str(profile.get("game_id") or "").strip(): index
+        for index, profile in enumerate(merged)
+        if str(profile.get("game_id") or "").strip()
+    }
+    positions_by_name = {
+        str(profile.get("name") or "").strip(): index
+        for index, profile in enumerate(merged)
+        if str(profile.get("name") or "").strip()
+    }
+    for profile in incoming_profiles:
+        game_id = str(profile.get("game_id") or "").strip()
+        name = str(profile.get("name") or "").strip()
+        index = positions_by_game_id.get(game_id) if game_id else None
+        if index is None:
+            index = positions_by_name.get(name)
+        if index is None:
+            if len(merged) >= limit:
+                break
+            index = len(merged)
+            merged.append(profile)
+            if game_id:
+                positions_by_game_id[game_id] = index
+            if name:
+                positions_by_name[name] = index
+            continue
+        existing = merged[index]
+        for field, value in profile.items():
+            if existing.get(field) in (None, "", [], {}) and value not in (None, "", [], {}):
+                existing[field] = value
+        saved_game_id = str(existing.get("game_id") or "").strip()
+        if saved_game_id:
+            positions_by_game_id[saved_game_id] = index
+    return merged
+
+
 def _default_character_profiles(project: NovelProject, genre_plugins: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return []
 
@@ -1682,7 +1319,7 @@ def _derive_author_constraints(world_blueprint: dict[str, Any]) -> list[str]:
     plugin_ids = {str(item).strip() for item in world_blueprint.get("genre_plugin_ids", []) if str(item).strip()}
     if "game_webnovel" in plugin_ids:
         constraints.append(
-            "网游角色必须区分现实姓名和游戏ID：游戏内行动、交易行、论坛和公会追踪优先使用游戏ID，现实身份只能在现实场景或旁白中出现。"
+            "角色卡同时提供姓名和游戏ID时，游戏内行动优先使用游戏ID；未提供时不得凭空补写另一套身份。"
         )
     for field in RULEBOOK_FIELDS:
         constraints.extend(_as_string_list(world_blueprint.get(field), 2, item_limit=180))
@@ -1760,16 +1397,28 @@ def _drop_irrelevant_genre_constraints(
 def _plugin_metadata(project: NovelProject) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
     plugins = select_genre_plugins(project)
     rulebook = merge_plugin_rulebooks(plugins)
-    metadata = [
-        {
-            "id": plugin.plugin_id,
-            "name": plugin.name,
-            "core_promises": list(plugin.core_promises),
-            "ledger_fields": list(plugin.ledger_fields),
-            "quality_checks": list(plugin.quality_checks),
-        }
-        for plugin in plugins
-    ]
+    metadata: list[dict[str, Any]] = []
+    for plugin in plugins:
+        if plugin.plugin_id == "game_webnovel":
+            metadata.append(
+                {
+                    "id": plugin.plugin_id,
+                    "name": plugin.name,
+                    "core_promises": ["游戏规则保持一致，行动产生可追踪反馈。"],
+                    "ledger_fields": ["角色状态", "资源", "能力", "装备", "目标", "关系", "外部压力"],
+                    "quality_checks": ["规则一致", "行动闭环", "信息边界", "状态连续"],
+                }
+            )
+        else:
+            metadata.append(
+                {
+                    "id": plugin.plugin_id,
+                    "name": plugin.name,
+                    "core_promises": list(plugin.core_promises),
+                    "ledger_fields": list(plugin.ledger_fields),
+                    "quality_checks": list(plugin.quality_checks),
+                }
+            )
     return metadata, rulebook
 
 
@@ -1848,8 +1497,9 @@ def _validated_power_system_merge(
             )
         except PowerSystemValidationError as error:
             raise _power_system_validation_error(error) from error
-        changed = current_validated is None or incoming_validated != current_validated
-        return deepcopy(incoming_validated), changed
+        if current_validated is not None:
+            return deepcopy(current_validated), False
+        return deepcopy(incoming_validated), True
 
     if current_validated is not None:
         return deepcopy(current_validated), False
@@ -1890,15 +1540,15 @@ def _merge_enrichment(
     requires_power_system = _requires_structured_power_system(selected_plugin.plugin_id)
 
     relationships = _as_relationships(
-        parsed.get("relationship_graph") or incoming_world.get("relationship_graph") or project.relationship_graph,
+        project.relationship_graph or incoming_world.get("relationship_graph") or parsed.get("relationship_graph"),
         48,
     )
     world_blueprint: dict[str, Any] = {
-        "premise": compact_text(str(incoming_world.get("premise") or current_world.get("premise") or project.world_summary), 360),
-        "world_rules": _merge_string_lists(incoming_world.get("world_rules"), current_world.get("world_rules"), limit=16),
-        "locations": _as_entry_list(incoming_world.get("locations") or current_world.get("locations"), 16),
-        "factions": _as_entry_list(incoming_world.get("factions") or current_world.get("factions"), 16),
-        "current_arc": compact_text(str(incoming_world.get("current_arc") or current_world.get("current_arc") or project.current_focus), 520),
+        "premise": compact_text(str(current_world.get("premise") or incoming_world.get("premise") or project.world_summary), 360),
+        "world_rules": _merge_string_lists(current_world.get("world_rules"), incoming_world.get("world_rules"), limit=16),
+        "locations": _merge_entry_lists_with_fallback(current_world.get("locations"), incoming_world.get("locations"), [], limit=16),
+        "factions": _merge_entry_lists_with_fallback(current_world.get("factions"), incoming_world.get("factions"), [], limit=16),
+        "current_arc": compact_text(str(current_world.get("current_arc") or incoming_world.get("current_arc") or project.current_focus), 520),
         "relationship_graph": relationships,
         "genre_plugins": genre_plugins,
     }
@@ -1909,8 +1559,8 @@ def _merge_enrichment(
             else deepcopy(current_world.get("power_system", []))
             if power_system_spec is not None
             else _merge_string_lists(
-                incoming_world.get("power_system"),
                 current_world.get("power_system"),
+                incoming_world.get("power_system"),
                 limit=16,
             )
         )
@@ -1932,31 +1582,24 @@ def _merge_enrichment(
         world_blueprint["server_runtime"] = _merge_server_runtime(project, incoming_world, current_world, genre_plugins)
         world_blueprint["map_ecology"] = _merge_map_ecology(project, incoming_world, current_world, genre_plugins)
     if incoming_world.get("genre_plugin_ids") or current_world.get("genre_plugin_ids"):
-        world_blueprint["genre_plugin_ids"] = incoming_world.get("genre_plugin_ids") or current_world.get("genre_plugin_ids")
+        world_blueprint["genre_plugin_ids"] = current_world.get("genre_plugin_ids") or incoming_world.get("genre_plugin_ids")
 
     for field in RULEBOOK_FIELDS:
         if field in {"quest_rules", "panel_rules"} and not uses_game_modules:
             continue
-        sources = (
-            (
-                [*market_rules(), *appraisal_rules(), *exchange_rules()],
-                current_world.get(field),
-                incoming_world.get(field),
-                plugin_rulebook.get(field, []),
-            )
-            if field == "economy_rules" and "game_webnovel" in plugin_ids
-            else (incoming_world.get(field), current_world.get(field), plugin_rulebook.get(field, []))
-        )
-        world_blueprint[field] = _merge_string_lists(
-            *sources,
+        plugin_fallback = [] if uses_game_modules else plugin_rulebook.get(field, [])
+        world_blueprint[field] = _merge_string_lists_with_fallback(
+            current_world.get(field),
+            incoming_world.get(field),
+            plugin_fallback,
             limit=12,
             item_limit=260,
         )
 
     derived_constraints = _derive_author_constraints(world_blueprint)
     merged_constraints = _merge_string_lists(
-        incoming_world.get("constraints"),
         current_world.get("constraints"),
+        incoming_world.get("constraints"),
         project.author_constraints,
         derived_constraints,
         limit=8,
@@ -1980,16 +1623,20 @@ def _merge_enrichment(
         uses_game_modules=uses_game_modules,
         requires_power_system=requires_power_system,
     )
-    next_project.character_profiles = _as_character_profiles(
+    next_project.character_profiles = _merge_character_profiles(
+        project.character_profiles,
         parsed.get("character_profiles"),
-        project.character_profiles or _default_character_profiles(project, genre_plugins),
     )
     next_project.relationship_graph = relationships
-    if parsed.get("world_summary"):
+    if project.world_summary:
+        next_project.world_summary = project.world_summary
+    elif parsed.get("world_summary"):
         next_project.world_summary = compact_text(str(parsed["world_summary"]), 360)
     elif world_blueprint["premise"]:
         next_project.world_summary = world_blueprint["premise"]
-    if parsed.get("current_focus"):
+    if project.current_focus:
+        next_project.current_focus = project.current_focus
+    elif parsed.get("current_focus"):
         next_project.current_focus = compact_text(str(parsed["current_focus"]), 620)
     elif world_blueprint["current_arc"]:
         next_project.current_focus = world_blueprint["current_arc"]
