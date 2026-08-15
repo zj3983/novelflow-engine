@@ -249,6 +249,32 @@ def test_custom_game_power_spec_still_requires_generic_core_structure():
         validate_power_system_spec(spec, novel_type_id="game_webnovel")
 
 
+def test_custom_game_power_spec_may_omit_advancement_in_full_enrichment():
+    spec = complete_custom_game_power_spec()
+    spec.pop("advancement")
+
+    enriched = world_enrichment._merge_enrichment(
+        game_project(),
+        {"world_blueprint": {"power_system_spec": spec}},
+        rules_only=False,
+    )
+
+    assert enriched.world_blueprint["power_system_spec"]["name"] == "雾海沙盒规则"
+    assert "advancement" not in enriched.world_blueprint["power_system_spec"]
+
+
+def test_traditional_game_power_spec_still_requires_advancement():
+    spec = complete_game_power_spec()
+    spec.pop("advancement")
+
+    with pytest.raises(ValueError, match=r"missing_sections=\[advancement\]"):
+        world_enrichment._merge_enrichment(
+            game_project(),
+            {"world_blueprint": {"power_system_spec": spec}},
+            rules_only=False,
+        )
+
+
 def test_traditional_game_merge_still_rejects_missing_advancement_nodes():
     spec = complete_game_power_spec()
     spec["paths"][0]["advancement_tree"] = spec["paths"][0]["advancement_tree"][:-1]

@@ -588,11 +588,21 @@ def validate_power_system_spec(
         _selected_template(novel_type_id, template),
         spec,
     )
+    try:
+        canonical_id = canonical_novel_type_id(novel_type_id)
+    except Exception:
+        canonical_id = "generic_webnovel"
+    uses_traditional_game_contract = (
+        canonical_id == "game_webnovel"
+        and uses_traditional_game_class_advancement(spec)
+    )
     missing = {
         section
         for section in _required_sections(selected)
         if _is_empty(normalized.get(section))
     }
+    if canonical_id == "game_webnovel" and not uses_traditional_game_contract:
+        missing.discard("advancement")
     violations: set[str] = set()
     if _contains_placeholder_content(normalized):
         violations.add("content.placeholder_or_low_information")
@@ -629,11 +639,7 @@ def validate_power_system_spec(
     if len(ledger) < 4:
         violations.add("continuity_ledger.minimum_count")
 
-    try:
-        canonical_id = canonical_novel_type_id(novel_type_id)
-    except Exception:
-        canonical_id = "generic_webnovel"
-    if canonical_id == "game_webnovel" and uses_traditional_game_class_advancement(spec):
+    if uses_traditional_game_contract:
         ledger_keys = {_ledger_key(item) for item in ledger}
         for concept, aliases in _LEDGER_ALIASES.items():
             if not _ledger_covers(ledger_keys, aliases):
