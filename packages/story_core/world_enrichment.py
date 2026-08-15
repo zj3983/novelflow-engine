@@ -22,6 +22,10 @@ from packages.story_core.novel_type_catalog import (
     runtime_novel_type,
 )
 from packages.story_core.power_system_templates import compact_power_system_template
+from packages.story_core.power_system_spec import (
+    effective_power_system_template,
+    uses_traditional_game_class_advancement,
+)
 from packages.story_core.power_systems import (
     PowerSystemValidationError,
     legacy_power_summary,
@@ -266,42 +270,6 @@ def _runtime_power_template(selected_plugin: Any) -> dict[str, Any]:
     return compact_power_system_template(selected_plugin.power_system_template)
 
 
-def _has_traditional_game_advancement(project: NovelProject) -> bool:
-    blueprint = _as_dict(project.world_blueprint)
-    spec = _as_dict(blueprint.get("power_system_spec"))
-    tiers = spec.get("class_advancement_tiers")
-    if isinstance(tiers, list) and any(isinstance(tier, dict) for tier in tiers):
-        return True
-    paths = spec.get("paths")
-    if isinstance(paths, list) and any(
-        isinstance(path, dict) and isinstance(path.get("advancement_tree"), list)
-        and bool(path["advancement_tree"])
-        for path in paths
-    ):
-        return True
-    stages = spec.get("stages")
-    return isinstance(stages, list) and any(
-        isinstance(stage, dict) and _as_int(stage.get("level"), 0) > 0
-        for stage in stages
-    )
-
-
-def _neutral_game_power_template(template: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        "system_form": "项目自定义的游戏成长或行动体系",
-        "required_sections": deepcopy(list(template.get("required_sections", []))),
-        "progression_shape": {"stages": []},
-        "branching_rules": ["路线与分支只依据当前项目已明确的玩法和成长方式定义。"],
-        "resource_rules": ["资源类型、产出和消耗只依据当前项目设定定义。"],
-        "cost_rules": ["失败代价和行动限制只依据当前项目设定定义。"],
-        "conflict_rules": ["冲突边界只依据当前项目的玩法、目标和规则定义。"],
-        "ledger_fields": ["项目已明确需要持续追踪的状态"],
-        "quality_checks": ["结构可执行且不引入项目未声明的成长机制"],
-        "minimum_path_count": 1,
-        "fixed_milestones": [],
-    }
-
-
 def _core_power_template(template: Mapping[str, Any], budget: int) -> dict[str, Any]:
     serialized = _serialized_json(template)
     if len(serialized) <= budget:
@@ -353,11 +321,20 @@ def _build_prompt(project: NovelProject, *, rules_only: bool = False) -> str:
     power_template = _runtime_power_template(selected_plugin)
     requires_power_system = _requires_structured_power_system(selected_plugin.plugin_id)
     uses_game_modules = _uses_game_world_modules(selected_plugin.plugin_id)
-    uses_traditional_game_advancement = (
-        uses_game_modules and _has_traditional_game_advancement(project)
+    current_power_spec = (
+        project.world_blueprint.get("power_system_spec")
+        if isinstance(project.world_blueprint, Mapping)
+        else None
     )
-    if uses_game_modules and not uses_traditional_game_advancement:
-        power_template = _neutral_game_power_template(power_template)
+    uses_traditional_game_advancement = (
+        uses_game_modules
+        and uses_traditional_game_class_advancement(current_power_spec)
+    )
+    power_template = effective_power_system_template(
+        selected_plugin.plugin_id,
+        power_template,
+        current_power_spec,
+    )
     world_fields = [
         "premise", "world_rules", "locations", "factions",
         "current_arc", "constraints", "relationship_graph", "progression_rules",

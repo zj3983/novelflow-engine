@@ -139,6 +139,51 @@ def complete_game_power_spec() -> dict[str, object]:
     return spec
 
 
+def complete_custom_game_power_spec(*, levels: tuple[int, ...] | None = None) -> dict[str, object]:
+    stage_names = ("建立据点", "扩大行动", "形成长期循环")
+    stages = [
+        {
+            "name": name,
+            "entry": f"满足{name}的前置条件",
+            "change": f"解锁{name}对应的行动空间",
+            "failure": f"保留资源并重新规划{name}",
+        }
+        for name in stage_names
+    ]
+    if levels is not None:
+        for stage, level in zip(stages, levels, strict=True):
+            stage["level"] = level
+    return {
+        "name": "雾海沙盒规则",
+        "origin": ["参与者通过探索、经营和协作改变持续演化的雾海"],
+        "attributes": [{"name": "航路掌握", "effect": "影响可安全抵达的区域"}],
+        "paths": [
+            {
+                "name": "航路经营",
+                "role": "规划行动与资源投放",
+                "core_resource": "航路情报",
+                "core_attributes": ["航路掌握"],
+                "strengths": ["长期规划"],
+                "weaknesses": ["即时应变成本较高"],
+                "skill_categories": ["探索", "经营"],
+                "branches": ["公开航路", "隐秘航路"],
+                "advancement": ["通过可验证的行动成果扩大经营范围"],
+            }
+        ],
+        "stages": stages,
+        "skills": ["能力来自项目内明确的行动经验与协作关系"],
+        "equipment": ["工具只提供场景能力，不绑定职业或等级"],
+        "resources": ["情报、时间与行动机会形成可追踪收支"],
+        "advancement": ["推进依据目标完成度和世界反馈"],
+        "costs": ["失败会损失时间、信誉或行动机会"],
+        "counters": ["情报优势可被误导和时效性克制"],
+        "boundaries": ["任何行动都不能绕过已建立的世界规则"],
+        "social_impact": ["行动结果会改变组织关系和区域秩序"],
+        "visibility": ["参与者只能依据已获得的信息决策"],
+        "continuity_ledger": ["行动目标", "资源收支", "关系变化", "世界反馈"],
+    }
+
+
 def test_game_power_system_requires_shared_class_advancement_levels() -> None:
     spec = complete_game_power_spec()
 
@@ -158,6 +203,62 @@ def test_game_power_system_rejects_missing_class_advancement_level(missing_level
 
     with pytest.raises(ValueError, match="game.invalid_class_advancement_tiers"):
         validate_power_system_spec(spec, novel_type_id="game_webnovel")
+
+
+def test_level_less_game_power_spec_round_trips_through_full_enrichment_validation():
+    spec = complete_custom_game_power_spec()
+    project = game_project()
+
+    validated = validate_power_system_spec(spec, novel_type_id="game_webnovel")
+    enriched = world_enrichment._merge_enrichment(
+        project,
+        {"world_blueprint": {"power_system_spec": spec}},
+        rules_only=False,
+    )
+
+    assert validated["name"] == "雾海沙盒规则"
+    assert all("level" not in stage for stage in validated["stages"])
+    assert enriched.world_blueprint["power_system_spec"] == validated
+
+
+def test_leveled_game_without_class_advancement_is_not_treated_as_traditional():
+    spec = complete_custom_game_power_spec(levels=(1, 2, 3))
+    project = game_project()
+
+    enriched = world_enrichment._merge_enrichment(
+        project,
+        {"world_blueprint": {"power_system_spec": spec}},
+        rules_only=False,
+    )
+
+    assert [
+        stage["level"]
+        for stage in enriched.world_blueprint["power_system_spec"]["stages"]
+    ] == [1, 2, 3]
+    assert "class_advancement_tiers" not in enriched.world_blueprint["power_system_spec"]
+    prompt = world_enrichment._build_prompt(enriched)
+    assert "Lv.10正式转职、Lv.30选择职业分支、Lv.60晋升传承职业" not in prompt
+    assert prompt_power_template(prompt)["fixed_milestones"] == []
+
+
+def test_custom_game_power_spec_still_requires_generic_core_structure():
+    spec = complete_custom_game_power_spec()
+    spec["costs"] = []
+
+    with pytest.raises(ValueError, match="costs"):
+        validate_power_system_spec(spec, novel_type_id="game_webnovel")
+
+
+def test_traditional_game_merge_still_rejects_missing_advancement_nodes():
+    spec = complete_game_power_spec()
+    spec["paths"][0]["advancement_tree"] = spec["paths"][0]["advancement_tree"][:-1]
+
+    with pytest.raises(ValueError, match="game.path_invalid_advancement_tree"):
+        world_enrichment._merge_enrichment(
+            game_project(),
+            {"world_blueprint": {"power_system_spec": spec}},
+            rules_only=False,
+        )
 
 
 def game_project(*, power_system_spec=None, power_system=None) -> NovelProject:

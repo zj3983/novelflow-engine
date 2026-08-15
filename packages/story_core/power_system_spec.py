@@ -387,6 +387,55 @@ def _selected_template(novel_type_id: str, template: Mapping[str, Any] | None) -
     return POWER_SYSTEM_TEMPLATES.get(canonical_id, POWER_SYSTEM_TEMPLATES["generic_webnovel"])
 
 
+def uses_traditional_game_class_advancement(spec: Any) -> bool:
+    """Return whether a game spec explicitly opts into class-transfer contracts."""
+
+    if not isinstance(spec, Mapping):
+        return False
+    tiers = _mapping_get(spec, "class_advancement_tiers")
+    if any(isinstance(tier, Mapping) for tier in _items(tiers)):
+        return True
+    for path in _items(_mapping_get(spec, "paths")):
+        if not isinstance(path, Mapping):
+            continue
+        if _text(_mapping_get(path, "transfer_task")):
+            return True
+        if any(
+            isinstance(node, Mapping)
+            for node in _items(_mapping_get(path, "advancement_tree"))
+        ):
+            return True
+    return False
+
+
+def effective_power_system_template(
+    novel_type_id: str,
+    template: Mapping[str, Any],
+    spec: Any,
+) -> dict[str, Any]:
+    """Select the template contract that matches the project's explicit game mode."""
+
+    try:
+        canonical_id = canonical_novel_type_id(novel_type_id)
+    except Exception:
+        canonical_id = "generic_webnovel"
+    if canonical_id != "game_webnovel" or uses_traditional_game_class_advancement(spec):
+        return dict(template)
+    return {
+        "system_form": "项目自定义的游戏成长或行动体系",
+        "required_sections": deepcopy(list(template.get("required_sections", []))),
+        "progression_shape": {"stages": []},
+        "branching_rules": ["路线与分支只依据当前项目已明确的玩法和成长方式定义。"],
+        "resource_rules": ["资源类型、产出和消耗只依据当前项目设定定义。"],
+        "cost_rules": ["失败代价和行动限制只依据当前项目设定定义。"],
+        "conflict_rules": ["冲突边界只依据当前项目的玩法、目标和规则定义。"],
+        "ledger_fields": ["项目已明确需要持续追踪的状态"],
+        "quality_checks": ["结构可执行且不引入项目未声明的成长机制"],
+        "minimum_path_count": 1,
+        "fixed_milestones": [],
+    }
+
+
 def _required_sections(template: Mapping[str, Any]) -> set[str]:
     required = set(_BASE_REQUIRED)
     required.update(_text_list(_mapping_get(template, "required_sections")))
@@ -534,7 +583,11 @@ def validate_power_system_spec(
     """Normalize and validate a project power-system specification."""
 
     normalized = normalize_power_system_spec(spec)
-    selected = _selected_template(novel_type_id, template)
+    selected = effective_power_system_template(
+        novel_type_id,
+        _selected_template(novel_type_id, template),
+        spec,
+    )
     missing = {
         section
         for section in _required_sections(selected)
@@ -580,7 +633,7 @@ def validate_power_system_spec(
         canonical_id = canonical_novel_type_id(novel_type_id)
     except Exception:
         canonical_id = "generic_webnovel"
-    if canonical_id == "game_webnovel":
+    if canonical_id == "game_webnovel" and uses_traditional_game_class_advancement(spec):
         ledger_keys = {_ledger_key(item) for item in ledger}
         for concept, aliases in _LEDGER_ALIASES.items():
             if not _ledger_covers(ledger_keys, aliases):
