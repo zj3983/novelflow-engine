@@ -239,6 +239,22 @@ def test_world_enrichment_prompt_requests_canonical_spec_and_carries_template_an
         assert field in prompt
 
 
+def test_game_world_enrichment_prompt_spells_out_advancement_node_contracts():
+    prompt = world_enrichment._build_prompt(game_project())
+
+    assert (
+        "class_advancement_tiers: "
+        "[{level,name,purpose,common_requirements,failure_rule}]"
+    ) in prompt
+    assert "class_advancement_tiers 的 level 必须是整数，且固定为 10/30/60" in prompt
+    assert "advancement_tree: [{level,tier_name,options}]" in prompt
+    assert "advancement_tree 的 level 必须是整数" in prompt
+    assert (
+        "options: [{name,requirements,transfer_task,ability_changes,new_resources,"
+        "equipment_permissions,failure_consequence,next_options}]"
+    ) in prompt
+
+
 def test_generic_world_enrichment_prompt_omits_game_only_world_contracts():
     project = NovelProject(
         project_id="p-realistic-generic",
