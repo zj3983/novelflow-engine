@@ -358,6 +358,120 @@ def test_generic_world_enrichment_drops_game_only_generated_sections():
     assert "人物借钱必须说明还款压力。" in enriched.author_constraints
 
 
+def test_game_world_fallbacks_are_project_neutral_when_model_omits_optional_modules():
+    power_spec = complete_game_power_spec()
+    project = NovelProject(
+        project_id="p-game-neutral-fallbacks",
+        title="星海远征",
+        seed_outline="周行以游戏ID行舟进入星海远征，从潮汐港接下第一份护航委托。",
+        world_summary="周行在星海远征中靠航线判断积累优势。",
+        current_focus="行舟准备完成潮汐港的护航委托。",
+        world_blueprint={
+            "genre_plugin_ids": ["game_webnovel"],
+            "premise": "行舟从潮汐港起步，在开放世界中探索航线。",
+            "power_system_spec": power_spec,
+            "living_world": {"daily_routines": ["潮汐港玩家按航班组队承接护航委托。"]},
+            "world_systems": {"material_base": ["潮汐矿用于修理舰船与制作导航组件。"]},
+            "npc_system": {
+                "npcs": [{"name": "港务员林岚", "role": "护航委托登记员"}],
+            },
+            "quest_network": {
+                "active_chains": [{"name": "潮汐护航", "description": "护送补给船离港。"}],
+            },
+            "server_runtime": {"phase": "首批玩家正在探索近海航线。"},
+            "map_ecology": {
+                "zones": [{"name": "潮汐港", "description": "新玩家集结的港口。"}],
+            },
+            "opening_arc": {
+                "golden_three_chapters": {
+                    "chapter_1": {"purpose": "周行以行舟的身份完成首次护航。"},
+                },
+            },
+            "volume_plan": {"volume_title": "第一卷 潮汐启航"},
+            "longform_framework": {
+                "series_premise": "周行沿未知航线逐步建立自己的远征队。",
+            },
+            "progression_ledger": {"protagonist": {"location": "潮汐港"}},
+        },
+        character_profiles=[
+            {
+                "name": "周行",
+                "game_id": "行舟",
+                "role": "主角",
+                "motivation": "找到失踪的远征队。",
+            }
+        ],
+    )
+
+    enriched = world_enrichment._merge_enrichment(
+        project,
+        {
+            "world_summary": "周行在星海远征中追查失踪航线。",
+            "current_focus": "行舟从潮汐港接取首个护航委托。",
+            "world_blueprint": {
+                "premise": "行舟从潮汐港起步，在开放世界中探索航线。",
+                "power_system_spec": deepcopy(power_spec),
+            },
+        },
+        rules_only=False,
+    )
+
+    serialized = json.dumps(enriched.model_dump(mode="json"), ensure_ascii=False)
+    assert not any(
+        legacy_term in serialized
+        for legacy_term in (
+            "苏叶",
+            "夜烬",
+            "千倍爆率",
+            "混沌之种",
+            "灰烬村",
+            "西林狼坡",
+            "洛婶",
+            "艾伦",
+            "白袍",
+        )
+    )
+    assert enriched.character_profiles[0]["name"] == "周行"
+    assert enriched.character_profiles[0]["game_id"] == "行舟"
+    assert len(enriched.character_profiles) == 1
+    assert "潮汐港玩家按航班组队承接护航委托。" in enriched.world_blueprint["living_world"]["daily_routines"]
+    assert "潮汐矿用于修理舰船与制作导航组件。" in enriched.world_blueprint["world_systems"]["material_base"]
+    assert enriched.world_blueprint["npc_system"]["npcs"][0]["name"] == "港务员林岚"
+    assert enriched.world_blueprint["quest_network"]["active_chains"][0]["name"] == "潮汐护航"
+    assert enriched.world_blueprint["server_runtime"]["phase"] == "首批玩家正在探索近海航线。"
+    assert enriched.world_blueprint["map_ecology"]["zones"][0]["name"] == "潮汐港"
+    assert enriched.world_blueprint["opening_arc"]["golden_three_chapters"]["chapter_1"]["purpose"] == "周行以行舟的身份完成首次护航。"
+    assert enriched.world_blueprint["volume_plan"]["volume_title"] == "第一卷 潮汐启航"
+    assert enriched.world_blueprint["longform_framework"]["series_premise"] == "周行沿未知航线逐步建立自己的远征队。"
+    assert enriched.world_blueprint["progression_ledger"]["protagonist"]["location"] == "潮汐港"
+
+
+def test_game_world_enrichment_leaves_characters_empty_when_no_cards_are_available():
+    power_spec = complete_game_power_spec()
+    project = NovelProject(
+        project_id="p-game-no-character-cards",
+        title="星海远征",
+        world_blueprint={
+            "genre_plugin_ids": ["game_webnovel"],
+            "premise": "玩家从未知港口开始探索。",
+            "power_system_spec": power_spec,
+        },
+    )
+
+    enriched = world_enrichment._merge_enrichment(
+        project,
+        {
+            "world_blueprint": {
+                "premise": "玩家从未知港口开始探索。",
+                "power_system_spec": deepcopy(power_spec),
+            },
+        },
+        rules_only=False,
+    )
+
+    assert enriched.character_profiles == []
+
+
 def test_world_enrichment_prompt_bounds_hostile_maximum_project_context():
     class Hostile:
         def __str__(self):
