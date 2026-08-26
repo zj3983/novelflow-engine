@@ -2022,6 +2022,27 @@ def _apply_module_owned_fields(
             project.current_focus = compact_text(value, 620)
 
 
+def _world_build_context_project(
+    source_project: NovelProject,
+    completed_outputs: Mapping[str, Any],
+) -> NovelProject:
+    """Project a context for the next module's prompt.
+
+    The projection merges only validated completed-module outputs onto the
+    original ``world_blueprint`` so later prompts do not see the placeholder
+    defaults that ``_merge_enrichment`` adds during persistence.  The
+    ``_merge_enrichment`` defaults exist so an old, half-filled project is
+    still runnable; they must never leak back into a later model call.
+    """
+
+    context = source_project.model_copy(deep=True)
+    context.world_blueprint = {
+        **deepcopy(source_project.world_blueprint or {}),
+        **deepcopy(dict(completed_outputs)),
+    }
+    return context
+
+
 def _call_world_build_modules(
     project: NovelProject,
     *,
@@ -2032,6 +2053,7 @@ def _call_world_build_modules(
     working = project.model_copy(deep=True)
     source_world = deepcopy(project.world_blueprint or {})
     artifacts: list[dict[str, Any]] = []
+    completed_outputs: dict[str, Any] = {}
     for module in world_build_modules(project):
         if progress_callback is not None:
             progress_callback(
@@ -2042,8 +2064,9 @@ def _call_world_build_modules(
                     "message": f"正在构建：{module.title}",
                 }
             )
+        context_project = _world_build_context_project(project, completed_outputs)
         request = ModelRequest(
-            prompt=_build_world_module_prompt(working, module),
+            prompt=_build_world_module_prompt(context_project, module),
             system_prompt="You are a senior Chinese webnovel worldbuilding editor. Return JSON only.",
             provider="",
             model="",
@@ -2065,6 +2088,9 @@ def _call_world_build_modules(
             {"choices": [{"message": {"content": response.text}}]}
         )
         payload = _module_world_payload(parsed, module)
+        # Capture raw validated output for downstream prompts before any
+        # merge-default padding enters the next context.
+        completed_outputs.update(deepcopy(payload))
         try:
             working = _merge_enrichment(
                 working,

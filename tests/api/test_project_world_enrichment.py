@@ -516,6 +516,91 @@ def test_modular_world_enrichment_persists_each_module_artifact() -> None:
     ]
 
 
+def test_world_build_prompt_context_excludes_merge_defaults() -> None:
+    project = NovelProject(
+        project_id="p-world-context-isolation",
+        title="断香炉",
+        world_summary="守祠杂役林照从断香炉里看见旧案。",
+        world_blueprint={"genre_plugin_ids": ["xuanhuan"]},
+    )
+
+    captured_prompts: list[str] = []
+    outputs = {
+        "core_rules": {
+            "world_rules": [
+                "香火能留下旧案痕迹，但每次动用都会折损寿数。"
+            ],
+            "constraints": ["证物被毁后不能凭空复原。"],
+            "locations": [
+                {"name": "守祠", "description": "林照看守香火与旧物的地方。"}
+            ],
+            "factions": [
+                {"name": "执事房", "description": "掌握祠内账簿与惩戒权。"}
+            ],
+            "power_system_spec": complete_game_power_spec(),
+        },
+        "society_and_livelihood": {
+            "locations": [
+                {"name": "守祠", "description": "林照看守香火与旧物的地方。"}
+            ],
+            "factions": [
+                {"name": "执事房", "description": "掌握祠内账簿与惩戒权。"}
+            ],
+            "economy_rules": ["香灰、旧物修复与人情债构成基层交换。"],
+            "world_systems": {
+                "material_base": ["香火与旧物修复材料稀缺。"],
+                "institutions": ["祠堂由执事房管理。"],
+                "social_order": ["杂役依附祠堂获取生计。"],
+                "conflict_engines": ["旧案证物会威胁既得者。"],
+                "causal_loops": ["每次修复都会留下新的追查痕迹。"],
+            },
+            "living_world": {
+                "daily_routines": ["杂役每日清扫香案、核对供奉。"],
+                "economy": ["香客供奉换取祠堂庇护。"],
+                "power_structure": ["执事房决定杂役去留。"],
+                "information_network": ["香客与杂役会在后院交换消息。"],
+                "information_visibility_rules": ["账簿只向执事开放。"],
+                "world_reaction_ladder": ["证物异动先惊动看守，再惊动执事。"],
+                "location_functions": ["守祠既是工作地也是证物库。"],
+                "timeline": ["每月朔望清点旧物。"],
+                "reaction_rules": ["公开修复会提高执事房的警惕。"],
+            },
+        },
+        "story_engine": {
+            "opening_arc": {"golden_three_chapters": {}},
+            "volume_plan": {"volume_title": "第一卷 断炉旧案", "target_chapters": 50},
+            "longform_framework": {"series_premise": "林照靠修复旧物追查被掩埋的旧案。"},
+        },
+    }
+
+    class Gateway:
+        def complete_stage(self, stage, request):
+            captured_prompts.append(request.prompt)
+            module_id = request.metadata.get("world_build_module") or "core_rules"
+            payload = outputs.get(module_id)
+            if payload is None:
+                payload = outputs["core_rules"]
+            return ModelResponse.success(
+                request,
+                text=json.dumps({"world_blueprint": payload}, ensure_ascii=False),
+            )
+
+    world_enrichment.enrich_project_world(project, model_gateway=Gateway())
+
+    assert len(captured_prompts) >= 2
+    society_prompt = captured_prompts[1]
+    assert "香火能留下旧案痕迹" in society_prompt
+    for default_marker in (
+        '"opening_arc"',
+        '"volume_plan"',
+        '"living_world"',
+        '"world_systems"',
+    ):
+        assert default_marker not in society_prompt, (
+            f"society_and_livelihood prompt leaked merge default {default_marker!r}"
+        )
+
+
 def test_world_build_module_required_fields_reject_missing_outputs() -> None:
     module = world_enrichment.WorldBuildModule(
         module_id="core_rules",
