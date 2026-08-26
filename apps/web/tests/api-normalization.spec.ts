@@ -1,6 +1,10 @@
 import { expect, test } from "@playwright/test";
 
-import { normalizeProjectResponse, regenerateFileProjectChapter } from "../lib/api";
+import {
+  fetchCurrentWorldBuildJob,
+  normalizeProjectResponse,
+  regenerateFileProjectChapter,
+} from "../lib/api";
 
 const legacyProject = {
   project_id: "file:legacy",
@@ -150,6 +154,42 @@ test("nested regeneration responses normalize legacy project publishing assets a
       synopsis: null,
       cover: null,
     });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("fetchCurrentWorldBuildJob returns null on 404 and exposes interrupted/conflicted statuses", async () => {
+  const originalFetch = globalThis.fetch;
+  const job = {
+    schema_version: "world-build-job/v1",
+    job_id: "wbg-rehydrate",
+    project_id: "file:rehydrate",
+    status: "interrupted",
+    progress: "服务已重启，请重新开始补全",
+    active_module_id: "core_rules",
+    active_module_title: "核心规则",
+    active_module_status: "interrupted",
+    error: "",
+    created_at: "2025-01-01T00:00:00+00:00",
+    updated_at: "2025-01-01T00:00:00+00:00",
+  };
+  let called = 0;
+  globalThis.fetch = async () => {
+    called += 1;
+    if (called === 1) {
+      return new Response("not found", { status: 404 });
+    }
+    return new Response(JSON.stringify(job), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    expect(await fetchCurrentWorldBuildJob("file:missing")).toBeNull();
+    const rehydrated = await fetchCurrentWorldBuildJob("file:rehydrate");
+    expect(rehydrated?.status).toBe("interrupted");
+    expect(rehydrated?.active_module_status).toBe("interrupted");
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -1,3 +1,13 @@
+import {
+  apiBase,
+  fetchJson,
+  fetchOptionalJson,
+  fetchVoid,
+  fileProjectPath,
+  fileStoryPath,
+  isFileProjectId,
+} from "./api-client";
+
 export type CreateStoryRequest = {
   story_id: string;
   outline: string;
@@ -240,6 +250,42 @@ export type NovelTypeRecord = NovelType;
 export type NovelTypeWritePayload = NovelTypeWriteRequest;
 
 export type GenerationJobStatus = "queued" | "running" | "completed" | "failed";
+
+export type WorldBuildJobStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "interrupted"
+  | "conflicted";
+
+export type WorldBuildJobResponse = {
+  schema_version: "world-build-job/v1" | string;
+  job_id: string;
+  project_id: string;
+  status: WorldBuildJobStatus;
+  progress: string;
+  active_module_id: string;
+  active_module_title?: string;
+  active_module_status:
+    | "queued"
+    | "running"
+    | "done"
+    | "interrupted"
+    | "conflicted"
+    | string;
+  error: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type WorldBuildArtifact = {
+  module_id: string;
+  title: string;
+  status: "completed" | string;
+  fields: string[];
+  output: Record<string, unknown>;
+};
 
 export type GenerationJobStep = {
   at?: string;
@@ -1034,6 +1080,7 @@ export type ImportedWorldBlueprint = {
   relationship_graph?: ImportedRelationshipEdge[];
   monster_profiles?: ImportedMonsterProfile[];
   equipment_cards?: ImportedEquipmentCard[];
+  world_build_artifacts?: WorldBuildArtifact[];
 };
 
 export type PowerSystemAttribute = {
@@ -1403,6 +1450,36 @@ export type ProjectOutlineArc = {
     payoff: string;
     next_effect: string;
   }>;
+};
+
+export type ContinuousGenerationStatus =
+  | "queued"
+  | "running"
+  | "stopping"
+  | "completed"
+  | "stopped"
+  | "failed";
+
+export type ContinuousGenerationJobResponse = {
+  schema_version: "continuous-generation-job/v1";
+  job_id: string;
+  project_id: string;
+  story_id: string;
+  status: ContinuousGenerationStatus;
+  phase: "queued" | "checking_outline" | "generating" | "confirming" | "between_chapters" | string;
+  requested_count: number;
+  completed_count: number;
+  start_chapter: number;
+  current_chapter: number;
+  completed_chapters: number[];
+  review_warnings: Array<{ chapter: number; warning: string }>;
+  candidate_id: string;
+  stop_requested: boolean;
+  progress: string;
+  stop_reason: string;
+  error: string;
+  created_at: string;
+  updated_at: string;
 };
 
 export type CharacterIdentityProfile = {
@@ -2264,22 +2341,6 @@ export type QuickContinuationResult = {
   job_id: string;
   job_status: string;
 };
-
-function apiBase() {
-  return process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
-}
-
-function isFileProjectId(value: string): boolean {
-  return value.startsWith("file:");
-}
-
-function fileProjectPath(projectId: string): string {
-  return `${apiBase()}/file-projects/${encodeURIComponent(projectId)}`;
-}
-
-function fileStoryPath(storyId: string): string {
-  return `${apiBase()}/file-stories/${encodeURIComponent(storyId)}`;
-}
 
 type MockStory = {
   story_id: string;
@@ -3224,68 +3285,20 @@ function mockSaveRuntimeStrategy(settings: RuntimeStrategySettings): RuntimeStra
   return clone(mockRuntimeStrategy);
 }
 
-async function requestWithTimeout<T>(
-  url: string,
-  init: RequestInit,
-  readResponse: (response: Response) => Promise<T>,
-  timeoutMs = 30000,
-): Promise<T> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => {
-    controller.abort();
-  }, timeoutMs);
-
-  try {
-    const resp = await fetch(url, { ...init, signal: controller.signal });
-    if (!resp.ok) {
-      const detail = await resp.text().catch(() => "");
-      console.error('[tryFetchJson] Not OK, detail:', detail.slice(0, 500));
-      let message = detail ? `${url} failed: ${resp.status} ${detail}` : `${url} failed: ${resp.status}`;
-      if (detail) {
-        let parsed: any;
-        try {
-          parsed = JSON.parse(detail);
-        } catch {
-          parsed = undefined;
-        }
-        if (parsed) {
-          const structuredDetail = parsed.detail;
-          if (structuredDetail && typeof structuredDetail === "object" && !Array.isArray(structuredDetail)
-            && typeof structuredDetail.code === "string") {
-            throw new PublishingApiError(structuredDetail.code, structuredDetail);
-          } else if (typeof structuredDetail === "string" && structuredDetail.trim()) {
-            message = structuredDetail.trim();
-          } else if (Array.isArray(structuredDetail)) {
-            const issues = structuredDetail
-              .map((issue) => typeof issue?.msg === "string" ? issue.msg.trim() : "")
-              .filter(Boolean);
-            if (issues.length) message = issues.join("；");
-          }
-        }
-      }
-      throw new Error(message);
-    }
-    return await readResponse(resp);
-  } catch (error) {
-    console.error('[tryFetchJson] Error:', error);
-    if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error(`${url} failed: request timed out (${Math.round(timeoutMs / 1000)}s)`);
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 async function tryFetchJson(url: string, init: RequestInit, timeoutMs = 30000): Promise<any> {
-  return await requestWithTimeout(
+  return await fetchJson(
     url,
     init,
-    async (response) => {
-      const text = await response.text();
-      return JSON.parse(text);
-    },
     timeoutMs,
+    (detail) => {
+      const code = detail.code;
+      if (typeof code !== "string") return undefined;
+      return new PublishingApiError(code, detail as {
+        phase?: "prompt" | "image";
+        prompt_saved?: boolean;
+        cover?: CoverAsset | null;
+      });
+    },
   );
 }
 
@@ -3293,27 +3306,6 @@ const LONG_RUNNING_REQUEST_TIMEOUT_MS = 1_800_000;
 // A cover can make one 70s text request followed by one 70s image request;
 // synopsis repair can make two 70s text requests. Keep client time above both.
 export const PUBLISHING_GENERATION_TIMEOUT_MS = 180_000;
-
-async function fetchOptionalJson(url: string, init: RequestInit, timeoutMs = 30000): Promise<any | null> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(url, { ...init, signal: controller.signal });
-    if (response.status === 404) return null;
-    if (!response.ok) {
-      const detail = await response.text().catch(() => "");
-      throw new Error(detail || `${url} failed: ${response.status}`);
-    }
-    return JSON.parse(await response.text());
-  } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error(`${url} failed: request timed out (${Math.round(timeoutMs / 1000)}s)`);
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
 
 export async function fetchRuntimeSettings(): Promise<RuntimeSettings> {
   const response = await tryFetchJson(`${apiBase()}/runtime-settings`, {
@@ -3616,17 +3608,17 @@ export async function startFileProjectRegenerationJob(
   })) as GenerationJobResponse;
 }
 
-export async function startFileProjectExpansionJob(
+export async function startFileProjectPolishJob(
   projectId: string,
   chapterNumber: number,
 ): Promise<GenerationJobResponse> {
   if (!isFileProjectId(projectId)) {
-    throw new Error("expand_chapter_only_supports_file_projects");
+    throw new Error("polish_chapter_only_supports_file_projects");
   }
   return (await tryFetchJson(`${fileProjectPath(projectId)}/generation-jobs`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ chapter_number: chapterNumber, operation: "expand" }),
+    body: JSON.stringify({ chapter_number: chapterNumber, operation: "polish" }),
   })) as GenerationJobResponse;
 }
 
@@ -3787,167 +3779,28 @@ export async function fetchProjectWritingPacket(
   )) as CodexWritingPacket;
 }
 
-export async function fetchProjectPromptPreview(
-  projectId: string,
-  chapterNumber?: number | null,
-): Promise<PromptPreviewResponse> {
-  const params = new URLSearchParams();
-  if (chapterNumber != null) {
-    params.set("chapter_number", String(chapterNumber));
-  }
-  const suffix = params.toString() ? `?${params.toString()}` : "";
-  const path = isFileProjectId(projectId)
-    ? `${fileProjectPath(projectId)}/prompt-preview${suffix}`
-    : `${apiBase()}/projects/${encodeURIComponent(projectId)}/prompt-preview${suffix}`;
-  return (await tryFetchJson(
-    path,
-    {
-      method: "GET",
-    },
-    120000,
-  )) as PromptPreviewResponse;
-}
+export {
+  auditPrompt,
+  deepAuditPrompt,
+  deleteProjectPromptTemplate,
+  fetchGlobalPromptTemplates,
+  fetchProjectPromptCall,
+  fetchProjectPromptCalls,
+  fetchProjectPromptContext,
+  fetchProjectPromptPreview,
+  fetchProjectPromptTemplates,
+  saveGlobalPromptTemplate,
+  saveProjectPromptTemplate,
+} from "./prompt-api";
 
-export async function fetchGlobalPromptTemplates(): Promise<PromptTemplatesResponse> {
-  return (await tryFetchJson(`${apiBase()}/prompt-templates`, { method: "GET" })) as PromptTemplatesResponse;
-}
-
-export async function auditPrompt(payload: PromptAuditRequest): Promise<PromptAuditResult> {
-  return (await tryFetchJson(`${apiBase()}/prompt-audit`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  })) as PromptAuditResult;
-}
-
-export async function deepAuditPrompt(
-  payload: PromptAuditRequest,
-  localResult: PromptAuditResult,
-): Promise<DeepPromptAuditResult> {
-  const sanitizedLocalResult: PromptAuditResult = {
-    schema_version: localResult.schema_version,
-    mode: localResult.mode,
-    content_sha256: localResult.content_sha256,
-    summary: localResult.summary,
-    must_fix: localResult.must_fix,
-    suggestions: localResult.suggestions,
-    passed_checks: localResult.passed_checks,
-  };
-  return (await tryFetchJson(`${apiBase()}/prompt-audit/deep`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...payload, local_result: sanitizedLocalResult }),
-  }, 360000)) as DeepPromptAuditResult;
-}
-
-export async function saveGlobalPromptTemplate(
-  templateKey: string,
-  content: string,
-): Promise<PromptTemplateEntry> {
-  return (await tryFetchJson(`${apiBase()}/prompt-templates/${encodeURIComponent(templateKey)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content }),
-  })) as PromptTemplateEntry;
-}
-
-export async function fetchProjectPromptTemplates(projectId: string): Promise<PromptTemplatesResponse> {
-  return (await tryFetchJson(`${fileProjectPath(projectId)}/prompt-templates`, {
-    method: "GET",
-  })) as PromptTemplatesResponse;
-}
-
-export async function saveProjectPromptTemplate(
-  projectId: string,
-  templateKey: string,
-  content: string,
-): Promise<PromptTemplateEntry> {
-  return (await tryFetchJson(`${fileProjectPath(projectId)}/prompt-templates/${encodeURIComponent(templateKey)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content }),
-  })) as PromptTemplateEntry;
-}
-
-export async function deleteProjectPromptTemplate(
-  projectId: string,
-  templateKey: string,
-): Promise<PromptTemplateEntry> {
-  return (await tryFetchJson(`${fileProjectPath(projectId)}/prompt-templates/${encodeURIComponent(templateKey)}`, {
-    method: "DELETE",
-  })) as PromptTemplateEntry;
-}
-
-export async function fetchProjectPromptContext(
-  projectId: string,
-  chapterNumber?: number | null,
-): Promise<PromptContextResponse> {
-  const params = new URLSearchParams();
-  if (chapterNumber != null) params.set("chapter_number", String(chapterNumber));
-  const suffix = params.toString() ? `?${params.toString()}` : "";
-  return (await tryFetchJson(`${fileProjectPath(projectId)}/prompt-context${suffix}`, {
-    method: "GET",
-  })) as PromptContextResponse;
-}
-
-export async function fetchProjectPromptCalls(
-  projectId: string,
-  chapterNumber?: number | null,
-): Promise<PromptCallListResponse> {
-  const params = new URLSearchParams();
-  if (chapterNumber != null) params.set("chapter_number", String(chapterNumber));
-  const suffix = params.toString() ? `?${params.toString()}` : "";
-  return (await tryFetchJson(`${fileProjectPath(projectId)}/prompt-calls${suffix}`, {
-    method: "GET",
-  })) as PromptCallListResponse;
-}
-
-export async function fetchProjectPromptCall(projectId: string, callId: string): Promise<PromptCallDetail> {
-  return (await tryFetchJson(`${fileProjectPath(projectId)}/prompt-calls/${encodeURIComponent(callId)}`, {
-    method: "GET",
-  })) as PromptCallDetail;
-}
-
-export async function listSkillPacks(): Promise<SkillPackSummary[]> {
-  return (await tryFetchJson(`${apiBase()}/skill-packs`, {
-    method: "GET",
-  })) as SkillPackSummary[];
-}
-
-export async function fetchSkillPack(skillId: string): Promise<SkillPackSummary> {
-  return (await tryFetchJson(`${apiBase()}/skill-packs/${encodeURIComponent(skillId)}`, {
-    method: "GET",
-  })) as SkillPackSummary;
-}
-
-export async function importSkillPackFromPath(sourcePath: string): Promise<SkillPackSummary> {
-  return (await tryFetchJson(`${apiBase()}/skill-packs/import`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ source_path: sourcePath }),
-  })) as SkillPackSummary;
-}
-
-export async function uploadSkillPackZip(file: File): Promise<SkillPackSummary> {
-  return (await tryFetchJson(`${apiBase()}/skill-packs/upload`, {
-    method: "POST",
-    headers: { "content-type": "application/zip" },
-    body: await file.arrayBuffer(),
-  })) as SkillPackSummary;
-}
-
-export async function uninstallSkillPack(skillId: string): Promise<UninstallSkillPackResponse> {
-  return (await tryFetchJson(`${apiBase()}/skill-packs/${encodeURIComponent(skillId)}`, {
-    method: "DELETE",
-  })) as UninstallSkillPackResponse;
-}
-
-export async function uninstallSkillModule(skillId: string, moduleId: string): Promise<UninstallSkillPackResponse> {
-  return (await tryFetchJson(
-    `${apiBase()}/skill-packs/${encodeURIComponent(skillId)}/modules/${encodeURIComponent(moduleId)}`,
-    { method: "DELETE" },
-  )) as UninstallSkillPackResponse;
-}
+export {
+  fetchSkillPack,
+  importSkillPackFromPath,
+  listSkillPacks,
+  uninstallSkillModule,
+  uninstallSkillPack,
+  uploadSkillPackZip,
+} from "./skill-pack-api";
 
 export async function fetchStory(storyId: string): Promise<StoryResponse> {
   try {
@@ -4406,33 +4259,11 @@ export async function listProjects(lifecycle: ProjectLifecycle = "active"): Prom
   }
 }
 
-export async function fetchFileProjectCandidates(
-  projectId: string,
-  chapterNumber?: number,
-): Promise<CandidateListResponse> {
-  if (!isFileProjectId(projectId)) throw new Error("candidates_only_support_file_projects");
-  const query = Number.isInteger(chapterNumber) ? `?chapter_number=${chapterNumber}` : "";
-  return (await tryFetchJson(`${fileProjectPath(projectId)}/candidates${query}`, { method: "GET" })) as CandidateListResponse;
-}
-
-export async function discardFileProjectCandidate(projectId: string, candidateId: string): Promise<{ candidate: CandidateDraft }> {
-  if (!isFileProjectId(projectId)) throw new Error("candidates_only_support_file_projects");
-  return (await tryFetchJson(`${fileProjectPath(projectId)}/candidates/${encodeURIComponent(candidateId)}/discard`, {
-    method: "POST",
-  })) as { candidate: CandidateDraft };
-}
-
-export async function confirmFileProjectCandidate(projectId: string, candidateId: string, force = false): Promise<{
-  candidate: CandidateDraft;
-  project: ProjectResponse;
-  story: StoryResponse;
-}> {
-  if (!isFileProjectId(projectId)) throw new Error("candidates_only_support_file_projects");
-  const suffix = force ? "?force=true" : "";
-  return (await tryFetchJson(`${fileProjectPath(projectId)}/candidates/${encodeURIComponent(candidateId)}/confirm${suffix}`, {
-    method: "POST",
-  }, 900000)) as { candidate: CandidateDraft; project: ProjectResponse; story: StoryResponse };
-}
+export {
+  confirmFileProjectCandidate,
+  discardFileProjectCandidate,
+  fetchFileProjectCandidates,
+} from "./project-candidate-api";
 
 function projectLifecyclePath(projectId: string, action: "archive" | "trash" | "restore"): string {
   const base = isFileProjectId(projectId)
@@ -4461,8 +4292,8 @@ export async function permanentlyDeleteProject(projectId: string, title: string)
 }
 
 export async function fetchProject(projectId: string): Promise<ProjectResponse> {
+  const fileProject = isFileProjectId(projectId);
   try {
-    const fileProject = isFileProjectId(projectId);
     const path = fileProject
       ? fileProjectPath(projectId)
       : `${apiBase()}/projects/${encodeURIComponent(projectId)}`;
@@ -4470,7 +4301,8 @@ export async function fetchProject(projectId: string): Promise<ProjectResponse> 
       method: "GET",
     }, fileProject ? 90000 : 30000)) as ProjectResponse;
     return persistProjectIntoMockStore(normalizeProjectResponse(response));
-  } catch {
+  } catch (error) {
+    if (fileProject) throw error;
     return mockFetchProject(projectId);
   }
 }
@@ -4500,142 +4332,26 @@ export async function updateProject(
   }
 }
 
-export async function fetchProjectOutline(projectId: string): Promise<ProjectOutline> {
-  if (!isFileProjectId(projectId)) {
-    throw new Error("three_level_outline_requires_file_project");
-  }
-  return (await tryFetchJson(`${fileProjectPath(projectId)}/outline`, { method: "GET" })) as ProjectOutline;
-}
+export {
+  designNextVolume,
+  fetchOutlineExtensionReadiness,
+  fetchOutlineGenerationCheckpoints,
+  fetchProjectForeshadowing,
+  fetchProjectOutline,
+  fetchProjectRollingOutline,
+  fetchVolumeWorkflow,
+  generateProjectOutline,
+  generateVolumeDetail,
+  updateProjectForeshadowing,
+  updateProjectOutline,
+} from "./project-outline-api";
 
-export async function fetchProjectRollingOutline(projectId: string): Promise<RollingOutline> {
-  if (!isFileProjectId(projectId)) {
-    throw new Error("rolling_outline_requires_file_project");
-  }
-  return (await tryFetchJson(
-    `${fileProjectPath(projectId)}/outline/rolling`,
-    { method: "GET" },
-  )) as RollingOutline;
-}
-
-export async function fetchVolumeWorkflow(
-  projectId: string,
-  targetChapter: number,
-): Promise<VolumeWorkflowResponse> {
-  if (!isFileProjectId(projectId)) {
-    throw new Error("volume_workflow_requires_file_project");
-  }
-  return (await tryFetchJson(
-    `${fileProjectPath(projectId)}/outline/volume-workflow?target_chapter=${encodeURIComponent(String(targetChapter))}`,
-    { method: "GET" },
-  )) as VolumeWorkflowResponse;
-}
-
-export async function designNextVolume(
-  projectId: string,
-  guidance = "",
-): Promise<VolumeDesignResponse> {
-  if (!isFileProjectId(projectId)) {
-    throw new Error("volume_workflow_requires_file_project");
-  }
-  return (await tryFetchJson(
-    `${fileProjectPath(projectId)}/outline/volumes/next`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ guidance }),
-    },
-    420000,
-  )) as VolumeDesignResponse;
-}
-
-export async function generateVolumeDetail(
-  projectId: string,
-  volumeId: string,
-  guidance = "",
-): Promise<VolumeDetailGenerationResponse> {
-  if (!isFileProjectId(projectId)) {
-    throw new Error("volume_workflow_requires_file_project");
-  }
-  return (await tryFetchJson(
-    `${fileProjectPath(projectId)}/outline/volumes/${encodeURIComponent(volumeId)}/detail`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ guidance }),
-    },
-    420000,
-  )) as VolumeDetailGenerationResponse;
-}
-
-export async function updateProjectOutline(projectId: string, payload: ProjectOutlineUpdate): Promise<ProjectOutline> {
-  if (!isFileProjectId(projectId)) {
-    throw new Error("three_level_outline_requires_file_project");
-  }
-  return (await tryFetchJson(`${fileProjectPath(projectId)}/outline`, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
-  })) as ProjectOutline;
-}
-
-export async function fetchProjectForeshadowing(projectId: string): Promise<ForeshadowingResponse> {
-  return (await tryFetchJson(`${fileProjectPath(projectId)}/foreshadowing`, {
-    method: "GET",
-  })) as ForeshadowingResponse;
-}
-
-export async function updateProjectForeshadowing(
-  projectId: string,
-  items: ForeshadowingEntry[],
-  baseVersion: string,
-): Promise<ForeshadowingResponse> {
-  return (await tryFetchJson(`${fileProjectPath(projectId)}/foreshadowing`, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ items, base_version: baseVersion }),
-  })) as ForeshadowingResponse;
-}
-
-export async function generateProjectOutline(
-  projectId: string,
-  mode: OutlineGenerationMode,
-  guidance = "",
-  restartFrom?: OutlineGenerationPhaseId,
-): Promise<GeneratedOutlinePlanResponse> {
-  if (!isFileProjectId(projectId)) {
-    throw new Error("只有文件项目支持生成大纲");
-  }
-  return (await tryFetchJson(
-    `${fileProjectPath(projectId)}/outline/generate`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ mode, guidance, ...(restartFrom ? { restart_from: restartFrom } : {}) }),
-    },
-    420000,
-  )) as GeneratedOutlinePlanResponse;
-}
-
-export async function fetchOutlineExtensionReadiness(
-  projectId: string,
-): Promise<OutlineExtensionReadinessResponse> {
-  if (!isFileProjectId(projectId)) {
-    throw new Error("只有文件项目支持后续细纲体检");
-  }
-  return (await tryFetchJson(
-    `${fileProjectPath(projectId)}/outline/extension-readiness`,
-    { method: "GET" },
-  )) as OutlineExtensionReadinessResponse;
-}
-
-export async function fetchOutlineGenerationCheckpoints(
-  projectId: string,
-): Promise<OutlineGenerationCheckpointResponse> {
-  return (await tryFetchJson(
-    `${fileProjectPath(projectId)}/outline/generation-checkpoints`,
-    { method: "GET" },
-  )) as OutlineGenerationCheckpointResponse;
-}
+export {
+  fetchContinuousGenerationJob,
+  fetchCurrentContinuousGeneration,
+  startContinuousGeneration,
+  stopContinuousGeneration,
+} from "./continuous-generation-api";
 
 export async function enrichProjectWorld(projectId: string): Promise<ProjectResponse> {
   const path = isFileProjectId(projectId)
@@ -4809,9 +4525,34 @@ export async function updateNovelType(typeId: string, payload: NovelTypeWriteReq
 }
 
 export async function deleteNovelType(typeId: string): Promise<void> {
-  await requestWithTimeout(
+  await fetchVoid(
     `${apiBase()}/novel-types/${encodeURIComponent(typeId)}`,
     { method: "DELETE" },
-    async () => undefined,
   );
+}
+
+export async function startWorldBuildJob(projectId: string): Promise<WorldBuildJobResponse> {
+  return (await tryFetchJson(`${fileProjectPath(projectId)}/world-build-jobs`, {
+    method: "POST",
+  })) as WorldBuildJobResponse;
+}
+
+export async function fetchWorldBuildJob(
+  projectId: string,
+  jobId: string,
+): Promise<WorldBuildJobResponse> {
+  return (await tryFetchJson(
+    `${fileProjectPath(projectId)}/world-build-jobs/${encodeURIComponent(jobId)}`,
+    { method: "GET" },
+  )) as WorldBuildJobResponse;
+}
+
+export async function fetchCurrentWorldBuildJob(
+  projectId: string,
+): Promise<WorldBuildJobResponse | null> {
+  return (await fetchOptionalJson(
+    `${fileProjectPath(projectId)}/world-build-jobs/current`,
+    { method: "GET" },
+    60_000,
+  )) as WorldBuildJobResponse | null;
 }
