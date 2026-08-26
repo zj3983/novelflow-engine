@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from copy import deepcopy
+from dataclasses import dataclass
 from itertools import islice
 from typing import Any
 
@@ -84,6 +85,127 @@ def _requires_structured_power_system(plugin_id: str) -> bool:
 
 def _uses_game_world_modules(plugin_id: str) -> bool:
     return plugin_id == "game_webnovel"
+
+
+@dataclass(frozen=True)
+class WorldBuildModule:
+    """One bounded worldbuilding responsibility and its persisted fields."""
+
+    module_id: str
+    title: str
+    fields: tuple[str, ...]
+    required_fields: tuple[str, ...]
+    instructions: str
+    max_tokens: int
+
+
+def world_build_modules(project: NovelProject) -> tuple[WorldBuildModule, ...]:
+    """Select the smallest useful worldbuilding workflow for a novel type.
+
+    The previous one-shot prompt asked one model call to invent every layer of a
+    setting.  Modules keep ownership clear while still avoiding a heavyweight
+    agent graph: normal projects make three calls; game novels add one runtime
+    ecology call.
+    """
+
+    selected_plugin = _selected_novel_type_plugin(project)
+    requires_power_system = _requires_structured_power_system(selected_plugin.plugin_id)
+    core_fields = ("premise", "world_rules", "constraints", "locations", "factions")
+    core_required: tuple[str, ...] = ("world_rules", "locations", "factions")
+    if requires_power_system:
+        core_fields += ("power_system", "power_system_spec")
+        core_required = core_required + ("power_system_spec",)
+    core_instructions = (
+        "定义这个世界不可违背的底层规则、代价和边界。"
+        "只解释本作与日常常识不同的部分，不写剧情结果或角色命运。"
+    )
+    if requires_power_system:
+        core_instructions += (
+            "同时给出可校验的力量或成长体系：来源、路径、阶段、资源、代价、克制和可见信息都必须具体。"
+        )
+
+    modules: list[WorldBuildModule] = [
+        WorldBuildModule(
+            module_id="core_rules",
+            title="核心规则",
+            fields=core_fields,
+            required_fields=core_required,
+            instructions=core_instructions,
+            max_tokens=3200 if requires_power_system else 1800,
+        ),
+        WorldBuildModule(
+            module_id="society_and_livelihood",
+            title="社会与资源",
+            fields=(
+                "locations",
+                "factions",
+                "economy_rules",
+                "faction_rules",
+                "relationship_graph",
+                "world_systems",
+                "living_world",
+            ),
+            required_fields=("world_systems", "living_world"),
+            instructions=(
+                "建立地点、组织、资源流动和普通人的日常。必须交代谁分配资源、消息从哪里来、"
+                "人为什么会相互合作或冲突；只写客观运行机制，不替章节设计剧情。"
+            ),
+            max_tokens=2600,
+        ),
+    ]
+    if _uses_game_world_modules(selected_plugin.plugin_id):
+        modules.append(
+            WorldBuildModule(
+                module_id="game_ecology",
+                title="游戏运行",
+                fields=(
+                    "quest_rules",
+                    "panel_rules",
+                    "npc_system",
+                    "quest_network",
+                    "server_runtime",
+                    "map_ecology",
+                ),
+                required_fields=(
+                    "npc_system",
+                    "quest_network",
+                    "server_runtime",
+                    "map_ecology",
+                ),
+                instructions=(
+                    "只补充当前项目已明确的游戏规则：任务、交易与资源、地图生态、NPC 和服务器阶段。"
+                    "不得凭空套入职业、等级、现实反馈、货币或交易行规则；缺失处保持中性。"
+                ),
+                max_tokens=2200,
+            )
+        )
+    modules.append(
+        WorldBuildModule(
+            module_id="story_engine",
+            title="长篇运行",
+            fields=(
+                "current_arc",
+                "progression_rules",
+                "chapter_formula",
+                "forbidden_breaks",
+                "opening_arc",
+                "volume_plan",
+                "longform_framework",
+                "progression_ledger",
+            ),
+            required_fields=(
+                "opening_arc",
+                "volume_plan",
+                "longform_framework",
+            ),
+            instructions=(
+                "把已建立的规则转成可持续写作的运行边界：开篇风险、卷目标、成长阶梯、势力压力、"
+                "资源消耗和谜团揭示节奏。不要替每一章编剧情，更不能改写已有章节事实。"
+            ),
+            max_tokens=2800,
+        )
+    )
+    return tuple(modules)
 
 
 def _world_plugin_prompt_guide(plugins: list[Any], *, uses_game_modules: bool) -> str:
@@ -181,7 +303,7 @@ def _bounded_world_blueprint(
         added = 0
         for raw_key, item in source_items:
             key = _safe_compact_text(raw_key, 80)
-            if not key or key in result or key == "power_system_spec":
+            if not key or key in result or key in {"power_system_spec", "world_build_artifacts"}:
                 continue
             result[key] = _bounded_json_projection(
                 item,
@@ -576,11 +698,16 @@ def _as_dict(value: Any) -> dict[str, Any]:
 
 
 def _default_living_world(project: NovelProject, genre_plugins: list[dict[str, Any]]) -> dict[str, Any]:
+    daily_routines = [
+        "角色与组织围绕各自目标持续行动，世界不会只在主角出现时运转。",
+        "资源、信息与关系的变化会影响后续选择，并留下可追踪的结果。",
+    ]
+    if _has_game_plugin(genre_plugins):
+        daily_routines.append(
+            "玩家会按各自目标持续探索、交易、组队或竞争，行动受公开规则、资源条件和可见信息限制。"
+        )
     return {
-        "daily_routines": [
-            "玩家与非玩家角色围绕各自目标持续行动，世界不会只在主角出现时运转。",
-            "资源、信息与关系的变化会影响后续选择，并留下可追踪的结果。",
-        ],
+        "daily_routines": daily_routines,
         "economy": {
             "resource_flow": ["资源必须有明确来源、用途与消耗方式，具体形式服从当前项目设定。"],
             "pressure_points": ["资源稀缺", "信息差", "行动成本", "身份风险"],
@@ -594,7 +721,7 @@ def _default_living_world(project: NovelProject, genre_plugins: list[dict[str, A
             "rumors": [],
         },
         "player_ecology": [
-            "不同玩家根据目标、能力、资源和风险偏好形成合作或竞争关系。",
+            "不同角色与组织根据目标、能力、资源和风险偏好形成合作或竞争关系。",
         ],
         "information_visibility_rules": [
             "角色只能依据可观察事实和可靠来源行动，不能无条件知道他人秘密。",
@@ -1341,20 +1468,21 @@ def _as_character_profiles(value: Any, fallback: list[dict], limit: int = 24) ->
         name = compact_text(str(item.get("name", "")), 80)
         if not name:
             continue
-        profiles.append(
-            {
-                "name": name,
-                "game_id": compact_text(str(item.get("game_id", "")), 80),
-                "role": compact_text(str(item.get("role", "")), 80),
-                "motivation": compact_text(str(item.get("motivation", "")), 220),
-                "current_state": compact_text(str(item.get("current_state", "")), 220),
-                "personality": compact_text(str(item.get("personality", "")), 220),
-                "speech_style": compact_text(str(item.get("speech_style", "")), 160),
-                "goals": _as_string_list(item.get("goals", []), 5),
-                "secrets": _as_string_list(item.get("secrets", []), 5),
-                "conflict_hooks": _as_string_list(item.get("conflict_hooks", []), 5),
-            }
-        )
+        profile = {
+            "name": name,
+            "role": compact_text(str(item.get("role", "")), 80),
+            "motivation": compact_text(str(item.get("motivation", "")), 220),
+            "current_state": compact_text(str(item.get("current_state", "")), 220),
+            "personality": compact_text(str(item.get("personality", "")), 220),
+            "speech_style": compact_text(str(item.get("speech_style", "")), 160),
+            "goals": _as_string_list(item.get("goals", []), 5),
+            "secrets": _as_string_list(item.get("secrets", []), 5),
+            "conflict_hooks": _as_string_list(item.get("conflict_hooks", []), 5),
+        }
+        game_id = compact_text(str(item.get("game_id", "")), 80)
+        if game_id:
+            profile["game_id"] = game_id
+        profiles.append(profile)
         if len(profiles) >= limit:
             break
     return profiles
@@ -1754,36 +1882,232 @@ def _call_world_enrichment_model(
     model_gateway: RuntimeModelGateway | None = None,
 ) -> NovelProject:
     gateway = model_gateway or RuntimeModelGateway(runtime_resolver=resolve_stage_runtime)
-    response = gateway.complete_stage(
-        "planner",
-        ModelRequest(
-            prompt=_build_prompt(project, rules_only=rules_only),
+    base_prompt = _build_prompt(project, rules_only=rules_only)
+    validation_feedback = ""
+    for attempt in range(2):
+        prompt = base_prompt
+        if validation_feedback:
+            prompt += (
+                "\n\n上一次返回的力量体系未通过确定性校验。"
+                f"错误：{validation_feedback}。"
+                "请完整重写 power_system_spec，逐项满足题材模板中的最少层级、"
+                "固定里程碑、路径和连续性账本要求；仍只返回完整 JSON。"
+            )
+        response = gateway.complete_stage(
+            "planner",
+            ModelRequest(
+                prompt=prompt,
+                system_prompt="You are a senior Chinese webnovel worldbuilding editor. Return JSON only.",
+                provider="",
+                model="",
+                operation="world_rulebook_enrichment" if rules_only else "world_enrichment",
+                max_tokens=6000,
+                json_mode=True,
+                metadata={"reasoning_effort": "low", "enable_thinking": False},
+            ),
+        )
+        if not response.ok:
+            raise WorldEnrichmentError(response.error or "model_call_failed")
+        parsed = parse_json_message_content(
+            {"choices": [{"message": {"content": response.text}}]}
+        )
+        if not parsed:
+            raise WorldEnrichmentError("invalid_llm_response")
+        try:
+            try:
+                return _merge_enrichment(project, parsed, rules_only=rules_only)
+            except TypeError as error:
+                if "unexpected keyword argument 'rules_only'" not in str(error):
+                    raise
+                return _merge_enrichment(project, parsed)
+        except ValueError as error:
+            detail = str(error)
+            if attempt == 0 and detail.startswith("invalid_power_system_spec:"):
+                validation_feedback = detail
+                continue
+            raise
+    raise WorldEnrichmentError("world_enrichment_validation_retry_exhausted")
+
+
+def _build_world_module_prompt(
+    project: NovelProject,
+    module: WorldBuildModule,
+) -> str:
+    """Build a small, field-owned prompt instead of the old omnibus request."""
+
+    selected_plugin = _selected_novel_type_plugin(project)
+    payload = _compact_project_payload(project, budget=12_000)
+    field_list = ", ".join(module.fields)
+    lines = [
+        "你是中文长篇网文的世界观编辑。只返回 JSON，不要 Markdown，不要小说正文。",
+        f"当前题材：{selected_plugin.name}（{selected_plugin.plugin_id}）。",
+        f"当前模块：{module.title}。",
+        f"本模块唯一职责：{module.instructions}",
+        f"只允许输出 world_blueprint 的这些字段：{field_list}。不要输出任何其他字段。",
+        "沿用输入中的人名、地名、既有事实；没有依据时不补具体数字、专名或剧情。",
+        "避免空话，如“存在复杂势力”“资源很重要”；每一条规则都要说明可观察的结果或限制。",
+        "输出结构：{\"world_blueprint\": { ... }}。",
+    ]
+    if "power_system_spec" in module.fields:
+        lines.extend(
+            [
+                "power_system_spec 必须包含 name、origin、attributes、paths、stages、skills、equipment、resources、advancement、costs、counters、boundaries、social_impact、visibility、continuity_ledger。",
+                "每条路径说明定位、来源、强弱项、能力类别、分支和推进条件；每个阶段写进入条件、能力变化和失败后果。",
+                "如果是网游且项目明确职业等级，基础职业转职节点固定为 Lv.10、Lv.30、Lv.60；否则不得编造等级或职业。",
+            ]
+        )
+    lines.append(f"项目资料：{_serialized_json(payload)}")
+    prompt = "\n".join(lines)
+    if len(prompt) > _FINAL_PROMPT_MAX:
+        raise WorldEnrichmentError("world_build_module_prompt_budget_exceeded")
+    return prompt
+
+
+def _module_world_payload(parsed: Any, module: WorldBuildModule) -> dict[str, Any]:
+    if not isinstance(parsed, dict):
+        raise WorldEnrichmentError(f"world_build_module_invalid_json:{module.module_id}")
+    world = parsed.get("world_blueprint")
+    if not isinstance(world, dict):
+        raise WorldEnrichmentError(f"world_build_module_missing_payload:{module.module_id}")
+    payload = {field: deepcopy(world[field]) for field in module.fields if field in world}
+    if not payload:
+        raise WorldEnrichmentError(f"world_build_module_empty_payload:{module.module_id}")
+    missing = [
+        field
+        for field in module.required_fields
+        if field not in payload or _is_blank_world_value(payload[field])
+    ]
+    if missing:
+        raise WorldEnrichmentError(
+            f"world_build_module_incomplete:{module.module_id}:{','.join(missing)}"
+        )
+    return payload
+
+
+def _world_build_artifact(module: WorldBuildModule, payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "module_id": module.module_id,
+        "title": module.title,
+        "status": "completed",
+        "fields": list(payload),
+        "output": _bounded_json_projection(payload, chars=280, items=16, depth=5),
+    }
+
+
+def _is_blank_world_value(value: Any) -> bool:
+    return value is None or value == "" or value == [] or value == {}
+
+
+def _apply_module_owned_fields(
+    project: NovelProject,
+    *,
+    source_world: Mapping[str, Any],
+    payload: Mapping[str, Any],
+) -> None:
+    """Let a module replace only values that were absent before this build.
+
+    ``_merge_enrichment`` deliberately fills defaults to keep an old project
+    runnable.  Those newly-created defaults must not mask a later module in
+    the same build.  A value the author had before pressing "AI 补全" remains
+    authoritative.
+    """
+
+    for field, value in payload.items():
+        if field in source_world and not _is_blank_world_value(source_world[field]):
+            continue
+        project.world_blueprint[field] = deepcopy(value)
+        if field == "relationship_graph" and isinstance(value, list):
+            project.relationship_graph = deepcopy(value)
+        elif field == "current_arc" and isinstance(value, str) and value.strip():
+            project.current_focus = compact_text(value, 620)
+
+
+def _call_world_build_modules(
+    project: NovelProject,
+    *,
+    model_gateway: RuntimeModelGateway | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> NovelProject:
+    gateway = model_gateway or RuntimeModelGateway(runtime_resolver=resolve_stage_runtime)
+    working = project.model_copy(deep=True)
+    source_world = deepcopy(project.world_blueprint or {})
+    artifacts: list[dict[str, Any]] = []
+    for module in world_build_modules(project):
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "module_id": module.module_id,
+                    "title": module.title,
+                    "status": "running",
+                    "message": f"正在构建：{module.title}",
+                }
+            )
+        request = ModelRequest(
+            prompt=_build_world_module_prompt(working, module),
             system_prompt="You are a senior Chinese webnovel worldbuilding editor. Return JSON only.",
             provider="",
             model="",
-            operation="world_rulebook_enrichment" if rules_only else "world_enrichment",
-            max_tokens=6000,
+            operation=f"world_build_{module.module_id}",
+            max_tokens=module.max_tokens,
             json_mode=True,
-            metadata={"reasoning_effort": "low", "enable_thinking": False},
-        ),
-    )
-    if not response.ok:
-        raise WorldEnrichmentError(response.error or "model_call_failed")
-    parsed = parse_json_message_content(
-        {"choices": [{"message": {"content": response.text}}]}
-    )
-    if not parsed:
-        raise WorldEnrichmentError("invalid_llm_response")
-    try:
-        return _merge_enrichment(project, parsed, rules_only=rules_only)
-    except TypeError as error:
-        if "unexpected keyword argument 'rules_only'" not in str(error):
-            raise
-        return _merge_enrichment(project, parsed)
+            metadata={
+                "reasoning_effort": "low",
+                "enable_thinking": False,
+                "world_build_module": module.module_id,
+            },
+        )
+        response = gateway.complete_stage("planner", request)
+        if not response.ok:
+            raise WorldEnrichmentError(
+                f"world_build_module_failed:{module.module_id}:{response.error or 'model_call_failed'}"
+            )
+        parsed = parse_json_message_content(
+            {"choices": [{"message": {"content": response.text}}]}
+        )
+        payload = _module_world_payload(parsed, module)
+        try:
+            working = _merge_enrichment(
+                working,
+                {"world_blueprint": payload},
+                rules_only=False,
+            )
+        except ValueError as exc:
+            raise WorldEnrichmentError(
+                f"world_build_module_validation_failed:{module.module_id}:{exc}"
+            ) from exc
+        _apply_module_owned_fields(
+            working,
+            source_world=source_world,
+            payload=payload,
+        )
+        artifact = _world_build_artifact(module, payload)
+        artifacts.append(artifact)
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "module_id": module.module_id,
+                    "title": module.title,
+                    "status": "done",
+                    "message": f"已完成：{module.title}",
+                    "artifact": artifact,
+                }
+            )
+
+    working.world_blueprint["world_build_artifacts"] = artifacts
+    return working
 
 
-def enrich_project_world(project: NovelProject) -> NovelProject:
-    return _call_world_enrichment_model(project, rules_only=False)
+def enrich_project_world(
+    project: NovelProject,
+    *,
+    model_gateway: RuntimeModelGateway | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> NovelProject:
+    return _call_world_build_modules(
+        project,
+        model_gateway=model_gateway,
+        progress_callback=progress_callback,
+    )
 
 
 def enrich_project_rulebook(project: NovelProject) -> NovelProject:

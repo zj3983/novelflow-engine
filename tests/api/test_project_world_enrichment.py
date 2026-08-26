@@ -10,6 +10,7 @@ from apps.api.storage import SQLiteStoryStore, _project_world_facts
 from packages.story_core import novel_type_catalog, novel_type_library
 from packages.story_core.engine import ChapterBundle
 from packages.story_core.models import NovelProject, StoryState
+from packages.story_core.model_gateway import ModelResponse
 from packages.story_core.novel_type_catalog import novel_type_prompt_context
 from packages.story_core.novel_type_library import NovelTypeLibrary
 from packages.story_core.power_system_templates import (
@@ -36,6 +37,8 @@ def test_world_prompt_projection_includes_only_world_story_core_fields():
         project_id="p-world-core",
         title="断香炉",
         story_core_context={
+            "logline": "守祠杂役林照从断香炉里看见旧案。",
+            "protagonist_profile": "林照是守祠杂役，谨慎但不肯替人背罪。",
             "inciting_incident": "断香炉指出第一件旧案证物。",
             "main_conflict": "执事要销毁证物。",
             "excitement_point": "从旧物痕迹追查宗门旧案。",
@@ -45,10 +48,42 @@ def test_world_prompt_projection_includes_only_world_story_core_fields():
     payload = world_enrichment._project_payload(project, chars=240, items=8, depth=4)
 
     assert set(payload["story_core"]) == {
+        "logline",
+        "protagonist_profile",
         "inciting_incident",
         "main_conflict",
         "excitement_point",
     }
+
+
+def test_non_game_world_defaults_use_genre_neutral_actor_language():
+    living_world = world_enrichment._default_living_world(
+        NovelProject(project_id="p-xuanhuan-living-world", title="断香炉"),
+        [{"id": "xuanhuan"}],
+    )
+
+    serialized = json.dumps(living_world, ensure_ascii=False)
+    assert "玩家" not in serialized
+    assert "角色与组织" in serialized
+
+
+def test_character_profile_omits_empty_game_id():
+    profiles = world_enrichment._as_character_profiles(
+        [{"name": "林照", "game_id": "", "role": "主角"}],
+        [],
+    )
+
+    assert profiles == [{
+        "name": "林照",
+        "role": "主角",
+        "motivation": "",
+        "current_state": "",
+        "personality": "",
+        "speech_style": "",
+        "goals": [],
+        "secrets": [],
+        "conflict_hooks": [],
+    }]
 
 
 def complete_game_power_spec() -> dict[str, object]:
@@ -327,6 +362,278 @@ def game_project(*, power_system_spec=None, power_system=None) -> NovelProject:
     if power_system is not None:
         blueprint["power_system"] = power_system
     return NovelProject(project_id="p-power", title="神域", world_blueprint=blueprint)
+
+
+def test_world_enrichment_retries_once_with_power_validation_feedback() -> None:
+    valid_spec = complete_game_power_spec()
+    invalid_spec = deepcopy(valid_spec)
+    invalid_spec["stages"] = invalid_spec["stages"][:2]
+    requests = []
+
+    class Gateway:
+        def complete_stage(self, stage, request):
+            requests.append((stage, request))
+            spec = invalid_spec if len(requests) == 1 else valid_spec
+            return ModelResponse.success(
+                request,
+                text=json.dumps(
+                    {"world_blueprint": {"power_system_spec": spec}},
+                    ensure_ascii=False,
+                ),
+            )
+
+    enriched = world_enrichment._call_world_enrichment_model(
+        game_project(),
+        rules_only=False,
+        model_gateway=Gateway(),
+    )
+
+    assert len(requests) == 2
+    assert requests[0][0] == requests[1][0] == "planner"
+    assert "stages.minimum_count" in requests[1][1].prompt
+    assert enriched.world_blueprint["power_system_spec"]["stages"] == valid_spec["stages"]
+
+
+def test_world_build_modules_are_genre_scoped_and_keep_game_runtime_separate() -> None:
+    generic = NovelProject(
+        project_id="p-world-modules-generic",
+        title="旧城夜话",
+        world_blueprint={"genre_plugin_ids": ["suspense"]},
+    )
+    game = game_project()
+
+    assert [module.module_id for module in world_enrichment.world_build_modules(generic)] == [
+        "core_rules",
+        "society_and_livelihood",
+        "story_engine",
+    ]
+    assert [module.module_id for module in world_enrichment.world_build_modules(game)] == [
+        "core_rules",
+        "society_and_livelihood",
+        "game_ecology",
+        "story_engine",
+    ]
+
+
+def test_world_build_artifacts_are_not_reused_as_model_context() -> None:
+    project = NovelProject(
+        project_id="p-world-artifact-context",
+        title="旧城夜话",
+        world_blueprint={
+            "premise": "雨夜的旧城里，调解员必须在天亮前找回失踪的当事人。",
+            "world_build_artifacts": [{"module_id": "core_rules", "output": {"secret": "不要回传"}}],
+        },
+    )
+
+    payload = world_enrichment._project_payload(project, chars=240, items=8, depth=4)
+
+    assert "world_build_artifacts" not in payload["world_blueprint"]
+
+
+def test_modular_world_enrichment_persists_each_module_artifact() -> None:
+    power_spec = complete_custom_game_power_spec()
+    power_spec["paths"].append(
+        {
+            **deepcopy(power_spec["paths"][0]),
+            "name": "旧物修复",
+            "role": "从损坏旧物中还原被抹去的信息",
+            "branches": ["公开鉴定", "私下修复"],
+        }
+    )
+    project = NovelProject(
+        project_id="p-world-modules-run",
+        title="断香炉",
+        world_summary="守祠杂役林照从断香炉里看见旧案。",
+        current_focus="林照必须保住第一件证物。",
+        world_blueprint={"genre_plugin_ids": ["xuanhuan"]},
+    )
+    outputs = {
+        "core_rules": {
+            "world_rules": ["香火能留下旧案痕迹，但每次动用都会折损寿数。"],
+            "constraints": ["证物被毁后不能凭空复原。"],
+            "power_system_spec": power_spec,
+            "locations": [{"name": "守祠", "description": "林照看守香火与旧物的地方。"}],
+            "factions": [{"name": "执事房", "description": "掌握祠内账簿与惩戒权。"}],
+        },
+        "society_and_livelihood": {
+            "locations": [{"name": "守祠", "description": "林照看守香火与旧物的地方。"}],
+            "factions": [{"name": "执事房", "description": "掌握祠内账簿与惩戒权。"}],
+            "economy_rules": ["香灰、旧物修复与人情债构成基层交换。"],
+            "world_systems": {
+                "material_base": ["香火与旧物修复材料稀缺。"],
+                "institutions": ["祠堂由执事房管理。"],
+                "social_order": ["杂役依附祠堂获取生计。"],
+                "conflict_engines": ["旧案证物会威胁既得者。"],
+                "causal_loops": ["每次修复都会留下新的追查痕迹。"],
+            },
+            "living_world": {
+                "daily_routines": ["杂役每日清扫香案、核对供奉。"],
+                "economy": ["香客供奉换取祠堂庇护。"],
+                "power_structure": ["执事房决定杂役去留。"],
+                "information_network": ["香客与杂役会在后院交换消息。"],
+                "information_visibility_rules": ["账簿只向执事开放。"],
+                "world_reaction_ladder": ["证物异动先惊动看守，再惊动执事。"],
+                "location_functions": ["守祠既是工作地也是证物库。"],
+                "timeline": ["每月朔望清点旧物。"],
+                "reaction_rules": ["公开修复会提高执事房的警惕。"],
+            },
+        },
+        "story_engine": {
+            "opening_arc": {"golden_three_chapters": {}},
+            "volume_plan": {"volume_title": "第一卷 断炉旧案", "target_chapters": 50},
+            "longform_framework": {"series_premise": "林照靠修复旧物追查被掩埋的旧案。"},
+            "progression_ledger": {"protagonist": {"location": "守祠"}},
+            "current_arc": "林照先保住证物，再查出是谁想毁掉它。",
+        },
+    }
+
+    class Gateway:
+        def complete_stage(self, stage, request):
+            module_id = request.metadata["world_build_module"]
+            return ModelResponse.success(
+                request,
+                text=json.dumps({"world_blueprint": outputs[module_id]}, ensure_ascii=False),
+            )
+
+    progress_events = []
+    enriched = world_enrichment.enrich_project_world(
+        project,
+        model_gateway=Gateway(),
+        progress_callback=progress_events.append,
+    )
+
+    artifacts = enriched.world_blueprint["world_build_artifacts"]
+    assert [artifact["module_id"] for artifact in artifacts] == [
+        "core_rules",
+        "society_and_livelihood",
+        "story_engine",
+    ]
+    assert enriched.world_blueprint["locations"][0]["name"] == "守祠"
+    assert enriched.world_blueprint["volume_plan"]["volume_title"] == "第一卷 断炉旧案"
+    assert "玩家" not in json.dumps(enriched.world_blueprint, ensure_ascii=False)
+    assert [event["status"] for event in progress_events] == [
+        "running", "done", "running", "done", "running", "done",
+    ]
+
+
+def test_world_build_module_required_fields_reject_missing_outputs() -> None:
+    module = world_enrichment.WorldBuildModule(
+        module_id="core_rules",
+        title="核心规则",
+        fields=("world_rules", "locations"),
+        required_fields=("world_rules", "locations"),
+        instructions="",
+        max_tokens=1024,
+    )
+
+    parsed = {"world_blueprint": {"world_rules": ["仅写一条规则"]}}
+    with pytest.raises(
+        world_enrichment.WorldEnrichmentError,
+        match=r"world_build_module_incomplete:core_rules:locations",
+    ):
+        world_enrichment._module_world_payload(parsed, module)
+
+
+def test_world_build_module_required_fields_reject_blank_outputs() -> None:
+    module = world_enrichment.WorldBuildModule(
+        module_id="core_rules",
+        title="核心规则",
+        fields=("world_rules", "locations"),
+        required_fields=("world_rules", "locations"),
+        instructions="",
+        max_tokens=1024,
+    )
+
+    parsed = {"world_blueprint": {"world_rules": ["一条规则"], "locations": []}}
+    with pytest.raises(
+        world_enrichment.WorldEnrichmentError,
+        match=r"world_build_module_incomplete:core_rules:locations",
+    ):
+        world_enrichment._module_world_payload(parsed, module)
+
+
+def test_core_rules_module_requires_rules_locations_factions() -> None:
+    project = NovelProject(
+        project_id="p-required-core",
+        title="守祠",
+        world_blueprint={"genre_plugin_ids": ["xuanhuan"]},
+    )
+    modules = world_enrichment.world_build_modules(project)
+    core = next(module for module in modules if module.module_id == "core_rules")
+    assert "world_rules" in core.required_fields
+    assert "locations" in core.required_fields
+    assert "factions" in core.required_fields
+
+
+def test_core_rules_module_requires_power_system_spec_for_power_genres() -> None:
+    project = NovelProject(
+        project_id="p-required-core-power",
+        title="网游",
+        world_blueprint={"genre_plugin_ids": ["xuanhuan"]},
+    )
+    modules = world_enrichment.world_build_modules(project)
+    core = next(module for module in modules if module.module_id == "core_rules")
+    assert "power_system_spec" in core.required_fields
+
+
+def test_society_and_livelihood_module_requires_world_systems_and_living_world() -> None:
+    project = NovelProject(
+        project_id="p-required-society",
+        title="断香炉",
+        world_blueprint={"genre_plugin_ids": ["xuanhuan"]},
+    )
+    modules = world_enrichment.world_build_modules(project)
+    society = next(module for module in modules if module.module_id == "society_and_livelihood")
+    assert "world_systems" in society.required_fields
+    assert "living_world" in society.required_fields
+
+
+def test_story_engine_module_requires_arc_volume_longform() -> None:
+    project = NovelProject(
+        project_id="p-required-story",
+        title="断香炉",
+        world_blueprint={"genre_plugin_ids": ["xuanhuan"]},
+    )
+    modules = world_enrichment.world_build_modules(project)
+    story = next(module for module in modules if module.module_id == "story_engine")
+    assert "opening_arc" in story.required_fields
+    assert "volume_plan" in story.required_fields
+    assert "longform_framework" in story.required_fields
+
+
+def test_game_ecology_module_requires_npc_quest_server_map() -> None:
+    project = NovelProject(
+        project_id="p-required-game",
+        title="网游",
+        world_blueprint={"genre_plugin_ids": ["game_webnovel"]},
+    )
+    modules = world_enrichment.world_build_modules(project)
+    ecology = next(module for module in modules if module.module_id == "game_ecology")
+    assert "npc_system" in ecology.required_fields
+    assert "quest_network" in ecology.required_fields
+    assert "server_runtime" in ecology.required_fields
+    assert "map_ecology" in ecology.required_fields
+
+
+def test_world_build_module_complete_payload_passes_required_fields() -> None:
+    module = world_enrichment.WorldBuildModule(
+        module_id="core_rules",
+        title="核心规则",
+        fields=("world_rules", "locations"),
+        required_fields=("world_rules", "locations"),
+        instructions="",
+        max_tokens=1024,
+    )
+
+    parsed = {
+        "world_blueprint": {
+            "world_rules": ["香火能留下旧案痕迹。"],
+            "locations": [{"name": "守祠"}],
+        }
+    }
+    payload = world_enrichment._module_world_payload(parsed, module)
+    assert payload["world_rules"] == ["香火能留下旧案痕迹。"]
+    assert payload["locations"] == [{"name": "守祠"}]
 
 
 @pytest.fixture
