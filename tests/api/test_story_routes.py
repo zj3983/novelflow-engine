@@ -13,6 +13,7 @@ from apps.api.routes import stories as story_routes
 from apps.api.routes.stories import _quality_context
 from packages.story_core.engine import ChapterBundle
 from packages.story_core.models import NovelProject, StoryState
+from packages.story_core.project_outline import normalize_project_outline
 
 
 client = TestClient(app)
@@ -188,6 +189,28 @@ class _ShuangwenReviewGateway:
 
 
 def _seed_generation_outline(root, chapter_number: int) -> None:
+    outline_path = root / ".webnovel" / "outline.json"
+    outline_path.parent.mkdir(parents=True, exist_ok=True)
+    outline_path.write_text(
+        json.dumps(
+            normalize_project_outline(
+                {
+                    "arcs": [
+                        {
+                            "id": f"test-volume-{chapter_number}",
+                            "title": "Test volume",
+                            "start_chapter": chapter_number,
+                            "end_chapter": chapter_number,
+                            "goal": "Cover the queued test chapter.",
+                            "is_final_arc": True,
+                        }
+                    ]
+                }
+            ),
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     path = root / ".story-system" / "outline-generation" / "rolling_outline.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -1526,12 +1549,50 @@ def test_file_project_candidate_routes_list_and_discard_pending_draft(tmp_path, 
     from packages.story_core.candidate_draft import CandidateDraft
     from packages.story_core.file_project_store import FileProjectStore
 
-    draft = CandidateDraft.create(project_id="p-candidate-file", chapter_number=1, body="候选正文")
+    draft = CandidateDraft.create(
+        project_id="p-candidate-file",
+        chapter_number=1,
+        body="候选正文",
+        quality_report={
+            "writing_review": {
+                "pass": True,
+                "issues": [],
+                "blocking": [],
+                "warnings": [
+                    {
+                        "code": "style.outline_hook_transcribed",
+                        "message": "章末直接复述了细纲钩子，没有落成人物动作、发现或现场变化。",
+                        "source": "deterministic",
+                    }
+                ],
+            }
+        },
+        submission_payload={"updated_story": {"characters": [{"name": "internal"}] * 500}},
+    )
     FileProjectStore(project_root).candidate_store.save(draft)
+
+    def fail_if_story_is_rebuilt(*args, **kwargs):
+        raise AssertionError("candidate routes must not rebuild the full visible story state")
+
+    monkeypatch.setattr(FileProjectStore, "state", fail_if_story_is_rebuilt)
 
     listed = client.get("/file-projects/p-candidate-file/candidates")
     assert listed.status_code == 200
     assert listed.json()["items"][0]["candidate_id"] == draft.candidate_id
+    assert "submission_payload" not in listed.json()["items"][0]
+    assert (
+        listed.json()["items"][0]["quality_report"]["simplified_review"]["status"]
+        == "needs_revision"
+    )
+
+    detail = client.get(
+        f"/file-projects/p-candidate-file/candidates/{draft.candidate_id}"
+    )
+    assert detail.status_code == 200
+    assert (
+        detail.json()["candidate"]["quality_report"]["simplified_review"]["status"]
+        == "needs_revision"
+    )
 
     discarded = client.post(f"/file-projects/p-candidate-file/candidates/{draft.candidate_id}/discard")
     assert discarded.status_code == 200
@@ -1898,6 +1959,314 @@ def test_file_generation_job_dispatches_manual_expansion(monkeypatch):
         with file_projects._file_generation_jobs_lock:
             file_projects._file_generation_jobs.pop(job_id, None)
             file_projects._active_file_generation_jobs.pop("file:p-manual-expand", None)
+
+    assert captured == {"chapter_number": 1}
+
+
+def test_world_build_job_keeps_completed_module_artifact_when_later_work_fails(monkeypatch, tmp_path):
+    project_payload = {
+        "project_id": "p-world-build-job",
+        "title": "断香炉",
+        "world_blueprint": {"premise": "守祠杂役在旧物中发现证物。"},
+    }
+    updates: list[dict[str, object]] = []
+
+    class FakeStore:
+        root = tmp_path / "p-world-build-job"
+
+        def project(self):
+            return project_payload
+
+        def story_core_context(self, _scope):
+            return {}
+
+        def update_project(self, patch, *, replace_world_blueprint=False):
+            updates.append({"patch": patch, "replace": replace_world_blueprint})
+            if isinstance(patch.get("world_blueprint"), dict):
+                project_payload["world_blueprint"] = patch["world_blueprint"]
+
+    artifact = {
+        "module_id": "core_rules",
+        "title": "核心规则",
+        "status": "completed",
+        "fields": ["world_rules"],
+        "output": {"world_rules": ["动用旧物会留下痕迹。"]},
+    }
+
+    def fake_enrich(_project, *, progress_callback=None, **_kwargs):
+        assert progress_callback is not None
+        progress_callback({"module_id": "core_rules", "status": "done", "message": "已完成：核心规则", "artifact": artifact})
+        raise RuntimeError("society_provider_timeout")
+
+    job_id = "wbg-partial"
+    monkeypatch.setattr(file_projects, "_store_for", lambda _project_id: FakeStore())
+    monkeypatch.setattr(file_projects, "enrich_project_world", fake_enrich)
+    monkeypatch.setattr(file_projects, "_persist_world_build_job", lambda _job: None)
+    with file_projects._world_build_jobs_lock:
+        file_projects._world_build_jobs[job_id] = {
+            "job_id": job_id,
+            "project_id": "file:p-world-build-job",
+            "status": "queued",
+            "progress": "等待构建核心规则",
+            "_project_root": str(FakeStore.root),
+        }
+
+    try:
+        file_projects._run_world_build_job(job_id, "file:p-world-build-job")
+        with file_projects._world_build_jobs_lock:
+            job = file_projects._world_build_jobs[job_id]
+    finally:
+        with file_projects._world_build_jobs_lock:
+            file_projects._world_build_jobs.pop(job_id, None)
+            file_projects._active_world_build_jobs.pop("p-world-build-job", None)
+
+    assert job["status"] == "failed"
+    assert "society_provider_timeout" not in str(job["error"])
+    assert str(job["error"]).startswith("world_build_provider_error:")
+    assert project_payload["world_blueprint"]["world_build_artifacts"] == [artifact]
+    assert updates[0]["replace"] is True
+
+
+def test_world_build_job_reconciles_persisted_running_after_restart(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    project_root = tmp_path / "p-world-build-restart"
+    _make_file_project(project_root, project_id="p-world-build-restart")
+    log_dir = project_root / ".story-system" / "world-build-jobs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    job_id = "wbg-restart"
+    (log_dir / f"{job_id}.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "world-build-job/v1",
+                "job_id": job_id,
+                "project_id": "file:p-world-build-restart",
+                "status": "running",
+                "progress": "正在构建：核心规则",
+                "active_module_id": "core_rules",
+                "active_module_title": "核心规则",
+                "active_module_status": "running",
+                "error": "",
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2025-01-01T00:00:00+00:00",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    store = file_projects._store_for(f"file:p-world-build-restart")
+    recovered = file_projects._reconcile_world_build_job(store, file_projects._load_world_build_job(store, job_id))
+    assert recovered["status"] == "interrupted"
+    assert "重新开始补全" in str(recovered["progress"])
+    assert recovered["active_module_status"] == "interrupted"
+
+    persisted = json.loads((log_dir / f"{job_id}.json").read_text(encoding="utf-8"))
+    assert persisted["status"] == "interrupted"
+
+    with file_projects._world_build_jobs_lock:
+        file_projects._active_world_build_jobs.pop("p-world-build-restart", None)
+        file_projects._world_build_jobs.pop(job_id, None)
+
+    response = client.post("/file-projects/file:p-world-build-restart/world-build-jobs")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] in {"queued", "running"}
+    job_id_started = body["job_id"]
+
+    with file_projects._world_build_jobs_lock:
+        file_projects._active_world_build_jobs.pop("p-world-build-restart", None)
+        file_projects._world_build_jobs.pop(job_id_started, None)
+
+
+def test_legacy_enrich_world_returns_409_when_world_build_job_active(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    project_root = tmp_path / "p-enrich-conflict"
+    _make_file_project(project_root, project_id="p-enrich-conflict")
+
+    active_job_id = "wbg-conflict-active"
+    with file_projects._world_build_jobs_lock:
+        file_projects._world_build_jobs[active_job_id] = {
+            "job_id": active_job_id,
+            "project_id": "file:p-enrich-conflict",
+            "status": "running",
+            "progress": "正在构建",
+            "active_module_id": "core_rules",
+            "active_module_title": "核心规则",
+            "active_module_status": "running",
+            "error": "",
+            "created_at": "2025-01-01T00:00:00+00:00",
+            "updated_at": "2025-01-01T00:00:00+00:00",
+            "_project_root": str(project_root),
+        }
+        file_projects._active_world_build_jobs["p-enrich-conflict"] = active_job_id
+
+    try:
+        response = client.post("/file-projects/file:p-enrich-conflict/enrich-world")
+        assert response.status_code == 409
+        assert response.json()["detail"] == "world_build_in_progress"
+    finally:
+        with file_projects._world_build_jobs_lock:
+            file_projects._active_world_build_jobs.pop("p-enrich-conflict", None)
+            file_projects._world_build_jobs.pop(active_job_id, None)
+
+
+def test_start_world_build_returns_409_when_legacy_enrich_world_active(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    project_root = tmp_path / "p-legacy-409"
+    _make_file_project(project_root, project_id="p-legacy-409")
+    monkeypatch.setattr(file_projects, "_has_active_world_build_job", lambda _project_id: True)
+    try:
+        response = client.post("/file-projects/file:p-legacy-409/world-build-jobs")
+        assert response.status_code == 409
+        assert response.json()["detail"] == "world_build_in_progress"
+    finally:
+        monkeypatch.setattr(file_projects, "_has_active_world_build_job", lambda _project_id: False)
+
+
+def test_world_build_job_marks_conflicted_when_author_edits_world_during_build(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    project_root = tmp_path / "p-world-conflict"
+    _make_file_project(project_root, project_id="p-world-conflict")
+    (project_root / ".webnovel" / "project.json").write_text(
+        json.dumps(
+            {
+                "project_id": "p-world-conflict",
+                "title": "断香炉",
+                "world_blueprint": {"world_rules": ["作者手改规则"]},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    job_id = "wbg-conflict"
+    initial_revision = file_projects._project_world_revision(
+        file_projects._store_for("file:p-world-conflict")
+    )
+    with file_projects._world_build_jobs_lock:
+        file_projects._world_build_jobs[job_id] = {
+            "job_id": job_id,
+            "project_id": "file:p-world-conflict",
+            "status": "running",
+            "progress": "正在构建：核心规则",
+            "active_module_id": "core_rules",
+            "active_module_title": "核心规则",
+            "active_module_status": "running",
+            "error": "",
+            "created_at": "2025-01-01T00:00:00+00:00",
+            "updated_at": "2025-01-01T00:00:00+00:00",
+            "project_revision": initial_revision,
+            "_project_root": str(project_root),
+        }
+        file_projects._active_world_build_jobs["p-world-conflict"] = job_id
+
+    (project_root / ".webnovel" / "project.json").write_text(
+        json.dumps(
+            {
+                "project_id": "p-world-conflict",
+                "title": "断香炉",
+                "world_blueprint": {"world_rules": ["作者手改规则（更新后）"]},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    artifact = {
+        "module_id": "core_rules",
+        "title": "核心规则",
+        "status": "completed",
+        "fields": ["world_rules"],
+        "output": {"world_rules": ["模块生成规则"]},
+    }
+
+    def fake_persist(store, artifact_obj):
+        if file_projects._check_world_build_conflict(store, job_id):
+            return False
+        if not isinstance(artifact_obj, dict):
+            return True
+        blueprint = store.project().get("world_blueprint") or {}
+        artifacts = blueprint.get("world_build_artifacts") or []
+        next_artifacts = [
+            item
+            for item in artifacts
+            if not (isinstance(item, dict) and item.get("module_id") == artifact_obj.get("module_id"))
+        ]
+        next_artifacts.append(artifact_obj)
+        store.update_project(
+            {"world_blueprint": {**blueprint, "world_build_artifacts": next_artifacts}},
+            replace_world_blueprint=True,
+        )
+        return True
+
+    monkeypatch.setattr(file_projects, "_persist_partial_world_build_artifact", fake_persist)
+    try:
+        store = file_projects._store_for("file:p-world-conflict")
+        result = fake_persist(store, artifact)
+        assert result is False
+        with file_projects._world_build_jobs_lock:
+            job = file_projects._world_build_jobs[job_id]
+        assert job["status"] == "conflicted"
+        assert "重新开始补全" in str(job["progress"])
+    finally:
+        with file_projects._world_build_jobs_lock:
+            file_projects._active_world_build_jobs.pop("p-world-conflict", None)
+            file_projects._world_build_jobs.pop(job_id, None)
+
+
+def test_world_build_error_translation_hides_provider_details() -> None:
+    raw = RuntimeError(
+        "API call failed: https://secret.example.com/v1/chat "
+        "headers=Authorization Bearer sk-secret-1234 body={\"x\":1}"
+    )
+    code = file_projects._world_build_error_code(raw)
+    message = file_projects._world_build_user_message(code)
+    assert code == "world_build_provider_error"
+    assert "https://" not in message
+    assert "sk-" not in message
+    assert "Authorization" not in message
+
+
+def test_file_generation_job_dispatches_adaptive_polish(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeStore:
+        def polish_chapter(self, chapter_number):
+            captured["chapter_number"] = chapter_number
+            return {
+                "chapter_number": chapter_number,
+                "chapter_title": "Polished",
+                "polish_mode": "polish",
+            }
+
+    job_id = "fgj-manual-polish"
+    monkeypatch.setattr(file_projects, "_store_for", lambda _project_id: FakeStore())
+    monkeypatch.setattr(file_projects, "_persist_file_generation_job", lambda _job: None)
+    with file_projects._file_generation_jobs_lock:
+        file_projects._file_generation_jobs[job_id] = {
+            "job_id": job_id,
+            "story_id": "file:p-manual-polish",
+            "project_id": "file:p-manual-polish",
+            "status": "queued",
+            "progress": "queued",
+            "steps": [],
+            "created_at": "",
+            "updated_at": "",
+        }
+
+    try:
+        file_projects._run_file_generation_job(
+            job_id,
+            "file:p-manual-polish",
+            chapter_number=1,
+            operation="polish",
+        )
+    finally:
+        with file_projects._file_generation_jobs_lock:
+            file_projects._file_generation_jobs.pop(job_id, None)
+            file_projects._active_file_generation_jobs.pop("file:p-manual-polish", None)
 
     assert captured == {"chapter_number": 1}
 
@@ -3119,6 +3488,9 @@ def test_update_file_project_route_preserves_game_title_in_patch(monkeypatch, tm
 
         def state(self):
             return {"story_id": "s-test", "current_chapter": 0}
+
+        def persisted_state(self):
+            return self.state()
 
         def summary(self):
             return {"current_chapter": 0, "title": "作品标题"}

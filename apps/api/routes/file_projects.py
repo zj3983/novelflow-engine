@@ -54,6 +54,14 @@ from apps.api.services.file_project_lifecycle import (
     restore_project,
     trash_project,
 )
+from apps.api.services.continuous_generation import (
+    ACTIVE_STATUSES as CONTINUOUS_ACTIVE_STATUSES,
+    SAFE_RECOVERY_PHASES,
+    ContinuousGenerationJobStore,
+    ContinuousGenerationRunner,
+)
+from apps.api.routes.file_project_candidates import register_file_project_candidate_routes
+from apps.api.routes.file_project_outline import register_file_project_outline_routes
 
 
 router = APIRouter()
@@ -72,6 +80,12 @@ _file_generation_executor = ThreadPoolExecutor(max_workers=1)
 _file_generation_jobs: dict[str, dict[str, object]] = {}
 _active_file_generation_jobs: dict[str, str] = {}
 _file_generation_jobs_lock = Lock()
+_world_build_executor = ThreadPoolExecutor(max_workers=1)
+_world_build_jobs: dict[str, dict[str, object]] = {}
+_active_world_build_jobs: dict[str, str] = {}
+_world_build_jobs_lock = Lock()
+_continuous_generation_executor = ThreadPoolExecutor(max_workers=1)
+_active_continuous_generation_jobs: dict[str, str] = {}
 # Plan rule: "Add a dedicated single-worker executor" for the
 # continuation bootstrap. Body generation and bootstrap share
 # a single worker to keep the disk state coherent.
@@ -101,40 +115,18 @@ class OpeningDirectionGenerationRequest(BaseModel):
         return value.strip() if isinstance(value, str) else value
 
 
-class OutlinePlanGenerationRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    mode: Literal["initial", "regenerate", "extend"] = "initial"
-    guidance: str = Field(default="", max_length=1000)
-    restart_from: Literal[
-        "outline_foundation",
-        "character_roster",
-        "chapter_window",
-    ] | None = None
-
-    @field_validator("guidance", mode="before")
-    @classmethod
-    def trim_guidance(cls, value: Any) -> Any:
-        return value.strip() if isinstance(value, str) else value
-
-
-class VolumeWorkflowGenerationRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    guidance: str = Field(default="", max_length=1000)
-
-    @field_validator("guidance", mode="before")
-    @classmethod
-    def trim_guidance(cls, value: Any) -> Any:
-        return value.strip() if isinstance(value, str) else value
-
-
 class FileProjectGenerationJobRequest(BaseModel):
     chapter_number: int | None = None
-    operation: Literal["expand"] | None = None
+    operation: Literal["polish", "expand"] | None = None
     variant: str | None = None
     guidance: str | None = None
     chapter_direction_id: str | None = None
+
+
+class FileProjectContinuousGenerationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    count: Literal[2, 5, 10, 20] = 5
 
 
 class FileProjectUpdateRequest(BaseModel):
@@ -299,29 +291,331 @@ def _public_project_id(store: FileProjectStore) -> str:
     return _file_id(store.root.name)
 
 
-def _candidate_project_ids(store: FileProjectStore, requested_project_id: str) -> set[str]:
-    project = store.project()
-    state = store.state()
-    raw_ids = {
-        str(project.get("project_id") or "").strip(),
-        str(project.get("active_story_id") or "").strip(),
-        str(state.get("story_id") or "").strip(),
-        str(store.root.name).strip(),
-        str(requested_project_id or "").strip(),
-    }
-    accepted: set[str] = set()
-    for raw_id in raw_ids:
-        if not raw_id:
-            continue
-        plain_id = _strip_file_prefix(raw_id)
-        accepted.add(raw_id)
-        accepted.add(plain_id)
-        accepted.add(_file_id(plain_id))
-    return accepted
-
-
 def _file_generation_job_log_dir(store: FileProjectStore) -> Path:
     return store.story_system_dir / "generation-jobs"
+
+
+def _world_build_job_log_dir(store: FileProjectStore) -> Path:
+    return store.story_system_dir / "world-build-jobs"
+
+
+def _persist_world_build_job(job: dict[str, object]) -> None:
+    project_root = str(job.get("_project_root", "")).strip()
+    job_id = str(job.get("job_id", "")).strip()
+    if not project_root or not job_id:
+        return
+    log_dir = Path(project_root) / ".story-system" / "world-build-jobs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    payload = {key: value for key, value in job.items() if not str(key).startswith("_")}
+    serialized = json.dumps(payload, ensure_ascii=False, indent=2)
+    for target in (log_dir / f"{job_id}.json", log_dir / "latest.json"):
+        temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
+        temporary.write_text(serialized, encoding="utf-8")
+        temporary.replace(target)
+
+
+def _load_world_build_job(store: FileProjectStore, job_id: str | None = None) -> dict[str, object] | None:
+    filename = f"{job_id}.json" if job_id else "latest.json"
+    path = _world_build_job_log_dir(store) / filename
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or not str(payload.get("job_id", "")).strip():
+        return None
+    payload["_project_root"] = str(store.root)
+    return _reconcile_world_build_job(store, payload)
+
+
+def _project_world_revision(store: FileProjectStore) -> str:
+    """Hash the project's world-bearing state for change detection.
+
+    The store has no built-in monotonic revision, so derive one from the
+    fields the world-build job is allowed to overwrite.  An author who
+    manually edits the project between job start and final persistence
+    gets a different hash and the job is marked conflicted.
+    """
+
+    project = store.project() if hasattr(store, "project") else {}
+    if not isinstance(project, dict):
+        return ""
+    payload = {
+        "project_id": str(project.get("project_id", "")).strip(),
+        "title": str(project.get("title", "")).strip(),
+        "world_summary": str(project.get("world_summary", "")).strip(),
+        "current_focus": str(project.get("current_focus", "")).strip(),
+        "world_blueprint": project.get("world_blueprint") or {},
+    }
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return sha256(serialized.encode("utf-8")).hexdigest()
+
+
+_WORLD_BUILD_ERROR_USER_MESSAGES: dict[str, str] = {
+    "world_build_provider_error": "模型服务暂不可用，请稍后重试。",
+    "world_build_validation_error": "本次结果未能通过校验，请重试。",
+    "world_build_module_incomplete": "模型返回的设定不完整，请重试。",
+    "world_build_unknown": "世界观补全失败，请稍后重试。",
+}
+
+
+def _world_build_error_code(exc: BaseException) -> str:
+    message = str(exc or "")
+    lowered = message.lower()
+    if "world_build_module_incomplete" in message:
+        return "world_build_module_incomplete"
+    if "world_build_module_validation_failed" in message:
+        return "world_build_validation_error"
+    if any(
+        marker in lowered
+        for marker in (
+            "http",
+            "https://",
+            "://",
+            "api key",
+            "api_key",
+            "unauthorized",
+            "timeout",
+            "rate limit",
+            "rate_limit",
+        )
+    ):
+        return "world_build_provider_error"
+    return "world_build_unknown"
+
+
+def _world_build_user_message(code: str) -> str:
+    return _WORLD_BUILD_ERROR_USER_MESSAGES.get(
+        code, _WORLD_BUILD_ERROR_USER_MESSAGES["world_build_unknown"]
+    )
+
+
+def _sanitize_world_build_error_detail(exc: BaseException) -> str:
+    code = _world_build_error_code(exc)
+    return f"{code}:{_world_build_user_message(code)}"
+
+
+def _reconcile_world_build_job(
+    store: FileProjectStore, job: dict[str, object] | None
+) -> dict[str, object] | None:
+    """Mark a persisted job that is still queued/running after a restart.
+
+    The in-memory executor and active-job map are process-local.  If the
+    server restarts, a job that was running becomes a stuck record on disk.
+    This helper turns it into ``interrupted`` so the UI can ask the author
+    to retry instead of showing infinite progress.
+    """
+
+    if job is None:
+        return None
+    if str(job.get("status")) not in {"queued", "running"}:
+        return job
+    recovered = {
+        **job,
+        "status": "interrupted",
+        "progress": "服务已重启，请重新开始补全",
+        "active_module_status": "interrupted",
+        "updated_at": _now_iso(),
+    }
+    project_root = str(recovered.get("_project_root") or store.root)
+    with _world_build_jobs_lock:
+        _active_world_build_jobs.pop(_strip_file_prefix(str(recovered.get("project_id", ""))), None)
+        _world_build_jobs.pop(str(recovered.get("job_id", "")).strip(), None)
+    _persist_world_build_job({**recovered, "_project_root": project_root})
+    return recovered
+
+
+def _has_active_world_build_job(project_id: str) -> bool:
+    normalized = _strip_file_prefix(project_id)
+    with _world_build_jobs_lock:
+        job_id = _active_world_build_jobs.get(normalized)
+        if not job_id:
+            return False
+        job = _world_build_jobs.get(job_id)
+        if job is None:
+            _active_world_build_jobs.pop(normalized, None)
+            return False
+        return str(job.get("status")) in {"queued", "running"}
+
+
+def _check_world_build_conflict(
+    store: FileProjectStore, job_id: str
+) -> bool:
+    """Mark the job conflicted when the project's world data has changed.
+
+    The author may hand-edit ``world_blueprint`` between job start and
+    final persistence.  When that happens the job must not silently
+    overwrite the author's edits; the completed artifacts are preserved
+    in the job record but ``world_blueprint`` is left untouched.
+    """
+
+    with _world_build_jobs_lock:
+        job = _world_build_jobs.get(job_id)
+    if job is None:
+        return False
+    stored_revision = str(job.get("project_revision") or "")
+    if not stored_revision:
+        return False
+    current_revision = _project_world_revision(store)
+    if stored_revision == current_revision:
+        return False
+    _update_world_build_job(
+        job_id,
+        status="conflicted",
+        progress="世界观已被手动修改，请重新开始补全",
+        active_module_status="conflicted",
+        error="world_build_conflict",
+        project_revision=current_revision,
+    )
+    return True
+
+
+def _world_build_job_response(job: dict[str, object]) -> dict[str, object]:
+    return {
+        key: value
+        for key, value in job.items()
+        if not str(key).startswith("_")
+    }
+
+
+def _update_world_build_job(job_id: str, **updates: object) -> None:
+    with _world_build_jobs_lock:
+        job = _world_build_jobs.get(job_id)
+        if job is None:
+            return
+        job.update(updates)
+        job["updated_at"] = _now_iso()
+        _persist_world_build_job(job)
+
+
+def _persist_partial_world_build_artifact(
+    store: FileProjectStore,
+    artifact: object,
+    *,
+    job_id: str | None = None,
+) -> bool:
+    if not isinstance(artifact, dict):
+        return True
+    module_id = str(artifact.get("module_id", "")).strip()
+    if not module_id:
+        return True
+    if job_id and _check_world_build_conflict(store, job_id):
+        return False
+    current = store.project()
+    blueprint = current.get("world_blueprint") if isinstance(current.get("world_blueprint"), dict) else {}
+    artifacts = blueprint.get("world_build_artifacts") if isinstance(blueprint.get("world_build_artifacts"), list) else []
+    next_artifacts = [
+        item for item in artifacts
+        if not isinstance(item, dict) or str(item.get("module_id", "")).strip() != module_id
+    ]
+    next_artifacts.append(artifact)
+    next_blueprint = {**blueprint, "world_build_artifacts": next_artifacts}
+    store.update_project({"world_blueprint": next_blueprint}, replace_world_blueprint=True)
+    return True
+
+
+def _run_world_build_job(job_id: str, project_id: str) -> None:
+    store = _store_for(project_id)
+
+    def report_progress(event: dict[str, object]) -> None:
+        message = str(event.get("message", "正在构建世界观")).strip()
+        module_id = str(event.get("module_id", "")).strip()
+        module_status = str(event.get("status", "running")).strip()
+        artifact = event.get("artifact")
+        _update_world_build_job(
+            job_id,
+            status="running",
+            progress=message,
+            active_module_id=module_id,
+            active_module_title=str(event.get("title", "")).strip(),
+            active_module_status=module_status,
+        )
+        if artifact is not None:
+            _persist_partial_world_build_artifact(store, artifact, job_id=job_id)
+
+    try:
+        if _check_world_build_conflict(store, job_id):
+            return
+        project_payload = {
+            **store.project(),
+            "project_id": _public_project_id(store),
+            "source_path": str(store.root),
+            "active_story_id": _story_id_for(store),
+            "story_core_context": store.story_core_context("world"),
+        }
+        enriched = enrich_project_world(
+            NovelProject.model_validate(project_payload),
+            progress_callback=report_progress,
+        )
+        if _check_world_build_conflict(store, job_id):
+            return
+        enriched_payload = enriched.model_dump(mode="json")
+        store.update_project(
+            {
+                key: value
+                for key, value in enriched_payload.items()
+                if key in {
+                    "title", "world_summary", "current_focus", "author_constraints",
+                    "world_blueprint", "character_profiles", "relationship_graph",
+                    "enabled_skill_ids", "enabled_skill_module_ids", "status",
+                }
+            }
+            | {"pipeline_stage": "environment_ready"},
+            replace_world_blueprint=True,
+        )
+    except Exception as exc:  # pragma: no cover - background safety net
+        code = _world_build_error_code(exc)
+        _update_world_build_job(
+            job_id,
+            status="failed",
+            progress=_world_build_user_message(code),
+            error=_sanitize_world_build_error_detail(exc),
+        )
+    else:
+        _update_world_build_job(
+            job_id,
+            status="completed",
+            progress="世界观构建完成",
+            error="",
+            active_module_id="",
+            active_module_title="",
+            active_module_status="done",
+        )
+    finally:
+        with _world_build_jobs_lock:
+            _active_world_build_jobs.pop(_strip_file_prefix(project_id), None)
+
+
+def _start_world_build_job(project_id: str) -> dict[str, object]:
+    store = _store_for(project_id)
+    normalized_project_id = _strip_file_prefix(project_id)
+    with _world_build_jobs_lock:
+        active_job_id = _active_world_build_jobs.get(normalized_project_id)
+        if active_job_id:
+            active = _world_build_jobs.get(active_job_id)
+            if active is not None and str(active.get("status")) in {"queued", "running"}:
+                return _world_build_job_response(active)
+        now = _now_iso()
+        job_id = f"wbg-{uuid4().hex}"
+        job: dict[str, object] = {
+            "schema_version": "world-build-job/v1",
+            "job_id": job_id,
+            "project_id": _public_project_id(store),
+            "status": "queued",
+            "progress": "等待构建核心规则",
+            "active_module_id": "core_rules",
+            "active_module_title": "核心规则",
+            "active_module_status": "queued",
+            "error": "",
+            "created_at": now,
+            "updated_at": now,
+            "project_revision": _project_world_revision(store),
+            "_project_root": str(store.root),
+        }
+        _world_build_jobs[job_id] = job
+        _active_world_build_jobs[normalized_project_id] = job_id
+        _persist_world_build_job(job)
+    _world_build_executor.submit(_run_world_build_job, job_id, project_id)
+    return _world_build_job_response(job)
 
 
 def _persist_file_generation_job(job: dict[str, object]) -> None:
@@ -518,11 +812,19 @@ def _assert_file_project_lifecycle_mutation_allowed(store: FileProjectStore) -> 
     story_id = _story_id_for(store)
     project_id = _strip_file_prefix(_public_project_id(store))
     with _file_generation_jobs_lock:
+        if _continuous_generation_active_locked(store):
+            raise HTTPException(status_code=409, detail="project_generation_in_progress")
         for key in (story_id, project_id, f"file:{project_id}"):
             job_id = _active_file_generation_jobs.get(key)
             job = _file_generation_jobs.get(job_id or "")
             if job and job.get("status") in {"queued", "running"}:
                 raise HTTPException(status_code=409, detail="project_generation_in_progress")
+
+
+def _assert_candidate_mutation_allowed(store: FileProjectStore) -> None:
+    with _file_generation_jobs_lock:
+        if _continuous_generation_active_locked(store):
+            raise HTTPException(status_code=409, detail="project_generation_in_progress")
 
 
 def _file_project_lifecycle_payload(store: FileProjectStore) -> dict[str, Any]:
@@ -547,30 +849,6 @@ def _raise_file_project_error(exc: ValueError) -> None:
     ):
         raise HTTPException(status_code=409, detail=detail) from exc
     raise HTTPException(status_code=400, detail=detail) from exc
-
-
-def _raise_volume_workflow_write_error(exc: Exception, *, operation: str) -> None:
-    if not isinstance(exc, ValueError):
-        detail = re.sub(r"\s+", " ", str(exc)).strip()[:500]
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                f"{operation}_generation_failed:{type(exc).__name__}:"
-                f"{detail or 'no_detail'}"
-            ),
-        ) from exc
-    detail = str(exc)
-    if detail in {
-        "outline_changed_during_volume_design",
-        "project_generation_in_progress",
-    }:
-        raise HTTPException(status_code=409, detail=detail) from exc
-    if "generation_failed" in detail or detail in {
-        "runtime_unavailable",
-        "invalid_next_volume_json",
-    }:
-        raise HTTPException(status_code=502, detail=detail) from exc
-    raise HTTPException(status_code=422, detail=detail) from exc
 
 
 def _raise_file_project_lifecycle_error(exc: FileProjectLifecycleError) -> None:
@@ -599,6 +877,106 @@ def _file_generation_job_response(job: dict[str, object]) -> dict[str, object]:
         "created_at": str(job.get("created_at", "")),
         "updated_at": str(job.get("updated_at", "")),
     }
+
+
+def _continuous_generation_job_response(job: dict[str, object]) -> dict[str, object]:
+    return {
+        "schema_version": "continuous-generation-job/v1",
+        "job_id": str(job.get("job_id", "")),
+        "project_id": str(job.get("project_id", "")),
+        "story_id": str(job.get("story_id", "")),
+        "status": str(job.get("status", "")),
+        "phase": str(job.get("phase", "")),
+        "requested_count": int(job.get("requested_count") or 0),
+        "completed_count": int(job.get("completed_count") or 0),
+        "start_chapter": int(job.get("start_chapter") or 0),
+        "current_chapter": int(job.get("current_chapter") or 0),
+        "completed_chapters": list(job.get("completed_chapters") or []),
+        "review_warnings": list(job.get("review_warnings") or []),
+        "candidate_id": str(job.get("candidate_id", "")),
+        "stop_requested": bool(job.get("stop_requested")),
+        "progress": str(job.get("progress", "")),
+        "stop_reason": str(job.get("stop_reason", "")),
+        "error": str(job.get("error", "")),
+        "created_at": str(job.get("created_at", "")),
+        "updated_at": str(job.get("updated_at", "")),
+    }
+
+
+def _active_job_for_story(
+    active_jobs: dict[str, str],
+    story_id: str,
+) -> str | None:
+    plain_id = _strip_file_prefix(story_id)
+    return active_jobs.get(story_id) or active_jobs.get(plain_id) or active_jobs.get(
+        _file_id(plain_id)
+    )
+
+
+def _continuous_job_store(store: FileProjectStore) -> ContinuousGenerationJobStore:
+    return ContinuousGenerationJobStore(store.root)
+
+
+def _run_continuous_generation_job(job_id: str, project_id: str) -> None:
+    store = _store_for(project_id)
+    story_id = _story_id_for(store)
+    try:
+        ContinuousGenerationRunner().run(
+            job_id,
+            project_store=store,
+            job_store=_continuous_job_store(store),
+        )
+    finally:
+        with _file_generation_jobs_lock:
+            if _active_job_for_story(
+                _active_continuous_generation_jobs, story_id
+            ) == job_id:
+                for key in {
+                    story_id,
+                    _strip_file_prefix(story_id),
+                    _file_id(_strip_file_prefix(story_id)),
+                }:
+                    if _active_continuous_generation_jobs.get(key) == job_id:
+                        _active_continuous_generation_jobs.pop(key, None)
+
+
+def _register_continuous_job(story_id: str, job_id: str) -> None:
+    _active_continuous_generation_jobs[story_id] = job_id
+
+
+def _normal_generation_active_locked(store: FileProjectStore) -> bool:
+    story_id = _story_id_for(store)
+    active_job_id = _active_job_for_story(_active_file_generation_jobs, story_id)
+    if not active_job_id:
+        return False
+    active_job = _file_generation_jobs.get(active_job_id)
+    if active_job is None:
+        active_job = _load_file_generation_job(store, active_job_id)
+        if active_job is not None:
+            _file_generation_jobs[active_job_id] = active_job
+    if active_job is None:
+        return False
+    if isinstance(active_job.get("starting_chapter"), int):
+        _reconcile_file_generation_job_locked(active_job, store=store)
+    return str(active_job.get("status")) in {"queued", "running"}
+
+
+def _continuous_generation_active_locked(store: FileProjectStore) -> bool:
+    story_id = _story_id_for(store)
+    jobs = _continuous_job_store(store)
+    job_id = _active_job_for_story(_active_continuous_generation_jobs, story_id)
+    job = jobs.load(job_id) if job_id else jobs.load()
+    if job is None:
+        return False
+    if not job_id:
+        job = jobs.reconcile(
+            job,
+            official_chapter=int(store.summary().get("current_chapter") or 0),
+        )
+    if str(job.get("status")) in CONTINUOUS_ACTIVE_STATUSES:
+        _register_continuous_job(story_id, str(job.get("job_id") or ""))
+        return True
+    return False
 
 
 def _update_file_generation_job(job_id: str, **updates: object) -> None:
@@ -683,7 +1061,7 @@ def _run_file_generation_job(
     project_id: str,
     *,
     chapter_number: int | None = None,
-    operation: Literal["expand"] | None = None,
+    operation: Literal["polish", "expand"] | None = None,
     variant: str | None = None,
     guidance: str | None = None,
     chapter_direction_id: str | None = None,
@@ -748,7 +1126,11 @@ def _run_file_generation_job(
     try:
         store = _store_for(project_id)
         with generation_progress(report_progress):
-            if operation == "expand":
+            if operation == "polish":
+                if not isinstance(chapter_number, int) or chapter_number < 1:
+                    raise ValueError("chapter_number_required_for_polish")
+                generated = store.polish_chapter(chapter_number)
+            elif operation == "expand":
                 if not isinstance(chapter_number, int) or chapter_number < 1:
                     raise ValueError("chapter_number_required_for_expansion")
                 generated = store.expand_chapter(chapter_number)
@@ -861,7 +1243,7 @@ def _display_title(project: dict[str, Any], state: dict[str, Any], summary: dict
 
 def _project_payload(store: FileProjectStore) -> dict[str, Any]:
     project = store.project()
-    state = store.state()
+    state = store.persisted_state()
     enabled_skill_module_ids = resolve_enabled_skill_module_ids(project, state)
     summary = store.summary()
     current_chapter = int(summary.get("current_chapter") or 0)
@@ -1063,6 +1445,7 @@ def _file_chapter_payload(store: FileProjectStore, chapter_number: int) -> dict[
     quality = dict(chapter.get("quality_report") or {})
     quality["simplified_review"] = build_simplified_review(quality)
     chapter["quality_report"] = quality
+    chapter.pop("updated_story", None)
     return chapter
 
 
@@ -1092,18 +1475,21 @@ def start_file_generation_job(
     """Queue generation through the shared file-project job runner."""
     store = _store_for(project_id)
     story_id = _story_id_for(store)
+    with _file_generation_jobs_lock:
+        if _continuous_generation_active_locked(store):
+            raise HTTPException(status_code=409, detail="project_generation_in_progress")
     operation = payload.operation if payload else None
     target_chapter = (
         payload.chapter_number
         if payload and isinstance(payload.chapter_number, int)
         else None
     )
-    if operation == "expand" and not (
+    if operation in {"polish", "expand"} and not (
         isinstance(target_chapter, int) and target_chapter > 0
     ):
         raise HTTPException(
             status_code=422,
-            detail="chapter_number_required_for_expansion",
+            detail="chapter_number_required_for_polish",
         )
     current_chapter = int(store.summary().get("current_chapter") or 0)
     targets_existing_chapter = (
@@ -1111,8 +1497,18 @@ def start_file_generation_job(
         and target_chapter > 0
         and target_chapter <= current_chapter
     )
+    job_operation = (
+        "polish"
+        if operation in {"polish", "expand"}
+        else "regenerate"
+        if targets_existing_chapter
+        else "generate"
+    )
+    execution_chapter_number = (
+        target_chapter if job_operation in {"polish", "regenerate"} else None
+    )
     requires_new_chapter_outline = (
-        operation != "expand" and not targets_existing_chapter
+        operation not in {"polish", "expand"} and not targets_existing_chapter
     )
     if target_chapter is None and requires_new_chapter_outline:
         next_chapter = current_chapter + 1
@@ -1147,12 +1543,16 @@ def start_file_generation_job(
                 response = _file_generation_job_response(loaded)
                 job_id = reserved_job_id
                 job_kwargs = {
-                    "chapter_number": loaded.get("target_chapter"),
+                    "chapter_number": (
+                        loaded.get("target_chapter")
+                        if loaded.get("operation") in {"polish", "expand", "regenerate"}
+                        else None
+                    ),
                     "variant": loaded.get("variant") or None,
                     "guidance": loaded.get("guidance") or None,
                 }
-                if loaded.get("operation") == "expand":
-                    job_kwargs["operation"] = "expand"
+                if loaded.get("operation") in {"polish", "expand"}:
+                    job_kwargs["operation"] = "polish"
                 loaded_direction = loaded.get("chapter_direction_id")
                 if loaded_direction:
                     job_kwargs["chapter_direction_id"] = loaded_direction
@@ -1198,7 +1598,7 @@ def start_file_generation_job(
                             "inputs": {
                                 "project_id": _public_project_id(store),
                                 "target_chapter": target_chapter,
-                                "operation": operation or "",
+                                "operation": job_operation,
                                 "variant": variant or "",
                                 "guidance": guidance or "",
                                 "chapter_direction_id": chapter_direction_id or "",
@@ -1207,11 +1607,9 @@ def start_file_generation_job(
                                 ),
                             },
                             "outputs": {
-                                "will_run_generate_next": target_chapter is None,
-                                "will_regen": isinstance(target_chapter, int)
-                                and target_chapter > 0
-                                and operation != "expand",
-                                "will_expand": operation == "expand",
+                                "will_run_generate_next": job_operation == "generate",
+                                "will_regen": job_operation == "regenerate",
+                                "will_polish": job_operation == "polish",
                             },
                         },
                         "at": now,
@@ -1219,7 +1617,7 @@ def start_file_generation_job(
                 ],
                 "chapter_number": None,
                 "target_chapter": target_chapter,
-                "operation": operation or "",
+                "operation": job_operation,
                 "variant": variant or "",
                 "guidance": guidance or "",
                 "chapter_direction_id": chapter_direction_id or "",
@@ -1236,18 +1634,98 @@ def start_file_generation_job(
 
     if not submit_loaded_job:
         job_kwargs = {
-            "chapter_number": target_chapter,
+            "chapter_number": execution_chapter_number,
             "variant": variant,
             "guidance": guidance,
         }
-        if operation == "expand":
-            job_kwargs["operation"] = "expand"
+        if operation in {"polish", "expand"}:
+            job_kwargs["operation"] = "polish"
         if chapter_direction_id:
             job_kwargs["chapter_direction_id"] = chapter_direction_id
     _file_generation_executor.submit(
         _run_file_generation_job, job_id, project_id, **job_kwargs
     )
     return response
+
+
+def start_continuous_generation_job(
+    project_id: str,
+    payload: FileProjectContinuousGenerationRequest,
+) -> dict[str, object]:
+    store = _store_for(project_id)
+    story_id = _story_id_for(store)
+    with _file_generation_jobs_lock:
+        if _normal_generation_active_locked(store) or _continuous_generation_active_locked(
+            store
+        ):
+            raise HTTPException(status_code=409, detail="project_generation_in_progress")
+        current_chapter = int(store.summary().get("current_chapter") or 0)
+        job = _continuous_job_store(store).create(
+            project_id=_public_project_id(store),
+            story_id=story_id,
+            count=payload.count,
+            start_chapter=current_chapter + 1,
+        )
+        job_id = str(job["job_id"])
+        _register_continuous_job(story_id, job_id)
+    _continuous_generation_executor.submit(
+        _run_continuous_generation_job,
+        job_id,
+        project_id,
+    )
+    return _continuous_generation_job_response(job)
+
+
+def _load_continuous_generation_job_for_route(
+    project_id: str,
+    *,
+    job_id: str | None = None,
+    resume_safe: bool = False,
+) -> dict[str, object]:
+    store = _store_for(project_id)
+    jobs = _continuous_job_store(store)
+    job = jobs.load(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail="continuous_generation_job_not_found",
+        )
+    if _strip_file_prefix(str(job.get("project_id") or "")) != _strip_file_prefix(
+        _public_project_id(store)
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail="continuous_generation_job_not_found",
+        )
+    story_id = _story_id_for(store)
+    with _file_generation_jobs_lock:
+        registered_job_id = _active_job_for_story(
+            _active_continuous_generation_jobs,
+            story_id,
+        )
+    if registered_job_id != str(job.get("job_id") or ""):
+        job = jobs.reconcile(
+            job,
+            official_chapter=int(store.summary().get("current_chapter") or 0),
+        )
+    should_submit = False
+    if resume_safe and str(job.get("status")) in CONTINUOUS_ACTIVE_STATUSES:
+        phase = str(job.get("phase") or "")
+        if phase in SAFE_RECOVERY_PHASES:
+            with _file_generation_jobs_lock:
+                active_id = _active_job_for_story(
+                    _active_continuous_generation_jobs, story_id
+                )
+                if not active_id:
+                    _register_continuous_job(story_id, str(job["job_id"]))
+                    should_submit = True
+    if should_submit:
+        _continuous_generation_executor.submit(
+            _run_continuous_generation_job,
+            str(job["job_id"]),
+            project_id,
+        )
+    return job
 
 
 # ---------------------------------------------------------------------------
@@ -1363,6 +1841,19 @@ def enqueue_continuation_bootstrap(
 
 
 def init_file_project_routes() -> APIRouter:
+    register_file_project_outline_routes(
+        router,
+        store_for=_store_for,
+        planning_generator=lambda: outline_planning_generator,
+    )
+    register_file_project_candidate_routes(
+        router,
+        store_for=_store_for,
+        assert_mutation_allowed=_assert_candidate_mutation_allowed,
+        project_payload=_project_payload,
+        story_payload=_story_payload,
+    )
+
     @router.post("/book-dissection/reference")
     def dissect_book_reference(payload: BookDissectionReferenceRequest) -> dict[str, Any]:
         try:
@@ -1734,94 +2225,6 @@ def init_file_project_routes() -> APIRouter:
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    @router.get("/file-projects/{project_id}/outline")
-    def get_file_project_outline(project_id: str) -> dict[str, Any]:
-        store = _store_for(project_id)
-        try:
-            return store.project_outline()
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    @router.get("/file-projects/{project_id}/outline/volume-workflow")
-    def get_file_project_volume_workflow(
-        project_id: str,
-        target_chapter: int,
-    ) -> dict[str, Any]:
-        store = _store_for(project_id)
-        try:
-            return store.volume_workflow_status(target_chapter)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    @router.post("/file-projects/{project_id}/outline/volumes/next")
-    def design_file_project_next_volume(
-        project_id: str,
-        payload: VolumeWorkflowGenerationRequest | None = None,
-    ) -> dict[str, Any]:
-        store = _store_for(project_id)
-        try:
-            return store.design_next_volume(
-                outline_planning_generator,
-                guidance=payload.guidance if payload else "",
-            )
-        except Exception as exc:
-            _raise_volume_workflow_write_error(exc, operation="next_volume")
-
-    @router.post(
-        "/file-projects/{project_id}/outline/volumes/{volume_id}/detail"
-    )
-    def generate_file_project_volume_detail(
-        project_id: str,
-        volume_id: str,
-        payload: VolumeWorkflowGenerationRequest | None = None,
-    ) -> dict[str, Any]:
-        store = _store_for(project_id)
-        try:
-            return store.generate_volume_detail(
-                outline_planning_generator,
-                volume_id=volume_id,
-                guidance=payload.guidance if payload else "",
-            )
-        except Exception as exc:
-            _raise_volume_workflow_write_error(exc, operation="volume_detail")
-
-    @router.get("/file-projects/{project_id}/outline/extension-readiness")
-    def get_file_project_outline_extension_readiness(
-        project_id: str,
-    ) -> dict[str, Any]:
-        store = _store_for(project_id)
-        try:
-            return store.outline_extension_readiness()
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    @router.post("/file-projects/{project_id}/outline/generate")
-    def generate_file_project_outline_plan(
-        project_id: str,
-        payload: OutlinePlanGenerationRequest,
-    ) -> dict[str, Any]:
-        store = _store_for(project_id)
-        try:
-            kwargs: dict[str, Any] = {
-                "mode": payload.mode,
-                "guidance": payload.guidance,
-            }
-            if payload.restart_from is not None:
-                kwargs["restart_from"] = payload.restart_from
-            return store.generate_outline_plan(outline_planning_generator, **kwargs)
-        except ValueError as exc:
-            detail = str(exc)
-            if detail == "outline_planning_generation_failed" and exc.__cause__ is not None:
-                cause = exc.__cause__
-                cause_text = re.sub(r"\s+", " ", str(cause)).strip()[:500]
-                detail = f"{detail}:{type(cause).__name__}:{cause_text or 'no_detail'}"
-            status_code = 502 if detail.startswith("outline_planning_generation_failed") else 422
-            raise HTTPException(status_code=status_code, detail=detail) from exc
-
-    @router.get("/file-projects/{project_id}/outline/generation-checkpoints")
-    def get_outline_generation_checkpoints(project_id: str) -> dict[str, Any]:
-        return _store_for(project_id).outline_generation_checkpoints()
-
     @router.post("/file-projects/{project_id}/continuation-bootstrap")
     def start_continuation_bootstrap(
         project_id: str, response: Response
@@ -1858,6 +2261,13 @@ def init_file_project_routes() -> APIRouter:
 
     @router.post("/file-projects/{project_id}/enrich-world")
     def enrich_file_project_world(project_id: str) -> dict[str, Any]:
+        # Plan rule: the legacy synchronous path and the new world-build
+        # job path are mutually exclusive — both call the same model
+        # graph and would race for the same world_blueprint if a user
+        # double-clicked.  Reject the synchronous path while a job is
+        # active; the caller can poll the job instead.
+        if _has_active_world_build_job(project_id):
+            raise HTTPException(status_code=409, detail="world_build_in_progress")
         store = _store_for(project_id)
         project_payload = {
             **store.project(),
@@ -1873,12 +2283,11 @@ def init_file_project_routes() -> APIRouter:
             status_code = 400 if detail == "missing_api_key" else 502
             raise HTTPException(status_code=status_code, detail=detail) from exc
         except Exception as exc:
-            cause_text = re.sub(r"\s+", " ", str(exc)).strip()[:500]
-            detail = (
-                f"world_enrichment_failed:{type(exc).__name__}:"
-                f"{cause_text or 'no_detail'}"
-            )
-            raise HTTPException(status_code=502, detail=detail) from exc
+            code = _world_build_error_code(exc)
+            raise HTTPException(
+                status_code=502,
+                detail=f"{code}:{_world_build_user_message(code)}",
+            ) from exc
         enriched_payload = enriched.model_dump(mode="json")
         store.update_project(
             {
@@ -1903,13 +2312,36 @@ def init_file_project_routes() -> APIRouter:
         )
         return _project_payload(store)
 
-    @router.put("/file-projects/{project_id}/outline")
-    def update_file_project_outline(project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        store = _store_for(project_id)
-        try:
-            return store.update_project_outline(payload)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    @router.post("/file-projects/{project_id}/world-build-jobs")
+    def start_file_project_world_build_job(project_id: str) -> dict[str, object]:
+        # Plan rule: starting a job while the legacy endpoint is mid-run
+        # would also race.  Reuse the same cross-check helper so both
+        # directions share one conflict guard.
+        if _has_active_world_build_job(project_id):
+            raise HTTPException(status_code=409, detail="world_build_in_progress")
+        return _start_world_build_job(project_id)
+
+    @router.get("/file-projects/{project_id}/world-build-jobs/current")
+    def get_current_file_project_world_build_job(project_id: str) -> dict[str, object]:
+        normalized_project_id = _strip_file_prefix(project_id)
+        with _world_build_jobs_lock:
+            job_id = _active_world_build_jobs.get(normalized_project_id)
+            job = _world_build_jobs.get(job_id) if job_id else None
+            if job is None:
+                job = _load_world_build_job(_store_for(project_id))
+            if job is None:
+                raise HTTPException(status_code=404, detail="world_build_job_not_found")
+            return _world_build_job_response(job)
+
+    @router.get("/file-projects/{project_id}/world-build-jobs/{job_id}")
+    def get_file_project_world_build_job(project_id: str, job_id: str) -> dict[str, object]:
+        with _world_build_jobs_lock:
+            job = _world_build_jobs.get(job_id)
+            if job is None:
+                job = _load_world_build_job(_store_for(project_id), job_id)
+            if job is None or _strip_file_prefix(str(job.get("project_id", ""))) != _strip_file_prefix(project_id):
+                raise HTTPException(status_code=404, detail="world_build_job_not_found")
+            return _world_build_job_response(job)
 
     @router.get("/file-projects/{project_id}/foreshadowing")
     def get_file_project_foreshadowing(project_id: str) -> dict[str, Any]:
@@ -2233,62 +2665,68 @@ def init_file_project_routes() -> APIRouter:
             "generated": generated,
         }
 
-    @router.get("/file-projects/{project_id}/candidates")
-    def list_file_project_candidates(project_id: str, chapter_number: int | None = None) -> dict[str, Any]:
-        store = _store_for(project_id)
-        accepted_project_ids = _candidate_project_ids(store, project_id)
-        items = [
-            item
-            for item in store.candidate_store.list(chapter_number=chapter_number)
-            if item.project_id in accepted_project_ids
-        ]
-        return {
-            "schema_version": "file-project-candidate-list/v1",
-            "items": [item.to_dict() for item in items],
-        }
-
-    @router.get("/file-projects/{project_id}/candidates/{candidate_id}")
-    def get_file_project_candidate(project_id: str, candidate_id: str) -> dict[str, Any]:
-        store = _store_for(project_id)
-        candidate = store.candidate_store.get(candidate_id)
-        if candidate is None or candidate.project_id not in _candidate_project_ids(store, project_id):
-            raise HTTPException(status_code=404, detail="candidate_not_found")
-        return {"schema_version": "file-project-candidate/v1", "candidate": candidate.to_dict()}
-
-    @router.post("/file-projects/{project_id}/candidates/{candidate_id}/discard")
-    def discard_file_project_candidate(project_id: str, candidate_id: str) -> dict[str, Any]:
-        store = _store_for(project_id)
-        candidate = store.candidate_store.get(candidate_id)
-        if candidate is None or candidate.project_id not in _candidate_project_ids(store, project_id):
-            raise HTTPException(status_code=404, detail="candidate_not_found")
-        try:
-            candidate.discard()
-        except ValueError as exc:
-            _raise_file_project_error(exc)
-        store.candidate_store.save(candidate)
-        return {"schema_version": "file-project-candidate-discard/v1", "candidate": candidate.to_dict()}
-
-    @router.post("/file-projects/{project_id}/candidates/{candidate_id}/confirm")
-    def confirm_file_project_candidate(project_id: str, candidate_id: str, force: bool = False) -> dict[str, Any]:
-        store = _store_for(project_id)
-        try:
-            confirmed = store.confirm_candidate(candidate_id, accept_quality_warnings=force)
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except ValueError as exc:
-            _raise_file_project_error(exc)
-        return {
-            **confirmed,
-            "project": _project_payload(store),
-            "story": _story_payload(store),
-        }
-
     @router.post("/file-projects/{project_id}/generation-jobs")
     def start_file_generation_job_route(
         project_id: str,
         payload: FileProjectGenerationJobRequest | None = None,
     ) -> dict[str, object]:
         return start_file_generation_job(project_id, payload)
+
+    @router.post("/file-projects/{project_id}/continuous-generation-jobs")
+    def start_continuous_generation_job_route(
+        project_id: str,
+        payload: FileProjectContinuousGenerationRequest,
+    ) -> dict[str, object]:
+        return start_continuous_generation_job(project_id, payload)
+
+    @router.get("/file-projects/{project_id}/continuous-generation-jobs/current")
+    def get_current_continuous_generation_job(
+        project_id: str,
+    ) -> dict[str, object]:
+        return _continuous_generation_job_response(
+            _load_continuous_generation_job_for_route(
+                project_id,
+                resume_safe=True,
+            )
+        )
+
+    @router.get(
+        "/file-projects/{project_id}/continuous-generation-jobs/{job_id}"
+    )
+    def get_continuous_generation_job(
+        project_id: str,
+        job_id: str,
+    ) -> dict[str, object]:
+        return _continuous_generation_job_response(
+            _load_continuous_generation_job_for_route(
+                project_id,
+                job_id=job_id,
+                resume_safe=True,
+            )
+        )
+
+    @router.post(
+        "/file-projects/{project_id}/continuous-generation-jobs/{job_id}/stop"
+    )
+    def stop_continuous_generation_job(
+        project_id: str,
+        job_id: str,
+    ) -> dict[str, object]:
+        store = _store_for(project_id)
+        existing = _load_continuous_generation_job_for_route(
+            project_id,
+            job_id=job_id,
+        )
+        try:
+            stopped = _continuous_job_store(store).request_stop(
+                str(existing["job_id"])
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="continuous_generation_job_not_found",
+            ) from exc
+        return _continuous_generation_job_response(stopped)
 
     @router.get("/file-projects/{project_id}/generation-jobs")
     def list_file_generation_jobs(project_id: str, limit: int = 30) -> dict[str, object]:
