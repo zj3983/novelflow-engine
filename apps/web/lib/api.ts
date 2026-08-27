@@ -275,6 +275,7 @@ export type WorldBuildJobResponse = {
     | "conflicted"
     | string;
   error: string;
+  error_code?: string;
   created_at: string;
   updated_at: string;
 };

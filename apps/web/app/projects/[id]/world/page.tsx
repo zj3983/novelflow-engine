@@ -200,14 +200,10 @@ export default function WorldPage() {
       if (job.status === "completed") {
         setSetupMessage("世界观已补全，可以继续检查或直接开始写作。");
         await refresh({ invalidateChapter: false });
-      } else if (job.status === "interrupted") {
-        setSetupMessage(job.progress || "服务已重启，请重新开始补全。");
-      } else if (job.status === "conflicted") {
-        setSetupMessage(
-          job.progress || "世界观已被手动修改，请重新开始补全。",
-        );
       } else {
-        setSetupMessage(describeJobStatus(job).message);
+        // interrupted / conflicted / failed / queued / running:
+        // jobStatus renders the same message, so don't duplicate it here.
+        setSetupMessage("");
       }
     } catch (enrichError) {
       if (enrichError instanceof DOMException && enrichError.name === "AbortError") {
@@ -225,10 +221,6 @@ export default function WorldPage() {
   const jobStatus = worldBuildJob ? describeJobStatus(worldBuildJob) : null;
   const isJobActive =
     worldBuildJob?.status === "queued" || worldBuildJob?.status === "running";
-  const canRetry =
-    worldBuildJob?.status === "failed" ||
-    worldBuildJob?.status === "interrupted" ||
-    worldBuildJob?.status === "conflicted";
   const isOpening = (story?.current_chapter ?? 0) === 0;
 
   return (
@@ -274,16 +266,6 @@ export default function WorldPage() {
                             ? "重试补全"
                             : "AI 补全世界观"}
                   </button>
-                  {canRetry ? (
-                    <button
-                      className="ws-btn ws-btn--ghost"
-                      type="button"
-                      disabled={enriching || isJobActive}
-                      onClick={() => void enrichWorld()}
-                    >
-                      再次尝试
-                    </button>
-                  ) : null}
                   <Link className="ws-btn ws-btn--primary" href={`/projects/${encodedProjectId}/write`}>
                     开始写第一章
                   </Link>

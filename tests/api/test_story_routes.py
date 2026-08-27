@@ -2022,7 +2022,8 @@ def test_world_build_job_keeps_completed_module_artifact_when_later_work_fails(m
 
     assert job["status"] == "failed"
     assert "society_provider_timeout" not in str(job["error"])
-    assert str(job["error"]).startswith("world_build_provider_error:")
+    assert job.get("error_code") == "world_build_provider_error"
+    assert "world_build_provider_error:" not in str(job["error"])
     assert project_payload["world_blueprint"]["world_build_artifacts"] == [artifact]
     assert updates[0]["replace"] is True
 

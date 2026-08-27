@@ -390,8 +390,14 @@ def _world_build_user_message(code: str) -> str:
 
 
 def _sanitize_world_build_error_detail(exc: BaseException) -> str:
+    """Return the user-facing message only — never the raw code.
+
+    The machine-readable code lives in its own ``error_code`` field on the
+    job record so the browser can render plain Chinese without leaking the
+    internal ``world_build_*`` taxonomy.
+    """
     code = _world_build_error_code(exc)
-    return f"{code}:{_world_build_user_message(code)}"
+    return _world_build_user_message(code)
 
 
 def _reconcile_world_build_job(
@@ -463,7 +469,8 @@ def _check_world_build_conflict(
         status="conflicted",
         progress="世界观已被手动修改，请重新开始补全",
         active_module_status="conflicted",
-        error="world_build_conflict",
+        error_code="world_build_conflict",
+        error="世界观已被手动修改，请重新开始补全。",
         project_revision=current_revision,
     )
     return True
@@ -568,6 +575,7 @@ def _run_world_build_job(job_id: str, project_id: str) -> None:
             job_id,
             status="failed",
             progress=_world_build_user_message(code),
+            error_code=code,
             error=_sanitize_world_build_error_detail(exc),
         )
     else:
@@ -2286,7 +2294,7 @@ def init_file_project_routes() -> APIRouter:
             code = _world_build_error_code(exc)
             raise HTTPException(
                 status_code=502,
-                detail=f"{code}:{_world_build_user_message(code)}",
+                detail=_world_build_user_message(code),
             ) from exc
         enriched_payload = enriched.model_dump(mode="json")
         store.update_project(
