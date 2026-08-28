@@ -8,7 +8,7 @@ import os
 import re
 import shutil
 from pathlib import Path
-from threading import Lock
+from threading import RLock, Lock
 from typing import Annotated, Any, Literal
 from uuid import uuid4
 
@@ -83,7 +83,7 @@ _file_generation_jobs_lock = Lock()
 _world_build_executor = ThreadPoolExecutor(max_workers=1)
 _world_build_jobs: dict[str, dict[str, object]] = {}
 _active_world_build_jobs: dict[str, str] = {}
-_world_build_jobs_lock = Lock()
+_world_build_jobs_lock = RLock()
 _continuous_generation_executor = ThreadPoolExecutor(max_workers=1)
 _active_continuous_generation_jobs: dict[str, str] = {}
 # Plan rule: "Add a dedicated single-worker executor" for the
@@ -430,17 +430,54 @@ def _reconcile_world_build_job(
     return recovered
 
 
+_legacy_world_enrichment_inflight: set[str] = set()
+_legacy_world_enrichment_lock = Lock()
+
+
+def _has_active_legacy_world_enrichment(project_id: str) -> bool:
+    normalized = _strip_file_prefix(project_id)
+    with _legacy_world_enrichment_lock:
+        return normalized in _legacy_world_enrichment_inflight
+
+
+def _mark_legacy_world_enrichment_started(project_id: str) -> bool:
+    """Atomically claim the legacy ``/enrich-world`` slot for one project.
+
+    Returns ``True`` if the caller now owns the slot, ``False`` if a
+    concurrent caller (legacy or new job) is already in flight.
+    """
+    normalized = _strip_file_prefix(project_id)
+    with _legacy_world_enrichment_lock:
+        if normalized in _legacy_world_enrichment_inflight:
+            return False
+        _legacy_world_enrichment_inflight.add(normalized)
+        return True
+
+
+def _mark_legacy_world_enrichment_finished(project_id: str) -> None:
+    normalized = _strip_file_prefix(project_id)
+    with _legacy_world_enrichment_lock:
+        _legacy_world_enrichment_inflight.discard(normalized)
+
+
 def _has_active_world_build_job(project_id: str) -> bool:
     normalized = _strip_file_prefix(project_id)
     with _world_build_jobs_lock:
         job_id = _active_world_build_jobs.get(normalized)
         if not job_id:
-            return False
+            legacy_busy = _has_active_legacy_world_enrichment(project_id)
+            return legacy_busy
         job = _world_build_jobs.get(job_id)
         if job is None:
             _active_world_build_jobs.pop(normalized, None)
-            return False
-        return str(job.get("status")) in {"queued", "running"}
+            legacy_busy = _has_active_legacy_world_enrichment(project_id)
+            return legacy_busy
+        if str(job.get("status")) in {"queued", "running"}:
+            return True
+        # Job in memory is in a terminal state — still consider a
+        # concurrent legacy enrich in flight, otherwise the two
+        # writers race for the same world_blueprint.
+        return _has_active_legacy_world_enrichment(project_id)
 
 
 def _check_world_build_conflict(
@@ -484,10 +521,36 @@ def _world_build_job_response(job: dict[str, object]) -> dict[str, object]:
     }
 
 
+_WORLD_BUILD_TERMINAL_STATUSES = frozenset(
+    {"conflicted", "completed", "failed", "interrupted"}
+)
+
+
 def _update_world_build_job(job_id: str, **updates: object) -> None:
+    """Apply a partial update to a world-build job in a single critical section.
+
+    Once the job reaches a terminal status (``conflicted``, ``completed``,
+    ``failed``, ``interrupted``) the ``status`` field is locked: subsequent
+    progress callbacks must not silently regress it back to ``running``,
+    which would let the next module's full write clobber a hand edit the
+    author made between modules.  Progress / module-metadata fields may
+    still be updated so the UI can keep reflecting what the model is
+    producing up to the moment the conflict was detected.
+    """
     with _world_build_jobs_lock:
         job = _world_build_jobs.get(job_id)
         if job is None:
+            return
+        current_status = str(job.get("status") or "")
+        if (
+            current_status in _WORLD_BUILD_TERMINAL_STATUSES
+            and "status" in updates
+            and updates["status"] != current_status
+        ):
+            updates = {k: v for k, v in updates.items() if k != "status"}
+        if not updates:
+            job["updated_at"] = _now_iso()
+            _persist_world_build_job(job)
             return
         job.update(updates)
         job["updated_at"] = _now_iso()
@@ -2282,45 +2345,49 @@ def init_file_project_routes() -> APIRouter:
         # Plan rule: the legacy synchronous path and the new world-build
         # job path are mutually exclusive — both call the same model
         # graph and would race for the same world_blueprint if a user
-        # double-clicked.  Reject the synchronous path while a job is
-        # active; the caller can poll the job instead.
+        # double-clicked.  Claim the slot atomically before doing any
+        # work; the symmetric check in ``_has_active_world_build_job``
+        # blocks the new job path while the legacy request is in flight.
         if _has_active_world_build_job(project_id):
             raise HTTPException(status_code=409, detail="world_build_in_progress")
-        store = _store_for(project_id)
-        project_payload = {
-            **store.project(),
-            "project_id": _public_project_id(store),
-            "source_path": str(store.root),
-            "active_story_id": _story_id_for(store),
-            "story_core_context": store.story_core_context("world"),
-        }
+        if not _mark_legacy_world_enrichment_started(project_id):
+            raise HTTPException(status_code=409, detail="world_build_in_progress")
         try:
-            enriched = enrich_project_world(NovelProject.model_validate(project_payload))
-        except WorldEnrichmentError as exc:
-            detail = str(exc) or "world_enrichment_failed"
-            status_code = 400 if detail == "missing_api_key" else 502
-            raise HTTPException(status_code=status_code, detail=detail) from exc
-        except Exception as exc:
-            code = _world_build_error_code(exc)
-            raise HTTPException(
-                status_code=502,
-                detail=_world_build_user_message(code),
-            ) from exc
-        enriched_payload = enriched.model_dump(mode="json")
-        store.update_project(
-            {
-                key: value
-                for key, value in enriched_payload.items()
-                if key
-                in {
-                    "title",
-                    "world_summary",
-                    "current_focus",
-                    "author_constraints",
-                    "world_blueprint",
-                    "character_profiles",
-                    "relationship_graph",
-                    "enabled_skill_ids",
+            store = _store_for(project_id)
+            project_payload = {
+                **store.project(),
+                "project_id": _public_project_id(store),
+                "source_path": str(store.root),
+                "active_story_id": _story_id_for(store),
+                "story_core_context": store.story_core_context("world"),
+            }
+            try:
+                enriched = enrich_project_world(NovelProject.model_validate(project_payload))
+            except WorldEnrichmentError as exc:
+                detail = str(exc) or "world_enrichment_failed"
+                status_code = 400 if detail == "missing_api_key" else 502
+                raise HTTPException(status_code=status_code, detail=detail) from exc
+            except Exception as exc:
+                code = _world_build_error_code(exc)
+                raise HTTPException(
+                    status_code=502,
+                    detail=_world_build_user_message(code),
+                ) from exc
+            enriched_payload = enriched.model_dump(mode="json")
+            store.update_project(
+                {
+                    key: value
+                    for key, value in enriched_payload.items()
+                    if key
+                    in {
+                        "title",
+                        "world_summary",
+                        "current_focus",
+                        "author_constraints",
+                        "world_blueprint",
+                        "character_profiles",
+                        "relationship_graph",
+                        "enabled_skill_ids",
                     "enabled_skill_module_ids",
                     "status",
                 }
@@ -2328,7 +2395,9 @@ def init_file_project_routes() -> APIRouter:
             | {"pipeline_stage": "environment_ready"},
             replace_world_blueprint=True,
         )
-        return _project_payload(store)
+            return _project_payload(store)
+        finally:
+            _mark_legacy_world_enrichment_finished(project_id)
 
     @router.post("/file-projects/{project_id}/world-build-jobs")
     def start_file_project_world_build_job(project_id: str) -> dict[str, object]:

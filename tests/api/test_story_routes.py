@@ -2079,6 +2079,199 @@ def test_world_build_job_reconciles_persisted_running_after_restart(tmp_path, mo
         file_projects._world_build_jobs.pop(job_id_started, None)
 
 
+def test_legacy_enrich_world_blocks_new_world_build_job_while_in_flight(
+    tmp_path, monkeypatch
+) -> None:
+    """The legacy synchronous ``/enrich-world`` must claim a slot before
+    writing, and the new job path must refuse to start while the legacy
+    request is in flight — otherwise both writers race for the same
+    world_blueprint.
+    """
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    project_root = tmp_path / "p-legacy-blocks-job"
+    _make_file_project(project_root, project_id="p-legacy-blocks-job")
+
+    assert file_projects._mark_legacy_world_enrichment_started(
+        "file:p-legacy-blocks-job"
+    ), "first legacy call should claim the slot"
+    try:
+        # New job endpoint must see the legacy request as in-flight.
+        assert file_projects._has_active_world_build_job(
+            "file:p-legacy-blocks-job"
+        )
+        assert file_projects._has_active_legacy_world_enrichment(
+            "file:p-legacy-blocks-job"
+        )
+        # A second legacy request must not be able to claim the slot
+        # while the first one is still in flight.
+        assert not file_projects._mark_legacy_world_enrichment_started(
+            "file:p-legacy-blocks-job"
+        )
+    finally:
+        file_projects._mark_legacy_world_enrichment_finished(
+            "file:p-legacy-blocks-job"
+        )
+
+    # Slot is released; both signals are now false.
+    assert not file_projects._has_active_world_build_job(
+        "file:p-legacy-blocks-job"
+    )
+    assert not file_projects._has_active_legacy_world_enrichment(
+        "file:p-legacy-blocks-job"
+    )
+
+
+def test_legacy_enrich_world_blocks_new_world_build_job_while_in_flight(
+    tmp_path, monkeypatch
+) -> None:
+    """The legacy synchronous ``/enrich-world`` must claim a slot before
+    writing, and the new job path must refuse to start while the legacy
+    request is in flight — otherwise both writers race for the same
+    world_blueprint.
+    """
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    project_root = tmp_path / "p-legacy-blocks-job"
+    _make_file_project(project_root, project_id="p-legacy-blocks-job")
+
+    assert file_projects._mark_legacy_world_enrichment_started(
+        "file:p-legacy-blocks-job"
+    ), "first legacy call should claim the slot"
+    try:
+        # New job endpoint must see the legacy request as in-flight.
+        assert file_projects._has_active_world_build_job(
+            "file:p-legacy-blocks-job"
+        )
+        assert file_projects._has_active_legacy_world_enrichment(
+            "file:p-legacy-blocks-job"
+        )
+        # A second legacy request must not be able to claim the slot
+        # while the first one is still in flight.
+        assert not file_projects._mark_legacy_world_enrichment_started(
+            "file:p-legacy-blocks-job"
+        )
+    finally:
+        file_projects._mark_legacy_world_enrichment_finished(
+            "file:p-legacy-blocks-job"
+        )
+
+    # Slot is released; both signals are now false.
+    assert not file_projects._has_active_world_build_job(
+        "file:p-legacy-blocks-job"
+    )
+    assert not file_projects._has_active_legacy_world_enrichment(
+        "file:p-legacy-blocks-job"
+    )
+
+
+def test_world_build_job_in_progress_check_treats_legacy_as_active(
+    tmp_path, monkeypatch
+) -> None:
+    """A queued/running new job AND an in-flight legacy request are
+    both signals that the world is being written; the new path's
+    pre-flight check must see either of them.
+    """
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    project_root = tmp_path / "p-legacy-blocks-job-in-prog"
+    _make_file_project(project_root, project_id="p-legacy-blocks-job-in-prog")
+
+    job_id = "wbg-legacy-blocks-job"
+    with file_projects._world_build_jobs_lock:
+        file_projects._world_build_jobs[job_id] = {
+            "job_id": job_id,
+            "project_id": "file:p-legacy-blocks-job-in-prog",
+            "status": "running",
+            "progress": "正在构建",
+            "active_module_id": "core_rules",
+            "active_module_title": "核心规则",
+            "active_module_status": "running",
+            "error": "",
+            "created_at": "2025-01-01T00:00:00+00:00",
+            "updated_at": "2025-01-01T00:00:00+00:00",
+            "project_revision": "marker",
+            "_project_root": str(project_root),
+        }
+        file_projects._active_world_build_jobs["p-legacy-blocks-job-in-prog"] = job_id
+    try:
+        from starlette.testclient import TestClient
+        from apps.api.main import app  # type: ignore
+
+        client = TestClient(app)
+        response = client.post(
+            "/file-projects/file:p-legacy-blocks-job-in-prog/enrich-world"
+        )
+        assert response.status_code == 409
+        assert response.json()["detail"] == "world_build_in_progress"
+    finally:
+        with file_projects._world_build_jobs_lock:
+            file_projects._active_world_build_jobs.pop(
+                "p-legacy-blocks-job-in-prog", None
+            )
+            file_projects._world_build_jobs.pop(job_id, None)
+
+
+def test_load_world_build_job_after_restart_does_not_deadlock(
+    tmp_path, monkeypatch
+) -> None:
+    """After a process restart, ``_load_world_build_job`` must not
+    deadlock when called from a context that already holds
+    ``_world_build_jobs_lock``.  The request route enters with the lock
+    held and then falls through to ``_reconcile_world_build_job``,
+    which tries to acquire the same lock.  An ``RLock`` makes that
+    re-entrant; a plain ``Lock`` would deadlock the request thread.
+    """
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    project_root = tmp_path / "p-world-build-restart-deadlock"
+    _make_file_project(project_root, project_id="p-world-build-restart-deadlock")
+    log_dir = project_root / ".story-system" / "world-build-jobs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    job_id = "wbg-restart-dl"
+    (log_dir / f"{job_id}.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "world-build-job/v1",
+                "job_id": job_id,
+                "project_id": "file:p-world-build-restart-deadlock",
+                "status": "running",
+                "progress": "正在构建：核心规则",
+                "active_module_id": "core_rules",
+                "active_module_title": "核心规则",
+                "active_module_status": "running",
+                "error": "",
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2025-01-01T00:00:00+00:00",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    store = file_projects._store_for("file:p-world-build-restart-deadlock")
+    # Mirror the request-handler entry path: hold the lock and call
+    # into the load helper.  If ``_world_build_jobs_lock`` is a plain
+    # ``Lock`` this call deadlocks; with ``RLock`` it returns the
+    # reconciled (interrupted) record.
+    import signal
+
+    class _Timeout(Exception):
+        pass
+
+    def _handler(_signum, _frame):
+        raise _Timeout
+
+    if hasattr(signal, "SIGALRM"):
+        signal.signal(signal.SIGALRM, _handler)
+        signal.alarm(5)
+    try:
+        with file_projects._world_build_jobs_lock:
+            job = file_projects._load_world_build_job(store, job_id)
+        assert job is not None, "load helper should return the persisted record"
+        assert job["status"] == "interrupted"
+        assert job["job_id"] == job_id
+    finally:
+        if hasattr(signal, "SIGALRM"):
+            signal.alarm(0)
+
+
 def test_legacy_enrich_world_returns_409_when_world_build_job_active(tmp_path, monkeypatch):
     monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
     project_root = tmp_path / "p-enrich-conflict"
@@ -2109,6 +2302,106 @@ def test_legacy_enrich_world_returns_409_when_world_build_job_active(tmp_path, m
         with file_projects._world_build_jobs_lock:
             file_projects._active_world_build_jobs.pop("p-enrich-conflict", None)
             file_projects._world_build_jobs.pop(active_job_id, None)
+
+
+def test_world_build_conflict_status_survives_subsequent_progress_callbacks(
+    tmp_path, monkeypatch
+) -> None:
+    """Once a job is marked ``conflicted`` (author edited the world), the
+    status must not be reset back to ``running`` by a later module's
+    progress callback.  Otherwise the next module's full pipeline write
+    silently overwrites the author's hand edits.
+    """
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    project_root = tmp_path / "p-conflict-survive"
+    _make_file_project(project_root, project_id="p-conflict-survive")
+
+    job_id = "wbg-conflict-survive"
+    with file_projects._world_build_jobs_lock:
+        file_projects._world_build_jobs[job_id] = {
+            "job_id": job_id,
+            "project_id": "file:p-conflict-survive",
+            "status": "running",
+            "progress": "正在构建：核心规则",
+            "active_module_id": "core_rules",
+            "active_module_title": "核心规则",
+            "active_module_status": "running",
+            "error": "",
+            "created_at": "2025-01-01T00:00:00+00:00",
+            "updated_at": "2025-01-01T00:00:00+00:00",
+            "project_revision": "stale-revision-marker",
+            "_project_root": str(project_root),
+        }
+        file_projects._active_world_build_jobs["p-conflict-survive"] = job_id
+
+    try:
+        # Author edits the world between modules.
+        project = json.loads(
+            (project_root / ".webnovel" / "project.json").read_text(encoding="utf-8")
+        )
+        project["world_blueprint"] = {"world_rules": ["作者手改规则"]}
+        (project_root / ".webnovel" / "project.json").write_text(
+            json.dumps(project, ensure_ascii=False), encoding="utf-8"
+        )
+
+        # Module-2 "done" callback with its artifact triggers the conflict.
+        artifact = {
+            "module_id": "society_and_livelihood",
+            "title": "社会民生",
+            "status": "completed",
+            "fields": ["world_systems"],
+            "output": {"world_systems": ["模块二生成制度"]},
+        }
+        # ``_persist_partial`` is called from inside the report_progress
+        # closure in ``_run_world_build_job`` — call it directly here.
+        store = file_projects._store_for("file:p-conflict-survive")
+        file_projects._persist_partial_world_build_artifact(
+            store, artifact, job_id=job_id
+        )
+
+        with file_projects._world_build_jobs_lock:
+            job = file_projects._world_build_jobs[job_id]
+        assert job["status"] == "conflicted", (
+            "expected partial persist to detect the author edit and mark "
+            "the job conflicted"
+        )
+
+        # The next module's "running" progress callback (the race the user
+        # reported) must NOT regress the job back to ``running``; the
+        # protected terminal state has to survive.
+        file_projects._update_world_build_job(
+            job_id,
+            status="running",
+            progress="正在构建：长篇运行",
+            active_module_id="story_engine",
+            active_module_title="长篇运行",
+            active_module_status="running",
+        )
+        with file_projects._world_build_jobs_lock:
+            job = file_projects._world_build_jobs[job_id]
+        assert job["status"] == "conflicted", (
+            "progress callback must not overwrite a terminal conflicted "
+            "status; otherwise the next full write would clobber the "
+            "author's manual edit"
+        )
+
+        # Likewise a "done" callback that only updates progress / module
+        # metadata must not silently reanimate the job.
+        file_projects._update_world_build_job(
+            job_id,
+            progress="已完成：长篇运行",
+            active_module_id="story_engine",
+            active_module_title="长篇运行",
+            active_module_status="done",
+        )
+        with file_projects._world_build_jobs_lock:
+            job = file_projects._world_build_jobs[job_id]
+        assert job["status"] == "conflicted"
+        assert job["active_module_status"] == "done"
+    finally:
+        with file_projects._world_build_jobs_lock:
+            file_projects._active_world_build_jobs.pop("p-conflict-survive", None)
+            file_projects._world_build_jobs.pop(job_id, None)
 
 
 def test_start_world_build_returns_409_when_legacy_enrich_world_active(tmp_path, monkeypatch):

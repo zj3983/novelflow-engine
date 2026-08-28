@@ -3609,6 +3609,12 @@ export async function startFileProjectRegenerationJob(
   })) as GenerationJobResponse;
 }
 
+// Backwards-compatible alias.  The legacy "expansion" entry point used
+// the same shape as a chapter regeneration job (project + chapter
+// number); keep the named export so the write-page button still
+// resolves even after the dedicated endpoint was removed.
+export const startFileProjectExpansionJob = startFileProjectRegenerationJob;
+
 export async function startFileProjectPolishJob(
   projectId: string,
   chapterNumber: number,

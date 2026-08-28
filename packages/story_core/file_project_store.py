@@ -7704,6 +7704,19 @@ class FileProjectStore:
         visible["continuity_facts"] = normalized_world.continuity_facts
         return visible
 
+    def persisted_state(self) -> dict[str, Any]:
+        """Return the raw ``state.json`` payload as last persisted to disk.
+
+        Unlike :meth:`state`, this does not fold in the visible chapter
+        state nor the world context projection — it surfaces the bytes
+        the file actually holds so the API can render a stable,
+        no-recomputation view of the project (e.g. project listing and
+        regenerate handlers).  Returns an empty dict when the file is
+        missing or unreadable.
+        """
+        state = self._read_json(self.webnovel_dir / "state.json", {})
+        return state if isinstance(state, dict) else {}
+
     def _valid_foreshadowing_ledger(self, raw_ledger: Any) -> list[ForeshadowingState]:
         parsed = self._parse_foreshadowing_ledger(raw_ledger)
         valid = [
