@@ -517,6 +517,16 @@ def _persist_partial_world_build_artifact(
     next_artifacts.append(artifact)
     next_blueprint = {**blueprint, "world_build_artifacts": next_artifacts}
     store.update_project({"world_blueprint": next_blueprint}, replace_world_blueprint=True)
+    if job_id:
+        # Refresh the job's stored revision so the next module's conflict
+        # check does not trip on this running job's own partial write.  A
+        # genuine author edit between modules still produces a different
+        # hash and is caught by the check.
+        with _world_build_jobs_lock:
+            tracked_job = _world_build_jobs.get(job_id)
+            if tracked_job is not None:
+                tracked_job["project_revision"] = _project_world_revision(store)
+                _persist_world_build_job(tracked_job)
     return True
 
 

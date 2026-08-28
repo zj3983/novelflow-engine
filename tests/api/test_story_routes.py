@@ -2217,6 +2217,99 @@ def test_world_build_job_marks_conflicted_when_author_edits_world_during_build(
             file_projects._world_build_jobs.pop(job_id, None)
 
 
+def test_world_build_job_does_not_conflict_on_running_jobs_own_partial_writes(
+    tmp_path, monkeypatch
+) -> None:
+    """The running job's own partial writes must not trip the conflict check.
+
+    Each module's ``done`` callback persists a partial artifact, which mutates
+    ``world_blueprint`` and therefore the project revision.  The job's
+    ``project_revision`` is captured at job start, so without refreshing it the
+    next module's ``_check_world_build_conflict`` would fire on the running
+    job's own writes and mark the build conflicted.  The user-edit conflict
+    path is still covered by the preceding test.
+    """
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    project_root = tmp_path / "p-world-self-partial"
+    _make_file_project(project_root, project_id="p-world-self-partial")
+    (project_root / ".webnovel" / "project.json").write_text(
+        json.dumps(
+            {
+                "project_id": "p-world-self-partial",
+                "title": "自连续补全",
+                "world_blueprint": {"world_rules": ["初始规则"]},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    job_id = "wbg-self-partial"
+    store = file_projects._store_for("file:p-world-self-partial")
+    initial_revision = file_projects._project_world_revision(store)
+    file_projects._world_build_jobs[job_id] = {
+        "job_id": job_id,
+        "project_id": "file:p-world-self-partial",
+        "status": "running",
+        "progress": "正在构建：核心规则",
+        "active_module_id": "core_rules",
+        "active_module_title": "核心规则",
+        "active_module_status": "running",
+        "error": "",
+        "created_at": "2025-01-01T00:00:00+00:00",
+        "updated_at": "2025-01-01T00:00:00+00:00",
+        "project_revision": initial_revision,
+        "_project_root": str(project_root),
+    }
+    file_projects._active_world_build_jobs["p-world-self-partial"] = job_id
+
+    try:
+        first_artifact = {
+            "module_id": "core_rules",
+            "title": "核心规则",
+            "status": "completed",
+            "fields": ["world_rules"],
+            "output": {"world_rules": ["模块一生成规则"]},
+        }
+        assert file_projects._persist_partial_world_build_artifact(
+            store, first_artifact, job_id=job_id
+        ) is True
+        with file_projects._world_build_jobs_lock:
+            job = file_projects._world_build_jobs[job_id]
+        assert job["status"] == "running"
+        assert job["project_revision"] != initial_revision
+
+        second_artifact = {
+            "module_id": "society_and_livelihood",
+            "title": "社会民生",
+            "status": "completed",
+            "fields": ["world_systems"],
+            "output": {"world_systems": ["模块二生成制度"]},
+        }
+        assert file_projects._persist_partial_world_build_artifact(
+            store, second_artifact, job_id=job_id
+        ) is True
+        with file_projects._world_build_jobs_lock:
+            job = file_projects._world_build_jobs[job_id]
+        assert job["status"] == "running", (
+            "Running job's own partial write must not mark the build conflicted"
+        )
+        assert "world_build_artifacts" in (
+            (store.project().get("world_blueprint") or {}).keys()
+        )
+        saved_artifacts = (store.project().get("world_blueprint") or {}).get(
+            "world_build_artifacts"
+        )
+        assert {a["module_id"] for a in saved_artifacts} == {
+            "core_rules",
+            "society_and_livelihood",
+        }
+    finally:
+        with file_projects._world_build_jobs_lock:
+            file_projects._active_world_build_jobs.pop("p-world-self-partial", None)
+            file_projects._world_build_jobs.pop(job_id, None)
+
+
 def test_world_build_error_translation_hides_provider_details() -> None:
     raw = RuntimeError(
         "API call failed: https://secret.example.com/v1/chat "
