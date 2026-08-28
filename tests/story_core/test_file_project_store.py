@@ -7,9 +7,12 @@ import threading
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import packages.story_core.file_project_store as file_project_store_module
+import packages.story_core.outline_plan_store as outline_plan_store_module
+import packages.story_core.project_profile_store as project_profile_store_module
 
 from packages.story_core.file_project_store import (
     ChapterQualityError,
@@ -22,7 +25,10 @@ from packages.story_core.file_project_store import (
     _project_legacy_review,
     _regeneration_quality_blocking,
 )
-from packages.story_core.outline_planning_generation import GeneratedChapterWindow
+from packages.story_core.outline_planning_generation import (
+    GeneratedChapterWindow,
+    validate_next_volume,
+)
 from packages.story_core.project_outline import ArcOutline
 from packages.story_core.outline_rolling_store import RollingOutlineStore
 from packages.story_core.volume_detail_checkpoints import VolumeDetailCheckpointStore
@@ -77,6 +83,29 @@ def _seed_generation_outline(root: Path, chapter_number: int) -> None:
         ),
         encoding="utf-8",
     )
+
+
+def test_character_names_in_chapter_resolve_visible_aliases(tmp_path: Path) -> None:
+    store = FileProjectStore(tmp_path)
+    state = {
+        "characters": [
+            {
+                "name": "沈家内卫统领",
+                "aliases": ["内卫统领"],
+            }
+        ]
+    }
+    chapter = {
+        "chapter_number": 157,
+        "body": "内卫统领收刀后，命人先护送伤员。",
+    }
+
+    assert store._character_names_in_chapter(state, chapter) == ["沈家内卫统领"]
+
+    hydrated = store._hydrate_chapter_display_fields(chapter, state)
+    assert [card["name"] for card in hydrated["character_cards"]] == [
+        "沈家内卫统领"
+    ]
 
 
 def test_manual_quality_report_passes_explicit_genre_context_to_style_review(monkeypatch):
@@ -262,6 +291,18 @@ def test_auto_chapter_length_rejects_body_above_hard_max():
         _assert_auto_chapter_length(body, operation="generate")
 
 
+def test_length_review_marks_soft_target_miss_without_rejecting_candidate():
+    body = "正" * 3900
+
+    review = _chapter_length_review(body)
+
+    assert review["pass"] is False
+    assert review["acceptance_pass"] is True
+    assert review["min_chars"] == 4200
+    assert review["hard_min_chars"] == 3800
+    _assert_auto_chapter_length(body, operation="regenerate")
+
+
 def test_shared_chapter_length_policy_is_the_single_source():
     module_name = "packages.story_core.chapter_length_policy"
     assert importlib.util.find_spec(module_name) is not None
@@ -391,6 +432,8 @@ from packages.story_core.models import ChapterSummary, StoryState, TimelineEvent
 from packages.story_core.outline_planning import GeneratedOutlinePlan
 from packages.story_core.skill_packs import import_skill_pack_from_path
 from packages.story_core.orchestrator import (
+    _chapter_char_count,
+    _expansion_target_range,
     _failed_bundle,
     _render_compression_length_prompt,
     _render_expansion_length_prompt,
@@ -1072,26 +1115,96 @@ def test_summary_reads_chapter_metadata_without_hydrating_full_chapters(tmp_path
             encoding="utf-8",
         )
 
-    read_counts: dict[str, int] = {}
-    original_read_json = store._read_json
+    read_counts: dict[int, int] = {}
+    original_read_chapter = store.chapter_store.read_chapter
 
-    def counting_read_json(path, default=None):
-        if path.parent == chapters_dir and path.suffix == ".json":
-            read_counts[path.name] = read_counts.get(path.name, 0) + 1
-        return original_read_json(path, default)
+    def counting_read_chapter(number, default=None, *, include_body=True):
+        assert include_body is False
+        read_counts[number] = read_counts.get(number, 0) + 1
+        return original_read_chapter(number, default, include_body=include_body)
 
     def fail_if_hydrated(_chapter_number=None):
         raise AssertionError("summary must not hydrate full chapter payloads")
 
     monkeypatch.setattr(store, "chapter", fail_if_hydrated)
-    monkeypatch.setattr(store, "_read_json", counting_read_json)
+    monkeypatch.setattr(store.chapter_store, "read_chapter", counting_read_chapter)
 
     summary = store.summary()
 
     assert summary["current_chapter"] == 3
     assert summary["chapter_count"] == 3
     assert summary["chapters"][-1] == {"chapter_number": 3, "chapter_title": "Chapter 3"}
-    assert read_counts == {"0001.json": 1, "0002.json": 1, "0003.json": 1}
+    assert read_counts == {1: 1, 2: 1, 3: 1}
+
+
+def test_summary_reuses_cached_chapter_index_when_metadata_is_unchanged(tmp_path, monkeypatch):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    chapters_dir = store.story_system_dir / "chapters"
+    for number in range(1, 4):
+        (chapters_dir / f"{number:04d}.json").write_text(
+            json.dumps(
+                {
+                    "chapter_number": number,
+                    "chapter_title": f"Chapter {number}",
+                    "body_chars": 4200,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    first = store.summary()
+    assert first["chapter_count"] == 3
+    assert (store.story_system_dir / "chapter-index.json").is_file()
+
+    monkeypatch.setattr(
+        store,
+        "_read_chapter_records",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("unchanged chapter index must come from cache")
+        ),
+    )
+
+    second = store.summary()
+
+    assert second["chapters"] == first["chapters"]
+
+
+def test_story_overview_skips_chapter_character_backfill_when_state_has_characters(
+    tmp_path,
+    monkeypatch,
+):
+    store = _make_minimal_file_project(
+        tmp_path / "novel",
+        state={
+            "story_id": "s-file",
+            "current_chapter": 1,
+            "characters": [{"name": "林修", "role": "protagonist"}],
+        },
+    )
+    (store.story_system_dir / "chapters" / "0001.json").write_text(
+        json.dumps(
+            {
+                "chapter_number": 1,
+                "chapter_title": "第一章",
+                "body_chars": 4200,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    store.chapter_index()
+    monkeypatch.setattr(
+        store,
+        "_read_chapter_records",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("persisted characters must not trigger a full chapter scan")
+        ),
+    )
+
+    overview = store.story_overview_data()
+
+    assert overview["state"]["characters"][0]["name"] == "林修"
+    assert overview["chapters"][0]["chapter_title"] == "第一章"
 
 
 def test_summary_uses_master_setting_project_metadata_without_project_json(tmp_path, monkeypatch):
@@ -1124,15 +1237,15 @@ def test_summary_uses_master_setting_project_metadata_without_project_json(tmp_p
         encoding="utf-8",
     )
 
-    read_counts: dict[str, int] = {}
-    original_read_json = store._read_json
+    read_counts: dict[int, int] = {}
+    original_read_chapter = store.chapter_store.read_chapter
 
-    def counting_read_json(path, default=None):
-        if path.parent == chapters_dir and path.suffix == ".json":
-            read_counts[path.name] = read_counts.get(path.name, 0) + 1
-        return original_read_json(path, default)
+    def counting_read_chapter(number, default=None, *, include_body=True):
+        assert include_body is False
+        read_counts[number] = read_counts.get(number, 0) + 1
+        return original_read_chapter(number, default, include_body=include_body)
 
-    monkeypatch.setattr(store, "_read_json", counting_read_json)
+    monkeypatch.setattr(store.chapter_store, "read_chapter", counting_read_chapter)
 
     summary = store.summary()
 
@@ -1140,7 +1253,7 @@ def test_summary_uses_master_setting_project_metadata_without_project_json(tmp_p
     assert summary["title"] == "Master Title"
     assert summary["active_story_id"] == "s-master"
     assert summary["chapter_count"] == 1
-    assert read_counts == {"0001.json": 1}
+    assert read_counts == {1: 1}
 
 
 def test_chapter_index_and_summary_use_chinese_fallback_for_untitled_chapters(tmp_path):
@@ -1210,20 +1323,20 @@ def test_chapter_index_reads_each_file_once_without_display_hydration(tmp_path, 
     for number, payload in chapter_payloads:
         (chapters_dir / f"{number:04d}.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
-    read_counts: dict[str, int] = {}
-    original_read_json = store._read_json
+    read_counts: dict[int, int] = {}
+    original_read_chapter = store.chapter_store.read_chapter
 
-    def counting_read_json(path, default=None):
-        if path.parent == chapters_dir and path.suffix == ".json":
-            read_counts[path.name] = read_counts.get(path.name, 0) + 1
-        return original_read_json(path, default)
+    def counting_read_chapter(number, default=None, *, include_body=True):
+        assert include_body is False
+        read_counts[number] = read_counts.get(number, 0) + 1
+        return original_read_chapter(number, default, include_body=include_body)
 
     monkeypatch.setattr(
         store,
         "chapter",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("chapter_index must not hydrate full chapters")),
     )
-    monkeypatch.setattr(store, "_read_json", counting_read_json)
+    monkeypatch.setattr(store.chapter_store, "read_chapter", counting_read_chapter)
 
     index = store.chapter_index()
 
@@ -1247,7 +1360,7 @@ def test_chapter_index_reads_each_file_once_without_display_hydration(tmp_path, 
             "has_simulation": False,
         },
     ]
-    assert read_counts == {"0001.json": 1, "0002.json": 1}
+    assert read_counts == {1: 1, 2: 1}
 
 
 def test_story_overview_data_matches_state_character_synthesis_in_one_chapter_pass(
@@ -1298,15 +1411,15 @@ def test_story_overview_data_matches_state_character_synthesis_in_one_chapter_pa
     )
     (store.webnovel_dir / "project.json").unlink()
     expected_state = store.state()
-    read_counts: dict[str, int] = {}
-    original_read_json = store._read_json
+    read_counts: dict[int, int] = {}
+    original_read_chapter = store.chapter_store.read_chapter
 
-    def counting_read_json(path, default=None):
-        if path.parent == chapters_dir and path.suffix == ".json":
-            read_counts[path.name] = read_counts.get(path.name, 0) + 1
-        return original_read_json(path, default)
+    def counting_read_chapter(number, default=None, *, include_body=True):
+        assert include_body is False
+        read_counts[number] = read_counts.get(number, 0) + 1
+        return original_read_chapter(number, default, include_body=include_body)
 
-    monkeypatch.setattr(store, "_read_json", counting_read_json)
+    monkeypatch.setattr(store.chapter_store, "read_chapter", counting_read_chapter)
     monkeypatch.setattr(
         store,
         "chapter",
@@ -1324,7 +1437,7 @@ def test_story_overview_data_matches_state_character_synthesis_in_one_chapter_pa
         "药剂师洛婶",
     }
     assert overview["chapters"][0]["chapter_title"] == "药剂铺窗口"
-    assert read_counts == {"0001.json": 1}
+    assert read_counts == {1: 1}
 
 
 def test_explicit_chapter_access_does_not_enumerate_chapter_numbers(tmp_path, monkeypatch):
@@ -1518,7 +1631,7 @@ def test_save_generated_outline_rejects_non_final_short_volume_without_writes(
     plan = GeneratedOutlinePlan.model_validate(payload)
     before = _file_snapshot(root)
     monkeypatch.setattr(
-        file_project_store_module,
+        outline_plan_store_module,
         "validate_generated_opening_plan",
         lambda candidate, **_kwargs: GeneratedOutlinePlan.model_validate(candidate),
     )
@@ -1556,7 +1669,7 @@ def _plan_with_short_final_volume() -> GeneratedOutlinePlan:
 
 def _bypass_generated_volume_validation(monkeypatch) -> None:
     monkeypatch.setattr(
-        file_project_store_module,
+        outline_plan_store_module,
         "validate_generated_opening_plan",
         lambda candidate, **_kwargs: GeneratedOutlinePlan.model_validate(candidate),
     )
@@ -1912,6 +2025,35 @@ def test_update_project_normalizes_relationship_graph(tmp_path):
     assert updated["relationship_graph"][0]["trust"] == 100
 
 
+def test_update_project_synchronizes_character_profiles_to_runtime_state(tmp_path):
+    store = _make_minimal_file_project(
+        tmp_path / "novel",
+        project={
+            "project_id": "p-file",
+            "title": "File Novel",
+            "character_profiles": [
+                {"name": "林昭", "role": "protagonist"},
+                {"name": "已删除人物", "role": "supporting"},
+            ],
+        },
+        state={
+            "characters": [
+                {"name": "林昭", "role": "protagonist"},
+                {"name": "已删除人物", "role": "supporting"},
+            ]
+        },
+    )
+
+    store.update_project(
+        {"character_profiles": [{"name": "林昭", "role": "protagonist"}]}
+    )
+
+    assert [item["name"] for item in store.project()["character_profiles"]] == [
+        "林昭"
+    ]
+    assert [item["name"] for item in store.state()["characters"]] == ["林昭"]
+
+
 def test_update_project_shallow_merges_independent_world_blueprint_patches(tmp_path):
     store = _make_minimal_file_project(
         tmp_path / "novel",
@@ -2137,7 +2279,8 @@ def test_update_project_keeps_saved_json_when_world_markdown_sync_fails(
         raise OSError("markdown unavailable")
 
     monkeypatch.setattr(
-        "packages.story_core.file_project_store.sync_world_markdown",
+        project_profile_store_module,
+        "sync_world_markdown",
         fail_sync,
     )
 
@@ -2519,7 +2662,7 @@ def test_chapter_ledger_ignores_compact_monster_panel_and_keeps_latest_quest_inv
     assert ledger["economy"]["backpack"] == "2/20"
 
 
-def test_default_protagonist_speech_profile_does_not_request_explanatory_dialogue(tmp_path):
+def test_ledger_recovery_does_not_invent_protagonist_speech_profile(tmp_path):
     store = _make_minimal_file_project(tmp_path / "novel")
     card = store._protagonist_character_card(
         {
@@ -2528,9 +2671,7 @@ def test_default_protagonist_speech_profile_does_not_request_explanatory_dialogu
         }
     )
 
-    speech_style = card["performance_profile"]["speech_style"]
-    assert "解释选择时把原因说清" not in speech_style
-    assert "只说当下会说的话" in speech_style
+    assert "performance_profile" not in card
 
 
 def test_character_merge_migrates_only_the_legacy_explanatory_speech_template(tmp_path):
@@ -4262,7 +4403,21 @@ def _volume_detail_generated_chapter(chapter_number: int) -> dict:
 
 
 def _prepare_volume_detail_project(tmp_path):
-    store = _make_minimal_file_project(tmp_path / "volume-detail")
+    store = _make_minimal_file_project(
+        tmp_path / "volume-detail",
+        project={
+            "project_id": "p-file",
+            "title": "File Novel",
+            "active_story_id": "s-file",
+            "character_profiles": [{"name": "Lin Xiu", "role": "protagonist"}],
+        },
+        state={
+            "story_id": "s-file",
+            "current_chapter": 0,
+            "world_facts": [],
+            "characters": [{"name": "Lin Xiu", "role": "protagonist"}],
+        },
+    )
     outline = _generated_opening_plan().outline.model_dump(mode="json")
     outline["overall"].update(
         core_ending_chapter=60,
@@ -4324,6 +4479,171 @@ class _RecordingVolumeDetailGenerator:
                 ]
             }
         )
+
+
+def test_generate_volume_detail_builds_and_persists_volume_characters_first(
+    tmp_path,
+) -> None:
+    store = _prepare_volume_detail_project(tmp_path)
+
+    class Generator(_RecordingVolumeDetailGenerator):
+        def __init__(self):
+            super().__init__()
+            self.events: list[str] = []
+
+        def generate_volume_characters(self, brief, *, volume, guidance=""):
+            self.events.append("characters")
+            assert brief.existing_character_names == ["Lin Xiu"]
+            return [
+                {
+                    "name": "Zhao Ming",
+                    "role": "archive keeper",
+                    "character_tier": "supporting",
+                    "first_appearance": 1,
+                    "identity_profile": {
+                        "origin": "The outer archive.",
+                        "current_identity": "Keeper of the sealed register.",
+                        "occupation": "Archive keeper",
+                    },
+                    "current_life_profile": {
+                        "immediate_problem": "The forged seal points to his desk."
+                    },
+                    "story_drive": {
+                        "immediate_goal": "Prove who replaced the register.",
+                        "failure_stakes": "He will be blamed for the missing page.",
+                    },
+                    "performance_profile": {
+                        "speech_style": "Explains the evidence before stating his judgment."
+                    },
+                    "dialogue_examples": [
+                        "I can open the register, but you must first show me who signed this seal.",
+                        "Do not rush to accuse anyone; the replacement page still carries wet ink.",
+                    ],
+                }
+            ]
+
+        def generate_chapter_batch(self, *args, **kwargs):
+            self.events.append("chapters")
+            assert "Zhao Ming" in args[0].existing_character_names
+            result = super().generate_chapter_batch(*args, **kwargs)
+            result.chapters[0].cast = ["Lin Xiu", "Zhao Ming"]
+            return result
+
+    generator = Generator()
+    store.generate_volume_detail(generator, volume_id="v3")
+
+    assert generator.events[0] == "characters"
+    assert generator.events[1] == "chapters"
+    assert [card["name"] for card in store.project()["character_profiles"]] == [
+        "Zhao Ming",
+        "Lin Xiu",
+    ]
+    assert [card["name"] for card in store.state()["characters"]] == [
+        "Zhao Ming",
+        "Lin Xiu",
+    ]
+
+
+def test_generate_volume_detail_rejects_cast_without_character_card(tmp_path) -> None:
+    store = _prepare_volume_detail_project(tmp_path)
+
+    class UnknownCastGenerator(_RecordingVolumeDetailGenerator):
+        def generate_chapter_batch(self, *args, **kwargs):
+            result = super().generate_chapter_batch(*args, **kwargs)
+            result.chapters[0].cast = ["Lin Xiu", "Unnamed Commander"]
+            return result
+
+    with pytest.raises(
+        ValueError,
+        match="missing_character_card:Unnamed Commander",
+    ):
+        store.generate_volume_detail(UnknownCastGenerator(), volume_id="v3")
+
+    assert RollingOutlineStore(store.root).read_rolling_outline() is None
+
+
+def test_generate_volume_detail_rejects_character_before_planned_first_appearance(
+    tmp_path,
+) -> None:
+    store = _prepare_volume_detail_project(tmp_path)
+
+    class EarlyCastGenerator(_RecordingVolumeDetailGenerator):
+        def generate_volume_characters(self, brief, *, volume, guidance=""):
+            return [
+                {
+                    "name": "Zhao Ming",
+                    "role": "archive keeper",
+                    "character_tier": "supporting",
+                    "first_appearance": 18,
+                }
+            ]
+
+        def generate_chapter_batch(self, *args, **kwargs):
+            result = super().generate_chapter_batch(*args, **kwargs)
+            result.chapters[0].cast = ["Lin Xiu", "Zhao Ming"]
+            return result
+
+    with pytest.raises(
+        ValueError,
+        match="character_appears_before_card:Zhao Ming:1:18",
+    ):
+        store.generate_volume_detail(EarlyCastGenerator(), volume_id="v3")
+
+
+def test_generate_volume_detail_repairs_cast_timing_once(tmp_path) -> None:
+    store = _prepare_volume_detail_project(tmp_path)
+
+    class RepairingGenerator(_RecordingVolumeDetailGenerator):
+        def __init__(self):
+            super().__init__()
+            self.batch_attempts = 0
+            self.guidance_seen: list[str] = []
+
+        def generate_volume_characters(self, brief, *, volume, guidance=""):
+            return [
+                {
+                    "name": "Zhao Ming",
+                    "role": "archive keeper",
+                    "character_tier": "supporting",
+                    "first_appearance": 18,
+                }
+            ]
+
+        def generate_chapter_batch(self, *args, **kwargs):
+            self.batch_attempts += 1
+            self.guidance_seen.append(kwargs.get("guidance", ""))
+            result = super().generate_chapter_batch(*args, **kwargs)
+            if self.batch_attempts == 1:
+                result.chapters[0].cast = ["Lin Xiu", "Zhao Ming"]
+            return result
+
+    generator = RepairingGenerator()
+    result = store.generate_volume_detail(generator, volume_id="v3")
+
+    assert result["detail_status"] == "complete"
+    assert generator.batch_attempts == 5
+    assert "character_appears_before_card:Zhao Ming:1:18" in generator.guidance_seen[1]
+
+
+def test_empty_volume_character_roster_is_cached_across_batch_retry(tmp_path) -> None:
+    store = _prepare_volume_detail_project(tmp_path)
+
+    class Generator(_RecordingVolumeDetailGenerator):
+        def __init__(self):
+            super().__init__(fail_batch_start=16)
+            self.roster_calls = 0
+
+        def generate_volume_characters(self, brief, *, volume, guidance=""):
+            self.roster_calls += 1
+            return []
+
+    generator = Generator()
+    with pytest.raises(ValueError, match="^volume_detail_generation_failed:0016-0030"):
+        store.generate_volume_detail(generator, volume_id="v3")
+
+    store.generate_volume_detail(generator, volume_id="v3")
+
+    assert generator.roster_calls == 1
 
 
 def test_generate_volume_detail_calls_model_once_per_fifteen_chapter_batch(tmp_path) -> None:
@@ -4469,6 +4789,70 @@ def test_volume_detail_continuity_failure_does_not_complete_or_publish(tmp_path)
     status = checkpoints.load("v3")
     assert status["batches"][0]["status"] == "failed"
     assert RollingOutlineStore(store.root).read_rolling_outline() is None
+
+
+def test_volume_detail_schema_failure_does_not_complete_or_publish(tmp_path) -> None:
+    store = _prepare_volume_detail_project(tmp_path)
+
+    class MissingCastGenerator(_RecordingVolumeDetailGenerator):
+        def generate_chapter_batch(self, *args, **kwargs):
+            result = super().generate_chapter_batch(*args, **kwargs)
+            result.chapters[0].cast = []
+            return result
+
+    with pytest.raises(
+        ValueError,
+        match="volume_detail_generation_failed:0001-0015:RollingValidationError",
+    ):
+        store.generate_volume_detail(MissingCastGenerator(), volume_id="v3")
+
+    checkpoints = VolumeDetailCheckpointStore(store.story_system_dir / "volume-detail")
+    status = checkpoints.load("v3")
+    assert status["batches"][0]["status"] == "failed"
+    assert RollingOutlineStore(store.root).read_rolling_outline() is None
+
+
+def test_invalid_cached_volume_batch_regenerates_it_and_downstream_batches(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = _prepare_volume_detail_project(tmp_path)
+    generator = _RecordingVolumeDetailGenerator()
+    original_apply = RollingOutlineStore.apply_rolling_batch
+    publish_attempts = 0
+
+    def interrupt_first_publish(self, **kwargs):
+        nonlocal publish_attempts
+        publish_attempts += 1
+        if publish_attempts == 1:
+            raise RuntimeError("publish interrupted")
+        return original_apply(self, **kwargs)
+
+    monkeypatch.setattr(
+        RollingOutlineStore,
+        "apply_rolling_batch",
+        interrupt_first_publish,
+    )
+    with pytest.raises(RuntimeError, match="publish interrupted"):
+        store.generate_volume_detail(generator, volume_id="v3")
+
+    payload_path = (
+        store.story_system_dir
+        / "volume-detail"
+        / "v3"
+        / "0016-0030.json"
+    )
+    payload = store._read_json(payload_path, {})
+    payload["chapters"][0]["cast"] = []
+    store._write_json(payload_path, payload)
+
+    result = store.generate_volume_detail(generator, volume_id="v3")
+
+    assert generator.calls.count(tuple(range(1, 16))) == 1
+    assert generator.calls.count(tuple(range(16, 31))) == 2
+    assert generator.calls.count(tuple(range(31, 46))) == 2
+    assert generator.calls.count(tuple(range(46, 61))) == 2
+    assert result["detail_status"] == "complete"
 
 
 def test_generate_volume_detail_rejects_unknown_volume_without_model_call(tmp_path) -> None:
@@ -4792,6 +5176,196 @@ def test_design_next_volume_rejects_short_final_at_core_ending_without_close(
     assert len(store.project_outline()["arcs"]) == 1
 
 
+def test_design_next_volume_appends_first_volume_when_no_previous_arc(tmp_path) -> None:
+    """A brand-new project with zero arcs must be able to design its first volume.
+
+    The previous implementation raised ``previous_volume_missing`` because it
+    treated the design step as a successor-only operation.  New projects
+    bootstrap from a single volume; the workflow must accept that.
+    """
+    store = _make_minimal_file_project(tmp_path / "first-volume-design")
+    outline = _generated_opening_plan().outline.model_dump(mode="json")
+    outline["overall"].update(
+        current_strategy="expand",
+        core_ending_chapter=10,
+        extension_ceiling_chapter=60,
+        planned_length=10,
+        planned_arc_count=1,
+    )
+    outline["arcs"] = []
+    outline["chapters"] = []
+    store.update_project_outline(outline)
+    state = store.state()
+    state["current_chapter"] = 0
+    state["world_facts"] = []
+    state["foreshadowing"] = []
+    state["characters"] = []
+    store._write_json(store.webnovel_dir / "state.json", state)
+
+    first_volume = ArcOutline.model_validate(
+        {
+            "id": "volume-1",
+            "title": "灵光初现",
+            "start_chapter": 1,
+            "end_chapter": 10,
+            "goal": "陈默拿到玉佩并完成首次跨界交易。",
+            "obstacle": "缺少修真界灵材，门派与机构都对他有疑心。",
+            "payoff": "建立稳定交易渠道。",
+            "emotional_curve": "紧张→怀疑→希望。",
+            "key_results": [
+                "主角拿到祖传玉佩",
+                "完成首次跨界交易",
+                "代价：练气进度缓慢。",
+            ],
+            "hook_plan": "每章结尾留下新交易机会。",
+            "irreversible_change": "机构已察觉异常快递线索。",
+            "end_state": "陈默到达练气二层。",
+            "extension_gate": {
+                "continue_route": "继续推动交易渠道升级。",
+                "close_route": "若门派逼到极限，可先撤退回归现代。",
+            },
+            "midpoint_turn": "陈默第一次进入修真界。",
+            "climax": "门派长老亲自出手试探玉佩来历。",
+            "next_arc_entry": "陈默在散修联盟中地位上升。",
+            "is_final_arc": False,
+            "story_nodes": _story_nodes(1, 10),
+        }
+    )
+    generator = _NextVolumeGenerator(result=first_volume)
+
+    result = store.design_next_volume(generator)
+
+    assert result["status"] == "volume_plan_ready"
+    assert result["volume_id"] == "volume-1"
+    assert result["volume_range"] == [1, 10]
+    assert generator.calls[0]["previous_volume"] is None
+    assert generator.calls[0]["guidance"] == ""
+    outline_after = store.project_outline()
+    assert [arc["id"] for arc in outline_after["arcs"]] == ["volume-1"]
+    assert outline_after["arcs"][0]["start_chapter"] == 1
+    assert outline_after["arcs"][0]["end_chapter"] == 10
+
+
+def test_generate_next_volume_accepts_first_volume_when_previous_is_none() -> None:
+    """Generator path: when the project has no prior volume, ``previous_volume``
+    must default to ``None`` and the model must be told to start at chapter 1
+    with a relaxed length floor (the standard 50-chapter minimum is a
+    whole-book assumption that does not apply to the bootstrap volume)."""
+    from packages.story_core.outline_planning_generation import LLMOutlinePlanningGenerator
+
+    captured: dict[str, object] = {}
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        captured.update(json.loads(payload["messages"][1]["content"]))
+        return {
+            "choices": [
+                {"message": {"content": json.dumps(
+                    _designed_next_volume(start_chapter=1, end_chapter=10).model_dump(mode="json"),
+                    ensure_ascii=False,
+                )}}
+            ]
+        }
+
+    runtime = SimpleNamespace(
+        provider_id="openai",
+        provider="openai",
+        protocol="openai_compatible",
+        model="planning-test-model",
+        api_key="test-key",
+        base_url="http://runtime.test",
+        codex_command="",
+        temperature=0.2,
+    )
+
+    generator = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=lambda stage: runtime,
+    )
+    brief = _build_next_volume_brief()
+
+    result = generator.generate_next_volume(brief, previous_volume=None)
+
+    assert isinstance(result, ArcOutline)
+    assert result.start_chapter == 1
+    assert result.end_chapter == 10
+    assert captured.get("required_start_chapter") == 1
+    assert "previous_volume" not in captured
+    assert "previous_volume_end_state" not in captured
+
+
+def _build_next_volume_brief() -> Any:
+    from packages.story_core.outline_planning_generation import OutlinePlanningBrief
+
+    return OutlinePlanningBrief.model_validate(
+        {
+            "title": "测试项目",
+            "novel_type_id": "generic_webnovel",
+            "overall_context": {"current_strategy": "expand"},
+            "existing_outline": {"arcs": [], "chapters": []},
+            "committed_facts": [],
+            "world_facts": [],
+            "continuity_facts": [],
+            "recent_chapter_summaries": [],
+            "historical_chapter_summaries": [],
+            "power_system_spec": {},
+            "opening_direction": {
+                "title": "开场",
+                "hook": "玉佩觉醒，主角跨界交易。",
+                "opening_promise": "陈默在练气二层的开端完成首次跨界交易。",
+            },
+            "author_constraints": [],
+            "existing_characters": [],
+            "existing_character_names": [],
+            "unresolved_foreshadowing": [],
+            "character_current_states": [],
+        }
+    )
+
+
+def test_validate_next_volume_accepts_previous_none() -> None:
+    """Validator path: ``previous_volume=None`` means the bootstrap volume —
+    start must be 1, the 50-chapter floor is dropped, and all required
+    textual fields still need to be populated."""
+    candidate = {
+        "id": "volume-1",
+        "title": "灵光初现",
+        "start_chapter": 1,
+        "end_chapter": 8,
+        "goal": "陈默拿到玉佩。",
+        "obstacle": "缺少灵材。",
+        "payoff": "建立交易渠道。",
+        "emotional_curve": "紧张→希望。",
+        "key_results": ["拿到玉佩", "代价：练气进度缓慢。"],
+        "hook_plan": "新交易机会。",
+        "irreversible_change": "机构察觉异常。",
+        "end_state": "陈默到达练气二层。",
+        "extension_gate": {
+            "continue_route": "继续推动交易渠道。",
+            "close_route": "撤退回归现代。",
+        },
+        "midpoint_turn": "陈默进入修真界。",
+        "climax": "门派长老试探玉佩。",
+        "next_arc_entry": "陈默地位上升。",
+        "is_final_arc": False,
+        "story_nodes": _story_nodes(1, 8),
+    }
+    volume = validate_next_volume(
+        candidate, previous_volume=None, allow_short_final=False
+    )
+    assert volume.start_chapter == 1
+    assert volume.end_chapter == 8
+
+    # A second non-final volume with the 50-chapter floor must still fail.
+    short_candidate = dict(candidate, id="volume-2", start_chapter=9, end_chapter=20)
+    short_candidate["story_nodes"] = _story_nodes(9, 20)
+    with pytest.raises(ValueError, match=r"^volume_too_short:"):
+        validate_next_volume(
+            short_candidate,
+            previous_volume=candidate,
+            allow_short_final=False,
+        )
+
+
 def test_foundation_save_allows_unchanged_committed_legacy_short_volume(
     tmp_path,
 ) -> None:
@@ -5013,8 +5587,10 @@ def test_extend_rejects_locked_trope_drift_without_writes(
     assert _file_snapshot(root) == before
 
 
-def test_extend_allows_unlocked_legacy_outline_without_selecting_trope(
+@pytest.mark.parametrize("mode", ["extend", "regenerate"])
+def test_continuation_allows_unlocked_legacy_outline_without_selecting_trope(
     tmp_path,
+    mode: str,
 ) -> None:
     _, store, current_outline = _prepare_extendable_outline(tmp_path)
     current_outline["overall"]["primary_trope_id"] = None
@@ -5025,8 +5601,12 @@ def test_extend_allows_unlocked_legacy_outline_without_selecting_trope(
     store.update_project_outline(current_outline)
 
     saved = store.save_generated_outline_plan(
-        _extension_plan(current_outline),
-        mode="extend",
+        (
+            _extension_plan(current_outline)
+            if mode == "extend"
+            else _regeneration_plan_from_current(current_outline)
+        ),
+        mode=mode,
     )
 
     assert saved["outline"]["overall"]["primary_trope_id"] is None
@@ -5755,6 +6335,36 @@ def test_xianxia_writing_packet_uses_genre_neutral_titles_and_style_rules(tmp_pa
         assert term not in rendered
 
 
+def test_game_writing_packet_does_not_invent_weapon_or_quest_rules(tmp_path):
+    store = _make_minimal_file_project(
+        tmp_path / "neutral-game-packet",
+        project={
+            "project_id": "p-neutral-game-packet",
+            "title": "任务发布者",
+            "world_blueprint": {"genre_plugin_ids": ["game_webnovel"]},
+        },
+        state={
+            "story_id": "s-neutral-game-packet",
+            "genre": "网游",
+            "genre_plugin_ids": ["game_webnovel"],
+            "current_chapter": 0,
+            "world_facts": [],
+        },
+    )
+
+    packet = store.writing_packet(1)
+    rendered = json.dumps(
+        {
+            "hard_locks": packet["hard_locks"],
+            "style_rules": packet["style_rules"],
+        },
+        ensure_ascii=False,
+    )
+
+    for term in ("法杖", "新手法杖", "裂纹杖芯", "必须有前置任务"):
+        assert term not in rendered
+
+
 def test_writing_packet_removes_replaced_baseline_protagonist(tmp_path):
     real_protagonist = {
         "name": "Lin Zhao",
@@ -6170,6 +6780,7 @@ def test_file_project_store_prompt_preview_exposes_generation_prompts(tmp_path):
         "writing_taskbook",
         "expansion",
         "compression",
+        "polish",
         "review_agents",
     }.issubset(keys)
     assert "style_adapt" not in keys
@@ -6214,10 +6825,17 @@ def test_file_project_store_prompt_preview_exposes_generation_prompts(tmp_path):
     assert by_key["writer_body"]["chars"] < 18000
     assert modules["packet_context"]["chars"] < 12000
     assert "第一章未获大纲授权时，不新增交易、提交委托、修理或买药水。" in by_key["expansion"]["content"]
+    source_chars = _chapter_char_count(chapter["body"])
+    target_min, target_max = _expansion_target_range(source_chars)
+    assert f"目标篇幅：{target_min}到{target_max}字（原文约{source_chars}字）" in by_key["expansion"]["content"]
+    assert f"新增字数预算：共补约{target_min - source_chars}到{target_max - source_chars}字" in by_key["expansion"]["content"]
+    assert "原文约40字" not in by_key["expansion"]["content"]
     assert "游戏账本" in by_key["compression"]["content"]
     assert "面板反馈" in by_key["compression"]["content"]
     assert "目标篇幅：保留完整网文章节感，调整到5000到5400字，绝对不要超过5500字。" in by_key["compression"]["content"]
     assert "4300到5000字" not in by_key["compression"]["content"]
+    assert "只润色表达" in by_key["polish"]["content"]
+    assert "不得新增、删除或改写剧情事实" in by_key["polish"]["content"]
 
 
 def test_first_chapter_prompt_preview_uses_regeneration_start_state(tmp_path):
@@ -6575,6 +7193,7 @@ def test_project_length_template_runtime_matches_preview_economy_normalization(
             chapter_number=1,
             event_plan=event_plan,
             world_facts=[],
+            source_chars_override=_chapter_char_count(body),
         )
         runtime_compression = _render_compression_length_prompt(
             story,
@@ -6902,6 +7521,11 @@ def test_file_project_store_generates_next_chapter_without_api(tmp_path):
 
     class FakeEngine:
         def generate_next_chapter(self, story):
+            from packages.story_core.continuity.delta import (
+                ContinuityDelta,
+                EntityAddition,
+            )
+
             updated_story = story.model_copy(
                 update={
                     "current_chapter": 1,
@@ -6938,6 +7562,20 @@ def test_file_project_store_generates_next_chapter_without_api(tmp_path):
                     "secondary_conflict": "Limited information.",
                     "event_beat": "Counter check.",
                 },
+                continuity_delta=ContinuityDelta(
+                    chapter_number=1,
+                    entity_additions=[
+                        EntityAddition(
+                            chapter_number=1,
+                            source_sentence="Night Ember checked the counter.",
+                            confidence=1.0,
+                            entity_id="character-night-ember",
+                            kind="character",
+                            canonical_name="Night Ember",
+                            attributes={"identity": "player protagonist"},
+                        )
+                    ],
+                ).model_dump(mode="json"),
             )
 
     candidate = FileProjectStore(root).generate_next_chapter(engine=FakeEngine(), persist=False)
@@ -6952,7 +7590,7 @@ def test_file_project_store_generates_next_chapter_without_api(tmp_path):
     assert generated["schema_version"] == "file-project-generate-next/v1"
     assert generated["chapter_number"] == 1
     assert (root / ".story-system" / "chapters" / "0001.json").exists()
-    assert (root / "chapters" / "0001-Generated One.md").read_text(encoding="utf-8").startswith("Night Ember")
+    assert (root / "chapters" / "0001-Chapter 1.md").read_text(encoding="utf-8").startswith("Night Ember")
     state = json.loads((root / ".webnovel" / "state.json").read_text(encoding="utf-8"))
     assert state["current_chapter"] == 1
     assert any(item["chapter_number"] == 1 for item in state["chapter_summaries"])
@@ -6971,6 +7609,12 @@ def test_file_project_store_generates_next_chapter_without_api(tmp_path):
     assert packet["state"]["world_snapshot"]["time_state"]["current_scene_time"] == "第1章章末"
     latest_commit = json.loads((root / ".story-system" / "commits" / "latest_commit.json").read_text(encoding="utf-8"))
     assert latest_commit["operation"] == "generate"
+    canon = json.loads(
+        (root / ".story-system" / "canon" / "registry.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert canon["by_id"]["character-night-ember"]["display_name"] == "Night Ember"
 
 
 def test_file_project_store_does_not_persist_unaccepted_review_lessons(tmp_path):
@@ -7584,7 +8228,16 @@ def test_first_chapter_direction_payload_does_not_restore_future_project_profile
             "story_id": "s-history-direction",
             "genre": "网游",
             "current_chapter": 4,
-            "characters": [{"name": "苏叶", "role": "protagonist"}],
+            "characters": [
+                {
+                    "name": "苏叶",
+                    "role": "protagonist",
+                    "identity_profile": {
+                        "current_identity": future_marker,
+                        "occupation": "仓库临时工",
+                    },
+                }
+            ],
         },
     )
     base_state = store._conservative_regeneration_state(store.state())
@@ -7593,8 +8246,52 @@ def test_first_chapter_direction_payload_does_not_restore_future_project_profile
     rendered = json.dumps(payload, ensure_ascii=False)
 
     assert future_marker not in rendered
+    assert "仓库临时工" in rendered
     assert "查清异常来源" in rendered
     assert "说话完整" in rendered
+
+
+def test_direction_payload_keeps_protagonist_when_character_list_is_long(tmp_path):
+    supporting = [
+        {"name": f"配角{index}", "role": "supporting"}
+        for index in range(1, 6)
+    ]
+    protagonist = {
+        "name": "周行",
+        "role": "protagonist",
+        "character_tier": "protagonist",
+        "performance_profile": {"speech_style": "语气自然，会把话说完整。"},
+    }
+    store = _make_minimal_file_project(
+        tmp_path / "direction-keeps-protagonist",
+        project={
+            "project_id": "p-direction-keeps-protagonist",
+            "title": "角色筛选测试",
+            "seed_outline": "周行进入游戏并与向导交涉。",
+            "character_profiles": [*supporting, protagonist],
+        },
+        state={
+            "story_id": "s-direction-keeps-protagonist",
+            "outline": "周行进入游戏并与向导交涉。",
+            "genre": "网游",
+            "current_chapter": 0,
+            "characters": [*supporting, protagonist],
+        },
+    )
+
+    payload = store._story_state_payload_for_direction(
+        store._conservative_regeneration_state(store.state()),
+        store.project(),
+        1,
+    )
+
+    protagonist_card = next(
+        card for card in payload["characters"] if card["name"] == "周行"
+    )
+    assert protagonist_card["character_tier"] == "protagonist"
+    assert protagonist_card["performance_profile"]["speech_style"] == (
+        "语气自然，会把话说完整。"
+    )
 
 
 def test_rewriting_later_chapter_uses_previous_snapshot_not_current_state(tmp_path):
@@ -8126,6 +8823,39 @@ def test_negated_quest_completion_does_not_mark_quest_completed(tmp_path):
     quests = synced["progression_ledger"]["quests"]
     assert quests["active"] == "灰狼材料收集"
     assert "灰狼材料收集" not in quests
+
+
+def test_game_ledger_sync_does_not_add_legacy_book_defaults(tmp_path):
+    store = _make_minimal_file_project(
+        tmp_path / "neutral-game-ledger",
+        project={
+            "project_id": "p-neutral-game-ledger",
+            "title": "任务发布者",
+            "world_blueprint": {"genre_plugin_ids": ["game_webnovel"]},
+        },
+        state={
+            "story_id": "s-neutral-game-ledger",
+            "genre": "网游",
+            "genre_plugin_ids": ["game_webnovel"],
+            "current_chapter": 0,
+            "world_facts": [],
+            "characters": [
+                {"name": "周行", "role": "protagonist", "game_id": "行舟"}
+            ],
+        },
+    )
+    state = store.state()
+    chapter = {
+        "chapter_number": 1,
+        "chapter_title": "第一份委托",
+        "body": "任务：请哈维带路。哈维答应以后，任务进度变成1/1。",
+    }
+
+    synced = store._sync_ledger_from_chapter_body(state, chapter)
+    rendered = json.dumps(synced, ensure_ascii=False)
+
+    for term in ("夜烬", "苏叶", "见习者（未转职）", "新手法杖", "清道夫委托", "灰狼毒腺"):
+        assert term not in rendered
 
 
 def test_state_does_not_add_market_buyer_as_character_before_outline_appearance(tmp_path):
@@ -9717,12 +10447,12 @@ def test_file_project_store_regenerates_target_chapter_with_rotating_variant(tmp
 
     assert regenerated["schema_version"] == "file-project-regenerate/v1"
     assert regenerated["chapter_number"] == 1
-    assert regenerated["chapter_title"] == "新版-focus-character-choice"
+    assert regenerated["chapter_title"] == "旧第一章"
     assert seen_variants == ["focus-character-choice"]
     assert regenerated["simulation_variant"]["id"] == "focus-character-choice"
     assert "skip_style_adapt" not in regenerated["simulation_variant"]
     assert regenerated["simulation_variant"]["skip_expansion"] is False
-    assert (root / "chapters" / "0001-新版-focus-character-choice.md").exists()
+    assert (root / "chapters" / "0001-旧第一章.md").exists()
 
 
 def test_regenerate_uses_complete_runtime_story_payload_for_project_genre(monkeypatch, tmp_path):
@@ -10581,6 +11311,147 @@ def test_file_project_store_saves_short_first_draft_for_human_review(tmp_path):
     assert saved["quality_report"]["manual_quality_override"] is True
 
 
+@pytest.mark.parametrize(
+    ("source_body", "candidate_body", "expected_mode", "prompt_marker"),
+    [
+        ("短" * 3000, "补" * 4400, "expand", "不是逐句增肥"),
+        ("长" * 5600, "压" * 5000, "shorten", "删重复解释"),
+        ("中" * 4600, "润" * 4550, "polish", "只润色表达"),
+    ],
+    ids=["expand-short", "shorten-long", "polish-in-range"],
+)
+def test_file_project_store_polishes_chapter_with_adaptive_length_mode(
+    tmp_path,
+    source_body,
+    candidate_body,
+    expected_mode,
+    prompt_marker,
+):
+    root = tmp_path / f"manual-polish-{expected_mode}"
+    store = _make_minimal_file_project(
+        root,
+        project={"project_id": "p-manual-polish", "title": "Manual Polish"},
+        state={
+            "story_id": "s-manual-polish",
+            "outline": "A grounded story.",
+            "genre": "general",
+            "style": "plain",
+            "current_chapter": 1,
+            "world_facts": ["The repair shop is still open."],
+        },
+    )
+    _seed_generation_outline(root, 1)
+    store.write_chapter(
+        chapter_number=1,
+        title="Chapter To Polish",
+        body=source_body,
+        summary="Keep every confirmed event.",
+    )
+
+    class FakeOrchestrator:
+        def __init__(self):
+            self.calls = []
+
+        def _timed_chat(self, story, prompt, **kwargs):
+            self.calls.append({"story": story, "prompt": prompt, "kwargs": kwargs})
+            return candidate_body, ""
+
+    orchestrator = FakeOrchestrator()
+    result = store.polish_chapter(1, orchestrator=orchestrator)
+
+    assert len(orchestrator.calls) == 1
+    assert source_body in orchestrator.calls[0]["prompt"]
+    assert prompt_marker in orchestrator.calls[0]["prompt"]
+    assert orchestrator.calls[0]["kwargs"]["stage"] == f"章节润色（{expected_mode}） 第1章"
+    assert result["polish_mode"] == expected_mode
+    assert result["candidate"]["body"] == candidate_body
+    assert result["candidate"]["operation"] == "regenerate"
+    assert store.chapter(1)["body"] == source_body
+
+
+def test_file_project_store_polish_repairs_overlong_first_pass_before_saving_candidate(tmp_path):
+    root = tmp_path / "manual-polish-length-repair"
+    store = _make_minimal_file_project(
+        root,
+        project={"project_id": "p-manual-polish-repair", "title": "Manual Polish Repair"},
+        state={
+            "story_id": "s-manual-polish-repair",
+            "outline": "A grounded story.",
+            "genre": "general",
+            "style": "plain",
+            "current_chapter": 1,
+            "world_facts": [],
+        },
+    )
+    _seed_generation_outline(root, 1)
+    source_body = "原" * 4600
+    first_pass_body = "初" * 5900
+    repaired_body = "改" * 5000
+    store.write_chapter(
+        chapter_number=1,
+        title="Chapter To Polish",
+        body=source_body,
+        summary="Keep every confirmed event.",
+    )
+
+    class FakeOrchestrator:
+        def __init__(self):
+            self.calls = []
+            self.responses = [first_pass_body, repaired_body]
+
+        def _timed_chat(self, story, prompt, **kwargs):
+            self.calls.append({"story": story, "prompt": prompt, "kwargs": kwargs})
+            return self.responses.pop(0), ""
+
+    orchestrator = FakeOrchestrator()
+    result = store.polish_chapter(1, orchestrator=orchestrator)
+
+    assert len(orchestrator.calls) == 2
+    assert first_pass_body in orchestrator.calls[1]["prompt"]
+    assert "删重复解释" in orchestrator.calls[1]["prompt"]
+    assert orchestrator.calls[1]["kwargs"]["stage"] == "章节润色字数校正（shorten） 第1章"
+    assert result["candidate"]["body"] == repaired_body
+    assert result["after_chars"] == 5000
+    assert result["length_repair_applied"] is True
+    assert store.chapter(1)["body"] == source_body
+
+
+def test_file_project_store_polish_rejects_candidate_still_overlong_after_one_repair(tmp_path):
+    root = tmp_path / "manual-polish-length-repair-failed"
+    store = _make_minimal_file_project(
+        root,
+        project={"project_id": "p-manual-polish-repair-failed", "title": "Manual Polish Repair Failed"},
+        state={
+            "story_id": "s-manual-polish-repair-failed",
+            "outline": "A grounded story.",
+            "genre": "general",
+            "style": "plain",
+            "current_chapter": 1,
+            "world_facts": [],
+        },
+    )
+    _seed_generation_outline(root, 1)
+    source_body = "原" * 4600
+    store.write_chapter(
+        chapter_number=1,
+        title="Chapter To Polish",
+        body=source_body,
+        summary="Keep every confirmed event.",
+    )
+
+    class FakeOrchestrator:
+        def __init__(self):
+            self.responses = ["初" * 5900, "改" * 5700]
+
+        def _timed_chat(self, *_args, **_kwargs):
+            return self.responses.pop(0), ""
+
+    with pytest.raises(ValueError, match="chapter_polish_failed:length_out_of_range:5700"):
+        store.polish_chapter(1, orchestrator=FakeOrchestrator())
+
+    assert store.chapter(1)["body"] == source_body
+
+
 def test_file_project_store_expands_short_chapter_as_candidate(tmp_path):
     root = tmp_path / "manual-expand"
     store = _make_minimal_file_project(
@@ -10618,10 +11489,56 @@ def test_file_project_store_expands_short_chapter_as_candidate(tmp_path):
 
     assert len(orchestrator.calls) == 1
     assert source_body.strip() in orchestrator.calls[0]["prompt"]
+    assert "不是逐句增肥" in orchestrator.calls[0]["prompt"]
+    assert "禁止扩写环境介绍" in orchestrator.calls[0]["prompt"]
+    source_chars = _chapter_char_count(source_body)
+    target_min, target_max = _expansion_target_range(source_chars)
+    assert f"新增字数预算：共补约{target_min - source_chars}到{target_max - source_chars}字" in orchestrator.calls[0]["prompt"]
+    assert "默认分到3处" in orchestrator.calls[0]["prompt"]
+    assert "不输出扩写规划" in orchestrator.calls[0]["prompt"]
+    assert orchestrator.calls[0]["kwargs"]["max_tokens"] < 6200
     assert result["schema_version"] == "file-project-candidate/v1"
     assert result["candidate"]["operation"] == "regenerate"
     assert result["candidate"]["body"] == expanded_body
     assert store.chapter(1)["body"] == source_body
+
+
+def test_later_game_chapter_expansion_does_not_inherit_first_chapter_trade_rule(tmp_path):
+    root = tmp_path / "later-game-expansion"
+    store = _make_minimal_file_project(
+        root,
+        project={"project_id": "p-later-game-expansion", "title": "Later Game"},
+        state={
+            "story_id": "s-later-game-expansion",
+            "outline": "A grounded webgame story.",
+            "genre": "网游",
+            "genre_plugin_ids": ["game_webnovel"],
+            "current_chapter": 2,
+            "world_facts": [],
+        },
+    )
+    _seed_generation_outline(root, 2)
+    source_body = "第二章正文。" * 500
+    store.write_chapter(
+        chapter_number=2,
+        title="Second Chapter",
+        body=source_body,
+        summary="Continue the game story.",
+    )
+
+    class FakeOrchestrator:
+        def __init__(self):
+            self.prompt = ""
+
+        def _timed_chat(self, _story, prompt, **_kwargs):
+            self.prompt = prompt
+            return source_body + ("新增过程。" * 100), ""
+
+    orchestrator = FakeOrchestrator()
+    store.expand_chapter(2, orchestrator=orchestrator)
+
+    assert "第一章未获大纲授权时" not in orchestrator.prompt
+    assert "第一章按大纲补足" not in orchestrator.prompt
 
 
 def test_file_project_store_expands_full_length_chapter_as_candidate(tmp_path):
@@ -10658,14 +11575,122 @@ def test_file_project_store_expands_full_length_chapter_as_candidate(tmp_path):
     assert store.chapter(1)["body"] == "甲" * 3800
 
 
+def test_file_project_store_keeps_shorter_than_target_expansion_as_reviewable_candidate(tmp_path):
+    root = tmp_path / "manual-expand-progress"
+    store = _make_minimal_file_project(
+        root,
+        project={"project_id": "p-manual-expand-progress", "title": "Manual Expand Progress"},
+        state={
+            "story_id": "s-manual-expand-progress",
+            "outline": "A grounded story.",
+            "genre": "general",
+            "style": "plain",
+            "current_chapter": 1,
+            "world_facts": [],
+        },
+    )
+    source_body = "原" * 3500
+    expanded_body = "新" * 3700
+    store.write_chapter(
+        chapter_number=1,
+        title="Short Chapter",
+        body=source_body,
+        summary="Short.",
+    )
+
+    class FakeOrchestrator:
+        def _timed_chat(self, *_args, **_kwargs):
+            return expanded_body, ""
+
+    result = store.expand_chapter(1, orchestrator=FakeOrchestrator())
+
+    assert result["candidate"]["body"] == expanded_body
+    assert result["candidate"]["quality_report"]["ok"] is False
+    assert "body_too_short" in result["candidate"]["quality_report"]["issues"]
+    assert store.chapter(1)["body"] == source_body
+
+
+def test_file_project_store_keeps_overlong_expansion_as_reviewable_candidate(tmp_path):
+    root = tmp_path / "manual-expand-overlong"
+    store = _make_minimal_file_project(
+        root,
+        project={"project_id": "p-manual-expand-overlong", "title": "Manual Expand Overlong"},
+        state={
+            "story_id": "s-manual-expand-overlong",
+            "outline": "A grounded story.",
+            "genre": "general",
+            "style": "plain",
+            "current_chapter": 1,
+            "world_facts": [],
+        },
+    )
+    source_body = "原" * 3500
+    expanded_body = "新" * 6000
+    store.write_chapter(
+        chapter_number=1,
+        title="Short Chapter",
+        body=source_body,
+        summary="Short.",
+    )
+
+    class FakeOrchestrator:
+        def _timed_chat(self, *_args, **_kwargs):
+            return expanded_body, ""
+
+    result = store.expand_chapter(1, orchestrator=FakeOrchestrator())
+
+    assert result["candidate"]["body"] == expanded_body
+    assert "body_too_long" in result["candidate"]["quality_report"]["issues"]
+    assert store.chapter(1)["body"] == source_body
+
+
+def test_file_project_store_flags_expansion_that_changes_the_ending_hook(tmp_path):
+    root = tmp_path / "manual-expand-ending"
+    store = _make_minimal_file_project(
+        root,
+        project={"project_id": "p-manual-expand-ending", "title": "Manual Expand Ending"},
+        state={
+            "story_id": "s-manual-expand-ending",
+            "outline": "A grounded story.",
+            "genre": "general",
+            "style": "plain",
+            "current_chapter": 1,
+            "world_facts": [],
+        },
+    )
+    source_body = ("原场景。" * 700) + "\n\n‘你终于回来了。’"
+    expanded_body = ("扩写场景。" * 850) + "\n\n‘你终于回来了。’\n\n他继续问了三句话。"
+    store.write_chapter(
+        chapter_number=1,
+        title="Ending Lock",
+        body=source_body,
+        summary="Short.",
+    )
+
+    class FakeOrchestrator:
+        def __init__(self):
+            self.prompt = ""
+
+        def _timed_chat(self, _story, prompt, **_kwargs):
+            self.prompt = prompt
+            return expanded_body, ""
+
+    orchestrator = FakeOrchestrator()
+    result = store.expand_chapter(1, orchestrator=orchestrator)
+
+    assert "‘你终于回来了。’" in orchestrator.prompt
+    assert "必须原样保留为全文最后一段" in orchestrator.prompt
+    assert result["candidate"]["quality_report"]["ok"] is False
+    assert "ending_hook_changed" in result["candidate"]["quality_report"]["issues"]
+
+
 @pytest.mark.parametrize(
     ("model_body", "expected_error"),
     [
         ("", "chapter_expansion_failed:empty_body"),
-        ("原文。" * 100, "chapter_expansion_failed:invalid_length"),
-        ("超长。" * 2000, "chapter_expansion_failed:invalid_length"),
+        ("原" * 100, "chapter_expansion_failed:no_progress"),
     ],
-    ids=["empty", "not-longer", "too-long"],
+    ids=["empty", "not-longer"],
 )
 def test_file_project_store_rejects_invalid_manual_expansion_output(
     tmp_path,
@@ -11002,6 +12027,10 @@ def test_file_project_store_normalizes_generated_chapter_title_prefix(tmp_path):
         },
     )
     _seed_generation_outline(root, 1)
+    rolling_path = root / ".story-system" / "outline-generation" / "rolling_outline.json"
+    rolling = json.loads(rolling_path.read_text(encoding="utf-8"))
+    rolling["chapters"][0]["title"] = "第1章 夜烬"
+    rolling_path.write_text(json.dumps(rolling, ensure_ascii=False), encoding="utf-8")
 
     class FakeEngine:
         def generate_next_chapter(self, story):
@@ -11034,6 +12063,167 @@ def test_file_project_store_normalizes_generated_chapter_title_prefix(tmp_path):
 
     assert generated["chapter_title"] == "夜烬"
     assert (root / "chapters" / "0001-夜烬.md").exists()
+
+
+def test_file_project_store_persists_new_chapter_with_detail_outline_title(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={"story_id": "s-file", "current_chapter": 0, "world_facts": []},
+    )
+    _seed_generation_outline(root, 1)
+    rolling_path = root / ".story-system" / "outline-generation" / "rolling_outline.json"
+    rolling = json.loads(rolling_path.read_text(encoding="utf-8"))
+    rolling["chapters"][0]["title"] = "细纲定下的标题"
+    rolling_path.write_text(json.dumps(rolling, ensure_ascii=False), encoding="utf-8")
+
+    result = store.persist_bundle(
+        {
+            "chapter_number": 1,
+            "chapter_title": "模型临时起的标题",
+            "body": _long_test_body("The chapter follows the approved detail outline."),
+            "chapter_summary": {
+                "chapter_number": 1,
+                "chapter_title": "模型临时起的标题",
+                "summary": "The planned event is completed.",
+                "facts": ["The plan advances."],
+                "next_focus": "Continue.",
+            },
+            "quality_report": {
+                "ok": True,
+                "issues": [],
+                "writing_review": {"pass": True, "issues": []},
+            },
+        },
+        operation="generate",
+        accept_quality_warnings=True,
+    )
+
+    assert result["chapter_title"] == "细纲定下的标题"
+    saved = json.loads(
+        (root / ".story-system" / "chapters" / "0001.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert saved["chapter_title"] == "细纲定下的标题"
+    assert saved["chapter_summary"]["chapter_title"] == "细纲定下的标题"
+
+
+def test_file_project_store_regenerate_preserves_formal_chapter_title(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={"story_id": "s-file", "current_chapter": 1, "world_facts": []},
+    )
+    _seed_generation_outline(root, 1)
+    formal_path = root / ".story-system" / "chapters" / "0001.json"
+    formal_path.write_text(
+        json.dumps(
+            {
+                "chapter_number": 1,
+                "chapter_title": "已经发布的标题",
+                "body": "",
+                "chapter_summary": {"chapter_title": "已经发布的标题"},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    assert store._authoritative_chapter_title(1, operation="regenerate") == "已经发布的标题"
+
+
+@pytest.mark.parametrize("placeholder", [None, "None", "null", "undefined", "未命名", "未命名章节"])
+def test_file_project_store_regenerate_ignores_placeholder_formal_title(
+    tmp_path,
+    placeholder,
+):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={"story_id": "s-file", "current_chapter": 1, "world_facts": []},
+    )
+    _seed_generation_outline(root, 1)
+    rolling_path = root / ".story-system" / "outline-generation" / "rolling_outline.json"
+    rolling = json.loads(rolling_path.read_text(encoding="utf-8"))
+    rolling["chapters"][0]["title"] = "细纲里的正式标题"
+    rolling_path.write_text(json.dumps(rolling, ensure_ascii=False), encoding="utf-8")
+    formal_path = root / ".story-system" / "chapters" / "0001.json"
+    formal_path.write_text(
+        json.dumps(
+            {
+                "chapter_number": 1,
+                "chapter_title": placeholder,
+                "body": "",
+                "chapter_summary": {"chapter_title": placeholder},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    assert store._authoritative_chapter_title(1, operation="regenerate") == "细纲里的正式标题"
+
+
+def test_file_project_store_hydrates_placeholder_title_from_detail_outline(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(
+        root,
+        state={"story_id": "s-file", "current_chapter": 1, "world_facts": []},
+    )
+    _seed_generation_outline(root, 1)
+    rolling_path = root / ".story-system" / "outline-generation" / "rolling_outline.json"
+    rolling = json.loads(rolling_path.read_text(encoding="utf-8"))
+    rolling["chapters"][0]["title"] = "细纲里的正式标题"
+    rolling_path.write_text(json.dumps(rolling, ensure_ascii=False), encoding="utf-8")
+    formal_path = root / ".story-system" / "chapters" / "0001.json"
+    formal_path.write_text(
+        json.dumps(
+            {
+                "chapter_number": 1,
+                "chapter_title": "None",
+                "body": "正文",
+                "chapter_intent": {"chapter_title": "细纲里的正式标题"},
+                "chapter_summary": {
+                    "chapter_title": "None",
+                    "summary": "本章完成。",
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    chapter = store.chapter(1)
+    index = store.chapter_index()
+
+    assert chapter["chapter_title"] == "细纲里的正式标题"
+    assert chapter["chapter_summary"]["chapter_title"] == "细纲里的正式标题"
+    assert index[0]["chapter_title"] == "细纲里的正式标题"
+
+
+def test_file_project_store_rejects_new_chapter_without_detail_title(tmp_path):
+    root = tmp_path / "novel"
+    store = _make_minimal_file_project(root)
+    (root / ".webnovel" / "outline.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "project-outline/v1",
+                "overall": {},
+                "arcs": [],
+                "chapters": [],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="chapter_outline_title_required:1"):
+        store._authoritative_chapter_title(
+            1,
+            operation="generate",
+            fallback_title="模型临时标题",
+        )
 
 
 def test_file_project_store_reads_exported_layout(tmp_path):

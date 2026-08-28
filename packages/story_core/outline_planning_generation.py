@@ -5,9 +5,10 @@ import re
 from copy import deepcopy
 from typing import Any, Callable, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from packages.story_core.agent_base import parse_json_message_content
+from packages.story_core.attribute_allocation import normalize_attribute_allocation_rule
 from packages.story_core.character_profiles import normalize_speech_style_for_writing
 from packages.story_core.elastic_outline import outline_window_status
 from packages.story_core.http_retry import post_json_with_retry
@@ -84,6 +85,7 @@ def chapter_output_schema(
     model: type[BaseModel],
     *,
     require_chapter_contracts: bool,
+    include_attribute_allocation: bool = True,
 ) -> dict[str, Any]:
     schema = deepcopy(model.model_json_schema())
     definitions = schema.get("$defs")
@@ -96,6 +98,19 @@ def chapter_output_schema(
         if name in {"ChapterPlan", "GeneratedDetailedChapter"}
         and isinstance(definition, dict)
     ]
+    if not include_attribute_allocation:
+        for definition in chapter_definitions:
+            properties = definition.get("properties")
+            if isinstance(properties, dict):
+                properties.pop("attribute_allocation_decision", None)
+            required = definition.get("required")
+            if isinstance(required, list):
+                definition["required"] = [
+                    field_name
+                    for field_name in required
+                    if field_name != "attribute_allocation_decision"
+                ]
+        definitions.pop("AttributeAllocationDecision", None)
     if not require_chapter_contracts:
         for definition in chapter_definitions:
             properties = definition.get("properties")
@@ -141,6 +156,47 @@ def chapter_output_schema(
     return schema
 
 
+def _drop_disabled_attribute_allocations(payload: Any) -> None:
+    if not isinstance(payload, dict):
+        return
+    chapters = payload.get("chapters")
+    if not isinstance(chapters, list):
+        outline = payload.get("outline")
+        chapters = outline.get("chapters") if isinstance(outline, dict) else None
+    if not isinstance(chapters, list):
+        return
+    for chapter in chapters:
+        if isinstance(chapter, dict):
+            chapter.pop("attribute_allocation_decision", None)
+
+
+def _drop_unknown_chapter_batch_fields(payload: Any) -> None:
+    """Ignore planner notes that are not part of the persisted detail schema."""
+
+    if not isinstance(payload, dict):
+        return
+    chapters = payload.get("chapters")
+    if not isinstance(chapters, list):
+        return
+    chapter_fields = set(GeneratedDetailedChapter.model_fields)
+    scene_fields = set(ChapterScenePlan.model_fields)
+    for chapter in chapters:
+        if not isinstance(chapter, dict):
+            continue
+        for key in list(chapter):
+            if key not in chapter_fields:
+                chapter.pop(key, None)
+        scenes = chapter.get("scene_chain")
+        if not isinstance(scenes, list):
+            continue
+        for scene in scenes:
+            if not isinstance(scene, dict):
+                continue
+            for key in list(scene):
+                if key not in scene_fields:
+                    scene.pop(key, None)
+
+
 def _drop_chapter_contracts_from_outline(outline: Any) -> None:
     if not isinstance(outline, dict):
         return
@@ -162,23 +218,40 @@ def _drop_disabled_chapter_contracts(payload: Any) -> None:
 def validate_next_volume(
     candidate: ArcOutline | dict[str, Any],
     *,
-    previous_volume: ArcOutline | dict[str, Any],
+    previous_volume: ArcOutline | dict[str, Any] | None,
     allow_short_final: bool,
 ) -> ArcOutline:
-    """Validate a single open-ended successor with the shared volume rules."""
+    """Validate a single open-ended successor with the shared volume rules.
 
-    previous = (
-        previous_volume
-        if isinstance(previous_volume, ArcOutline)
-        else ArcOutline.model_validate(previous_volume)
-    )
+    ``previous_volume=None`` signals the project's first (bootstrap) volume.
+    The validator then:
+    * pins ``expected_start = 1`` instead of deriving from a prior arc,
+    * drops the 50-chapter whole-book minimum so the user can pick a short
+      bootstrap length for a brand-new project.
+    """
+
+    if previous_volume is not None:
+        previous = (
+            previous_volume
+            if isinstance(previous_volume, ArcOutline)
+            else ArcOutline.model_validate(previous_volume)
+        )
+        expected_start = previous.end_chapter + 1
+        enforce_minimum_length = True
+    else:
+        previous = None
+        expected_start = 1
+        enforce_minimum_length = False
     volume = candidate if isinstance(candidate, ArcOutline) else ArcOutline.model_validate(candidate)
-    expected_start = previous.end_chapter + 1
     if volume.start_chapter != expected_start:
         raise ValueError("next_volume_start_mismatch")
     if volume.is_final_arc and not allow_short_final:
         raise ValueError("unexpected_final_volume")
-    if not volume.is_final_arc and volume.end_chapter - volume.start_chapter + 1 < MIN_VOLUME_CHAPTERS:
+    if (
+        enforce_minimum_length
+        and not volume.is_final_arc
+        and volume.end_chapter - volume.start_chapter + 1 < MIN_VOLUME_CHAPTERS
+    ):
         raise ValueError(f"volume_too_short:{volume.id}")
 
     required_text = {
@@ -379,6 +452,14 @@ class GeneratedDetailedChapter(ChapterPlan):
     schema therefore never sees the rolling-only keys.
     """
 
+    title: str = Field(min_length=1)
+    goal: str = Field(min_length=1)
+    obstacle: str = Field(min_length=1)
+    action: str = Field(min_length=1)
+    turn: str = Field(min_length=1)
+    payoff: str = Field(min_length=1)
+    ending_hook: str = Field(min_length=1)
+    cast: list[str] = Field(min_length=1)
     core_conflict: str = Field(min_length=1)
     gain: str = Field(min_length=1)
     cost: str = Field(min_length=1)
@@ -416,6 +497,80 @@ class PlanningCharacterSeed(_PlanningInput):
     decision_rule: str = Field(min_length=1, max_length=200)
     hidden_matter: str = Field(default="", max_length=300)
     dialogue_examples: list[str] = Field(min_length=2, max_length=2)
+
+
+_CHINESE_DIGITS = {
+    "零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+    "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
+}
+_CHINESE_UNITS = {"十": 10, "百": 100, "千": 1000}
+_HISTORY_EVENT_WORDS = (
+    "献祭", "失踪", "战争", "灭门", "事故", "灾难", "旧案", "血案", "入侵", "政变", "大劫",
+)
+_PERSONAL_HISTORY_MARKERS = (
+    "亲历", "见证", "参与", "主导", "发动", "反对", "签署", "镇压", "主持", "策划",
+)
+_HISTORY_INHERITANCE_MARKERS = (
+    "前世", "转世", "轮回", "重生", "分身", "后人", "后代", "先祖", "家族", "传闻", "记载", "记录",
+)
+_YEARS_AGO_PATTERN = re.compile(r"([0-9]{1,4}|[零〇一二两三四五六七八九十百千]{1,8})年前")
+
+
+def _parse_year_count(raw: str) -> int | None:
+    if raw.isdigit():
+        return int(raw)
+    total = 0
+    pending = 0
+    for char in raw:
+        if char in _CHINESE_DIGITS:
+            pending = _CHINESE_DIGITS[char]
+            continue
+        unit = _CHINESE_UNITS.get(char)
+        if unit is None:
+            return None
+        total += (pending or 1) * unit
+        pending = 0
+    return total + pending
+
+
+def _validate_character_seed_chronology(seed: PlanningCharacterSeed) -> None:
+    """Reject obvious age/history contradictions before cards enter the outline."""
+
+    fields = (
+        seed.origin,
+        seed.immediate_problem,
+        seed.immediate_goal,
+        seed.long_term_goal,
+        seed.hidden_matter,
+    )
+    clauses = [
+        clause.strip()
+        for value in fields
+        for clause in re.split(r"[。！？；;!?]", str(value or ""))
+        if clause.strip()
+    ]
+    event_dates: dict[str, set[int]] = {}
+    for clause in clauses:
+        offsets = {
+            years
+            for match in _YEARS_AGO_PATTERN.finditer(clause)
+            if (years := _parse_year_count(match.group(1))) is not None
+        }
+        if not offsets:
+            continue
+        for event in _HISTORY_EVENT_WORDS:
+            if event in clause:
+                event_dates.setdefault(event, set()).update(offsets)
+        if (
+            seed.age is not None
+            and any(marker in clause for marker in _PERSONAL_HISTORY_MARKERS)
+            and not any(marker in clause for marker in _HISTORY_INHERITANCE_MARKERS)
+            and any(years >= seed.age for years in offsets)
+        ):
+            raise ValueError(f"character_age_precedes_personal_history:{seed.name}")
+    for event, offsets in event_dates.items():
+        if len(offsets) > 1:
+            raise ValueError(f"character_event_date_conflict:{seed.name}:{event}")
 
 
 def _expand_character_seed(seed: PlanningCharacterSeed) -> PlanningCharacterCard:
@@ -481,6 +636,26 @@ def _clear_non_game_dual_line_payoffs(payload: dict[str, Any]) -> None:
         if isinstance(arc, dict):
             arc["game_line_payoff"] = ""
             arc["reality_line_payoff"] = ""
+
+
+def _fill_equivalent_arc_handoffs(payload: dict[str, Any]) -> None:
+    """Reuse an explicit next-volume entry when the duplicate hook field is blank."""
+
+    outline = payload.get("outline")
+    if not isinstance(outline, dict):
+        return
+    for arc in outline.get("arcs", []):
+        if not isinstance(arc, dict) or str(arc.get("hook_plan") or "").strip():
+            continue
+        extension_gate = arc.get("extension_gate")
+        continue_route = (
+            str(extension_gate.get("continue_route") or "").strip()
+            if isinstance(extension_gate, dict)
+            else ""
+        )
+        replacement = str(arc.get("next_arc_entry") or "").strip() or continue_route
+        if replacement:
+            arc["hook_plan"] = replacement
 
 
 def _drop_invalid_optional_trope_beats(
@@ -597,13 +772,18 @@ class LLMOutlinePlanningGenerator:
         self,
         brief: OutlinePlanningBrief,
         *,
-        previous_volume: dict[str, Any],
+        previous_volume: dict[str, Any] | None = None,
         guidance: str = "",
     ) -> ArcOutline:
-        """Design one successor volume without generating chapter detail."""
+        """Design one successor volume without generating chapter detail.
+
+        ``previous_volume=None`` means the bootstrap volume for a brand-new
+        project.  The model is told to start at chapter 1, no prior volume
+        is referenced, and the 50-chapter whole-book length floor is
+        dropped so the user can pick a short bootstrap length.
+        """
 
         validated = OutlinePlanningBrief.model_validate(brief)
-        previous = ArcOutline.model_validate(previous_volume)
         normalized_guidance = str(guidance or "").strip()
         if len(normalized_guidance) > 1000:
             raise ValueError("regeneration_guidance_too_long")
@@ -614,6 +794,18 @@ class LLMOutlinePlanningGenerator:
         overall = deepcopy(validated.overall_context)
         strategy = str(overall.get("current_strategy") or "observe")
         allow_short_final = strategy == "close"
+        if previous_volume is not None:
+            previous = (
+                previous_volume
+                if isinstance(previous_volume, ArcOutline)
+                else ArcOutline.model_validate(previous_volume)
+            )
+            required_start_chapter = previous.end_chapter + 1
+            is_bootstrap = False
+        else:
+            previous = None
+            required_start_chapter = 1
+            is_bootstrap = True
         context = {
             "generation_phase": "next_volume",
             "title": validated.title,
@@ -644,22 +836,24 @@ class LLMOutlinePlanningGenerator:
             "character_current_states": deepcopy(
                 validated.character_current_states
             ),
-            "previous_volume": previous.model_dump(mode="json"),
-            "previous_volume_end_state": previous.end_state,
-            "required_start_chapter": previous.end_chapter + 1,
+            "required_start_chapter": required_start_chapter,
             "allow_short_final_volume": allow_short_final,
+            "is_bootstrap_volume": is_bootstrap,
             "guidance": normalized_guidance,
             "output_schema": ArcOutline.model_json_schema(),
             "validation_rules": [
                 "Return exactly one volume object; do not return chapters or character cards.",
                 "start_chapter must equal required_start_chapter.",
-                "A non-final volume must cover at least 50 chapters.",
+                "A non-bootstrap, non-final volume must cover at least 50 chapters; the bootstrap volume may be any length the user requested.",
                 "story_nodes must cover the whole volume continuously in blocks of at most 15 chapters.",
                 "The volume must provide goal, obstacle, midpoint turn, climax, payoff, explicit cost, irreversible change, and end_state.",
                 "A non-final volume must leave a concrete extension_gate.continue_route and next-effect entry.",
                 "Set is_final_arc only when allow_short_final_volume is true and the story is actually closing.",
             ],
         }
+        if previous is not None:
+            context["previous_volume"] = previous.model_dump(mode="json")
+            context["previous_volume_end_state"] = previous.end_state
         payload = {
             "model": runtime.model,
             "messages": [
@@ -668,7 +862,11 @@ class LLMOutlinePlanningGenerator:
                     "content": (
                         "Design exactly one successor volume for a Chinese long-form webnovel. "
                         "Use only the supplied canon and return one ArcOutline JSON object. "
-                        "Do not generate chapter detail, prose, or character cards."
+                        "Do not generate chapter detail, prose, or character cards. "
+                        "If is_bootstrap_volume is true, this is the first volume "
+                        "of a brand-new project — start at required_start_chapter "
+                        "(=1), invent a coherent opening arc, and do not invent "
+                        "a prior volume."
                     ),
                 },
                 {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
@@ -689,6 +887,128 @@ class LLMOutlinePlanningGenerator:
             previous_volume=previous,
             allow_short_final=allow_short_final,
         )
+
+    def generate_volume_characters(
+        self,
+        brief: OutlinePlanningBrief,
+        *,
+        volume: dict[str, Any],
+        guidance: str = "",
+    ) -> list[PlanningCharacterCard]:
+        """Create cards for important named characters introduced by one volume."""
+
+        validated = OutlinePlanningBrief.model_validate(brief)
+        arc = ArcOutline.model_validate(volume)
+        normalized_guidance = str(guidance or "").strip()
+        if len(normalized_guidance) > 1000:
+            raise ValueError("regeneration_guidance_too_long")
+
+        runtime = self._runtime_resolver("planner")
+        if runtime.provider not in {"codexcli", "antigravity"} and not runtime.api_key:
+            raise ValueError("runtime_unavailable")
+        existing_names = {
+            str(name).strip()
+            for name in validated.existing_character_names
+            if str(name).strip()
+        }
+        existing_volume_names = {
+            str(card.get("name") or "").strip()
+            for card in validated.existing_characters
+            if isinstance(card, dict)
+            and str(card.get("name") or "").strip()
+            and isinstance(card.get("first_appearance"), int)
+            and not isinstance(card.get("first_appearance"), bool)
+            and arc.start_chapter
+            <= int(card["first_appearance"])
+            <= arc.end_chapter
+        }
+        existing_volume_character_count = len(existing_volume_names)
+        max_new_characters = max(0, min(10, 15 - existing_volume_character_count))
+        number_word = (
+            "zero",
+            "one",
+            "two",
+            "three",
+            "four",
+            "five",
+            "six",
+            "seven",
+            "eight",
+            "nine",
+            "ten",
+        )[max_new_characters]
+        context = {
+            "generation_phase": "volume_characters",
+            "title": validated.title,
+            "novel_type_id": validated.novel_type_id,
+            "volume": arc.model_dump(mode="json"),
+            "volume_range": [arc.start_chapter, arc.end_chapter],
+            "story_nodes": [node.model_dump(mode="json") for node in arc.story_nodes],
+            "existing_characters": deepcopy(validated.existing_characters),
+            "existing_character_names": list(validated.existing_character_names),
+            "existing_volume_character_count": existing_volume_character_count,
+            "max_new_characters": max_new_characters,
+            "world_facts": deepcopy(validated.world_facts),
+            "continuity_facts": deepcopy(validated.continuity_facts),
+            "author_constraints": list(validated.author_constraints),
+            "guidance": normalized_guidance,
+            "output_schema": GeneratedCharacterRoster.model_json_schema(),
+            "validation_rules": [
+                "Return only important named people who first appear in this volume and do not already have a card.",
+                f"Return zero to {number_word} characters; do not pad the roster.",
+                "A normal 50-chapter volume should have 10 to 15 active or newly introduced named people in total; generate only the missing people needed to reach a useful cast.",
+                "Include a new stage antagonist or recurring ally when the fixed volume needs one.",
+                "Every new card must attach to a concrete story node and have a recurring conflict, relationship, information, resource, or real-life function; do not create one-scene function labels.",
+                "Names must be concrete personal names, never placeholders, occupations, factions, crowds, monsters, or generic labels such as commander, guard, elder, or manager.",
+                "first_appearance must fall inside volume_range.",
+                "Do not redesign the volume, story nodes, world, or existing characters.",
+                "Dialogue examples must be complete, natural Chinese utterances suited to the relationship and situation.",
+            ],
+        }
+        payload = {
+            "model": runtime.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Generate only the new named-character roster required by one fixed "
+                        "Chinese webnovel volume. Return JSON with the single root field "
+                        "characters. Do not generate chapters, prose, groups, unnamed roles, "
+                        "or replacements for existing characters."
+                    ),
+                },
+                {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": float(runtime.temperature),
+        }
+        response = _complete_payload(
+            self._model_gateway,
+            payload,
+            operation="outline_planning_volume_characters",
+        )
+        data = parse_json_message_content(response)
+        if data is None:
+            raise ValueError("invalid_volume_character_json")
+        roster = GeneratedCharacterRoster.model_validate(data)
+        new_seeds = [
+            seed for seed in roster.characters if seed.name.strip() not in existing_names
+        ]
+        if len(new_seeds) > max_new_characters:
+            raise ValueError("too_many_volume_characters")
+
+        result: list[PlanningCharacterCard] = []
+        generated_names: set[str] = set()
+        for seed in new_seeds:
+            name = seed.name.strip()
+            _validate_character_seed_chronology(seed)
+            if name in generated_names:
+                raise ValueError(f"duplicate_volume_character:{name}")
+            if not arc.start_chapter <= seed.first_appearance <= arc.end_chapter:
+                raise ValueError(f"volume_character_first_appearance_out_of_range:{name}")
+            generated_names.add(name)
+            result.append(_expand_character_seed(seed))
+        return result
 
     def generate_chapter_batch(
         self,
@@ -801,6 +1121,42 @@ class LLMOutlinePlanningGenerator:
             str(module_id).strip()
             for module_id in (validated.enabled_skill_module_ids or [])
         }
+        attribute_allocation_enabled = bool(
+            normalize_attribute_allocation_rule(
+                validated.power_system_spec.get("attribute_allocation")
+                if isinstance(validated.power_system_spec, dict)
+                else None
+            )
+        )
+        all_character_first_appearances = {
+            str(card.get("name") or "").strip(): int(
+                card.get("first_appearance") or 0
+            )
+            for card in validated.existing_characters
+            if isinstance(card, dict) and str(card.get("name") or "").strip()
+        }
+        batch_end = chapter_numbers[-1]
+        visible_characters = [
+            deepcopy(card)
+            for card in validated.existing_characters
+            if isinstance(card, dict)
+            and (
+                int(card.get("first_appearance") or 0) <= 0
+                or int(card.get("first_appearance") or 0) <= batch_end
+            )
+        ]
+        visible_character_names = [
+            name
+            for name in validated.existing_character_names
+            if int(all_character_first_appearances.get(str(name).strip()) or 0) <= 0
+            or int(all_character_first_appearances.get(str(name).strip()) or 0)
+            <= batch_end
+        ]
+        character_first_appearances = {
+            name: first_appearance
+            for name, first_appearance in all_character_first_appearances.items()
+            if first_appearance <= 0 or first_appearance <= batch_end
+        }
         context = {
             "generation_phase": "volume_chapter_batch",
             "title": validated.title,
@@ -818,8 +1174,9 @@ class LLMOutlinePlanningGenerator:
                 "historical_chapter_summaries": deepcopy(
                     validated.historical_chapter_summaries
                 ),
-                "existing_characters": deepcopy(validated.existing_characters),
-                "known_character_names": list(validated.existing_character_names),
+                "existing_characters": visible_characters,
+                "known_character_names": visible_character_names,
+                "character_first_appearances": character_first_appearances,
                 "power_system": deepcopy(validated.power_system_spec),
                 "world_facts": deepcopy(validated.world_facts),
                 "continuity_facts": deepcopy(validated.continuity_facts),
@@ -840,56 +1197,228 @@ class LLMOutlinePlanningGenerator:
             "output_schema": chapter_output_schema(
                 GeneratedChapterWindow,
                 require_chapter_contracts=contracts_enabled,
+                include_attribute_allocation=attribute_allocation_enabled,
             ),
             "validation_rules": [
                 "Return exactly the target_chapter_numbers in order.",
                 "Use the fixed volume and story nodes; do not redesign arcs or volume boundaries.",
+                "Every cast entry must use a name from committed_context.known_character_names; do not invent unnamed roles or new people here.",
+                "Do not use a character before the chapter listed in committed_context.character_first_appearances.",
                 "Carry forward previous_batch_endings and committed_context.",
                 "Use adjacent_chapters as fixed handoff context for sparse gaps.",
                 "The final batch must satisfy required_volume_ending.",
             ],
         }
-        payload = {
-            "model": runtime.model,
-            "messages": [
+        def complete_batch(
+            prompt_context: dict[str, Any], *, operation: str
+        ) -> GeneratedChapterWindow:
+            payload = {
+                "model": runtime.model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Generate only one Chinese webnovel chapter-detail batch. "
+                            "The supplied volume structure is fixed: you must not redesign, "
+                            "replace, resize, or reorder the volume or its story nodes. "
+                            "Every chapter title must sound like a natural Chinese novel "
+                            "chapter title tied to a concrete event, choice, conflict, or "
+                            "result. 禁止报告式标题，例如‘调查记录’‘阶段报告’‘线索预告’"
+                            "‘任务总结’；不要把大纲字段名或工作说明当标题。 "
+                            "Return JSON with the single root field chapters. Follow "
+                            "prompt_context.output_schema and target_chapter_numbers exactly."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": json.dumps(prompt_context, ensure_ascii=False),
+                    },
+                ],
+                "response_format": {"type": "json_object"},
+                "temperature": float(runtime.temperature),
+            }
+            response = _complete_payload(
+                self._model_gateway,
+                payload,
+                operation=operation,
+            )
+            data = parse_json_message_content(response)
+            if data is None:
+                raise ValueError("invalid_chapter_batch_json")
+            _drop_unknown_chapter_batch_fields(data)
+            if not attribute_allocation_enabled:
+                _drop_disabled_attribute_allocations(data)
+            result = GeneratedChapterWindow.model_validate(data)
+            actual = [chapter.chapter_number for chapter in result.chapters]
+            if actual != chapter_numbers:
+                raise ValueError("generated_chapters_do_not_match_target_batch")
+            if contracts_enabled:
+                for chapter in result.chapters:
+                    validate_concrete_chapter_contract(chapter)
+            return result
+
+        def validate_titles(result: GeneratedChapterWindow) -> None:
+            validate_chapter_title_window(
+                [chapter.model_dump(mode="python") for chapter in result.chapters],
+                genre_id=genre_id,
+                previous_chapters=previous_titles,
+                known_chapters=known_titles,
+                generated_chapter_numbers=chapter_numbers,
+            )
+
+        def repair_rejected_titles(
+            result: GeneratedChapterWindow,
+            *,
+            validation_error: str,
+        ) -> GeneratedChapterWindow:
+            matched_numbers = [
+                int(value)
+                for value in re.findall(r"\d+", validation_error)
+                if int(value) in chapter_numbers
+            ]
+            target_numbers = sorted(set(matched_numbers)) or list(chapter_numbers)
+            repair_rows = [
                 {
-                    "role": "system",
-                    "content": (
-                        "Generate only one Chinese webnovel chapter-detail batch. "
-                        "The supplied volume structure is fixed: you must not redesign, "
-                        "replace, resize, or reorder the volume or its story nodes. "
-                        "Return JSON with the single root field chapters. Follow "
-                        "prompt_context.output_schema and target_chapter_numbers exactly."
-                    ),
+                    "chapter_number": chapter.chapter_number,
+                    "title": chapter.title,
+                    "goal": chapter.goal,
+                    "action": chapter.action,
+                    "turn": chapter.turn,
+                    "payoff": chapter.payoff,
+                    "ending_hook": chapter.ending_hook,
+                }
+                for chapter in result.chapters
+                if chapter.chapter_number in target_numbers
+            ]
+            repair_context = {
+                "validation_error": validation_error,
+                "target_chapters": repair_rows,
+                "chapter_title_strategy": build_chapter_title_guidance(genre_id),
+                "neighbor_titles": [
+                    {
+                        "chapter_number": chapter.chapter_number,
+                        "title": chapter.title,
+                    }
+                    for chapter in result.chapters
+                    if chapter.chapter_number not in target_numbers
+                ],
+                "output_schema": {
+                    "titles": [
+                        {"chapter_number": number, "title": "自然中文章节名"}
+                        for number in target_numbers
+                    ]
                 },
-                {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
-            ],
-            "response_format": {"type": "json_object"},
-            "temperature": float(runtime.temperature),
-        }
-        response = _complete_payload(
-            self._model_gateway,
-            payload,
-            operation="outline_planning_chapter_batch",
-        )
-        data = parse_json_message_content(response)
-        if data is None:
-            raise ValueError("invalid_chapter_batch_json")
-        result = GeneratedChapterWindow.model_validate(data)
-        actual = [chapter.chapter_number for chapter in result.chapters]
-        if actual != chapter_numbers:
-            raise ValueError("generated_chapters_do_not_match_target_batch")
-        if contracts_enabled:
-            for chapter in result.chapters:
-                validate_concrete_chapter_contract(chapter)
-        validate_chapter_title_window(
-            [chapter.model_dump(mode="python") for chapter in result.chapters],
-            genre_id=genre_id,
-            previous_chapters=previous_titles,
-            known_chapters=known_titles,
-            generated_chapter_numbers=chapter_numbers,
-        )
-        return result
+            }
+            payload = {
+                "model": runtime.model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "只改标题，不改章节事件。根据每章已有的具体行动、选择、冲突、"
+                            "结果和章末钩子，为指定章节重写自然中文章名。禁止‘调查记录’"
+                            "‘阶段报告’‘线索预告’‘任务总结’‘情况说明’等报告式标题。"
+                            "只返回 JSON，根字段为 titles。"
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": json.dumps(repair_context, ensure_ascii=False),
+                    },
+                ],
+                "response_format": {"type": "json_object"},
+                "temperature": float(runtime.temperature),
+            }
+            response = _complete_payload(
+                self._model_gateway,
+                payload,
+                operation="outline_planning_chapter_title_repair",
+            )
+            data = parse_json_message_content(response)
+            title_rows = data.get("titles") if isinstance(data, dict) else None
+            if not isinstance(title_rows, list):
+                raise ValueError("invalid_chapter_title_repair_json")
+            repaired_titles: dict[int, str] = {}
+            for row in title_rows:
+                if not isinstance(row, dict):
+                    continue
+                number = row.get("chapter_number")
+                title = str(row.get("title") or "").strip()
+                if (
+                    isinstance(number, int)
+                    and not isinstance(number, bool)
+                    and number in target_numbers
+                    and title
+                ):
+                    repaired_titles[number] = title
+            if sorted(repaired_titles) != target_numbers:
+                raise ValueError("chapter_title_repair_numbers_mismatch")
+            repaired = result.model_copy(
+                update={
+                    "chapters": [
+                        chapter.model_copy(
+                            update={"title": repaired_titles[chapter.chapter_number]}
+                        )
+                        if chapter.chapter_number in repaired_titles
+                        else chapter
+                        for chapter in result.chapters
+                    ]
+                }
+            )
+            validate_titles(repaired)
+            return repaired
+
+        try:
+            result = complete_batch(
+                context,
+                operation="outline_planning_chapter_batch",
+            )
+        except ValidationError as exc:
+            validation_error = str(exc).strip()
+            retry_context = deepcopy(context)
+            retry_context["correction_request"] = {
+                "validation_error": validation_error,
+                "instruction": (
+                    "Regenerate the complete target batch once. Fill every required "
+                    "chapter field with concrete content, especially cast, goal, "
+                    "ending_hook, and state_delta_summary. Preserve the fixed volume, "
+                    "chapter numbers, story-node events, and previous-batch handoff."
+                ),
+            }
+            result = complete_batch(
+                retry_context,
+                operation="outline_planning_chapter_batch_retry",
+            )
+
+        try:
+            validate_titles(result)
+            return result
+        except ValueError as exc:
+            validation_error = str(exc).strip()
+            retryable_title_errors = (
+                "report_like_chapter_title:",
+                "repeated_chapter_title_shape:",
+                "repeated_chapter_title_pattern:",
+            )
+            title_rejected = validation_error.startswith(retryable_title_errors)
+            if not title_rejected:
+                raise
+            try:
+                return repair_rejected_titles(
+                    result,
+                    validation_error=validation_error,
+                )
+            except ValueError as repair_exc:
+                repaired_error = str(repair_exc).strip()
+                if not repaired_error.startswith(retryable_title_errors):
+                    raise
+                return repair_rejected_titles(
+                    result,
+                    validation_error=(
+                        f"{validation_error}; first title repair was also rejected: "
+                        f"{repaired_error}"
+                    ),
+                )
 
     def generate(
         self,
@@ -910,6 +1439,13 @@ class LLMOutlinePlanningGenerator:
             str(module_id).strip()
             for module_id in (validated.enabled_skill_module_ids or [])
         }
+        attribute_allocation_enabled = bool(
+            normalize_attribute_allocation_rule(
+                validated.power_system_spec.get("attribute_allocation")
+                if isinstance(validated.power_system_spec, dict)
+                else None
+            )
+        )
         normalized_guidance = guidance.strip()
         if len(normalized_guidance) > 1000:
             raise ValueError("regeneration_guidance_too_long")
@@ -1008,7 +1544,7 @@ class LLMOutlinePlanningGenerator:
                 else opening_primary_trope_id
             )
             preserve_unlocked_legacy_tropes = (
-                mode == "extend"
+                mode in {"extend", "regenerate"}
                 and validated.current_chapter > 0
                 and expected_primary_trope_id is None
             )
@@ -1057,7 +1593,8 @@ class LLMOutlinePlanningGenerator:
                 ]
             else:
                 validation_rules = [
-                    "For initial/regenerate, characters must contain 4 to 6 unique names and include the protagonist, stage_antagonist, and long_term_antagonist tiers.",
+                    "For initial/regenerate, characters must contain 10 to 15 unique names for the first planned volume, with exactly one protagonist, at least one stage_antagonist, at least one long_term_antagonist, and at least five supporting characters.",
+                    "The supporting cast must cover recurring cooperation, peer competition, information or resources, and a relationship or reality-line anchor when the premise has a reality line; every card needs a concrete recurring story function.",
                     "Every character name and every arc stage_antagonist must be a concrete personal name, never a role, occupation, faction, or placeholder label.",
                     "The opening arc must start at chapter 1, and its stage_antagonist must be exactly equal to the name of the character whose character_tier is stage_antagonist.",
                     "The opening arc must contain at least one long_term_antagonist_traces item.",
@@ -1069,6 +1606,16 @@ class LLMOutlinePlanningGenerator:
 
             validation_rules.append(financial_outline_rule)
             validation_rules.extend(power_contract_rules)
+            validation_rules.extend(
+                [
+                    "Chapter fields must use neutral event planning, not finished prose, similes, camera directions, sensory-density instructions, or stock emotional gestures.",
+                    "must_include may lock only plot facts, objects, actions, information, or results; it must not prescribe prose style, graphic injury detail, gore intensity, or repeated sensory description.",
+                    "Arcs are complete book volumes, not short plot beats. Every non-final volume must span at least 50 chapters; only the actual closing volume may be shorter.",
+                    "Use story_nodes for the smaller payoff cycles inside a volume. They must cover the volume continuously, and each story_node may span at most 15 chapters.",
+                    "overall.planned_arc_count counts complete volumes, not story_nodes or pacing stages.",
+                    "Every future volume must fill goal, obstacle, payoff, emotional_curve, hook_plan, irreversible_change, end_state, stage_antagonist, core_loop, escalations, midpoint_turn, climax, and active_long_term_lines.",
+                ]
+            )
             if chapter_contracts_enabled:
                 validation_rules.append(CHAPTER_CONTRACT_RULE)
             is_game_story = effective_novel_type_id == "game_webnovel"
@@ -1159,6 +1706,7 @@ class LLMOutlinePlanningGenerator:
                 "output_schema": chapter_output_schema(
                     GeneratedOutlinePlan,
                     require_chapter_contracts=chapter_contracts_enabled,
+                    include_attribute_allocation=attribute_allocation_enabled,
                 ),
                 "validation_rules": validation_rules,
             }
@@ -1303,6 +1851,10 @@ class LLMOutlinePlanningGenerator:
                             operation=f"outline_planning_{phase}",
                         )
                         data = parse_json_message_content(response)
+                        if data is not None and not attribute_allocation_enabled:
+                            _drop_disabled_attribute_allocations(data)
+                        if isinstance(data, dict):
+                            _fill_equivalent_arc_handoffs(data)
                         validation_error = ""
                         result: BaseModel | None = None
                         if data is None:
@@ -1318,15 +1870,24 @@ class LLMOutlinePlanningGenerator:
                                 ).strip()[:1000]
                                 result = None
                         if result is None:
+                            invalid_response = (
+                                json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+                                if isinstance(data, dict)
+                                else "{}"
+                            )
                             retry_payload = {
                                 **request_payload,
                                 "messages": [
                                     *request_payload.get("messages", []),
                                     {
+                                        "role": "assistant",
+                                        "content": invalid_response,
+                                    },
+                                    {
                                         "role": "system",
                                         "content": (
-                                            "The previous JSON failed schema validation. Correct only the reported "
-                                            "format or missing-field problems, then return the complete JSON object "
+                                            "The JSON immediately above failed schema validation. Edit that object "
+                                            "to correct only the reported structural or missing-field problems, then return the complete JSON object "
                                             "again without markdown or commentary. Validation error: "
                                             f"{validation_error}"
                                         ),
@@ -1341,6 +1902,9 @@ class LLMOutlinePlanningGenerator:
                             data = parse_json_message_content(response)
                             if data is None:
                                 raise ValueError(invalid_json_error)
+                            if not attribute_allocation_enabled:
+                                _drop_disabled_attribute_allocations(data)
+                            _fill_equivalent_arc_handoffs(data)
                             result = schema.model_validate(data)
                             if result_validator:
                                 result_validator(result)
@@ -1364,6 +1928,7 @@ class LLMOutlinePlanningGenerator:
                     "output_schema": chapter_output_schema(
                         GeneratedOutlineFoundation,
                         require_chapter_contracts=False,
+                        include_attribute_allocation=attribute_allocation_enabled,
                     ),
                     "validation_rules": [
                         rule
@@ -1394,6 +1959,13 @@ class LLMOutlinePlanningGenerator:
                                 "planned_length, and planned_arc_count. core_ending_chapter must equal the end_chapter "
                                 "of the final core arc; extension_ceiling_chapter must be at least core_ending_chapter. "
                                 "Each arc must contain exactly three key_results. "
+                                "Treat arcs as complete book volumes: every non-final arc spans at least 50 chapters, "
+                                "and only the actual closing arc may be shorter. Put shorter plot beats in story_nodes, "
+                                "cover the whole volume continuously, and keep every story_node within 15 chapters. "
+                                "planned_arc_count counts volumes, not story_nodes or pacing stages. "
+                                "Fill every arc's goal, obstacle, payoff, emotional_curve, hook_plan, "
+                                "irreversible_change, end_state, stage_antagonist, core_loop, escalations, "
+                                "midpoint_turn, climax, and active_long_term_lines with concrete content. "
                                 "Every arc stage_antagonist must be a concrete personal name, never a role, occupation, "
                                 "faction, or placeholder label; put that information in the character card later. "
                                 "Provide the complete overall plan and all core arcs. Set outline.chapters to an empty array. "
@@ -1405,10 +1977,13 @@ class LLMOutlinePlanningGenerator:
                 }
 
                 def validate_foundation_detail(result: BaseModel) -> None:
-                    if stop_after_phase != "outline_foundation":
-                        return
                     outline = getattr(result, "outline", None)
                     arcs = getattr(outline, "arcs", [])
+                    if validated.current_chapter == 0:
+                        validate_volume_structure(
+                            arcs,
+                            core_ending_chapter=int(outline.overall.core_ending_chapter),
+                        )
                     boundary = max(0, int(validated.current_chapter))
                     problems: list[str] = []
                     for arc in arcs:
@@ -1420,6 +1995,10 @@ class LLMOutlinePlanningGenerator:
                                 "goal",
                                 "obstacle",
                                 "payoff",
+                                "emotional_curve",
+                                "hook_plan",
+                                "irreversible_change",
+                                "end_state",
                                 "stage_antagonist",
                                 "core_loop",
                                 "midpoint_turn",
@@ -1463,13 +2042,25 @@ class LLMOutlinePlanningGenerator:
                     "opening_direction": validated.opening_direction.model_dump(mode="json"),
                     "author_constraints": validated.author_constraints,
                     "outline_foundation": outline_foundation["outline"],
+                    "world_facts": deepcopy(validated.world_facts),
+                    "continuity_facts": deepcopy(validated.continuity_facts),
                     "target_chapter_numbers": [],
                     "output_schema": GeneratedCharacterRoster.model_json_schema(),
                     "validation_rules": [
-                        "Return 4 to 6 unique complete character cards.",
+                        "Return 10 to 15 unique complete character cards for the first planned volume.",
                         "Include protagonist, stage_antagonist, long_term_antagonist, and supporting tiers.",
+                        "Return exactly one protagonist and at least five supporting characters.",
+                        "The supporting cast must cover a recurring ally or partner, a peer rival or competitor, a resource or information contact, and a relationship or reality-line anchor when the premise has a reality line.",
+                        "Each card must have a concrete first-volume story function and enough recurring pressure or relationship value to appear more than once; do not pad with one-scene function labels.",
                         "Every character name must be a concrete personal name, never a role, occupation, faction, or placeholder label.",
                         "The stage_antagonist name must match the opening arc stage_antagonist.",
+                        "Personality describes decisions and behavior; it must not command clipped prose or emotionless dialogue.",
+                        "speech_style and dialogue_examples must use complete natural Chinese speech. Do not use 简短、短句、惜字如金、毫无情绪 or similar labels as dialogue instructions.",
+                        "Occupation defines what a character knows and does, not how every sentence sounds. speech_style must describe an everyday voice that changes with relationship, emotion, and situation; it is not a professional resume.",
+                        "Dialogue examples must first respond to the other person and sound like ordinary conversation. Use professional terms only when the immediate topic requires them; do not turn every line into a report, policy statement, technical explanation, or interrogation.",
+                        "Copy organization, faction, location, historical-event, and era names exactly from outline_foundation and world_facts; do not invent near-synonyms.",
+                        "A character cannot personally witness, oppose, lead, or sign an event that happened before their current age unless reincarnation or inherited memory is explicitly established.",
+                        "Do not assign two different dates to the same historical event inside one card.",
                     ],
                 }
                 character_payload = {
@@ -1480,20 +2071,51 @@ class LLMOutlinePlanningGenerator:
                             "role": "system",
                             "content": (
                                 "Generate only the opening character roster. Return JSON with the single root field characters. "
-                                "Create 4 to 6 complete Chinese webnovel character cards that fit outline_foundation. "
+                                "Create 10 to 15 complete Chinese webnovel character cards for the first planned volume that fit outline_foundation. "
                                 "Use concrete personal names; keep roles and occupations in their dedicated fields. "
+                                "Describe how each person decides, reacts, and speaks without turning restraint into clipped dialogue. "
+                                "Treat occupation as a knowledge and action boundary, not a permanent speaking tone. "
+                                "speech_style must describe everyday speech across different relationships and emotions, not a professional resume. "
+                                "Dialogue examples must be complete natural Chinese utterances that answer the immediate conversation before adding needed reasons or attitude. "
+                                "Professional terms belong only in scenes where the current topic requires them. "
                                 "Follow prompt_context.output_schema exactly."
                             ),
                         },
                         {"role": "user", "content": json.dumps(character_context, ensure_ascii=False)},
                     ],
                 }
+                def validate_opening_character_roster(result: BaseModel) -> None:
+                    characters = getattr(result, "characters", [])
+                    if not 10 <= len(characters) <= 15:
+                        raise ValueError("character_count_out_of_range")
+                    tier_counts = {
+                        tier: sum(
+                            card.character_tier == tier for card in characters
+                        )
+                        for tier in (
+                            "protagonist",
+                            "stage_antagonist",
+                            "long_term_antagonist",
+                            "supporting",
+                        )
+                    }
+                    if tier_counts["protagonist"] != 1:
+                        raise ValueError("invalid_protagonist_count")
+                    for tier in ("stage_antagonist", "long_term_antagonist"):
+                        if tier_counts[tier] < 1:
+                            raise ValueError(f"missing_character_tier:{tier}")
+                    if tier_counts["supporting"] < 5:
+                        raise ValueError("insufficient_supporting_characters")
+                    for character in characters:
+                        _validate_character_seed_chronology(character)
+
                 character_roster = run_phase(
                     "character_roster",
                     GeneratedCharacterRoster,
                     character_payload,
                     "character_generation_failed",
                     "invalid_character_json",
+                    validate_opening_character_roster,
                 )
                 foundation_data = {
                     "outline": outline_foundation["outline"],
@@ -1503,15 +2125,65 @@ class LLMOutlinePlanningGenerator:
                     ],
                 }
 
+                target_start = min(target_chapter_numbers)
+                target_end = max(target_chapter_numbers)
+                chapter_foundation = deepcopy(foundation_data["outline"])
+                active_arcs: list[dict[str, Any]] = []
+                active_story_nodes: list[dict[str, Any]] = []
+                for raw_arc in chapter_foundation.get("arcs", []):
+                    if not isinstance(raw_arc, dict):
+                        continue
+                    arc_start = int(raw_arc.get("start_chapter") or 0)
+                    arc_end = int(raw_arc.get("end_chapter") or 0)
+                    if arc_start > target_end or arc_end < target_start:
+                        continue
+                    active_arc = deepcopy(raw_arc)
+                    current_nodes = [
+                        deepcopy(node)
+                        for node in raw_arc.get("story_nodes", [])
+                        if isinstance(node, dict)
+                        and int(node.get("start_chapter") or 0) <= target_end
+                        and int(node.get("end_chapter") or 0) >= target_start
+                    ]
+                    active_arc["story_nodes"] = current_nodes
+                    active_story_nodes.extend(current_nodes)
+                    if arc_end > target_end:
+                        for future_field in (
+                            "midpoint_turn",
+                            "climax",
+                            "payoff",
+                            "end_state",
+                            "hook_plan",
+                        ):
+                            active_arc.pop(future_field, None)
+                    active_arcs.append(active_arc)
+                chapter_foundation["arcs"] = active_arcs
+                chapter_foundation["chapters"] = []
+                unfinished_active_node = any(
+                    int(node.get("end_chapter") or 0) > target_end
+                    for node in active_story_nodes
+                )
+
                 chapter_context = {
                     "generation_phase": "chapters",
                     "title": validated.title,
                     "novel_type_id": effective_novel_type_id,
                     "opening_direction": validated.opening_direction.model_dump(mode="json"),
                     "author_constraints": validated.author_constraints,
-                    "outline_foundation": foundation_data["outline"],
+                    "outline_foundation": chapter_foundation,
+                    "active_story_nodes": active_story_nodes,
+                    "window_guard": {
+                        "target_start_chapter": target_start,
+                        "target_end_chapter": target_end,
+                        "must_not_complete_active_node": unfinished_active_node,
+                    },
                     "characters": [
-                        {"name": card["name"], "role": card["role"], "character_tier": card["character_tier"]}
+                        {
+                            "name": card["name"],
+                            "role": card["role"],
+                            "character_tier": card["character_tier"],
+                            "first_appearance": int(card.get("first_appearance") or 0),
+                        }
                         for card in foundation_data["characters"]
                     ],
                     "genre_trope_templates": trope_candidates,
@@ -1523,12 +2195,27 @@ class LLMOutlinePlanningGenerator:
                     "output_schema": chapter_output_schema(
                         GeneratedChapterWindow,
                         require_chapter_contracts=chapter_contracts_enabled,
+                        include_attribute_allocation=attribute_allocation_enabled,
                     ),
                     "validation_rules": [
                         "Return exactly one chapter for every target_chapter_numbers value, in order.",
+                        "Chapter fields must use neutral event planning, not finished prose, similes, camera directions, sensory-density instructions, or stock emotional gestures.",
+                        "must_include may lock only plot facts, objects, actions, information, or results; it must not prescribe prose style, graphic injury detail, gore intensity, or repeated sensory description.",
                         "Every cast name must exactly match one name in characters.",
+                        "Do not use a character before that character's first_appearance chapter.",
                         "Use trope_beat only on a milestone that fits the active arc.",
+                        "Plan only active_story_nodes. Do not pull any later story node, volume climax, volume payoff, or volume end_state into this chapter window.",
+                        "When window_guard.must_not_complete_active_node is true, the final target chapter must leave the active node unresolved for its remaining chapters.",
                         financial_outline_rule,
+                        *(
+                            [
+                                "Chapter 1 must stage the inciting incident and first discovery on page; do not write the protagonist as already experienced with a newly acquired ability.",
+                                "If opening_direction.core_advantage.limits names a cost, chapter 1 must make that cost observable in an action, result, payoff, or ending hook instead of omitting it.",
+                                "Deliver the strongest opening promise early enough to affect chapter 1 when it belongs to the inciting incident; do not postpone it only to preserve an outline beat.",
+                            ]
+                            if 1 in target_chapter_numbers
+                            else []
+                        ),
                         *(
                             [CHAPTER_CONTRACT_RULE]
                             if chapter_contracts_enabled
@@ -1545,6 +2232,13 @@ class LLMOutlinePlanningGenerator:
                     for card in foundation_data["characters"]
                     if str(card.get("name") or "").strip()
                 }
+                chapter_character_first_appearances = {
+                    str(card["name"]).strip(): int(
+                        card.get("first_appearance") or 0
+                    )
+                    for card in foundation_data["characters"]
+                    if str(card.get("name") or "").strip()
+                }
                 chapter_payload = {
                     **payload,
                     "reasoning_effort": "low",
@@ -1557,6 +2251,7 @@ class LLMOutlinePlanningGenerator:
                                 "Generate only the requested Chinese webnovel chapter outline window. "
                                 "Fill each chapter using prompt_context.chapter_outline_template. "
                                 "Generate chapter.title from the concrete events in that chapter and follow prompt_context.chapter_title_strategy. "
+                                "For chapter 1, preserve the difference between first discovery and practiced mastery, and visibly apply any stated ability cost. "
                                 "Return JSON with the single root field chapters. Do not repeat overall, arcs, or character cards. "
                                 "Follow prompt_context.output_schema and target_chapter_numbers exactly."
                             ),
@@ -1567,10 +2262,27 @@ class LLMOutlinePlanningGenerator:
 
                 def validate_chapter_window_contracts(result: BaseModel) -> None:
                     chapters = getattr(result, "chapters", [])
+                    generated_chapter_numbers = [
+                        int(chapter.chapter_number) for chapter in chapters
+                    ]
+                    if generated_chapter_numbers != target_chapter_numbers:
+                        raise ValueError(
+                            "generated_chapters_do_not_match_target_window:"
+                            f"expected={target_chapter_numbers}:"
+                            f"actual={generated_chapter_numbers}"
+                        )
                     for chapter in chapters:
                         for name in chapter.cast:
                             if name not in chapter_character_names:
                                 raise ValueError(f"missing_character_card:{name}")
+                            planned_first = chapter_character_first_appearances.get(
+                                name, 0
+                            )
+                            if planned_first > 0 and chapter.chapter_number < planned_first:
+                                raise ValueError(
+                                    f"character_appears_before_card:{name}:"
+                                    f"{chapter.chapter_number}:{planned_first}"
+                                )
                     if chapter_contracts_enabled:
                         for chapter in chapters:
                             validate_concrete_chapter_contract(chapter)
@@ -1622,6 +2334,8 @@ class LLMOutlinePlanningGenerator:
                     candidate = parse_json_message_content(response)
                     if candidate is None:
                         raise ValueError("invalid_json")
+                    if not attribute_allocation_enabled:
+                        _drop_disabled_attribute_allocations(candidate)
                     candidate_plan = GeneratedOutlinePlan.model_validate(candidate)
                     validate_chapter_title_window(
                         [
@@ -1706,6 +2420,9 @@ class LLMOutlinePlanningGenerator:
                 expected_primary_trope_id=expected_primary_trope_id,
                 fallback_outline=fallback_outline,
                 require_chapter_contracts=chapter_contracts_enabled,
+                enforce_full_opening_roster=(
+                    mode == "initial" and validated.current_chapter == 0
+                ),
             )
         except Exception as exc:
             if split_plan_completed and phase_callback:
