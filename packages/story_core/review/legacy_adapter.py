@@ -143,6 +143,28 @@ def _collect_issue_records(report: dict[str, Any]) -> list[dict[str, Any]]:
                     "suggestion_priority": suggestion_priority,
                 }
             )
+        # Treat ``warnings`` as advisory issues too.  A draft with
+        # ``pass=True`` but non-empty ``warnings`` is still
+        # ``needs_revision`` from the operator's perspective — the writer
+        # said "fine to ship" but the review layer raised a
+        # prose/style/data concern that the operator should look at.
+        for index, warning in enumerate(source.get("warnings") or []):
+            message = _issue_text(warning)
+            if not message or message in INTERNAL_ISSUES:
+                continue
+            suggestion = _issue_suggestion(warning)
+            suggestion_priority = 2 if suggestion else 0
+            if not suggestion and index < len(plans):
+                suggestion = str(plans[index] or "").strip()
+                suggestion_priority = source_specificity if suggestion else 0
+            records.append(
+                {
+                    "message": message,
+                    "suggestion": suggestion,
+                    "suggestion_priority": suggestion_priority,
+                    "from_warning": True,
+                }
+            )
     return records
 
 
@@ -228,7 +250,19 @@ def build_legacy_simplified_review(quality_report: Any, *, limit: int = 3) -> di
     selected = ordered[: min(3, max(1, limit))]
     has_hard_errors = bool(grouped["hard"])
     has_blocking_dialogue = any(item["severity"] == "blocking" for item in grouped["dialogue"])
-    needs_revision = has_hard_errors or bool(grouped["dialogue"]) or bool(grouped["ai_flavor"])
+    # ``issues``-derived ``prose`` advice is intentionally NOT enough to
+    # force a revision (the writer already passed the prose review).
+    # But ``warnings`` flagged by the runtime are operator-actionable
+    # even when they classify as ``prose`` (e.g.
+    # ``style.outline_hook_transcribed``), so we count warning records
+    # separately here.
+    has_warning_records = any(bool(record.get("from_warning")) for record in unique_records)
+    needs_revision = (
+        has_hard_errors
+        or bool(grouped["dialogue"])
+        or bool(grouped["ai_flavor"])
+        or has_warning_records
+    )
     status = "blocked" if has_hard_errors else ("needs_revision" if needs_revision else "passed")
     revision_plan = [item["suggestion"] for item in selected]
     return {

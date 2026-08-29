@@ -54,6 +54,26 @@ def _seed_project(export_root: Path, *, current_chapter: int = 50) -> str:
         ),
         encoding="utf-8",
     )
+    # Volume tests assume a valid rolling outline so the outline gate
+    # does not pre-empt the volume gate they want to exercise.
+    (project_root / ".story-system" / "outline-generation").mkdir(parents=True)
+    target_chapter = current_chapter + 1
+    (project_root / ".story-system" / "outline-generation" / "rolling_outline.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "rolling-outline/v1",
+                "chapters": [
+                    {
+                        "chapter_number": target_chapter,
+                        "title": f"第{target_chapter}章",
+                        "chapter_goal": "seed",
+                        "source": "manual",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
     return "file:p-volume-api"
 
 

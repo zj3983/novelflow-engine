@@ -923,6 +923,7 @@ def _raise_file_project_error(exc: ValueError) -> None:
     if detail.startswith(
         (
             "chapter_frozen:",
+            "chapter_outline_required:",
             "next_volume_required:",
             "volume_detail_required:",
             "volume_detail_incomplete:",
@@ -1593,6 +1594,14 @@ def start_file_generation_job(
     )
     if target_chapter is None and requires_new_chapter_outline:
         next_chapter = current_chapter + 1
+        # Outline first: a missing chapter outline is the cheapest,
+        # most actionable gate.  Only after the outline is present
+        # do we require the volume-level design.
+        outline_status = store.rolling_fill_status(next_chapter)
+        if outline_status.get("status") not in {"present", "legacy"}:
+            _raise_file_project_error(
+                ValueError(f"chapter_outline_required:{next_chapter}")
+            )
         try:
             store.require_volume_detail_for_prose(next_chapter)
         except ValueError as exc:
@@ -1602,6 +1611,11 @@ def start_file_generation_job(
         and isinstance(target_chapter, int)
         and target_chapter > 0
     ):
+        outline_status = store.rolling_fill_status(target_chapter)
+        if outline_status.get("status") not in {"present", "legacy"}:
+            _raise_file_project_error(
+                ValueError(f"chapter_outline_required:{target_chapter}")
+            )
         try:
             store.require_volume_detail_for_prose(target_chapter)
         except ValueError as exc:

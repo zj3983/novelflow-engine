@@ -247,9 +247,52 @@ class ContinuousGenerationRunner:
                     status="failed",
                     phase="checking_outline",
                     current_chapter=next_chapter,
-                    error=f"{type(exc).__name__}:{exc}",
+                    error=f"outline_read_failed:{type(exc).__name__}:{exc}",
                     progress=f"第 {next_chapter} 章细纲状态读取失败",
                 )
+            # Pre-flight: the rolling outline is the cheapest gate and
+            # the most user-actionable.  Run it after the workflow read
+            # so a hard read failure still surfaces as ``failed`` rather
+            # than being mis-classified as a missing outline.  Skip the
+            # check entirely when the project doesn't expose a ``root``
+            # directory (test fakes, pre-rolling-outline projects) so
+            # the legacy volume gate stays the source of truth.
+            root = getattr(project_store, "root", None)
+            if root is not None:
+                try:
+                    from packages.story_core.outline_rolling_store import (
+                        RollingOutlineStore,
+                    )
+
+                    rolling_payload = (
+                        RollingOutlineStore(root).read_rolling_outline() or {}
+                    )
+                except Exception as exc:
+                    return job_store.update(
+                        job_id,
+                        status="failed",
+                        phase="checking_outline",
+                        current_chapter=next_chapter,
+                        error=f"outline_read_failed:{type(exc).__name__}:{exc}",
+                        progress=f"第 {next_chapter} 章细纲状态读取失败",
+                    )
+                rolling_chapter_numbers = {
+                    int(row["chapter_number"])
+                    for row in rolling_payload.get("chapters", [])
+                    if isinstance(row, dict)
+                    and isinstance(row.get("chapter_number"), int)
+                    and not isinstance(row.get("chapter_number"), bool)
+                }
+                if next_chapter not in rolling_chapter_numbers:
+                    return job_store.update(
+                        job_id,
+                        status="stopped",
+                        phase="checking_outline",
+                        current_chapter=next_chapter,
+                        stop_reason=f"chapter_outline_required:{next_chapter}",
+                        progress=f"请先生成第 {next_chapter} 章细纲",
+                    )
+
             workflow_status = str(workflow.get("status") or "")
             if workflow_status != "detail_complete":
                 return job_store.update(

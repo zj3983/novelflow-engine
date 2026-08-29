@@ -8557,10 +8557,14 @@ class FileProjectStore:
         state = self._generation_state(self.state())
         project = self.project()
         target_chapter = int(state.get("current_chapter") or 0) + 1
-        self.require_volume_detail_for_prose(target_chapter)
+        # Outline first: a missing chapter outline is the cheapest,
+        # most actionable gate.  Only after the outline is present
+        # do we require the volume-level design (which needs a
+        # separate "design next volume" click on the outline page).
         outline_status = self.rolling_fill_status(target_chapter)
         if outline_status.get("status") not in {"present", "legacy"}:
             raise ValueError(f"chapter_outline_required:{target_chapter}")
+        self.require_volume_detail_for_prose(target_chapter)
         chapter_direction = self._resolve_chapter_direction(state, project, target_chapter, chapter_direction_id)
         if chapter_direction:
             state = dict(state)
