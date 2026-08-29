@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
 import {
+import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
   importSkillPackFromPath,
   listSkillPacks,
   uninstallSkillModule,
@@ -224,7 +225,7 @@ export default function ProjectSkillsPage() {
 
       {error ? (
         <div className="ws-card" style={{ borderColor: "var(--ws-danger)" }}>
-          <p style={{ color: "var(--ws-danger)", margin: 0 }}>加载失败：{error}</p>
+          <p style={{ color: "var(--ws-danger)", margin: 0 }}>加载失败：{userFacingErrorMessage(error)}</p>
         </div>
       ) : null}
 
@@ -344,7 +345,7 @@ export default function ProjectSkillsPage() {
                             {uninstallingModuleKey === moduleKey(pack.skill_id, module.module_id) ? "卸载中" : "卸载"}
                           </button>
                         </div>
-                        <p className="ws-skill-module__usage">用途：{moduleUsage(module)}</p>
+                        <p className="ws-skill-module__usage">用途：{userFacingErrorMessage(moduleUsage(module))}</p>
                         <p className="ws-skill-module__intro">{moduleIntro(module)}</p>
                         {module.summary && module.summary !== module.description ? (
                           <p className="ws-skill-module__summary">{module.summary}</p>

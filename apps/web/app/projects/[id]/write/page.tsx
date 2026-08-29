@@ -11,6 +11,7 @@ import { useChapterDetail } from "../../../../components/ws/useChapterDetail";
 import { SimplifiedReview } from "../../../../components/ws/SimplifiedReview";
 import { RollingOutlineCard } from "../../../../components/ws/RollingOutlineCard";
 import {
+import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
   downstreamRewriteNotice,
   confirmFileProjectCandidate,
   discardFileProjectCandidate,
@@ -565,7 +566,7 @@ export default function WritePage() {
 
       {error ? (
         <div className="ws-card" style={{ borderColor: "var(--ws-danger)" }}>
-          <p style={{ color: "var(--ws-danger)", margin: 0 }}>加载失败：{error}</p>
+          <p style={{ color: "var(--ws-danger)", margin: 0 }}>加载失败：{userFacingErrorMessage(error)}</p>
         </div>
       ) : chapterIndex.length > 0 ? (
         <div className="ws-editor-layout ws-editor-layout--chapters">
@@ -647,7 +648,7 @@ export default function WritePage() {
               </>
             ) : chapterError ? (
               <div className="ws-card" style={{ borderColor: "var(--ws-danger)" }}>
-                <p style={{ color: "var(--ws-danger)", margin: 0 }}>章节加载失败：{chapterError}</p>
+                <p style={{ color: "var(--ws-danger)", margin: 0 }}>章节加载失败：{userFacingErrorMessage(chapterError)}</p>
               </div>
             ) : chapter ? (
               <>
@@ -703,7 +704,7 @@ export default function WritePage() {
               />
             ) : null}
 
-            {regenerateError ? <p className="ws-error">任务失败：{regenerateError}</p> : null}
+            {regenerateError ? <p className="ws-error">任务失败：{userFacingErrorMessage(regenerateError)}</p> : null}
             {nextPendingCandidate ? (
               <section className="ws-card" aria-label="下一章候选稿已保留">
                 <div className="ws-section-head">
@@ -866,7 +867,7 @@ export default function WritePage() {
               href={`/projects/${encodedProjectId}/log`}
             />
           ) : null}
-          {regenerateError ? <p className="ws-error">任务失败：{regenerateError}</p> : null}
+          {regenerateError ? <p className="ws-error">任务失败：{userFacingErrorMessage(regenerateError)}</p> : null}
           {pendingCandidate ? (
             <CandidatePanel
               candidate={pendingCandidate}

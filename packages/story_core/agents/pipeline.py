@@ -75,8 +75,13 @@ from packages.story_core.agents.consistency import (
     GatewayConsistencyRuntime,
     focused_consistency_review,
 )
-from packages.story_core.canon.registry import CanonEntity
-from packages.story_core.canon.service import CanonService
+# Canon classes are imported lazily inside the two callers that
+# actually construct them (``_ensure_canon_service`` and
+# ``_RequirementEntityDesigner.design``).  Importing them at module
+# scope creates a circular import with
+# ``packages.story_core.canon`` — the canon package itself loads
+# ``agents.contracts`` (via ``entity_designer``), and
+# ``agents/__init__.py`` eagerly re-exports this pipeline module.
 from packages.story_core.chapter_length_policy import (
     CHAPTER_HARD_MAX_CHARS,
     CHAPTER_HARD_MIN_CHARS,
@@ -808,6 +813,14 @@ def _ensure_canon_service(
         from packages.story_core.canon.registry import CanonRegistry
 
         registry = CanonRegistry()
+    # Lazy import to break the canon ↔ agents circular import: this
+    # module is loaded as part of ``agents/__init__.py`` and a top-level
+    # import of ``canon.service`` would re-enter ``canon`` while it is
+    # still being initialised.  See the test
+    # ``test_canon_service_imports_in_a_fresh_process_without_agent_cycle``
+    # for the regression this comment guards.
+    from packages.story_core.canon.service import CanonService
+
     return CanonService(registry=registry, designer=_RequirementEntityDesigner())
 
 
@@ -815,6 +828,10 @@ class _RequirementEntityDesigner:
     """Build a small, genre-neutral proposed card from director output."""
 
     def design(self, requirement: EntityRequirement, registry: Any) -> CanonEntity:
+        # Lazy import to break the canon ↔ agents circular import
+        # (see ``_ensure_canon_service`` above for the full reason).
+        from packages.story_core.canon.registry import CanonEntity
+
         digest = hashlib.sha1(
             f"{requirement.kind}:{requirement.name}".encode("utf-8")
         ).hexdigest()[:10]

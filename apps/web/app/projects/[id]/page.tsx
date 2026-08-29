@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 
@@ -7,6 +7,7 @@ import { PublishingAssetsCards } from "../../../components/ws/PublishingAssetsCa
 import { useProjectWorkspace } from "../../../components/ws/ProjectWorkspaceProvider";
 import type { ProjectStatus } from "../../../lib/api";
 import { isGameWebnovel, mergeCharacters, shortStatus } from "../../../lib/worldDisplay";
+import { userFacingErrorMessage } from "../../../lib/user-facing-error";
 
 const STATUS_LABEL: Record<string, string> = {
   draft: "草稿",
@@ -64,7 +65,7 @@ export default function ProjectOverviewPage() {
 
       {error ? (
         <div className="ws-card" style={{ borderColor: "var(--ws-danger)" }}>
-          <p style={{ color: "var(--ws-danger)", margin: 0 }}>加载失败：{error}</p>
+          <p style={{ color: "var(--ws-danger)", margin: 0 }}>加载失败：{userFacingErrorMessage(error)}</p>
         </div>
       ) : null}
 

@@ -7,6 +7,7 @@ import { useSearchParams } from "next/navigation";
 
 import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
+import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
 import {
   fetchProjectForeshadowing,
   fetchProjectOutline,
@@ -822,7 +823,7 @@ export default function OutlinePage() {
 
       {projectError || loadError ? (
         <div className="ws-card" style={{ borderColor: "var(--ws-danger)" }}>
-          <p style={{ color: "var(--ws-danger)", margin: 0 }}>加载失败：{projectError || loadError}</p>
+          <p style={{ color: "var(--ws-danger)", margin: 0 }}>加载失败：{userFacingErrorMessage(projectError || loadError)}</p>
         </div>
       ) : null}
 

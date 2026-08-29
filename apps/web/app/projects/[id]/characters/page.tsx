@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useState } from "react";
 
@@ -12,6 +12,7 @@ import {
   type ImportedRelationshipEdge,
 } from "../../../../lib/api";
 import { isGameWebnovel, mergeCharacters, stateRows, type DisplayCharacter } from "../../../../lib/worldDisplay";
+import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
 
 function characterCardBadge(state: string | undefined): string {
   if (state === "proposed") return "待出场卡";
@@ -565,7 +566,7 @@ export default function CharactersPage() {
         title="角色卡"
         subtitle="只显示正文需要的关键信息。"
       />
-      {error ? <div className="ws-card" style={{ borderColor: "var(--ws-danger)" }}><p className="ws-error-text">加载失败：{error}</p></div> : null}
+      {error ? <div className="ws-card" style={{ borderColor: "var(--ws-danger)" }}><p className="ws-error-text">加载失败：{userFacingErrorMessage(error)}</p></div> : null}
       {message ? <p className="ws-inline-message">{message}</p> : null}
 
       <section className="ws-character-workspace" aria-labelledby="character-workspace-title">

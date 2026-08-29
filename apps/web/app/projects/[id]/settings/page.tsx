@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -12,6 +12,7 @@ import {
   type ProjectStatus,
 } from "../../../../lib/api";
 import { DEFAULT_NOVEL_TYPE_ID } from "../../../../lib/novelTypes";
+import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
 
 const SOURCE_LABEL = {
   sqlite: "数据库",
@@ -184,7 +185,7 @@ export default function ProjectSettingsPage() {
 
       {error ? (
         <div className="ws-card" style={{ borderColor: "var(--ws-danger)" }}>
-          <p style={{ color: "var(--ws-danger)", margin: 0 }}>加载失败：{error}</p>
+          <p style={{ color: "var(--ws-danger)", margin: 0 }}>加载失败：{userFacingErrorMessage(error)}</p>
         </div>
       ) : (
         <>

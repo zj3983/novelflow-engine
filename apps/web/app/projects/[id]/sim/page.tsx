@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
@@ -8,6 +8,7 @@ import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
 import { useChapterDetail } from "../../../../components/ws/useChapterDetail";
 import type { ChapterBundle } from "../../../../lib/api";
+import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
 
 type WorldPulse = {
   pulse_index?: number;
@@ -160,7 +161,7 @@ export default function WorldStatePage() {
         subtitle={project?.world_summary || "当前世界状态"}
       />
 
-      {error ? <p className="ws-inline-error">加载失败：{error}</p> : null}
+      {error ? <p className="ws-inline-error">加载失败：{userFacingErrorMessage(error)}</p> : null}
 
       {story?.world_snapshot && Object.keys(story.world_snapshot).length > 0 ? (
         <section className="ws-card">
@@ -182,14 +183,14 @@ export default function WorldStatePage() {
           <select aria-label="响应章节" className="ws-input" value={selectedChapter} onChange={(event) => setSelectedChapter(Number(event.target.value))}>
             {stateIndex.map((entry) => (
               <option key={entry.chapter_number} value={entry.chapter_number}>
-                第 {entry.chapter_number} 章：{entry.chapter_title || "未命名"}
+                第 {entry.chapter_number} 章：{userFacingErrorMessage(entry.chapter_title || "未命名")}
               </option>
             ))}
           </select>
         </label>
       ) : null}
 
-      {chapterError ? <p className="ws-inline-error">章节加载失败：{chapterError}</p> : null}
+      {chapterError ? <p className="ws-inline-error">章节加载失败：{userFacingErrorMessage(chapterError)}</p> : null}
       {loading && chapter?.chapter_number !== selectedChapter ? <p className="ws-card__hint">正在加载章节...</p> : null}
 
       {chapter && chapter.chapter_number === selectedChapter ? (

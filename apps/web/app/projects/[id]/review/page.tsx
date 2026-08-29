@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -9,6 +9,7 @@ import { ShuangwenReview, SimplifiedReview } from "../../../../components/ws/Sim
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
 import { useChapterDetail } from "../../../../components/ws/useChapterDetail";
 import {
+import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
   runFileProjectShuangwenReview,
   type ShuangwenSkillReview,
 } from "../../../../lib/api";
@@ -79,7 +80,7 @@ export default function ReviewPage() {
 
       {error ? (
         <div className="ws-card" style={{ borderColor: "var(--ws-danger)" }}>
-          <p style={{ color: "var(--ws-danger)", margin: 0 }}>加载失败：{error}</p>
+          <p style={{ color: "var(--ws-danger)", margin: 0 }}>加载失败：{userFacingErrorMessage(error)}</p>
         </div>
       ) : chapterIndex.length ? (
         <div className="ws-editor-layout">
@@ -101,7 +102,7 @@ export default function ReviewPage() {
             </section>
           </aside>
           <main>
-            {chapterError ? <p className="ws-inline-error" role="alert">章节加载失败：{chapterError}</p> : null}
+            {chapterError ? <p className="ws-inline-error" role="alert">章节加载失败：{userFacingErrorMessage(chapterError)}</p> : null}
             {selectedChapter ? <SimplifiedReview report={selectedChapter.quality_report?.simplified_review} /> : null}
             {shuangwenEnabled ? (
               <ShuangwenReview

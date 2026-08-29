@@ -1,10 +1,11 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useMemo, useState } from "react";
 
 import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
 import { fetchProjectOutline, updateProject, type ImportedRelationshipEdge, type ProjectOutline } from "../../../../lib/api";
+import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
 
 type ViewMode = "protagonist" | "person" | "chapter" | "global";
 type Position = { x: number; y: number };
@@ -123,7 +124,7 @@ export default function RelationshipsPage() {
         title="人物关系"
         subtitle="关系图是人物关系的唯一记录。页面默认围绕主角查看，写作时只提取本章出场人物之间的关系。"
       />
-      {error ? <p className="ws-error-text">加载失败：{error}</p> : null}
+      {error ? <p className="ws-error-text">加载失败：{userFacingErrorMessage(error)}</p> : null}
       {message ? <p className="ws-inline-message">{message}</p> : null}
 
       <section className="ws-relationship-toolbar" aria-label="关系图查看范围">

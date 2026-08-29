@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -8,6 +8,7 @@ import { PromptContextView } from "../../../../components/prompts/PromptContextV
 import { PromptTemplatesView } from "../../../../components/prompts/PromptTemplatesView";
 import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
+import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
 
 type PromptView = "templates" | "context" | "calls";
 
@@ -46,7 +47,7 @@ export default function PromptsPage() {
         subtitle={selectedIndex?.chapter_title || "分别查看可编辑模板、本章动态上下文和真实模型调用。"}
       />
 
-      {error ? <p className="ws-inline-error" role="alert">项目加载失败：{error}</p> : null}
+      {error ? <p className="ws-inline-error" role="alert">项目加载失败：{userFacingErrorMessage(error)}</p> : null}
 
       <div className="ws-prompt-tabs" role="tablist" aria-label="提示词工作台视图">
         {VIEWS.map((view) => (

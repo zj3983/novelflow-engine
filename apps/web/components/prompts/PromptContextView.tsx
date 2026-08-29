@@ -1,9 +1,10 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState } from "react";
 
 import { fetchProjectPromptContext, type PromptContextResponse } from "../../lib/api";
 import { displayNovelTypeMetadata } from "../../lib/worldDisplay";
+import { userFacingErrorMessage } from "../../lib/user-facing-error";
 
 export function PromptContextView({ projectId, chapterNumber }: { projectId: string; chapterNumber: number }) {
   const [context, setContext] = useState<PromptContextResponse | null>(null);
@@ -28,7 +29,7 @@ export function PromptContextView({ projectId, chapterNumber }: { projectId: str
   }, [chapterNumber, projectId]);
 
   if (loading) return <p className="ws-card__hint" role="status">正在读取第 {chapterNumber} 章上下文...</p>;
-  if (error) return <p className="ws-inline-error" role="alert">上下文加载失败：{error}</p>;
+  if (error) return <p className="ws-inline-error" role="alert">上下文加载失败：{userFacingErrorMessage(error)}</p>;
 
   const modules = context?.modules ?? [];
   return (

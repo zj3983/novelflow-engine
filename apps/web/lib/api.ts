@@ -4360,10 +4360,24 @@ export {
   stopContinuousGeneration,
 } from "./continuous-generation-api";
 
-export async function enrichProjectWorld(projectId: string): Promise<ProjectResponse> {
-  const path = isFileProjectId(projectId)
-    ? `${fileProjectPath(projectId)}/enrich-world`
-    : `${apiBase()}/projects/${encodeURIComponent(projectId)}/enrich-world`;
+export async function enrichProjectWorld(
+  projectId: string,
+): Promise<ProjectResponse | WorldBuildJobResponse> {
+  // Round 11 (HR2): the legacy ``/enrich-world`` route on the
+  // file-project side now delegates to the world-build job entry
+  // and returns the job envelope (``WorldBuildJobResponse``) instead
+  // of the synchronously-enriched ``ProjectResponse``.  The legacy
+  // ``/projects/{id}/enrich-world`` route on the non-file side
+  // still runs synchronously and returns a project payload, so
+  // callers have to discriminate on ``schema_version`` before
+  // treating the body as a project.  ``startWorldBuildJob`` is the
+  // preferred entry point on the file-project side — this shim is
+  // kept only for callers that haven't migrated yet.
+  if (isFileProjectId(projectId)) {
+    const job = await startWorldBuildJob(projectId);
+    return job;
+  }
+  const path = `${apiBase()}/projects/${encodeURIComponent(projectId)}/enrich-world`;
   const response = (await tryFetchJson(path, {
     method: "POST",
   }, LONG_RUNNING_REQUEST_TIMEOUT_MS)) as ProjectResponse;

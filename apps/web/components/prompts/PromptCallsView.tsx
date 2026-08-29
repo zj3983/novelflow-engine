@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useRef, useState } from "react";
 
@@ -13,6 +13,7 @@ import {
   type PromptCallSummary,
 } from "../../lib/api";
 import { PromptAuditPanel } from "./PromptAuditPanel";
+import { userFacingErrorMessage } from "../../lib/user-facing-error";
 
 function callStatus(status: string): string {
   if (status === "succeeded") return "成功";
@@ -199,7 +200,7 @@ export function PromptCallsView({ projectId, chapterNumber }: { projectId: strin
             {selected.genre_stage_modules?.length ? (
               <div>
                 <p className="ws-card__hint">
-                  题材阶段来源：{selected.genre_stage_profile || "未标注"}
+                  题材阶段来源：{userFacingErrorMessage(selected.genre_stage_profile || "未标注")}
                 </p>
                 <div className="ws-tag-list" aria-label="题材阶段模块">
                   {selected.genre_stage_modules.map((module) => (
@@ -221,9 +222,9 @@ export function PromptCallsView({ projectId, chapterNumber }: { projectId: strin
               </button>
             </div>
             <pre className="ws-prompt-text">{selected.user_prompt}</pre>
-            <p className="ws-card__hint">读取模块：{selected.module_keys?.join("、") || "未记录"}</p>
+            <p className="ws-card__hint">读取模块：{userFacingErrorMessage(selected.module_keys?.join("、") || "未记录")}</p>
             {auditLoading ? <p className="ws-card__hint" role="status">提示词检查中...</p> : null}
-            {auditError ? <p className="ws-inline-error" role="alert">检查失败：{auditError}</p> : null}
+            {auditError ? <p className="ws-inline-error" role="alert">检查失败：{userFacingErrorMessage(auditError)}</p> : null}
             {displayAuditResult ? (
               <PromptAuditPanel
                 result={displayAuditResult}
@@ -237,7 +238,7 @@ export function PromptCallsView({ projectId, chapterNumber }: { projectId: strin
         ) : (
           <p className="ws-card__hint">选择一条调用，查看当时真正发送给模型的完整内容。</p>
         )}
-        {error ? <p className="ws-inline-error" role="alert">调用记录加载失败：{error}</p> : null}
+        {error ? <p className="ws-inline-error" role="alert">调用记录加载失败：{userFacingErrorMessage(error)}</p> : null}
       </section>
     </div>
   );

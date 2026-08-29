@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -14,6 +14,7 @@ import {
   type PromptAuditResult,
 } from "../../lib/api";
 import { PromptAuditPanel } from "./PromptAuditPanel";
+import { userFacingErrorMessage } from "../../lib/user-facing-error";
 
 const SOURCE_LABELS: Record<PromptTemplateEntry["source"], string> = {
   global_default: "全局默认",
@@ -242,7 +243,7 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
   }
 
   if (error && templates.length === 0) {
-    return <p className="ws-inline-error" role="alert">模板加载失败：{error}</p>;
+    return <p className="ws-inline-error" role="alert">模板加载失败：{userFacingErrorMessage(error)}</p>;
   }
 
   return (
@@ -289,7 +290,7 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
             />
           </label>
           <p className="ws-card__hint">
-            必需变量：{selected.required_variables.map((name) => `{{${name}}}`).join("、") || "无"}
+            必需变量：{userFacingErrorMessage(selected.required_variables.map((name) => `{{${name)}}}`).join("、") || "无"}
           </p>
           <div className="ws-actions">
             <button className="ws-btn ws-btn--primary" type="button" disabled={saving !== null || auditLoading} onClick={() => void save("project")}>
@@ -308,9 +309,9 @@ export function PromptTemplatesView({ projectId }: { projectId: string }) {
             </button>
           </div>
           {message ? <p className="ws-inline-success" role="status">{message}</p> : null}
-          {error ? <p className="ws-inline-error" role="alert">保存失败：{error}</p> : null}
+          {error ? <p className="ws-inline-error" role="alert">保存失败：{userFacingErrorMessage(error)}</p> : null}
           {auditLoading ? <p className="ws-card__hint" role="status">提示词检查中...</p> : null}
-          {auditError ? <p className="ws-inline-error" role="alert">检查失败：{auditError}</p> : null}
+          {auditError ? <p className="ws-inline-error" role="alert">检查失败：{userFacingErrorMessage(auditError)}</p> : null}
           {displayAuditResult ? (
             <PromptAuditPanel
               result={displayAuditResult}

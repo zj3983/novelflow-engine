@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useMemo, useState } from "react";
 
@@ -6,6 +6,7 @@ import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
 import { useChapterDetail } from "../../../../components/ws/useChapterDetail";
 import {
+import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
   type BookDissectionReport,
   dissectFileProjectChapter,
   dissectReferenceText,
@@ -203,7 +204,7 @@ export default function DissectionPage() {
 
       {error ? (
         <div className="ws-card" style={{ borderColor: "var(--ws-danger)" }}>
-          <p style={{ color: "var(--ws-danger)", margin: 0 }}>加载失败：{error}</p>
+          <p style={{ color: "var(--ws-danger)", margin: 0 }}>加载失败：{userFacingErrorMessage(error)}</p>
         </div>
       ) : (
         <div className="ws-editor-layout">
@@ -280,7 +281,7 @@ export default function DissectionPage() {
                     ))}
                   </select>
                 </label>
-                {chapterError ? <p className="ws-inline-error ws-form-grid__wide" role="alert">章节加载失败：{chapterError}</p> : null}
+                {chapterError ? <p className="ws-inline-error ws-form-grid__wide" role="alert">章节加载失败：{userFacingErrorMessage(chapterError)}</p> : null}
                 {chapterLoading ? <p className="ws-card__hint ws-form-grid__wide">正在加载章节...</p> : null}
               </div>
             )}

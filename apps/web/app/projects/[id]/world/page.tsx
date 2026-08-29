@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
@@ -18,6 +18,7 @@ import {
   type WorldBuildJobResponse,
 } from "../../../../lib/api";
 import { isGameWebnovel } from "../../../../lib/worldDisplay";
+import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
 
 type ArtifactFieldLabels = Record<string, string>;
 
@@ -236,7 +237,7 @@ export default function WorldPage() {
 
       {error ? (
         <div className="ws-card" style={{ borderColor: "var(--ws-danger)" }}>
-          <p style={{ color: "var(--ws-danger)", margin: 0 }}>加载失败：{error}</p>
+          <p style={{ color: "var(--ws-danger)", margin: 0 }}>加载失败：{userFacingErrorMessage(error)}</p>
         </div>
       ) : null}
 
@@ -306,7 +307,7 @@ export default function WorldPage() {
                       </span>
                     </summary>
                     <div className="ws-card__hint" style={{ marginTop: 10 }}>
-                      包含：{artifact.fields.map((field) => labelForField(artifact.module_id, field)).join("、")}
+                      包含：{userFacingErrorMessage(artifact.fields.map((field) => labelForField(artifact.module_id, field)).join("、"))}
                     </div>
                     <details className="ws-list__row__nested" style={{ marginTop: 8 }}>
                       <summary>查看原始输出</summary>
