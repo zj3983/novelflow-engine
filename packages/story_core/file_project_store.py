@@ -6762,17 +6762,27 @@ class FileProjectStore:
             if isinstance(arc, dict)
             and int(arc.get("end_chapter") or 0) < target_chapter
         ]
-        if not previous_candidates:
-            raise ValueError("previous_volume_missing")
-        previous = max(previous_candidates, key=lambda arc: int(arc["end_chapter"]))
-        if int(previous["end_chapter"]) + 1 != target_chapter:
-            raise ValueError("next_volume_start_gap")
+        if previous_candidates:
+            previous = max(
+                previous_candidates, key=lambda arc: int(arc["end_chapter"])
+            )
+            if int(previous["end_chapter"]) + 1 != target_chapter:
+                raise ValueError("next_volume_start_gap")
+        else:
+            # A brand-new project with zero arcs must bootstrap the first
+            # volume; the generator and validator receive
+            # ``previous_volume=None`` and the whole-book length floor is
+            # relaxed (the 50-chapter minimum does not apply to a
+            # bootstrap volume).  See commit 9cc7775 for the original
+            # intent and ``VolumeOutlineWorkflowMixin.design_next_volume``
+            # for the canonical implementation.
+            previous = None
 
         version_before = self._volume_design_outline_hash(original)
         brief = self._planning_brief()
         generated = generator.generate_next_volume(
             brief,
-            previous_volume=deepcopy(previous),
+            previous_volume=deepcopy(previous) if previous is not None else None,
             guidance=str(guidance or "").strip(),
         )
         overall = original.get("overall") if isinstance(original.get("overall"), dict) else {}
