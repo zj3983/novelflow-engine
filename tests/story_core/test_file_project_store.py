@@ -85,6 +85,49 @@ def _seed_generation_outline(root: Path, chapter_number: int) -> None:
     )
 
 
+def test_expansion_target_range_grows_short_chapter_to_target_window() -> None:
+    """``_expansion_target_range`` is the canonical source for the
+    ``目标篇幅：{min}到{max}字（原文约{source_chars}字）`` and
+    ``新增字数预算：共补约{min-source}到{max-source}字`` strings
+    used by the expansion prompt preview.  A short chapter must
+    grow to the canonical target window (not below), and the
+    budget (``max - source``) must be positive so the model has
+    something to fill.
+    """
+    from packages.story_core.chapter_length_policy import (
+        CHAPTER_HARD_MAX_CHARS,
+        CHAPTER_TARGET_MIN_CHARS,
+    )
+    from packages.story_core.orchestrator import _expansion_target_range
+
+    target_min, target_max = _expansion_target_range(1991)
+    assert target_min == CHAPTER_TARGET_MIN_CHARS
+    assert target_max == CHAPTER_HARD_MAX_CHARS
+    assert target_max - target_min > 0
+    # Budget must always be a positive add, never a trim.
+    assert target_min - 1991 > 0
+    assert target_max - 1991 > 0
+
+
+def test_expansion_target_range_handles_zero_and_garbage_source_chars() -> None:
+    """The expansion path can be hit with a brand-new chapter (zero
+    characters) or with bad input from older callers.  The helper must
+    coerce / clamp instead of raising — raising here would break both
+    the new chapter flow and any in-flight expansion pass.
+    """
+    from packages.story_core.orchestrator import _expansion_target_range
+
+    min_zero, max_zero = _expansion_target_range(0)
+    assert min_zero >= 1
+    assert max_zero > min_zero
+
+    # Non-numeric input is coerced to 0, never raises.
+    assert _expansion_target_range("garbage") == _expansion_target_range(0)
+    assert _expansion_target_range(None) == _expansion_target_range(0)
+    # Negative input is clamped to 0.
+    assert _expansion_target_range(-5) == _expansion_target_range(0)
+
+
 def test_character_names_in_chapter_resolve_visible_aliases(tmp_path: Path) -> None:
     store = FileProjectStore(tmp_path)
     state = {

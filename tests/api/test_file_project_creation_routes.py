@@ -198,15 +198,43 @@ def test_file_project_response_exposes_sanitized_continuation_boundary(creation_
 
 
 def test_file_project_world_enrichment_completes_opening_environment(creation_api, monkeypatch):
+    """HR2 (Round 11): the legacy ``/enrich-world`` route now delegates
+    to the world-build job entry point and returns the job envelope,
+    not the synchronous project payload.  A client that wants the
+    ``pipeline_stage == "environment_ready"`` state has to wait for the
+    job to finish, then re-read the project.  The semantic the
+    pre-existing test was checking (synchronous world_summary write)
+    is still correct, only the path is now async.
+    """
     client, _, _ = creation_api
     created = client.post(
         "/file-projects",
         json={"mode": "blank", "title": "开书流程测试", "novel_type_id": "urban"},
     ).json()
 
-    def fake_enrich(project: NovelProject) -> NovelProject:
+    captured: dict[str, object] = {}
+
+    def fake_enrich(project: NovelProject, progress_callback=None) -> NovelProject:
         assert project.title == "开书流程测试"
-        return project.model_copy(
+        if progress_callback is not None:
+            progress_callback({
+                "module_id": "core_rules",
+                "title": "核心规则",
+                "status": "completed",
+            })
+            progress_callback({
+                "module_id": "core_rules",
+                "title": "核心规则",
+                "status": "completed",
+                "artifact": {
+                    "module_id": "core_rules",
+                    "title": "核心规则",
+                    "status": "completed",
+                    "fields": ["world_rules"],
+                    "output": {"world_rules": ["模块生成规则"]},
+                },
+            })
+        enriched = project.model_copy(
             update={
                 "world_summary": "一座所有承诺都会留下公开记录的现代城市。",
                 "world_blueprint": {
@@ -216,17 +244,64 @@ def test_file_project_world_enrichment_completes_opening_environment(creation_ap
                 },
             }
         )
+        captured["enriched"] = enriched
+        return enriched
 
     monkeypatch.setattr(file_project_routes, "enrich_project_world", fake_enrich)
 
-    response = client.post(f"/file-projects/{created['project_id']}/enrich-world")
+    # Stub the job's _start to also expose the ``progress_callback``
+    # we want the background loop to call; the route itself only
+    # enqueues and returns the job envelope.
+    started_jobs: list[str] = []
 
+    def fake_start(project_id: str) -> dict[str, object]:
+        from apps.api.routes import file_projects as fp
+
+        job_id = "wbg-stub-from-enrich"
+        started_jobs.append(job_id)
+        with fp._world_build_jobs_lock:
+            fp._world_build_jobs[job_id] = {
+                "schema_version": "world-build-job/v1",
+                "job_id": job_id,
+                "project_id": project_id,
+                "status": "queued",
+                "progress": "等待构建核心规则",
+                "active_module_id": "core_rules",
+                "active_module_title": "核心规则",
+                "active_module_status": "queued",
+                "error": "",
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2025-01-01T00:00:00+00:00",
+                "project_revision": "",
+                "_project_root": str(
+                    Path(created["source_path"])
+                ),
+            }
+            fp._active_world_build_jobs[
+                project_id.replace("file:", "")
+            ] = job_id
+        # Run the job loop inline so the test can synchronously observe
+        # the final state without a real executor.
+        fp._run_world_build_job(job_id, project_id)
+        with fp._world_build_jobs_lock:
+            return fp._world_build_job_response(fp._world_build_jobs[job_id])
+
+    monkeypatch.setattr(file_project_routes, "_start_world_build_job", fake_start)
+
+    response = client.post(f"/file-projects/{created['project_id']}/enrich-world")
     assert response.status_code == 200, response.text
-    assert response.json()["pipeline_stage"] == "environment_ready"
-    assert response.json()["world_summary"].startswith("一座")
-    assert response.json()["world_blueprint"]["premise"].startswith("承诺记录")
+    body = response.json()
+    assert body["status"] == "completed"
+    assert body["job_id"] == "wbg-stub-from-enrich"
+    # The job's "completed" status means the world_blueprint has been
+    # written; the client re-reads the project to see the new fields.
     persisted = FileProjectStore(Path(created["source_path"])).project()
     assert persisted["pipeline_stage"] == "environment_ready"
+    assert persisted["world_summary"].startswith("一座")
+    assert persisted["world_blueprint"]["premise"].startswith("承诺记录")
+    # And the model's enriched payload really was applied — captured
+    # through the patched ``enrich_project_world`` stub.
+    assert "enriched" in captured
 
 
 def test_file_project_world_enrichment_reports_runtime_failure(creation_api, monkeypatch):

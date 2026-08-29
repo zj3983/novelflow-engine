@@ -237,6 +237,30 @@ def _expansion_timeout_seconds() -> int:
     return _env_int("NOVEL_EXPANSION_TIMEOUT_SECONDS", 720)
 
 
+def _expansion_target_range(source_chars: int) -> tuple[int, int]:
+    """Return ``(target_min, target_max)`` for an expansion pass on a chapter
+    whose body is currently ``source_chars`` long.
+
+    The expansion path is only invoked when the source body is too short
+    (below :data:`MIN_CHAPTER_CHARS`), so ``target_min`` is the lower
+    bound of the canonical chapter size (``CHAPTER_TARGET_MIN_CHARS``)
+    and ``target_max`` is the upper bound (``CHAPTER_HARD_MAX_CHARS``).
+    The pair is what the expansion prompt renders as
+    "目标篇幅：{min}到{max}字（原文约{source_chars}字）", and
+    the difference ``(target - source_chars)`` is the budget the model
+    is asked to fill in.
+    """
+    try:
+        current = int(source_chars)
+    except (TypeError, ValueError):
+        current = 0
+    if current < 0:
+        current = 0
+    target_min = max(CHAPTER_TARGET_MIN_CHARS, current + 1)
+    target_max = CHAPTER_HARD_MAX_CHARS
+    return target_min, target_max
+
+
 def _should_compress_chapter(body: str) -> bool:
     return _chapter_char_count(body) > MAX_CHAPTER_CHARS + CHAPTER_MAX_CHAR_TOLERANCE
 

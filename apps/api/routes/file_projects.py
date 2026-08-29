@@ -430,54 +430,29 @@ def _reconcile_world_build_job(
     return recovered
 
 
-_legacy_world_enrichment_inflight: set[str] = set()
-_legacy_world_enrichment_lock = Lock()
-
-
-def _has_active_legacy_world_enrichment(project_id: str) -> bool:
-    normalized = _strip_file_prefix(project_id)
-    with _legacy_world_enrichment_lock:
-        return normalized in _legacy_world_enrichment_inflight
-
-
-def _mark_legacy_world_enrichment_started(project_id: str) -> bool:
-    """Atomically claim the legacy ``/enrich-world`` slot for one project.
-
-    Returns ``True`` if the caller now owns the slot, ``False`` if a
-    concurrent caller (legacy or new job) is already in flight.
-    """
-    normalized = _strip_file_prefix(project_id)
-    with _legacy_world_enrichment_lock:
-        if normalized in _legacy_world_enrichment_inflight:
-            return False
-        _legacy_world_enrichment_inflight.add(normalized)
-        return True
-
-
-def _mark_legacy_world_enrichment_finished(project_id: str) -> None:
-    normalized = _strip_file_prefix(project_id)
-    with _legacy_world_enrichment_lock:
-        _legacy_world_enrichment_inflight.discard(normalized)
-
-
 def _has_active_world_build_job(project_id: str) -> bool:
+    """Return True iff a world-build job is queued/running for this project.
+
+    Both ``/world-build-jobs`` and the legacy ``/enrich-world`` entry
+    point enqueue through :func:`_start_world_build_job`, so a single
+    in-memory map of ``project_id -> job_id`` is the only place a
+    concurrent writer can be tracked.  (An earlier version of this
+    function also checked a separate legacy slot; the two ``check then
+    set`` operations were guarded by different locks, which left a tiny
+    window where both writers could pass the check and clobber the
+    world_blueprint.  Collapsing the two paths into one job entry
+    removes that window entirely.)
+    """
     normalized = _strip_file_prefix(project_id)
     with _world_build_jobs_lock:
         job_id = _active_world_build_jobs.get(normalized)
         if not job_id:
-            legacy_busy = _has_active_legacy_world_enrichment(project_id)
-            return legacy_busy
+            return False
         job = _world_build_jobs.get(job_id)
         if job is None:
             _active_world_build_jobs.pop(normalized, None)
-            legacy_busy = _has_active_legacy_world_enrichment(project_id)
-            return legacy_busy
-        if str(job.get("status")) in {"queued", "running"}:
-            return True
-        # Job in memory is in a terminal state — still consider a
-        # concurrent legacy enrich in flight, otherwise the two
-        # writers race for the same world_blueprint.
-        return _has_active_legacy_world_enrichment(project_id)
+            return False
+        return str(job.get("status")) in {"queued", "running"}
 
 
 def _check_world_build_conflict(
@@ -526,6 +501,26 @@ _WORLD_BUILD_TERMINAL_STATUSES = frozenset(
 )
 
 
+def _is_world_build_job_terminal(job_id: str | None) -> bool:
+    """Return True when the tracked job has reached a terminal state.
+
+    Once a world-build job is in ``conflicted`` / ``completed`` / ``failed``
+    / ``interrupted`` the background loop, the partial-write callback, and
+    the final-write path must all stop touching the world blueprint.  The
+    job status is the single source of truth — even if the running model
+    loop is still firing progress events for an old module, the operator
+    has already accepted (or rejected) the result, and the author may have
+    hand-edited the world since the conflict was detected.
+    """
+    if not job_id:
+        return False
+    with _world_build_jobs_lock:
+        job = _world_build_jobs.get(job_id)
+        if job is None:
+            return False
+        return str(job.get("status") or "") in _WORLD_BUILD_TERMINAL_STATUSES
+
+
 def _update_world_build_job(job_id: str, **updates: object) -> None:
     """Apply a partial update to a world-build job in a single critical section.
 
@@ -568,6 +563,15 @@ def _persist_partial_world_build_artifact(
     module_id = str(artifact.get("module_id", "")).strip()
     if not module_id:
         return True
+    # Once the job is in a terminal state (most commonly ``conflicted``
+    # after an author edit) the partial artifact must be discarded: the
+    # background loop may still be flushing a stale module, but the
+    # operator already accepted the conflict and may have hand-edited
+    # the world since.  Persisting here would clobber that edit and
+    # also let the final-write path's "no revision change" check pass
+    # and overwrite the blueprint.
+    if _is_world_build_job_terminal(job_id):
+        return False
     if job_id and _check_world_build_conflict(store, job_id):
         return False
     current = store.project()
@@ -584,12 +588,18 @@ def _persist_partial_world_build_artifact(
         # Refresh the job's stored revision so the next module's conflict
         # check does not trip on this running job's own partial write.  A
         # genuine author edit between modules still produces a different
-        # hash and is caught by the check.
-        with _world_build_jobs_lock:
-            tracked_job = _world_build_jobs.get(job_id)
-            if tracked_job is not None:
-                tracked_job["project_revision"] = _project_world_revision(store)
-                _persist_world_build_job(tracked_job)
+        # hash and is caught by the check.  The bump is only safe while
+        # the job is still active — a terminal job (typically
+        # ``conflicted``) must not touch the revision, otherwise the
+        # post-enrich final write would compare the job's stale snapshot
+        # to the author's just-edited world, see "no change", and
+        # overwrite the blueprint.
+        if not _is_world_build_job_terminal(job_id):
+            with _world_build_jobs_lock:
+                tracked_job = _world_build_jobs.get(job_id)
+                if tracked_job is not None:
+                    tracked_job["project_revision"] = _project_world_revision(store)
+                    _persist_world_build_job(tracked_job)
     return True
 
 
@@ -597,6 +607,16 @@ def _run_world_build_job(job_id: str, project_id: str) -> None:
     store = _store_for(project_id)
 
     def report_progress(event: dict[str, object]) -> None:
+        # Drop progress events for jobs that have already terminated.  The
+        # background loop may be flushing a stale module after the author
+        # already triggered a conflict; we must not push the new
+        # ``status="running"`` back into the job record (the terminal
+        # guard in ``_update_world_build_job`` would drop the status but
+        # would still accept the rest of the update, which is enough to
+        # mislead the UI).  Also drop the partial artifact write: see
+        # ``_persist_partial_world_build_artifact`` for the full reason.
+        if _is_world_build_job_terminal(job_id):
+            return
         message = str(event.get("message", "正在构建世界观")).strip()
         module_id = str(event.get("module_id", "")).strip()
         module_status = str(event.get("status", "running")).strip()
@@ -613,6 +633,8 @@ def _run_world_build_job(job_id: str, project_id: str) -> None:
             _persist_partial_world_build_artifact(store, artifact, job_id=job_id)
 
     try:
+        if _is_world_build_job_terminal(job_id):
+            return
         if _check_world_build_conflict(store, job_id):
             return
         project_payload = {
@@ -626,6 +648,19 @@ def _run_world_build_job(job_id: str, project_id: str) -> None:
             NovelProject.model_validate(project_payload),
             progress_callback=report_progress,
         )
+        # Final terminal guard before the big ``store.update_project``:
+        # ``_check_world_build_conflict`` only flips the job to
+        # ``conflicted`` when the author edit produced a different hash,
+        # but the conflict detection inside ``_persist_partial_world_build_artifact``
+        # may have already pushed the job to ``conflicted`` and the
+        # author may have edited again afterwards.  In that window the
+        # full write below would compare the job's stored
+        # ``project_revision`` (frozen when the conflict was detected)
+        # to the current world, see "no change", and overwrite the
+        # author's latest hand edit.  Re-check the terminal status here
+        # to short-circuit that race.
+        if _is_world_build_job_terminal(job_id):
+            return
         if _check_world_build_conflict(store, job_id):
             return
         enriched_payload = enriched.model_dump(mode="json")
@@ -2355,63 +2390,20 @@ def init_file_project_routes() -> APIRouter:
         return _read_continuation_bootstrap_checkpoint(store.root)
 
     @router.post("/file-projects/{project_id}/enrich-world")
-    def enrich_file_project_world(project_id: str) -> dict[str, Any]:
-        # Plan rule: the legacy synchronous path and the new world-build
-        # job path are mutually exclusive — both call the same model
-        # graph and would race for the same world_blueprint if a user
-        # double-clicked.  Claim the slot atomically before doing any
-        # work; the symmetric check in ``_has_active_world_build_job``
-        # blocks the new job path while the legacy request is in flight.
+    def enrich_file_project_world(project_id: str) -> dict[str, object]:
+        # Plan rule (Round 11): the legacy synchronous
+        # ``/enrich-world`` used to race with the new
+        # ``/world-build-jobs`` entry point because they were
+        # guarded by different locks.  The new job entry already
+        # enforces the "one writer per project" invariant
+        # atomically, so the legacy route now just delegates to
+        # it.  Clients that need the synchronous result should
+        # poll
+        # ``GET /file-projects/{id}/world-build-jobs/{job_id}``
+        # until ``status`` reaches ``completed``.
         if _has_active_world_build_job(project_id):
             raise HTTPException(status_code=409, detail="world_build_in_progress")
-        if not _mark_legacy_world_enrichment_started(project_id):
-            raise HTTPException(status_code=409, detail="world_build_in_progress")
-        try:
-            store = _store_for(project_id)
-            project_payload = {
-                **store.project(),
-                "project_id": _public_project_id(store),
-                "source_path": str(store.root),
-                "active_story_id": _story_id_for(store),
-                "story_core_context": store.story_core_context("world"),
-            }
-            try:
-                enriched = enrich_project_world(NovelProject.model_validate(project_payload))
-            except WorldEnrichmentError as exc:
-                detail = str(exc) or "world_enrichment_failed"
-                status_code = 400 if detail == "missing_api_key" else 502
-                raise HTTPException(status_code=status_code, detail=detail) from exc
-            except Exception as exc:
-                code = _world_build_error_code(exc)
-                raise HTTPException(
-                    status_code=502,
-                    detail=_world_build_user_message(code),
-                ) from exc
-            enriched_payload = enriched.model_dump(mode="json")
-            store.update_project(
-                {
-                    key: value
-                    for key, value in enriched_payload.items()
-                    if key
-                    in {
-                        "title",
-                        "world_summary",
-                        "current_focus",
-                        "author_constraints",
-                        "world_blueprint",
-                        "character_profiles",
-                        "relationship_graph",
-                        "enabled_skill_ids",
-                    "enabled_skill_module_ids",
-                    "status",
-                }
-            }
-            | {"pipeline_stage": "environment_ready"},
-            replace_world_blueprint=True,
-        )
-            return _project_payload(store)
-        finally:
-            _mark_legacy_world_enrichment_finished(project_id)
+        return _start_world_build_job(project_id)
 
     @router.post("/file-projects/{project_id}/world-build-jobs")
     def start_file_project_world_build_job(project_id: str) -> dict[str, object]:
