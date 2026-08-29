@@ -12,13 +12,14 @@ import {
   type ImportedRelationshipEdge,
 } from "../../../../lib/api";
 import { isGameWebnovel, mergeCharacters, stateRows, type DisplayCharacter } from "../../../../lib/worldDisplay";
-import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
 
 function characterCardBadge(state: string | undefined): string {
   if (state === "proposed") return "待出场卡";
   if (state === "active") return "确定性角色卡";
   return "记录卡";
 }
+
+import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
 
 function cloneCharacter(character: DisplayCharacter): DisplayCharacter {
   return JSON.parse(JSON.stringify(character)) as DisplayCharacter;

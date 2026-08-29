@@ -5,7 +5,6 @@ import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
 import { fetchProjectOutline, updateProject, type ImportedRelationshipEdge, type ProjectOutline } from "../../../../lib/api";
-import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
 
 type ViewMode = "protagonist" | "person" | "chapter" | "global";
 type Position = { x: number; y: number };
@@ -13,6 +12,8 @@ type Position = { x: number; y: number };
 function copyGraph(graph: ImportedRelationshipEdge[] | undefined): ImportedRelationshipEdge[] {
   return JSON.parse(JSON.stringify(graph ?? [])) as ImportedRelationshipEdge[];
 }
+
+import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
 
 function uniqueNames(values: Array<string | undefined>): string[] {
   return [...new Set(values.map((value) => String(value ?? "").trim()).filter(Boolean))];

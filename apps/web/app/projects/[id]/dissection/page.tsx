@@ -6,11 +6,12 @@ import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
 import { useChapterDetail } from "../../../../components/ws/useChapterDetail";
 import {
-import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
   type BookDissectionReport,
   dissectFileProjectChapter,
   dissectReferenceText,
 } from "../../../../lib/api";
+
+import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
 
 type DissectionMode = "reference" | "project";
 

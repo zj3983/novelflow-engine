@@ -7,7 +7,6 @@ import { PublishingAssetsCards } from "../../../components/ws/PublishingAssetsCa
 import { useProjectWorkspace } from "../../../components/ws/ProjectWorkspaceProvider";
 import type { ProjectStatus } from "../../../lib/api";
 import { isGameWebnovel, mergeCharacters, shortStatus } from "../../../lib/worldDisplay";
-import { userFacingErrorMessage } from "../../../lib/user-facing-error";
 
 const STATUS_LABEL: Record<string, string> = {
   draft: "草稿",
@@ -18,6 +17,8 @@ const STATUS_LABEL: Record<string, string> = {
   paused: "已暂停",
   completed: "已完成",
 };
+
+import { userFacingErrorMessage } from "../../../lib/user-facing-error";
 
 function statusLabel(status: ProjectStatus | undefined): string {
   const key = String(status || "draft");

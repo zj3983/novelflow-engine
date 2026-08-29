@@ -307,7 +307,7 @@ export default function WorldPage() {
                       </span>
                     </summary>
                     <div className="ws-card__hint" style={{ marginTop: 10 }}>
-                      包含：{userFacingErrorMessage(artifact.fields.map((field) => labelForField(artifact.module_id, field)).join("、"))}
+                      包含：{artifact.fields.map((field) => labelForField(artifact.module_id, field)).join("、")}
                     </div>
                     <details className="ws-list__row__nested" style={{ marginTop: 8 }}>
                       <summary>查看原始输出</summary>

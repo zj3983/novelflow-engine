@@ -12,12 +12,13 @@ import {
   type ProjectStatus,
 } from "../../../../lib/api";
 import { DEFAULT_NOVEL_TYPE_ID } from "../../../../lib/novelTypes";
-import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
 
 const SOURCE_LABEL = {
   sqlite: "数据库",
   file: "文件夹",
 } as const;
+
+import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
 
 const STATUS_LABEL = {
   draft: "草稿",

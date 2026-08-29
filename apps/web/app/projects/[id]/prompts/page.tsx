@@ -8,7 +8,6 @@ import { PromptContextView } from "../../../../components/prompts/PromptContextV
 import { PromptTemplatesView } from "../../../../components/prompts/PromptTemplatesView";
 import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
-import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
 
 type PromptView = "templates" | "context" | "calls";
 
@@ -21,6 +20,8 @@ const VIEWS: Array<{ id: PromptView; label: string }> = [
 function promptView(value: string | null): PromptView {
   return value === "context" || value === "calls" ? value : "templates";
 }
+
+import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
 
 export default function PromptsPage() {
   const router = useRouter();

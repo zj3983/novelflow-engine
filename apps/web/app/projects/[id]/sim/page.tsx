@@ -8,7 +8,6 @@ import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
 import { useChapterDetail } from "../../../../components/ws/useChapterDetail";
 import type { ChapterBundle } from "../../../../lib/api";
-import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
 
 type WorldPulse = {
   pulse_index?: number;
@@ -22,6 +21,8 @@ type WorldPulse = {
   hidden_state?: Record<string, unknown>;
   market_order_book?: Record<string, unknown>;
 };
+
+import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
 
 const STATE_FIELD_LABELS: Record<string, string> = {
   current_arc: "当前阶段",
@@ -183,7 +184,7 @@ export default function WorldStatePage() {
           <select aria-label="响应章节" className="ws-input" value={selectedChapter} onChange={(event) => setSelectedChapter(Number(event.target.value))}>
             {stateIndex.map((entry) => (
               <option key={entry.chapter_number} value={entry.chapter_number}>
-                第 {entry.chapter_number} 章：{userFacingErrorMessage(entry.chapter_title || "未命名")}
+                第 {entry.chapter_number} 章：{entry.chapter_title || "未命名"}
               </option>
             ))}
           </select>

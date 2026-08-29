@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 import { Trash2 } from "lucide-react";
@@ -7,7 +7,6 @@ import { useSearchParams } from "next/navigation";
 
 import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
-import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
 import {
   fetchProjectForeshadowing,
   fetchProjectOutline,
@@ -73,6 +72,8 @@ const FORESHADOWING_STATUS_LABELS: Record<ForeshadowingStatus, string> = {
   resolved: "已回收",
   expired: "已失效",
 };
+
+import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
 
 const OUTLINE_PHASE_LABELS: Record<OutlineGenerationPhaseId, string> = {
   outline_foundation: "总纲与阶段大纲",

@@ -11,7 +11,6 @@ import { useChapterDetail } from "../../../../components/ws/useChapterDetail";
 import { SimplifiedReview } from "../../../../components/ws/SimplifiedReview";
 import { RollingOutlineCard } from "../../../../components/ws/RollingOutlineCard";
 import {
-import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
   downstreamRewriteNotice,
   confirmFileProjectCandidate,
   discardFileProjectCandidate,
@@ -28,6 +27,7 @@ import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
   type GenerationJobStep,
   type VolumeWorkflowResponse,
 } from "../../../../lib/api";
+import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
 
 const PAGE_SIZE = 80;
 
@@ -867,7 +867,7 @@ export default function WritePage() {
               href={`/projects/${encodedProjectId}/log`}
             />
           ) : null}
-          {regenerateError ? <p className="ws-error">任务失败：{userFacingErrorMessage(regenerateError)}</p> : null}
+          {regenerateError ? <p className="ws-error">任务失败：{regenerateError}</p> : null}
           {pendingCandidate ? (
             <CandidatePanel
               candidate={pendingCandidate}
