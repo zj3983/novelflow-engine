@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from difflib import SequenceMatcher
 from typing import Any
 
 from packages.story_core.ai_flavor_review import review_ai_flavor
@@ -128,6 +129,13 @@ _PLANNING_META_ENTITY_PATTERNS = (
     ),
 )
 
+_DIRECTOR_EDITORIAL_PATTERNS = (
+    re.compile(r"完成(?:了)?(?:本卷|本章).{0,10}(?:终局)?收束"),
+    re.compile(r"(?:故事|剧情)(?:的)?舞台.{0,16}(?:扩展|拓展|转向)"),
+    re.compile(r"(?:主角|主人公|林修)(?:的)?身份.{0,18}(?:升华|转变|蜕变)"),
+)
+_QUOTED_SPAN_PATTERN = re.compile(r"[“‘「『\"](?:[^”’」』\"]*)[”’」』\"]")
+
 _POV_BREACH_TERMS = (
     "公会频道",
     "通讯频道",
@@ -193,6 +201,70 @@ def _planning_meta_entity_hits(text: str) -> list[str]:
             if phrase not in hits:
                 hits.append(phrase)
     return hits
+
+
+def _normalise_director_result(text: str) -> str:
+    return re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]", "", str(text or "")).casefold()
+
+
+def _narration_without_quotes(text: str) -> str:
+    return _QUOTED_SPAN_PATTERN.sub("", str(text or ""))
+
+
+def review_director_result_leak(
+    text: str,
+    *,
+    director_results: list[str] | tuple[str, ...],
+) -> dict[str, Any]:
+    """Detect director-only result summaries copied into reader prose."""
+
+    narration = _narration_without_quotes(text)
+    normalised_narration = _normalise_director_result(narration)
+    narration_sentences = [
+        _normalise_director_result(sentence)
+        for sentence in re.split(r"[。！？!?\n]+", narration)
+        if _normalise_director_result(sentence)
+    ]
+    hits: list[str] = []
+
+    for raw_result in director_results:
+        result = str(raw_result or "").strip()
+        normalised_result = _normalise_director_result(result)
+        if len(normalised_result) < 18:
+            continue
+        copied = normalised_result in normalised_narration
+        paraphrased = any(
+            len(sentence) >= 18
+            and SequenceMatcher(None, normalised_result, sentence).ratio() >= 0.72
+            for sentence in narration_sentences
+        )
+        if copied or paraphrased:
+            hits.append(result)
+
+    editorial_hits = [
+        match.group(0)
+        for pattern in _DIRECTOR_EDITORIAL_PATTERNS
+        for match in pattern.finditer(narration)
+    ]
+    issues: list[str] = []
+    if hits or editorial_hits:
+        examples = [*hits, *editorial_hits]
+        issues.append(
+            "正文混入导演结果/创作总结语："
+            + "、".join(dict.fromkeys(examples[:3]))
+            + "。"
+        )
+
+    return {
+        "pass": not issues,
+        "issues": issues,
+        "revision_plan": (
+            ["把导演结果改写成动作、对话和可观察后果，不在正文中宣布本章功能或人物升华。"]
+            if issues
+            else []
+        ),
+        "scores": {"director_result_leak": 5 if issues else 8},
+    }
 
 
 def _paragraphs(text: str) -> list[str]:
@@ -715,6 +787,7 @@ HARD_REVIEWERS: frozenset[str] = frozenset({
     "diagnostic_terms",          # 后台术语 / 事实矛盾词（前世/穿越模板）
     "guide_terms",                # 攻略术语（前摇 / DPS / 元素传导效率）
     "planning_meta_leak",         # 规划元语言被写成可站立、跨越或推开的实体
+    "director_result_leak",       # 导演结果/章节功能总结被复制进正文
     "pov_boundary",               # 公会内部频道 / 上帝视角宣告
     "npc_boundary",               # NPC 越权讲不该讲的
     "refrain_traps",              # 照抄 demo 复读句

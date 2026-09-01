@@ -93,6 +93,15 @@ class _StubWriterRuntime:
         return _Resp(self.body)
 
 
+class _DirectorResultLeakRuntime(_StubDirectorRuntime):
+    def complete(self, request: Any) -> dict[str, Any]:
+        payload = super().complete(request)
+        payload["scene_beats"][-1]["result"] = (
+            "完成本卷终局收束，林修主角身份从求生反抗者正式升华为万界灵气网络维修工。"
+        )
+        return payload
+
+
 # --- Helpers --------------------------------------------------------------
 
 
@@ -252,6 +261,33 @@ def test_orchestrator_with_modular_agents_routes_main_entry(tmp_path: Path):
     if workflow_root.is_dir():
         job_dirs = list(workflow_root.iterdir())
         assert any(job.is_dir() for job in job_dirs)
+
+
+def test_modular_main_flow_blocks_director_result_leak(tmp_path: Path):
+    project = tmp_path
+    _seed_legacy_webnovel(project, with_outline=False)
+    leaked_result = (
+        "完成本卷终局收束，林修主角身份从求生反抗者正式升华为万界灵气网络维修工。"
+    )
+    writer_runtime = _StubWriterRuntime(
+        body=("林修检查完最后一处阵纹。" * 300) + leaked_result
+    )
+
+    bundle = StoryOrchestrator(
+        use_modular_agents=True,
+        project_root=project,
+    ).generate_next_chapter(
+        _story_state(),
+        project_root=project,
+        director_runtime=_DirectorResultLeakRuntime(),
+        writer_runtime=writer_runtime,
+    )
+
+    assert bundle.quality_report["ok"] is False
+    writing_review = bundle.quality_report["writing_review"]
+    assert writing_review["requires_revision"] is True
+    assert writing_review["scores"]["director_result_leak"] == 5
+    assert any("导演结果" in issue for issue in writing_review["hard_issues"])
 
 
 def test_orchestrator_modular_agents_without_project_root_keeps_legacy(

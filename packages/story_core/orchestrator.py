@@ -120,7 +120,12 @@ from packages.story_core.adversarial_cut_review import build_expression_patch_su
 from packages.story_core.ai_flavor_review import review_ai_flavor
 from packages.story_core.cold_reader_review import review_cold_reader_experience
 from packages.story_core.prose_quality_review import review_prose_quality
-from packages.story_core.prose_rule_review import CRITICAL_PROMPT_RULES, PROMPT_CRAFT_GUARDS, review_critical_prose_rules
+from packages.story_core.prose_rule_review import (
+    CRITICAL_PROMPT_RULES,
+    PROMPT_CRAFT_GUARDS,
+    review_critical_prose_rules,
+    review_director_result_leak,
+)
 from packages.story_core.prose_style_review import review_prose_style
 from packages.story_core.character_portraits import build_scene_portrait_slice
 from packages.story_core.reader_feel_review import review_reader_feel
@@ -175,7 +180,12 @@ from packages.story_core.adversarial_cut_review import build_expression_patch_su
 from packages.story_core.ai_flavor_review import review_ai_flavor
 from packages.story_core.cold_reader_review import review_cold_reader_experience
 from packages.story_core.prose_quality_review import review_prose_quality
-from packages.story_core.prose_rule_review import CRITICAL_PROMPT_RULES, PROMPT_CRAFT_GUARDS, review_critical_prose_rules
+from packages.story_core.prose_rule_review import (
+    CRITICAL_PROMPT_RULES,
+    PROMPT_CRAFT_GUARDS,
+    review_critical_prose_rules,
+    review_director_result_leak,
+)
 from packages.story_core.prose_style_review import review_prose_style
 from packages.story_core.character_portraits import build_scene_portrait_slice
 from packages.story_core.reader_feel_review import review_reader_feel
@@ -4147,11 +4157,55 @@ class StoryOrchestrator:
             adapt_modular_bundle_to_legacy,
         )
 
-        return adapt_modular_bundle_to_legacy(
+        legacy_bundle = adapt_modular_bundle_to_legacy(
             story=story,
             modular_bundle=bundle,
             chapter_number=chapter_number,
         )
+        director_review = review_director_result_leak(
+            legacy_bundle.body,
+            director_results=[
+                str(beat.result or "")
+                for beat in (bundle.director_artifact.scene_beats or [])
+            ],
+        )
+        quality_report = dict(legacy_bundle.quality_report or {})
+        existing_review = dict(quality_report.get("writing_review") or {})
+        existing_issues = [str(item) for item in (existing_review.get("issues") or [])]
+        director_issues = [str(item) for item in director_review.get("issues") or []]
+        existing_hard = [str(item) for item in (existing_review.get("hard_issues") or [])]
+        existing_plan = [str(item) for item in (existing_review.get("revision_plan") or [])]
+        combined_review = {
+            **existing_review,
+            "pass": bool(existing_review.get("pass", True))
+            and bool(director_review.get("pass", True)),
+            "issues": list(dict.fromkeys([*existing_issues, *director_issues])),
+            "hard_issues": list(dict.fromkeys([*existing_hard, *director_issues])),
+            "soft_issues": list(existing_review.get("soft_issues") or []),
+            "revision_plan": list(
+                dict.fromkeys(
+                    [*existing_plan, *[str(item) for item in director_review.get("revision_plan") or []]]
+                )
+            ),
+            "scores": {
+                **dict(existing_review.get("scores") or {}),
+                **dict(director_review.get("scores") or {}),
+            },
+            "requires_revision": (
+                not bool(existing_review.get("pass", True))
+                or not bool(director_review.get("pass", True))
+            ),
+            "severity_summary": {
+                "has_hard_violation": bool(director_issues),
+                "soft_violation_count": 0,
+                "soft_threshold": 3,
+            },
+        }
+        legacy_bundle.quality_report = _merge_writing_review_quality(
+            quality_report,
+            combined_review,
+        )
+        return legacy_bundle
 
     def _generate_next_chapter_bundle(self, story: StoryState):
         from packages.story_core.engine import ChapterBundle

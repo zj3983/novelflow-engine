@@ -4,12 +4,55 @@ from packages.story_core.prose_rule_review import (
     CRITICAL_PROMPT_RULES,
     review_critical_prose_rules,
     review_ai_flavor,
+    review_director_result_leak,
     review_diagnostic_terms_in_body,
     review_npc_boundary_violation,
     review_paragraph_opener_repetition,
     review_pov_breach,
     review_system_tag_density,
 )
+
+
+def test_review_flags_verbatim_director_result_in_body():
+    result = "完成本卷终局收束，林修主角身份从求生反抗者正式升华为万界灵气网络维修工。"
+
+    review = review_director_result_leak(
+        f"林修踏入通道，{result}",
+        director_results=[result],
+    )
+
+    assert review["pass"] is False
+    assert review["scores"]["director_result_leak"] == 5
+    assert any("导演结果" in issue for issue in review["issues"])
+
+
+def test_review_flags_editorial_identity_summary_without_exact_match():
+    review = review_director_result_leak(
+        "至此完成本卷收束，主角身份也正式升华为万界维修工。",
+        director_results=["林修离开本界。"],
+    )
+
+    assert review["pass"] is False
+    assert review["scores"]["director_result_leak"] == 5
+
+
+def test_review_allows_role_language_without_editorial_summary():
+    review = review_director_result_leak(
+        "林修扣紧工具箱：‘维修工不修好东西，难道留着过年？’",
+        director_results=["林修接下跨界维修任务。"],
+    )
+
+    assert review["pass"] is True
+    assert review["scores"]["director_result_leak"] == 8
+
+
+def test_review_allows_editorial_words_inside_character_dialogue():
+    review = review_director_result_leak(
+        "沈墨璃问：‘你总说身份升华，到底是什么意思？’",
+        director_results=["林修接下跨界维修任务。"],
+    )
+
+    assert review["pass"] is True
 
 
 def test_critical_prompt_rules_name_actual_quality_gates():
