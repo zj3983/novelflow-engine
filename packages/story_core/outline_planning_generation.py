@@ -34,6 +34,7 @@ from packages.story_core.skill_packs import skill_pack_prompt_context
 from packages.story_core.title_strategy import (
     build_chapter_title_guidance,
     select_adjacent_chapter_titles,
+    select_all_existing_chapter_titles,
     select_chapter_title_neighbors,
     select_previous_chapter_titles,
     validate_chapter_title_window,
@@ -1105,6 +1106,17 @@ class LLMOutlinePlanningGenerator:
             for chapter in validated.existing_outline.get("chapters", [])
             if isinstance(chapter, dict)
         ]
+        previous_batch_chapters: list[dict[str, Any]] = []
+        for batch in previous_batches:
+            if isinstance(batch, dict) and isinstance(batch.get("chapters"), list):
+                previous_batch_chapters.extend(
+                    [c for c in batch["chapters"] if isinstance(c, dict)]
+                )
+        all_known_titles = select_all_existing_chapter_titles(
+            existing_chapters,
+            previous_batch_chapters,
+            adjacent_chapters,
+        )
         previous_titles = select_previous_chapter_titles(
             [*existing_chapters, *previous_endings],
             target_start=chapter_numbers[0],
@@ -1194,6 +1206,7 @@ class LLMOutlinePlanningGenerator:
             "chapter_title_strategy": build_chapter_title_guidance(genre_id),
             "previous_chapter_titles": previous_titles,
             "existing_window_chapter_titles": known_titles,
+            "existing_book_chapter_titles": all_known_titles,
             "output_schema": chapter_output_schema(
                 GeneratedChapterWindow,
                 require_chapter_contracts=contracts_enabled,
@@ -1224,7 +1237,8 @@ class LLMOutlinePlanningGenerator:
                             "Every chapter title must sound like a natural Chinese novel "
                             "chapter title tied to a concrete event, choice, conflict, or "
                             "result. 禁止报告式标题，例如‘调查记录’‘阶段报告’‘线索预告’"
-                            "‘任务总结’；不要把大纲字段名或工作说明当标题。 "
+                            "‘任务总结’；不要把大纲字段名或工作说明当标题。"
+                            "严禁与prompt_context.existing_book_chapter_titles中已有的任何全书章节标题重名。"
                             "Return JSON with the single root field chapters. Follow "
                             "prompt_context.output_schema and target_chapter_numbers exactly."
                         ),
@@ -1262,7 +1276,7 @@ class LLMOutlinePlanningGenerator:
                 [chapter.model_dump(mode="python") for chapter in result.chapters],
                 genre_id=genre_id,
                 previous_chapters=previous_titles,
-                known_chapters=known_titles,
+                known_chapters=all_known_titles,
                 generated_chapter_numbers=chapter_numbers,
             )
 
@@ -1290,6 +1304,17 @@ class LLMOutlinePlanningGenerator:
                 for chapter in result.chapters
                 if chapter.chapter_number in target_numbers
             ]
+            forbidden_titles = [
+                row["title"]
+                for row in all_known_titles
+                if isinstance(row, dict)
+                and row.get("chapter_number") not in target_numbers
+                and row.get("title")
+            ] + [
+                chapter.title
+                for chapter in result.chapters
+                if chapter.chapter_number not in target_numbers and chapter.title
+            ]
             repair_context = {
                 "validation_error": validation_error,
                 "target_chapters": repair_rows,
@@ -1302,6 +1327,7 @@ class LLMOutlinePlanningGenerator:
                     for chapter in result.chapters
                     if chapter.chapter_number not in target_numbers
                 ],
+                "forbidden_existing_titles": forbidden_titles,
                 "output_schema": {
                     "titles": [
                         {"chapter_number": number, "title": "自然中文章节名"}
@@ -1318,6 +1344,7 @@ class LLMOutlinePlanningGenerator:
                             "只改标题，不改章节事件。根据每章已有的具体行动、选择、冲突、"
                             "结果和章末钩子，为指定章节重写自然中文章名。禁止‘调查记录’"
                             "‘阶段报告’‘线索预告’‘任务总结’‘情况说明’等报告式标题。"
+                            "严禁使用forbidden_existing_titles中已有的任何章节标题（不得重名）。"
                             "只返回 JSON，根字段为 titles。"
                         ),
                     },
@@ -1399,6 +1426,7 @@ class LLMOutlinePlanningGenerator:
                 "report_like_chapter_title:",
                 "repeated_chapter_title_shape:",
                 "repeated_chapter_title_pattern:",
+                "duplicate_chapter_title:",
             )
             title_rejected = validation_error.startswith(retryable_title_errors)
             if not title_rejected:
@@ -1791,7 +1819,7 @@ class LLMOutlinePlanningGenerator:
                             "还要填写核心卖点、长期主线、规划卷数与章数、扩展路线和收束路线。"
                             "每卷必须写清情绪曲线、三个可验证结果、核心循环、三次升级、中段转折、"
                             "卷末高潮、关系变化、伏笔承接与新埋伏笔，以及卷尾不可逆变化。"
-                            "但细纲只能覆盖目标章节，并给出4至6张具体角色卡。角色卡必须包括主角、阶段对手、长期反派和重要配角，"
+                            "但细纲只能覆盖目标章节，并给出10至15张具体角色卡。角色卡必须恰好1位主角，并包括阶段对手、长期反派和至少5位重要配角，"
                             "并写清年龄或身份、来历、职业、当前生活、目标、失败代价、可观察行为和两句自然对白。"
                             "阶段对手要有现实利益和权力边界；长期反派只把允许露出的痕迹写进大纲。"
                             "章节字段为 chapter_number/title/goal/obstacle/action/turn/payoff/ending_hook/cast。"
@@ -2290,7 +2318,7 @@ class LLMOutlinePlanningGenerator:
                         [chapter.model_dump(mode="python") for chapter in chapters],
                         genre_id=effective_novel_type_id,
                         previous_chapters=previous_chapters,
-                        known_chapters=existing_window_chapters,
+                        known_chapters=existing_outline_chapters,
                         generated_chapter_numbers=target_chapter_numbers,
                     )
 
@@ -2344,7 +2372,7 @@ class LLMOutlinePlanningGenerator:
                         ],
                         genre_id=effective_novel_type_id,
                         previous_chapters=previous_chapters,
-                        known_chapters=existing_window_chapters,
+                        known_chapters=existing_outline_chapters,
                         generated_chapter_numbers=target_chapter_numbers,
                     )
                     return candidate
@@ -2423,6 +2451,7 @@ class LLMOutlinePlanningGenerator:
                 enforce_full_opening_roster=(
                     mode == "initial" and validated.current_chapter == 0
                 ),
+                allow_established_roster=(mode == "regenerate"),
             )
         except Exception as exc:
             if split_plan_completed and phase_callback:

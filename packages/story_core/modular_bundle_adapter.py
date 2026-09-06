@@ -89,6 +89,33 @@ def adapt_modular_bundle_to_legacy(
     issues = [str(finding.get("code") or "") for finding in blocking_findings]
     writing_review_pass = not blocking_findings
     continuity_delta = getattr(modular_bundle, "continuity_delta", None)
+    writer_context = getattr(modular_bundle, "writer_context", None)
+    writer_character_cards = list(
+        getattr(writer_context, "character_cards", []) or []
+    )
+    body_folded = str(modular_bundle.body or "").casefold()
+    required_character_names = {
+        str(move.get("name") or "").strip().casefold()
+        for move in character_moves
+        if str(move.get("kind") or "character").strip().lower() == "character"
+        and str(move.get("name") or "").strip()
+    }
+    character_cards = []
+    for card in writer_character_cards:
+        if not isinstance(card, dict):
+            continue
+        names = [str(card.get("name") or "").strip()]
+        names.extend(
+            str(alias).strip()
+            for alias in (card.get("aliases") or [])
+            if str(alias).strip()
+        )
+        if (
+            any(name and name.casefold() in required_character_names for name in names)
+            if required_character_names
+            else any(name and name.casefold() in body_folded for name in names)
+        ):
+            character_cards.append(dict(card))
     quality_report: dict[str, Any] = {
         "ok": writing_review_pass,
         "schema_version": "file-writing-review/v1",
@@ -172,7 +199,7 @@ def adapt_modular_bundle_to_legacy(
         action_briefs=character_moves,
         conflict_summary={},
         event_beat={"turn": str(director_artifact.hook or "")},
-        character_cards=[],
+        character_cards=character_cards,
         foreshadowing=list(working_story.foreshadowing or []),
         next_outline=next_outline,
         updated_story=working_story,

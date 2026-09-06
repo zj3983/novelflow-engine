@@ -25,15 +25,18 @@ it is wrapped in ``try / except`` and produces an empty model delta.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+import hashlib
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 from packages.story_core.continuity.delta import (
     ContinuityDelta,
+    EntityAddition,
     ForeshadowingChange,
     InventoryChange,
     LocationMovement,
     RelationshipChange,
+    TimelineAdvance,
 )
 
 
@@ -48,7 +51,10 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？!?\.])")
 def _split_sentences(body: str) -> list[str]:
     if not body:
         return []
-    parts = [segment.strip() for segment in _SENTENCE_SPLIT_RE.split(body)]
+    parts = [
+        segment.strip(" \t\r\n\"'“”‘’")
+        for segment in _SENTENCE_SPLIT_RE.split(body)
+    ]
     return [part for part in parts if part]
 
 
@@ -119,17 +125,17 @@ def _chinese_to_int(text: str) -> int | None:
         return total
     return None
 
-# "林昭从包裹里取出一把生锈的铁剑" → +1 acquisition
+# "林昭获得一把生锈的铁剑" → +1 acquisition
 _TAKE_ITEM_RE = re.compile(
     r"(?P<entity>[一-龥]{2,8}?)"
     r"[^\n。！？!?\.]{0,12}?"
-    r"(?:取出|拿出|拾起|拿起|获得|收到|收下|得到|取了|捡起)"
+    r"(?:拾起|获得|收到|收下|得到|捡起)"
     r"[^\n。！？!?\.]{0,12}?"
     r"(?P<item>[一-龥]{2,8}?)"
     r"(?=[。！？!?\.\s]|$)"
 )
 
-# "苏婉把旧玉佩塞进了行李底" / "苏婉失去了一支笔" → -1 loss
+# "苏婉把旧玉佩交出" / "苏婉失去了一支笔" → -1 loss
 # The item group is greedy so it absorbs the full noun phrase (e.g.
 # "旧玉佩") before the verb. The non-greedy variant truncated the
 # noun at two characters; the verb acts as a natural terminator here
@@ -140,7 +146,7 @@ _LOSE_ITEM_RE = re.compile(
     r"(?:把|将)?"
     r"(?P<item>[一-龥]{2,8})"
     r"[^\n。！？!?\.]{0,8}?"
-    r"(?:失去|丢失|交出|送出|卖掉|用掉|消耗|塞进|藏进|扔掉)"
+    r"(?:失去|丢失|交出|送出|卖掉|用掉|消耗|扔掉)"
 )
 
 # "林昭才赶到了驿站" / "林昭走进客栈" → to_location
@@ -150,9 +156,23 @@ _LOSE_ITEM_RE = re.compile(
 _LOCATION_MOVE_RE = re.compile(
     r"(?P<entity>[一-龥]{2,8})"
     r"[^\n。！？!?\.]{0,16}?"
-    r"(?:抵达|到达|来到|赶到|进入|走进|走入|回|返回|抵达了|到达了|来到了)"
+    r"(?:抵达|到达|来到|赶到|进入|走进|走入|回到|返回|抵达了|到达了|来到了)"
     r"(?P<location>[一-龥]{2,8}?)"
     r"(?=[。！？!?\.\s]|$)"
+)
+
+_DIRECTIONAL_LOCATION_RE = re.compile(
+    r"(?:向|往)"
+    r"(?:斜对面的|对面的|附近的|前方的)?"
+    r"(?P<location>[一-龥]{2,8}?)"
+    r"(?:走去|赶去|跑去|驶去|前进)"
+)
+
+_TIMELINE_ADVANCE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"(?:外面的)?天空(?:已经|终于|彻底)?亮了起来"),
+        "天亮",
+    ),
 )
 
 # "把 X 交给 Y" / "X 塞给 Y" → implied transfer (logged as relationship
@@ -194,6 +214,7 @@ class FactExtractorContext:
     director_artifact: Any = None
     canon_view: dict[str, Any] = field(default_factory=dict)
     continuity_facts: list[dict[str, Any]] = field(default_factory=list)
+    candidate_entities: list[dict[str, Any]] = field(default_factory=list)
 
 
 # --- Helpers -------------------------------------------------------------------
@@ -228,6 +249,146 @@ def _record_valid(name: str, entity_id: str) -> dict[str, Any]:
         "name": name,
         "status": "valid",
     }
+
+
+_ENTITY_ID_PREFIX = {
+    "character": "char",
+    "item": "item",
+    "equipment": "equip",
+    "technique": "tech",
+    "location": "loc",
+    "organization": "org",
+    "quest": "quest",
+    "monster": "mon",
+    "rule": "rule",
+}
+
+
+def _stable_entity_id(kind: str, name: str) -> str:
+    digest = hashlib.sha256(f"{kind}\0{name}".encode("utf-8")).hexdigest()[:12]
+    return f"{_ENTITY_ID_PREFIX.get(kind, 'ent')}-{digest}"
+
+
+def _derived_aliases(kind: str, name: str) -> list[str]:
+    if kind != "technique":
+        return []
+    for suffix in ("异能", "能力", "技能"):
+        if name.endswith(suffix) and len(name) > len(suffix) + 1:
+            return [name[: -len(suffix)]]
+    return []
+
+
+def _candidate_card(
+    context: FactExtractorContext,
+    *,
+    kind: str,
+    name: str,
+) -> dict[str, Any]:
+    for raw_card in context.candidate_entities:
+        if not isinstance(raw_card, dict):
+            continue
+        card_kind = str(raw_card.get("kind") or "character")
+        card_name = str(
+            raw_card.get("name") or raw_card.get("canonical_name") or ""
+        ).strip()
+        if card_kind == kind and card_name == name:
+            return dict(raw_card)
+    return {}
+
+
+def _deterministic_entity_additions(
+    context: FactExtractorContext,
+) -> list[EntityAddition]:
+    artifact = context.director_artifact
+    requirements = getattr(artifact, "entity_requirements", None) or []
+    additions: list[EntityAddition] = []
+    seen: set[tuple[str, str]] = set()
+    for requirement in requirements:
+        if bool(getattr(requirement, "inline_minor", False)):
+            continue
+        kind = str(getattr(requirement, "kind", "") or "").strip()
+        name = str(getattr(requirement, "name", "") or "").strip()
+        key = (kind, name)
+        if not kind or not name or key in seen:
+            continue
+        seen.add(key)
+        if _resolve_entity_id(name, context.canon_view) is not None:
+            continue
+        source_sentence = next(
+            (sentence for sentence in _split_sentences(context.body) if name in sentence),
+            "",
+        )
+        if not source_sentence:
+            continue
+        card = _candidate_card(context, kind=kind, name=name)
+        entity_id = str(card.get("id") or card.get("entity_id") or "").strip()
+        if not entity_id:
+            entity_id = _stable_entity_id(kind, name)
+        aliases = [
+            str(alias).strip()
+            for alias in (card.get("aliases") or [])
+            if str(alias).strip() and str(alias).strip() != name
+        ]
+        for alias in _derived_aliases(kind, name):
+            if alias not in aliases:
+                aliases.append(alias)
+        attributes = {
+            key: value
+            for key, value in card.items()
+            if key
+            not in {
+                "id",
+                "entity_id",
+                "kind",
+                "name",
+                "canonical_name",
+                "aliases",
+                "lifecycle",
+            }
+        }
+        notes = str(getattr(requirement, "notes", "") or "").strip()
+        if notes:
+            attributes.setdefault("summary", notes)
+        additions.append(
+            EntityAddition(
+                chapter_number=context.chapter_number,
+                source_sentence=source_sentence,
+                confidence=1.0,
+                entity_id=entity_id,
+                kind=kind,
+                canonical_name=name,
+                aliases=aliases,
+                attributes=attributes,
+            )
+        )
+    return additions
+
+
+def _canon_view_with_additions(
+    canon_view: dict[str, Any], additions: list[EntityAddition]
+) -> dict[str, Any]:
+    merged = {
+        "by_id": dict(canon_view.get("by_id") or {}),
+        "by_kind": {
+            str(kind): list(entity_ids or [])
+            for kind, entity_ids in (canon_view.get("by_kind") or {}).items()
+        },
+        "by_alias": {
+            str(alias): list(entity_ids or [])
+            for alias, entity_ids in (canon_view.get("by_alias") or {}).items()
+        },
+    }
+    for addition in additions:
+        merged["by_id"][addition.entity_id] = {
+            "kind": addition.kind,
+            "canonical_name": addition.canonical_name,
+            "aliases": list(addition.aliases or []),
+            "attributes": dict(addition.attributes or {}),
+        }
+        merged["by_kind"].setdefault(addition.kind, []).append(addition.entity_id)
+        for alias in [addition.canonical_name, *list(addition.aliases or [])]:
+            merged["by_alias"].setdefault(alias, []).append(addition.entity_id)
+    return merged
 
 
 # --- Deterministic passes ------------------------------------------------------
@@ -305,6 +466,9 @@ def _deterministic_inventory(context: FactExtractorContext) -> list[InventoryCha
     changes: list[InventoryChange] = []
     for sentence in _split_sentences(context.body):
         for name, entity_id in _find_entity_in_sentence(sentence, canon_view):
+            entity_record = (canon_view.get("by_id") or {}).get(entity_id) or {}
+            if entity_record.get("kind") != "character":
+                continue
             # Numeric state has the highest precision; check it first.
             match = _NUMERIC_STATE_RE.search(sentence)
             if match and _resolve_entity_id(match.group("entity"), canon_view) == entity_id:
@@ -355,28 +519,54 @@ def _deterministic_locations(context: FactExtractorContext) -> list[LocationMove
     moves: list[LocationMovement] = []
     for sentence in _split_sentences(context.body):
         for name, entity_id in _find_entity_in_sentence(sentence, canon_view):
+            entity_record = (canon_view.get("by_id") or {}).get(entity_id) or {}
+            if entity_record.get("kind") != "character":
+                continue
             # Use a fresh, entity-name anchored regex for the location
             # so the leading "天黑后，" never shadows the real subject.
             anchored = re.compile(
                 re.escape(name)
                 + r"[^\n。！？!?\.]{0,16}?"
-                + r"(?:赶到了|抵达了|到达了|来到了|抵达|到达|来到|赶到|进入|走进|走入|回|返回)"
+                + r"(?:赶到了|抵达了|到达了|来到了|进入了|走进了|走入了|回到了|返回了|抵达|到达|来到|赶到|进入|走进|走入|回到|返回)"
                 + r"(?P<location>[一-龥]{2,8}?)"
                 + r"(?=[。！？!?\.\s]|$)"
             )
             match = anchored.search(sentence)
-            if not match:
-                continue
+            if match:
+                to_location = match.group("location")
+            else:
+                directional = _DIRECTIONAL_LOCATION_RE.search(sentence)
+                if not directional or sentence.find(name) > directional.start():
+                    continue
+                to_location = directional.group("location")
             moves.append(
                 LocationMovement(
                     chapter_number=context.chapter_number,
                     source_sentence=sentence,
                     confidence=1.0,
                     entity_id=entity_id,
-                    to_location=match.group("location"),
+                    to_location=to_location,
                 )
             )
     return moves
+
+
+def _deterministic_timeline(context: FactExtractorContext) -> list[TimelineAdvance]:
+    advances: list[TimelineAdvance] = []
+    for sentence in _split_sentences(context.body):
+        for pattern, marker in _TIMELINE_ADVANCE_PATTERNS:
+            if not pattern.search(sentence):
+                continue
+            advances.append(
+                TimelineAdvance(
+                    chapter_number=context.chapter_number,
+                    source_sentence=sentence,
+                    confidence=1.0,
+                    marker=marker,
+                )
+            )
+            break
+    return advances
 
 
 # --- Reference validation ------------------------------------------------------
@@ -489,17 +679,33 @@ def _safe_model_extract(
     except Exception:
         return [], []
     payload = response if isinstance(response, dict) else getattr(response, "payload", {}) or {}
+    canon_ids = set((context.canon_view.get("by_id") or {}).keys())
+
+    def has_body_evidence(source_sentence: Any) -> bool:
+        evidence = "".join(str(source_sentence or "").split())
+        body = "".join(str(context.body or "").split())
+        return bool(evidence) and evidence in body
+
     relationships: list[RelationshipChange] = []
     for item in payload.get("relationship_changes") or []:
+        subject_id = str(item.get("subject_id") or "")
+        object_id = str(item.get("object_id") or "")
+        source_sentence = str(item.get("source_sentence") or "")
+        if (
+            subject_id not in canon_ids
+            or object_id not in canon_ids
+            or not has_body_evidence(source_sentence)
+        ):
+            continue
         try:
             relationships.append(
                 RelationshipChange(
                     chapter_number=context.chapter_number,
-                    source_sentence=str(item.get("source_sentence") or ""),
+                    source_sentence=source_sentence,
                     confidence=float(item.get("confidence") or 0.5),
-                    subject_id=str(item.get("subject_id") or ""),
+                    subject_id=subject_id,
                     predicate=str(item.get("predicate") or ""),
-                    object_id=str(item.get("object_id") or ""),
+                    object_id=object_id,
                     polarity=item.get("polarity") or "added",
                 )
             )
@@ -507,11 +713,14 @@ def _safe_model_extract(
             continue
     foreshadowing: list[ForeshadowingChange] = []
     for item in payload.get("foreshadowing_changes") or []:
+        source_sentence = str(item.get("source_sentence") or "")
+        if not has_body_evidence(source_sentence):
+            continue
         try:
             foreshadowing.append(
                 ForeshadowingChange(
                     chapter_number=context.chapter_number,
-                    source_sentence=str(item.get("source_sentence") or ""),
+                    source_sentence=source_sentence,
                     confidence=float(item.get("confidence") or 0.5),
                     foreshadowing_id=str(item.get("foreshadowing_id") or ""),
                     action=item.get("action") or "planted",
@@ -533,15 +742,26 @@ class FactExtractor:
 
     def extract(self, context: FactExtractorContext) -> ContinuityDelta:
         delta = ContinuityDelta(chapter_number=context.chapter_number)
-        delta.inventory_changes.extend(_deterministic_inventory(context))
-        delta.location_movements.extend(_deterministic_locations(context))
+        additions = _deterministic_entity_additions(context)
+        delta.entity_additions.extend(additions)
+        effective_context = replace(
+            context,
+            canon_view=_canon_view_with_additions(context.canon_view, additions),
+        )
+        delta.inventory_changes.extend(_deterministic_inventory(effective_context))
+        delta.location_movements.extend(_deterministic_locations(effective_context))
+        delta.timeline_advances.extend(_deterministic_timeline(effective_context))
 
-        relationships, foreshadowing = _safe_model_extract(context, self._runtime)
+        relationships, foreshadowing = _safe_model_extract(
+            effective_context, self._runtime
+        )
         delta.relationship_changes.extend(relationships)
         delta.foreshadowing_changes.extend(foreshadowing)
 
-        referenced = _collect_referenced_names(context)
-        delta.reference_validation = _validate_references(context, referenced)
+        referenced = _collect_referenced_names(effective_context)
+        delta.reference_validation = _validate_references(
+            effective_context, referenced
+        )
         return delta
 
 

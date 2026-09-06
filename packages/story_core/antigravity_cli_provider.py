@@ -94,13 +94,15 @@ def read_antigravity_cli_models(command: str = "agy") -> list[str]:
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()
         raise RuntimeError(f"antigravity_cli_models_failed:{detail[:300]}")
-    return list(
-        dict.fromkeys(
-            line.strip()
-            for line in (completed.stdout or "").splitlines()
-            if line.strip()
-        )
-    )
+    models: list[str] = []
+    for raw_line in (completed.stdout or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        model_id = line.split("\t")[0].strip()
+        if model_id and model_id not in models:
+            models.append(model_id)
+    return models
 
 
 def post_json_via_antigravity_cli(
@@ -111,6 +113,8 @@ def post_json_via_antigravity_cli(
 ) -> dict[str, Any]:
     cfg = config or RetryConfig()
     model = str(payload.get("model") or "").strip()
+    if "\t" in model:
+        model = model.split("\t")[0].strip()
     if not model:
         raise ValueError("antigravity_cli_model_required")
 
@@ -135,12 +139,14 @@ def post_json_via_antigravity_cli(
             "--print-timeout",
             f"{timeout_seconds}s",
             "--sandbox",
+            "--dangerously-skip-permissions",
             "--disable-slash-commands",
         ]
         reasoning_effort = str(payload.get("reasoning_effort") or "").strip().lower()
         model_encodes_effort = re.search(r"-(?:low|medium|high)$", model.lower()) is not None
-        if reasoning_effort in {"low", "medium", "high"} and not model_encodes_effort:
-            args.extend(["--effort", reasoning_effort])
+        if not model_encodes_effort:
+            effort = reasoning_effort if reasoning_effort in {"low", "medium", "high"} else "high"
+            args.extend(["--effort", effort])
         attempts = max(1, int(cfg.max_retries))
         delay = max(0.0, float(cfg.initial_delay))
         content = ""

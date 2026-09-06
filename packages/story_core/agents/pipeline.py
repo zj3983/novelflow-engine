@@ -876,7 +876,9 @@ def _canon_view_for(canon: CanonService) -> dict[str, Any]:
     FactExtractor expects.
     """
     registry = canon.registry
-    by_id = {entity.id: _entity_to_dict(entity) for entity in registry.list_all()}
+    by_id = {
+        entity.entity_id: _entity_to_dict(entity) for entity in registry.list_all()
+    }
     by_kind: dict[str, list[str]] = {}
     by_alias: dict[str, list[str]] = {}
     for entity_id, record in by_id.items():
@@ -893,10 +895,10 @@ def _canon_view_for(canon: CanonService) -> dict[str, Any]:
 def _entity_to_dict(entity: CanonEntity) -> dict[str, Any]:
     return {
         "kind": entity.kind,
-        "canonical_name": entity.canonical_name,
+        "canonical_name": entity.display_name,
         "aliases": list(entity.aliases),
         "lifecycle": entity.lifecycle,
-        "attributes": dict(entity.attributes),
+        "attributes": dict(entity.extensions),
     }
 
 
@@ -1228,9 +1230,21 @@ def run_modular_pipeline(
         FactExtractorContext(
             body=writer_result.body,
             chapter_number=chapter_number,
+            director_artifact=director_result.artifact,
             canon_view=_canon_view_for(
                 _ensure_canon_service(canon_registry, project_root)
             ),
+            continuity_facts=list(writer_result.context.continuity_facts or []),
+            candidate_entities=[
+                {**dict(card), "kind": "character"}
+                for card in (writer_result.context.character_cards or [])
+                if isinstance(card, dict)
+            ]
+            + [
+                dict(card)
+                for card in (writer_result.context.entity_cards or [])
+                if isinstance(card, dict)
+            ],
         )
     )
     report_generation_progress(

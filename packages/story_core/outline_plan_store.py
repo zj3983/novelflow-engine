@@ -859,6 +859,10 @@ class OutlinePlanStoreMixin:
                 committed_through_chapter=(
                     current_chapter if mode == "regenerate" else None
                 ),
+                enforce_full_opening_roster=(
+                    mode == "initial" and current_chapter == 0
+                ),
+                allow_established_roster=(mode == "regenerate"),
             )
         else:
             existing_character_names: set[str] = set()

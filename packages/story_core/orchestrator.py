@@ -63,6 +63,7 @@ from packages.story_core.genre_stages.common_writer import (
 from packages.story_core.genre_stages.common_revision import RevisionContext, revision_char_ceiling
 from packages.story_core.genre_stages.length_prompts import (
     LengthPromptContext,
+    render_generic_polish_prompt,
 )
 from packages.story_core.genre_stages.postprocess import PostprocessContext
 from packages.story_core.foreshadowing import select_unresolved_foreshadowing
@@ -292,6 +293,23 @@ def _expanded_body_is_acceptable(original_body: str, candidate_body: str) -> boo
     original_chars = _chapter_char_count(original_body)
     candidate_chars = _chapter_char_count(candidate_body)
     return original_chars < candidate_chars and MIN_CHAPTER_CHARS - CHAPTER_CHAR_TOLERANCE <= candidate_chars <= MAX_CHAPTER_CHARS
+
+
+def _expanded_body_is_progress(original_body: str, candidate_body: str) -> bool:
+    original_chars = _chapter_char_count(original_body)
+    candidate_chars = _chapter_char_count(candidate_body)
+    return original_chars < candidate_chars
+
+
+def _chapter_polish_mode(body: str) -> str:
+    """Pick the adaptive length pass for a chapter body."""
+
+    chars = _chapter_char_count(body)
+    if chars < MIN_CHAPTER_CHARS:
+        return "expand"
+    if chars > MAX_CHAPTER_CHARS:
+        return "shorten"
+    return "polish"
 
 
 def _compressed_body_is_acceptable(original_body: str, candidate_body: str) -> bool:
@@ -2874,14 +2892,23 @@ def _render_expansion_length_prompt(
     chapter_number: int,
     event_plan: dict[str, Any] | None = None,
     world_facts: list[str] | None = None,
+    source_chars_override: int | None = None,
 ) -> str:
+    target_chars: str = TARGET_CHAPTER_CHARS
+    if source_chars_override is not None:
+        source_chars = int(source_chars_override)
+        target_min, target_max = _expansion_target_range(source_chars)
+        target_chars = (
+            f"{target_min}到{target_max}字（原文约{source_chars}字）"
+            f"\n新增字数预算：共补约{target_min - source_chars}到{target_max - source_chars}字"
+        )
     context = LengthPromptContext(
         story=story,
         chapter_number=chapter_number,
         source_body=source_body,
         event_plan=event_plan or {},
         world_facts=world_facts or [],
-        target_chars=TARGET_CHAPTER_CHARS,
+        target_chars=target_chars,
         max_chapter_chars=MAX_CHAPTER_CHARS,
         outline_anchor={},
     )
@@ -2921,6 +2948,37 @@ def _render_compression_length_prompt(
         feedback=feedback,
     )
     return genre_stage_profile_for(story, event_plan).render_compression_prompt(context=context)
+
+
+def _render_polish_length_prompt(
+    story: StoryState,
+    *,
+    source_body: str,
+    chapter_number: int,
+    event_plan: dict[str, Any] | None = None,
+    world_facts: list[str] | None = None,
+    outline_anchor: dict[str, Any] | None = None,
+    target_chars: str | None = None,
+) -> str:
+    """Render the expression-only polish prompt for an in-range chapter body."""
+
+    context = LengthPromptContext(
+        story=story,
+        chapter_number=chapter_number,
+        source_body=source_body,
+        event_plan=event_plan or {},
+        world_facts=world_facts or [],
+        target_chars=target_chars or TARGET_CHAPTER_CHARS,
+        max_chapter_chars=MAX_CHAPTER_CHARS,
+        outline_anchor=outline_anchor if isinstance(outline_anchor, dict) else {},
+    )
+    rendered = None
+    profile = genre_stage_profile_for(story, event_plan)
+    if profile.render_polish_prompt is not None:
+        rendered = profile.render_polish_prompt(context=context)
+    else:
+        rendered = render_generic_polish_prompt(context=context)
+    return rendered
 
 
 def _repair_generic_chapter_title(

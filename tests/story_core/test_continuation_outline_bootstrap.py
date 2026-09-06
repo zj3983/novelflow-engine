@@ -339,7 +339,7 @@ def detailed_chapter(chapter_number: int) -> dict[str, Any]:
 
     return {
         "chapter_number": chapter_number,
-        "title": f"第{chapter_number}章 续写推进",
+        "title": f"第{chapter_number}章 续写推进{chapter_number}",
         "goal": f"推进主线并完成第{chapter_number}章的阶段目标",
         "obstacle": "现有资源不足以支撑下一阶段行动",
         "action": "林修重新调配资源并制定下一步计划",

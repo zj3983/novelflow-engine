@@ -91,6 +91,7 @@ class GenreStageProfile:
     prepare_scene_cards: SceneCardPreparer
     prepare_writer_context: WriterContextPreparer
     stage_modules: dict[str, tuple[str, ...]]
+    render_polish_prompt: LengthPromptRenderer | None = None
 
     def modules_for(self, stage: str) -> tuple[str, ...]:
         return self.stage_modules.get(str(stage).strip(), ())

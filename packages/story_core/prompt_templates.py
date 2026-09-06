@@ -143,6 +143,13 @@ _DEFAULT_TEMPLATES: dict[str, PromptTemplate] = {
         content="{{opening_line}}\n目标篇幅：{{target_chars}}。\n{{compression_method}}\n{{chapter_scope}}\n只输出压缩后的小说正文，不要解释，不要列大纲。\n原正文：\n{{source_body}}",
         required_variables=("opening_line", "target_chars", "compression_method", "chapter_scope", "source_body"),
     ),
+    "polish": PromptTemplate(
+        key="polish",
+        title="章节润色",
+        stage="revision",
+        content="下面这章正文篇幅基本达标，请只做表达层面的润色。\n目标篇幅：{{target_chars}}。\n{{polish_focus}}\n只输出润色后的小说正文，不要解释，不要列大纲。\n原正文：\n{{source_body}}",
+        required_variables=("target_chars", "polish_focus", "source_body"),
+    ),
 }
 
 

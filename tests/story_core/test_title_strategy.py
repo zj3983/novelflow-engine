@@ -151,9 +151,9 @@ def test_mixed_title_shapes_are_accepted():
 
 def test_sparse_generated_numbers_are_not_treated_as_consecutive_positions():
     generated = [
-        {"chapter_number": 14, "title": "第十四章发生了什么？"},
-        {"chapter_number": 16, "title": "第十六章发生了什么？"},
-        {"chapter_number": 17, "title": "第十七章发生了什么？"},
+        {"chapter_number": 14, "title": "第十四章谁动了合同？"},
+        {"chapter_number": 16, "title": "第十六章真相在哪？"},
+        {"chapter_number": 17, "title": "第十七章谁在撒谎？"},
     ]
 
     assert (
@@ -169,15 +169,15 @@ def test_sparse_generated_numbers_are_not_treated_as_consecutive_positions():
 
 def test_known_chapter_completes_a_consecutive_generated_title_triple():
     generated = [
-        {"chapter_number": 14, "title": "第十四章发生了什么？"},
-        {"chapter_number": 16, "title": "第十六章发生了什么？"},
+        {"chapter_number": 14, "title": "第十四章谁动了合同？"},
+        {"chapter_number": 16, "title": "第十六章谁在撒谎？"},
     ]
 
     with pytest.raises(ValueError) as exc_info:
         validate_chapter_title_window(
             generated,
             genre_id="urban",
-            known_chapters=[{"chapter_number": 15, "title": "第十五章发生了什么？"}],
+            known_chapters=[{"chapter_number": 15, "title": "第十五章真相在哪？"}],
             generated_chapter_numbers={14, 16},
         )
 
@@ -188,11 +188,11 @@ def test_generated_nonempty_titles_override_known_duplicates_without_empty_erasu
     generated = [
         {"chapter_number": 14, "title": "生成标题为什么改变？"},
         {"chapter_number": 14, "title": ""},
-        {"chapter_number": 16, "title": "第十六章发生了什么？"},
+        {"chapter_number": 16, "title": "第十六章真相在哪？"},
     ]
     known = [
         {"chapter_number": 14, "title": "已有陈述标题"},
-        {"chapter_number": 15, "title": "第十五章发生了什么？"},
+        {"chapter_number": 15, "title": "第十五章谁动了合同？"},
         {"chapter_number": 15, "title": ""},
     ]
 
@@ -221,3 +221,52 @@ def test_old_title_triples_without_generated_chapters_do_not_block_current_windo
         )
         is None
     )
+
+
+def test_duplicate_chapter_title_within_same_batch_is_rejected():
+    generated = [
+        {"chapter_number": 10, "title": "玄渊降临"},
+        {"chapter_number": 15, "title": "第15章 玄渊降临"},
+    ]
+
+    with pytest.raises(ValueError) as exc_info:
+        validate_chapter_title_window(
+            generated,
+            genre_id="xuanhuan",
+            generated_chapter_numbers={10, 15},
+        )
+
+    assert str(exc_info.value) == "duplicate_chapter_title:15:10:第15章 玄渊降临"
+
+
+def test_duplicate_chapter_title_across_distant_known_chapters_is_rejected():
+    known = [
+        {"chapter_number": 198, "title": "第198章 玄渊降临"},
+    ]
+    generated = [
+        {"chapter_number": 209, "title": "《玄渊降临》"},
+    ]
+
+    with pytest.raises(ValueError) as exc_info:
+        validate_chapter_title_window(
+            generated,
+            genre_id="xuanhuan",
+            known_chapters=known,
+            generated_chapter_numbers={209},
+        )
+
+    assert str(exc_info.value) == "duplicate_chapter_title:209:198:《玄渊降临》"
+
+
+def test_select_all_existing_chapter_titles_aggregates_and_sorts_correctly():
+    from packages.story_core.title_strategy import select_all_existing_chapter_titles
+
+    source1 = [{"chapter_number": 1, "title": "短路与穿越"}, {"chapter_number": 2, "title": "无灵根"}]
+    source2 = [{"chapter_number": 2, "title": "无灵根的杂役"}, {"chapter_number": 3, "title": "灵气的本质"}]
+
+    all_titles = select_all_existing_chapter_titles(source1, source2)
+    assert all_titles == [
+        {"chapter_number": 1, "title": "短路与穿越"},
+        {"chapter_number": 2, "title": "无灵根的杂役"},
+        {"chapter_number": 3, "title": "灵气的本质"},
+    ]

@@ -74,6 +74,7 @@ def build_chapter_title_guidance(
         "禁止使用‘新的开始’‘危机来临’等抽象概括，不得虚构正文不存在的卖点。"
         "默认不超过二十个汉字，不要重复写章节编号。"
         "相邻三章不要连续使用同一种问句或感叹句结构。"
+        "严禁与全书已有的任何历史章节标题重名。"
         f"当前题材可用词汇：{terms}。"
     )
 
@@ -141,6 +142,30 @@ def select_chapter_titles(
     ]
 
 
+def select_all_existing_chapter_titles(
+    *sources: Sequence[Mapping[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    titles_by_number: dict[int, str] = {}
+    for source in sources:
+        if not source:
+            continue
+        for chapter in source:
+            if not isinstance(chapter, Mapping):
+                continue
+            number = chapter.get("chapter_number")
+            if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+                continue
+            title = str(
+                chapter.get("title") or chapter.get("chapter_title") or ""
+            ).strip()
+            if title:
+                titles_by_number[number] = title
+    return [
+        {"chapter_number": number, "title": titles_by_number[number]}
+        for number in sorted(titles_by_number)
+    ]
+
+
 def select_adjacent_chapter_titles(
     chapters: Sequence[Mapping[str, Any]],
     *,
@@ -195,13 +220,20 @@ def select_chapter_title_neighbors(
     ]
 
 
-def _title_shape(title: str) -> str:
+_WRAPPER_CHARS = " \t\r\n《》〈〉「」『』【】（）()[]｛{}“”‘’\"'"
+
+
+def normalize_title_text(title: str) -> str:
     text = re.sub(
-        r"^第\s*[一二三四五六七八九十百千万\d]+\s*章[：:\s]*",
+        r"^第\s*[一二三四五六七八九十百千万零两\d\s]+章[：:\s]*",
         "",
-        title.strip(),
+        str(title or "").strip(),
     )
-    text = text.rstrip(" \t\r\n》〉」』】）)]｝}”’\"'")
+    return text.strip(_WRAPPER_CHARS)
+
+
+def _title_shape(title: str) -> str:
+    text = normalize_title_text(title)
     if text.endswith(("？", "?")):
         return "question"
     if text.endswith(("！", "!")):
@@ -244,6 +276,34 @@ def validate_chapter_title_window(
             if title:
                 titles_by_number[number] = title
 
+    # 1. Deterministic duplicate check across generated chapters and known history
+    for gen_number in sorted(generated_numbers):
+        if gen_number not in titles_by_number:
+            continue
+        gen_title = titles_by_number[gen_number]
+        norm_gen = normalize_title_text(gen_title)
+        if not norm_gen:
+            continue
+        # Check against earlier chapters first (whether historical or within current batch)
+        for other_number in sorted(titles_by_number):
+            if other_number >= gen_number:
+                continue
+            other_title = titles_by_number[other_number]
+            if normalize_title_text(other_title) == norm_gen:
+                raise ValueError(
+                    f"duplicate_chapter_title:{gen_number}:{other_number}:{gen_title}"
+                )
+        # Check against future fixed chapters (not in generated batch)
+        for other_number in sorted(titles_by_number):
+            if other_number <= gen_number or other_number in generated_numbers:
+                continue
+            other_title = titles_by_number[other_number]
+            if normalize_title_text(other_title) == norm_gen:
+                raise ValueError(
+                    f"duplicate_chapter_title:{gen_number}:{other_number}:{gen_title}"
+                )
+
+    # 2. Window shape check (no 3 consecutive questions or exclamations)
     for start in sorted(titles_by_number):
         numbers = (start, start + 1, start + 2)
         if not all(number in titles_by_number for number in numbers):

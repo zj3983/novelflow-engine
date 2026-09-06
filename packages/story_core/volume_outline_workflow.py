@@ -545,6 +545,22 @@ class VolumeOutlineWorkflowMixin:
             if batch["id"] in completed_payloads
         ]
         brief = self._planning_brief()
+        if rolling_outline and rolling_outline.get("chapters"):
+            existing_outline_copy = deepcopy(brief.existing_outline)
+            existing_chapters_by_num = {
+                int(c["chapter_number"]): dict(c)
+                for c in existing_outline_copy.get("chapters", [])
+                if isinstance(c, dict) and isinstance(c.get("chapter_number"), int)
+            }
+            for c in rolling_outline.get("chapters", []):
+                if isinstance(c, dict) and isinstance(c.get("chapter_number"), int):
+                    num = int(c["chapter_number"])
+                    if num not in existing_chapters_by_num:
+                        existing_chapters_by_num[num] = dict(c)
+            existing_outline_copy["chapters"] = [
+                existing_chapters_by_num[num] for num in sorted(existing_chapters_by_num)
+            ]
+            brief = brief.model_copy(update={"existing_outline": existing_outline_copy})
         known_character_names = {
             str(name).strip()
             for name in brief.existing_character_names

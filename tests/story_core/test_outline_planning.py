@@ -118,6 +118,9 @@ def valid_payload() -> dict:
                 "main_conflict": "掌管旧产的人持续销毁证据。",
                 "growth_path": "从只能守住现场成长为能调动宗门规则。",
                 "ending_direction": "旧案公开，宗门权力重新洗牌。",
+                "core_ending_chapter": 10,
+                "extension_ceiling_chapter": 10,
+                "planned_length": 10,
             },
             "arcs": [
                 {
@@ -125,6 +128,18 @@ def valid_payload() -> dict:
                     "title": "祖祠旧案",
                     "start_chapter": 1,
                     "end_chapter": 10,
+                    "is_final_arc": True,
+                    "story_nodes": [
+                        {
+                            "start_chapter": 1,
+                            "end_chapter": 10,
+                            "objective": "查清祖祠异动",
+                            "pressure": "赵衡控制现场",
+                            "turn": "旧名册出现矛盾",
+                            "payoff": "主角得到可验证线索",
+                            "next_effect": "线索指向宗门旧案",
+                        }
+                    ],
                     "goal": "确认谁在寻找第三块青砖",
                     "obstacle": "赵衡掌握清点和封存权",
                     "payoff": "林照拿到进入旧档房的机会",
@@ -155,11 +170,76 @@ def test_valid_opening_plan_has_concrete_cast_and_two_layer_opposition(valid_pay
     }
 
 
+def test_initial_opening_plan_accepts_full_generated_roster(valid_payload) -> None:
+    valid_payload["outline"]["overall"].update(
+        {
+            "core_ending_chapter": 10,
+            "extension_ceiling_chapter": 10,
+            "planned_length": 10,
+        }
+    )
+    valid_payload["outline"]["arcs"][0].update(
+        {
+            "is_final_arc": True,
+            "core_loop": "发现异常、完成维修、取得证据",
+            "escalations": ["现场被封锁", "关键设备再次故障"],
+            "midpoint_turn": "主角确认故障源于人为破坏",
+            "climax": "主角公开证据并完成抢修",
+            "active_long_term_lines": ["旧案调查线"],
+            "story_nodes": [
+                {
+                    "start_chapter": 1,
+                    "end_chapter": 10,
+                    "objective": "查清祖祠异动",
+                    "pressure": "赵衡控制现场",
+                    "turn": "旧名册出现矛盾",
+                    "payoff": "主角得到可验证线索",
+                    "next_effect": "线索指向宗门旧案",
+                }
+            ],
+        }
+    )
+    valid_payload["characters"].extend(
+        _character(f"开篇配角{number}", "supporting")
+        for number in range(1, 7)
+    )
+
+    plan = validate_generated_opening_plan(
+        valid_payload,
+        enforce_full_opening_roster=True,
+    )
+
+    assert len(plan.characters) == 10
+
+
 def test_generated_opening_plan_rejects_core_ending_before_planned_arc(valid_payload) -> None:
     valid_payload["outline"]["overall"]["planned_length"] = 10
+    valid_payload["outline"]["overall"]["core_ending_chapter"] = 10
+    committed_arc = {
+        **valid_payload["outline"]["arcs"][0],
+        "end_chapter": 3,
+        "story_nodes": [
+            {
+                "start_chapter": 1,
+                "end_chapter": 3,
+                "objective": "查清祖祠异动",
+                "pressure": "赵衡控制现场",
+                "turn": "旧名册出现矛盾",
+                "payoff": "主角得到可验证线索",
+                "next_effect": "线索指向宗门旧案",
+            }
+        ],
+    }
+    fallback = deepcopy(valid_payload["outline"])
+    fallback["arcs"] = [deepcopy(committed_arc)]
+    valid_payload["outline"]["arcs"] = [committed_arc]
 
     with pytest.raises(ValueError, match="core_ending_not_arc_boundary"):
-        validate_generated_opening_plan(valid_payload)
+        validate_generated_opening_plan(
+            valid_payload,
+            fallback_outline=fallback,
+            committed_through_chapter=3,
+        )
 
 
 @pytest.mark.parametrize(

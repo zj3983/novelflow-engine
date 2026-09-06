@@ -13,6 +13,7 @@ from packages.story_core.genre_stages.game_webnovel.director import (
 from packages.story_core.genre_stages.game_webnovel.length import (
     render_game_compression_prompt,
     render_game_expansion_prompt,
+    render_game_polish_prompt,
 )
 from packages.story_core.genre_stages.game_webnovel.postprocess import postprocess_game_body
 from packages.story_core.genre_stages.game_webnovel.writer import (
@@ -32,6 +33,7 @@ GAME_WEBNOVEL_STAGES = GenreStageProfile(
     render_revision_prompt=render_game_revision_prompt,
     render_expansion_prompt=render_game_expansion_prompt,
     render_compression_prompt=render_game_compression_prompt,
+    render_polish_prompt=render_game_polish_prompt,
     postprocess_body=postprocess_game_body,
     chapter_phase=game_chapter_phase,
     review_director_plan=review_game_director_plan,

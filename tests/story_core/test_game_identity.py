@@ -6,17 +6,24 @@ from packages.story_core.world_enrichment import _merge_enrichment
 
 
 def test_game_character_profiles_include_game_ids():
+    """网游项目只保留项目自定义角色；题材模板不再注入旧书的固定人物。"""
+
     project = NovelProject(
         project_id="p-game-ids",
-        title="苟在网游里成神",
-        seed_outline="网游开服，主角靠千倍爆率低调发育。",
+        title="雾海漫游",
+        seed_outline="周行驾驶纸舟探索不断变化的雾海。",
+        character_profiles=[
+            {"name": "周行", "game_id": "行舟", "role": "主角"},
+        ],
         world_blueprint={"genre_plugin_ids": ["game_webnovel"]},
     )
 
     enriched = _merge_enrichment(project, {})
-    suye = next(profile for profile in enriched.character_profiles if profile["name"] == "苏叶")
+    profiles = {profile["name"]: profile for profile in enriched.character_profiles}
 
-    assert suye["game_id"] == "夜烬"
+    assert "苏叶" not in profiles
+    assert "夜烬" not in {str(profile.get("game_id") or "") for profile in profiles.values()}
+    assert profiles["周行"]["game_id"] == "行舟"
     assert any("游戏ID" in item for item in enriched.author_constraints)
     assert len(enriched.author_constraints) <= 8
 

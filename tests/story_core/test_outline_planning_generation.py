@@ -171,6 +171,39 @@ def _valid_plan() -> dict:
     }
 
 
+def _full_opening_roster(plan: dict) -> list[dict]:
+    """Pad a four-card fixture roster to the enforced 10-card opening roster."""
+
+    roster = list(plan["characters"])
+    existing = {card["name"] for card in roster}
+    for suffix in ("沈青", "陆九", "白芷", "韩松", "秦霜", "陈伯"):
+        if suffix not in existing:
+            roster.append(_card(suffix, "supporting"))
+    return roster
+
+def _model_valid_plan_with_contracts() -> dict:
+    plan = _valid_plan_with_chapter_contracts()
+    plan["characters"] = _full_opening_roster(plan)
+    return plan
+
+
+def _model_valid_plan() -> dict:
+    """_valid_plan padded to satisfy foundation detail and the 10-15 roster."""
+
+    plan = _valid_plan()
+    plan["characters"] = _full_opening_roster(plan)
+    for arc in plan["outline"]["arcs"]:
+        arc.update({
+            "core_loop": "查证、受阻、换证据路径、公开一项结果",
+            "escalations": ["取得查档资格", "找到被换过的名册"],
+            "midpoint_turn": "林照发现失火和换名册是同一批人所为",
+            "climax": "林照当众拿出无法销毁的证据",
+            "active_long_term_lines": ["被改写的宗门旧史"],
+        })
+    return plan
+
+
+
 def test_generated_opening_rejects_non_final_short_volume() -> None:
     plan = _valid_plan()
     plan["outline"]["overall"]["core_ending_chapter"] = 10
@@ -640,7 +673,7 @@ def test_outline_prompt_receives_compact_power_contract_and_explicit_game_milest
     def fake_post(base_url, path, payload, api_key, **kwargs):
         captured["system"] = payload["messages"][0]["content"]
         captured["context"] = json.loads(payload["messages"][1]["content"])
-        plan = _valid_plan()
+        plan = _model_valid_plan()
         plan["outline"]["overall"]["primary_trope_id"] = "login_character_creation"
         plan["outline"]["arcs"][0]["trope_id"] = "login_character_creation"
         plan["outline"]["arcs"][0]["game_line_payoff"] = "完成新手区域的首个核心目标。"
@@ -680,7 +713,7 @@ def test_outline_prompt_fills_only_the_selected_genre_outline_template() -> None
         captured["context"] = json.loads(payload["messages"][1]["content"])
         return {
             "choices": [
-                {"message": {"content": json.dumps(_valid_plan(), ensure_ascii=False)}}
+                {"message": {"content": json.dumps(_model_valid_plan(), ensure_ascii=False)}}
             ]
         }
 
@@ -702,8 +735,20 @@ def _codex_phase_content(prompt: dict) -> dict:
     plan = _valid_plan()
     if prompt["generation_phase"] == "outline":
         plan["outline"]["chapters"] = []
+        for arc in plan["outline"]["arcs"]:
+            arc.update({
+                "core_loop": "查证、受阻、换证据路径、公开一项结果",
+                "escalations": ["取得查档资格", "找到被换过的名册"],
+                "midpoint_turn": "林照发现失火和换名册是同一批人所为",
+                "climax": "林照当众拿出无法销毁的证据",
+                "active_long_term_lines": ["被改写的宗门旧史"],
+            })
         return {"outline": plan["outline"]}
     if prompt["generation_phase"] == "characters":
+        roster_cards = [
+            *plan["characters"],
+            *(_card(f"配角{suffix}", "supporting") for suffix in "甲乙丙丁戊己"),
+        ]
         return {
             "characters": [
                 {
@@ -728,7 +773,7 @@ def _codex_phase_content(prompt: dict) -> dict:
                     "hidden_matter": "",
                     "dialogue_examples": card["dialogue_examples"],
                 }
-                for card in plan["characters"]
+                for card in roster_cards
             ]
         }
     template = plan["outline"]["chapters"][0]
@@ -745,6 +790,7 @@ def _codex_phase_content(prompt: dict) -> dict:
                 **detailed,
                 **contract,
                 "chapter_number": number,
+                "title": f"旧名册第{number}页",
                 "trope_beat": template["trope_beat"] if number == 1 else None,
             }
             for number in prompt["target_chapter_numbers"]
@@ -757,7 +803,7 @@ def test_outline_prompt_does_not_fabricate_power_contract_for_legacy_brief() -> 
 
     def fake_post(base_url, path, payload, api_key, **kwargs):
         captured.update(json.loads(payload["messages"][1]["content"]))
-        return {"choices": [{"message": {"content": json.dumps(_valid_plan(), ensure_ascii=False)}}]}
+        return {"choices": [{"message": {"content": json.dumps(_model_valid_plan(), ensure_ascii=False)}}]}
 
     fixture = RecordingRuntime()
     LLMOutlinePlanningGenerator(post_json=fake_post, runtime_resolver=fixture.resolve).generate(
@@ -772,7 +818,7 @@ def test_non_game_outline_prompt_uses_general_long_form_fields_without_game_dual
     def fake_post(base_url, path, payload, api_key, **kwargs):
         captured["system"] = payload["messages"][0]["content"]
         captured["context"] = json.loads(payload["messages"][1]["content"])
-        plan = _valid_plan()
+        plan = _model_valid_plan()
         plan["outline"]["arcs"][0]["game_line_payoff"] = "不该进入非网游大纲"
         plan["outline"]["arcs"][0]["reality_line_payoff"] = "不该进入非网游大纲"
         return {"choices": [{"message": {"content": json.dumps(plan, ensure_ascii=False)}}]}
@@ -794,7 +840,7 @@ def test_non_game_outline_prompt_uses_general_long_form_fields_without_game_dual
 
 def test_game_outline_generation_still_requires_game_and_reality_payoffs() -> None:
     def fake_post(base_url, path, payload, api_key, **kwargs):
-        return {"choices": [{"message": {"content": json.dumps(_valid_plan(), ensure_ascii=False)}}]}
+        return {"choices": [{"message": {"content": json.dumps(_model_valid_plan(), ensure_ascii=False)}}]}
 
     fixture = RecordingRuntime()
     payload = _brief().model_dump(mode="json")
@@ -824,7 +870,7 @@ def test_xianxia_structured_power_prompt_omits_game_only_milestone_rules() -> No
     def fake_post(base_url, path, payload, api_key, **kwargs):
         captured["system"] = payload["messages"][0]["content"]
         captured["context"] = json.loads(payload["messages"][1]["content"])
-        return {"choices": [{"message": {"content": json.dumps(_valid_plan(), ensure_ascii=False)}}]}
+        return {"choices": [{"message": {"content": json.dumps(_model_valid_plan(), ensure_ascii=False)}}]}
 
     fixture = RecordingRuntime()
     payload = _brief().model_dump(mode="json")
@@ -870,7 +916,7 @@ def test_trope_validator_rejects_empty_string_beat_when_candidates_exist() -> No
 
 def test_generator_drops_invalid_optional_trope_beat_before_strict_validation() -> None:
     def fake_post(base_url, path, payload, api_key, **kwargs):
-        plan = _valid_plan()
+        plan = _model_valid_plan()
         plan["outline"]["chapters"][0]["trope_beat"] = "模型改写的低位压力"
         return {
             "choices": [
@@ -1024,16 +1070,19 @@ class RecordingRuntime:
     def post(self, base_url, path, payload, api_key, **kwargs):
         self.calls.append({"base_url": base_url, "path": path, "payload": payload, "api_key": api_key, "kwargs": kwargs})
         self.prompt_context = json.loads(payload["messages"][1]["content"])
-        plan = _valid_plan()
+        plan = _model_valid_plan()
         targets = self.prompt_context.get(
             "target_chapter_numbers",
             list(range(1, INITIAL_OUTLINE_CHAPTER_COUNT + 1)),
         )
+        if min(targets, default=2) == 1:
+            plan["characters"] = _full_opening_roster(plan)
         template = plan["outline"]["chapters"][0]
         plan["outline"]["chapters"] = [
             {
                 **template,
                 "chapter_number": number,
+                "title": f"旧名册第{number}页",
                 "trope_beat": template["trope_beat"] if number == 1 else None,
             }
             for number in targets
@@ -1082,7 +1131,7 @@ class RecordingRuntime:
             }
         )
         outline["chapters"] = [
-            {**template, "chapter_number": number}
+            {**template, "chapter_number": number, "title": f"祖祠第{number}步"}
             for number in existing_chapters
         ]
         payload.update(
@@ -1105,7 +1154,7 @@ def test_outline_generation_routes_through_planner_gateway() -> None:
             calls.append((stage, request))
             return ModelResponse.success(
                 request,
-                text=json.dumps(_valid_plan(), ensure_ascii=False),
+                text=json.dumps(_model_valid_plan(), ensure_ascii=False),
             )
 
     runtime_calls = []
@@ -1137,7 +1186,7 @@ def test_generate_chapter_batch_uses_complete_volume_context_and_exact_numbers()
             captured["stage"] = stage
             captured["request"] = request
             prompt = json.loads(request.messages[1]["content"])
-            template = _valid_plan()["outline"]["chapters"][0]
+            template = _model_valid_plan()["outline"]["chapters"][0]
             chapters = [
                 {
                     **template,
@@ -1169,7 +1218,7 @@ def test_generate_chapter_batch_uses_complete_volume_context_and_exact_numbers()
         {"chapter_number": 167, "text": "The witness is missing."}
     ]
     volume = {
-        **_valid_plan()["outline"]["arcs"][0],
+        **_model_valid_plan()["outline"]["arcs"][0],
         "id": "v3",
         "start_chapter": 153,
         "end_chapter": 212,
@@ -1220,7 +1269,7 @@ def test_generate_chapter_batch_uses_complete_volume_context_and_exact_numbers()
 def test_generate_chapter_batch_rejects_wrong_chapter_numbers() -> None:
     class Gateway:
         def complete_stage(self, _stage, request):
-            template = _valid_plan()["outline"]["chapters"][0]
+            template = _model_valid_plan()["outline"]["chapters"][0]
             chapter = {
                 **template,
                 **_detailed_chapter_template(),
@@ -1241,7 +1290,7 @@ def test_generate_chapter_batch_rejects_wrong_chapter_numbers() -> None:
         base_url="https://api.deepseek.test",
     )
     volume = {
-        **_valid_plan()["outline"]["arcs"][0],
+        **_model_valid_plan()["outline"]["arcs"][0],
         "id": "v3",
         "start_chapter": 153,
         "end_chapter": 212,
@@ -1283,7 +1332,7 @@ def test_enabled_xuanhuan_outline_prompt_gets_only_outline_skill_modules(monkeyp
                 {
                     "message": {
                         "content": json.dumps(
-                            _valid_plan_with_chapter_contracts(),
+                            _model_valid_plan_with_contracts(),
                             ensure_ascii=False,
                         )
                     }
@@ -1358,7 +1407,7 @@ def test_enabled_chapter_sop_requires_and_persists_concrete_chapter_contracts(
                 {
                     "message": {
                         "content": json.dumps(
-                            _valid_plan_with_chapter_contracts(),
+                            _model_valid_plan_with_contracts(),
                             ensure_ascii=False,
                         )
                     }
@@ -1401,7 +1450,7 @@ def test_chapter_plan_loads_explicit_genre_examples_without_chapter_sop(
             "choices": [
                 {
                     "message": {
-                        "content": json.dumps(_valid_plan(), ensure_ascii=False)
+                        "content": json.dumps(_model_valid_plan(), ensure_ascii=False)
                     }
                 }
             ]
@@ -1446,7 +1495,7 @@ def test_disabled_chapter_sop_does_not_mention_or_persist_contract_fields(
                 {
                     "message": {
                         "content": json.dumps(
-                            _valid_plan_with_chapter_contracts(),
+                            _model_valid_plan_with_contracts(),
                             ensure_ascii=False,
                         )
                     }
@@ -1482,7 +1531,7 @@ def test_disabled_chapter_sop_removes_persisted_contracts_only_from_prompt_copy(
         captured["context"] = json.loads(payload["messages"][1]["content"])
         return {
             "choices": [
-                {"message": {"content": json.dumps(_valid_plan(), ensure_ascii=False)}}
+                {"message": {"content": json.dumps(_model_valid_plan(), ensure_ascii=False)}}
             ]
         }
 
@@ -1520,7 +1569,7 @@ def test_enabled_chapter_sop_rejects_partial_or_vague_generated_contracts(
     monkeypatch.setenv("NOVEL_AUTOGROWTH_SKILL_PACKS_DIR", str(PACKS_DIR))
 
     def fake_post(base_url, path, payload, api_key, **kwargs):
-        plan = _valid_plan_with_chapter_contracts()
+        plan = _model_valid_plan_with_contracts()
         mutation(plan["outline"]["chapters"][0])
         return {
             "choices": [
@@ -1555,7 +1604,7 @@ def test_outline_skill_context_uses_canonical_genre_and_bounded_budget(monkeypat
 
     def fake_post(base_url, path, payload, api_key, **kwargs):
         captured_prompt.update(json.loads(payload["messages"][1]["content"]))
-        return {"choices": [{"message": {"content": json.dumps(_valid_plan(), ensure_ascii=False)}}]}
+        return {"choices": [{"message": {"content": json.dumps(_model_valid_plan(), ensure_ascii=False)}}]}
 
     fixture = RecordingRuntime()
     LLMOutlinePlanningGenerator(post_json=fake_post, runtime_resolver=fixture.resolve).generate(
@@ -1778,7 +1827,7 @@ def test_direct_outline_paths_retry_title_validation_once(
             for message in payload["messages"][2:]
             if message.get("role") == "system"
         )
-        plan = _valid_plan()
+        plan = _model_valid_plan()
         template = plan["outline"]["chapters"][0]
         plan["outline"]["chapters"] = [
             {
@@ -1877,7 +1926,7 @@ def test_extend_sparse_window_does_not_treat_14_16_17_as_consecutive() -> None:
         attempts += 1
         prompt = json.loads(payload["messages"][1]["content"])
         prompts.append(prompt)
-        plan = _valid_plan()
+        plan = _model_valid_plan()
         template = plan["outline"]["chapters"][0]
         plan["outline"]["chapters"] = [
             {
@@ -1931,7 +1980,7 @@ def test_extend_sparse_window_uses_existing_15_to_repair_14_15_16() -> None:
             for message in payload["messages"][2:]
             if message.get("role") == "system"
         )
-        plan = _valid_plan()
+        plan = _model_valid_plan()
         template = plan["outline"]["chapters"][0]
         plan["outline"]["chapters"] = [
             {
@@ -1985,7 +2034,7 @@ def test_extend_single_missing_chapter_uses_right_neighbors_for_title_repair() -
             for message in payload["messages"][2:]
             if message.get("role") == "system"
         )
-        plan = _valid_plan()
+        plan = _model_valid_plan()
         template = plan["outline"]["chapters"][0]
         plan["outline"]["chapters"] = [
             {
@@ -2063,7 +2112,7 @@ def test_outline_prompt_omits_empty_or_unavailable_skill_context(
     def fake_post(base_url, path, request_payload, api_key, **kwargs):
         captured["system"] = request_payload["messages"][0]["content"]
         captured["context"] = json.loads(request_payload["messages"][1]["content"])
-        return {"choices": [{"message": {"content": json.dumps(_valid_plan(), ensure_ascii=False)}}]}
+        return {"choices": [{"message": {"content": json.dumps(_model_valid_plan(), ensure_ascii=False)}}]}
 
     fixture = RecordingRuntime()
     LLMOutlinePlanningGenerator(post_json=fake_post, runtime_resolver=fixture.resolve).generate(
@@ -2173,7 +2222,7 @@ def test_codexcli_full_plan_is_generated_in_three_bounded_phases(scenario: str) 
         prompt = json.loads(payload["messages"][1]["content"])
         calls.append(prompt)
         systems.append(payload["messages"][0]["content"])
-        plan = _valid_plan()
+        plan = _model_valid_plan()
         if prompt["generation_phase"] == "outline":
             plan["outline"]["chapters"] = []
             content = {"outline": plan["outline"]}
@@ -2214,6 +2263,7 @@ def test_codexcli_full_plan_is_generated_in_three_bounded_phases(scenario: str) 
                         **template,
                         **detailed,
                         "chapter_number": number,
+                        "title": f"旧名册第{number}页",
                         "trope_beat": template["trope_beat"] if number == 1 else None,
                     }
                     for number in prompt["target_chapter_numbers"]
@@ -2280,7 +2330,7 @@ def test_codexcli_retries_a_phase_after_schema_validation_failure() -> None:
         nonlocal outline_attempts
         prompt = json.loads(payload["messages"][1]["content"])
         phase = prompt["generation_phase"]
-        plan = _valid_plan()
+        plan = _model_valid_plan()
         if phase == "outline":
             outline_attempts += 1
             plan["outline"]["chapters"] = []
@@ -2336,7 +2386,7 @@ def test_codexcli_foundation_only_stops_before_characters_and_chapters() -> None
     def fake_post(base_url, path, payload, api_key, **kwargs):
         prompt = json.loads(payload["messages"][1]["content"])
         calls.append(prompt["generation_phase"])
-        plan = _valid_plan()
+        plan = _model_valid_plan()
         plan["outline"]["chapters"] = []
         plan["outline"]["arcs"][0].update({
             "core_loop": "查证、受阻、换证据路径、公开一项结果",
@@ -2805,7 +2855,7 @@ def test_generator_forbids_exact_financial_hard_anchors_in_every_mode(
 
 def test_generator_sanitizes_financial_anchors_before_validation() -> None:
     def fake_post(base_url, path, payload, api_key, **kwargs):
-        plan = _valid_plan()
+        plan = _model_valid_plan()
         plan["outline"]["chapters"][0]["turn"] = (
             "平台扣除5%手续费后，到账1764.00元。"
         )
@@ -2831,7 +2881,7 @@ def test_generator_sanitizes_financial_anchors_before_validation() -> None:
 
 def test_generator_rejects_selected_primary_trope_drift() -> None:
     def fake_post(base_url, path, payload, api_key, **kwargs):
-        plan = _valid_plan()
+        plan = _model_valid_plan()
         plan["outline"]["overall"]["primary_trope_id"] = "golden_finger_first_test"
         plan["outline"]["arcs"][0]["trope_id"] = "golden_finger_first_test"
         plan["outline"]["chapters"][0]["trope_beat"] = "异常出现"
@@ -2867,7 +2917,7 @@ def test_generator_allows_direct_initial_model_to_choose_primary_trope() -> None
 def test_extend_rejects_existing_primary_trope_drift() -> None:
     def fake_post(base_url, path, payload, api_key, **kwargs):
         prompt = json.loads(payload["messages"][1]["content"])
-        plan = _valid_plan()
+        plan = _model_valid_plan()
         template = plan["outline"]["chapters"][0]
         plan["outline"]["overall"]["primary_trope_id"] = "golden_finger_first_test"
         plan["outline"]["arcs"][0]["trope_id"] = "golden_finger_first_test"
@@ -2875,6 +2925,7 @@ def test_extend_rejects_existing_primary_trope_drift() -> None:
             {
                 **template,
                 "chapter_number": number,
+                "title": f"旧名册第{number}页",
                 "trope_beat": "异常出现" if number == prompt["target_chapter_numbers"][0] else None,
                 "cast": ["林照", "New"],
             }
@@ -2902,7 +2953,7 @@ def test_extend_rejects_existing_primary_trope_drift() -> None:
 def test_extend_preserves_null_tropes_for_legacy_project_without_lock() -> None:
     def fake_post(base_url, path, payload, api_key, **kwargs):
         prompt = json.loads(payload["messages"][1]["content"])
-        plan = _valid_plan()
+        plan = _model_valid_plan()
         template = plan["outline"]["chapters"][0]
         plan["outline"]["overall"]["primary_trope_id"] = "model-invented-trope"
         plan["outline"]["arcs"][0]["trope_id"] = "model-invented-trope"
@@ -2910,6 +2961,7 @@ def test_extend_preserves_null_tropes_for_legacy_project_without_lock() -> None:
             {
                 **template,
                 "chapter_number": number,
+                "title": f"旧名册第{number}页",
                 "trope_beat": "model invented beat",
                 "cast": ["鏋楃収", "New"],
             }
@@ -2948,7 +3000,7 @@ def test_extend_preserves_null_tropes_for_legacy_project_without_lock() -> None:
 def test_generator_uses_existing_locked_arc_context_for_omitted_arc_beats(mode: str) -> None:
     def fake_post(base_url, path, payload, api_key, **kwargs):
         prompt = json.loads(payload["messages"][1]["content"])
-        plan = _valid_plan()
+        plan = _model_valid_plan()
         template = plan["outline"]["chapters"][0]
         plan["outline"]["arcs"] = [
             arc
@@ -2959,6 +3011,7 @@ def test_generator_uses_existing_locked_arc_context_for_omitted_arc_beats(mode: 
             {
                 **template,
                 "chapter_number": number,
+                "title": f"旧名册第{number}页",
                 "trope_beat": "异常出现" if number == 11 else None,
                 "cast": ["林照", "New"] if mode == "extend" else template["cast"],
             }
@@ -3134,13 +3187,14 @@ def test_extend_accepts_only_new_character_cards_and_existing_cast() -> None:
 
     def fake_post(base_url, path, payload, api_key, **kwargs):
         prompt_context.update(json.loads(payload["messages"][1]["content"]))
-        plan = _valid_plan()
+        plan = _model_valid_plan()
         template = plan["outline"]["chapters"][0]
         plan["outline"]["arcs"] = []
         plan["outline"]["chapters"] = [
             {
                 **template,
                 "chapter_number": number,
+                "title": f"旧名册第{number}页",
                 "trope_beat": None,
                 "cast": ["林照", "新角色"],
             }
@@ -3173,13 +3227,14 @@ def test_extend_accepts_seventh_existing_character_in_cast() -> None:
 
     def fake_post(base_url, path, payload, api_key, **kwargs):
         prompt_context.update(json.loads(payload["messages"][1]["content"]))
-        plan = _valid_plan()
+        plan = _model_valid_plan()
         template = plan["outline"]["chapters"][0]
         plan["outline"]["arcs"] = []
         plan["outline"]["chapters"] = [
             {
                 **template,
                 "chapter_number": number,
+                "title": f"旧名册第{number}页",
                 "trope_beat": None,
                 "cast": ["第七个已有角色", "新角色"],
             }
@@ -3224,13 +3279,14 @@ def test_extend_wraps_model_contract_errors_uniformly(
 
     def fake_post(base_url, path, payload, api_key, **kwargs):
         prompt = json.loads(payload["messages"][1]["content"])
-        plan = _valid_plan()
+        plan = _model_valid_plan()
         template = plan["outline"]["chapters"][0]
         plan["outline"]["arcs"] = []
         plan["outline"]["chapters"] = [
             {
                 **template,
                 "chapter_number": number,
+                "title": f"旧名册第{number}页",
                 "cast": cast,
             }
             for number in prompt["target_chapter_numbers"]

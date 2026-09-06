@@ -675,6 +675,8 @@ def validate_generated_opening_plan(
     fallback_outline: dict[str, Any] | None = None,
     committed_through_chapter: int | None = None,
     require_chapter_contracts: bool = False,
+    enforce_full_opening_roster: bool = False,
+    allow_established_roster: bool = False,
 ) -> GeneratedOutlinePlan:
     """Validate an AI-generated opening plan without constraining manual drafts."""
 
@@ -728,11 +730,31 @@ def validate_generated_opening_plan(
         if len(arc.key_results) != 3 or any(not item.strip() for item in arc.key_results):
             raise ValueError(f"invalid_arc_key_results:{arc.id}")
 
-    tiers = {card.character_tier for card in plan.characters}
+    tier_counts = {
+        tier: sum(card.character_tier == tier for card in plan.characters)
+        for tier in (
+            "protagonist",
+            "stage_antagonist",
+            "long_term_antagonist",
+            "supporting",
+        )
+    }
     for tier in ("protagonist", "stage_antagonist", "long_term_antagonist"):
-        if tier not in tiers:
+        if tier_counts[tier] < 1:
             raise ValueError(f"missing_character_tier:{tier}")
-    if not 4 <= len(plan.characters) <= 6:
+    if enforce_full_opening_roster:
+        if not 10 <= len(plan.characters) <= 15:
+            raise ValueError("character_count_out_of_range")
+        if tier_counts["protagonist"] != 1:
+            raise ValueError("invalid_protagonist_count")
+        if tier_counts["supporting"] < 5:
+            raise ValueError("insufficient_supporting_characters")
+    elif allow_established_roster:
+        # Regenerate payloads carry the book's established cast: legacy books
+        # have 4-6 cards, books opened under the full-roster rule have 10-15.
+        if not 4 <= len(plan.characters) <= 15:
+            raise ValueError("character_count_out_of_range")
+    elif not 4 <= len(plan.characters) <= 6:
         raise ValueError("character_count_out_of_range")
 
     names = [card.name.strip() for card in plan.characters]
@@ -812,7 +834,8 @@ def validate_generated_continuation_plan(
             else (expected_chapter_numbers or [1])[0] - 1
         ),
     )
-    validate_volume_structure(volume_arcs, core_ending_chapter=volume_ending)
+    if volume_arcs:
+        validate_volume_structure(volume_arcs, core_ending_chapter=volume_ending)
     if require_chapter_contracts:
         _validate_generated_chapter_contracts(plan)
     chapter_numbers = [chapter.chapter_number for chapter in plan.outline.chapters]
@@ -869,7 +892,20 @@ def validate_generated_trope_selection(
     if expected and primary_trope_id != expected:
         raise ValueError("unexpected_primary_trope_id")
     if not expected:
-        if candidates_by_id and primary_trope_id not in candidates_by_id:
+        fallback_primary = None
+        if fallback_outline is not None:
+            fallback_overall = (
+                fallback_outline.get("overall")
+                if isinstance(fallback_outline.get("overall"), dict)
+                else {}
+            )
+            fallback_primary = fallback_overall.get("primary_trope_id")
+        legacy_unlocked = (
+            fallback_outline is not None
+            and primary_trope_id is None
+            and fallback_primary is None
+        )
+        if candidates_by_id and primary_trope_id not in candidates_by_id and not legacy_unlocked:
             raise ValueError("invalid_primary_trope_id")
         if not candidates_by_id and primary_trope_id is not None:
             raise ValueError("unexpected_primary_trope_id")
@@ -894,8 +930,7 @@ def validate_generated_trope_selection(
             continue
         fallback_arc = fallback_arcs.get(arc.id)
         if (
-            arc.trope_id is not None
-            and fallback_arc is not None
+            fallback_arc is not None
             and arc.trope_id == fallback_arc.get("trope_id")
         ):
             continue

@@ -40,6 +40,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from packages.story_core.title_strategy import (
     build_chapter_title_guidance,
     select_adjacent_chapter_titles,
+    select_all_existing_chapter_titles,
     select_chapter_title_neighbors,
     select_previous_chapter_titles,
     validate_chapter_title_window,
@@ -693,6 +694,10 @@ class LLMRollingWindowGenerator:
             existing_window_chapters,
             generated_chapter_numbers=chapter_numbers,
         )
+        all_known_titles = select_all_existing_chapter_titles(
+            raw_previous_chapters if isinstance(raw_previous_chapters, list) else [],
+            raw_existing_window_chapters if isinstance(raw_existing_window_chapters, list) else [],
+        )
         request_context = dict(context)
         request_context.pop("previous_chapter_titles", None)
         request_context.pop("existing_window_chapter_titles", None)
@@ -714,6 +719,7 @@ class LLMRollingWindowGenerator:
             "chapter_title_strategy": build_chapter_title_guidance(genre_id),
             "previous_chapter_titles": previous_chapters,
             "existing_window_chapter_titles": adjacent_existing_chapters,
+            "existing_book_chapter_titles": all_known_titles,
             "output_schema": chapter_output_schema(
                 GeneratedChapterWindow,
                 require_chapter_contracts=require_shuangwen_contracts,
@@ -742,6 +748,7 @@ class LLMRollingWindowGenerator:
                         "location、pov、goal、obstacle、action、change、next和state_delta。"
                         "cast只能使用character_cards中已有的人名。"
                         "chapter.title必须来自本章具体事件，并执行request.chapter_title_strategy。"
+                        "严禁与request.existing_book_chapter_titles中已有的任何全书章节标题重名。"
                         f"{CHAPTER_CONTRACT_RULE if require_shuangwen_contracts else ''}"
                         f"{skill_instruction}"
                     ),
@@ -780,7 +787,7 @@ class LLMRollingWindowGenerator:
                 generated_chapters,
                 genre_id=genre_id,
                 previous_chapters=previous_chapters,
-                known_chapters=existing_window_chapters,
+                known_chapters=all_known_titles,
                 generated_chapter_numbers=chapter_numbers,
             )
             batch = rolling_batch_from_generated_window(

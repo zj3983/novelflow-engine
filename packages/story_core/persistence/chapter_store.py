@@ -160,17 +160,36 @@ class ChapterStore:
             return default
         return json.loads(path.read_text(encoding="utf-8-sig"))
 
-    def read_records(self, *, ignore_errors: bool = False) -> list[tuple[int, dict[str, Any]]]:
+    def read_records(
+        self,
+        *,
+        ignore_errors: bool = False,
+        include_body: bool = True,
+    ) -> list[tuple[int, dict[str, Any]]]:
         records: list[tuple[int, dict[str, Any]]] = []
         for number in self.chapter_numbers():
             try:
-                chapter = self.read_chapter(number, {})
+                chapter = self.read_chapter(number, {}, include_body=include_body)
             except (OSError, ValueError, json.JSONDecodeError):
                 if not ignore_errors:
                     raise
                 chapter = {}
             records.append((number, chapter if isinstance(chapter, dict) else {}))
         return records
+
+    def metadata_signature(self) -> list[list[Any]]:
+        """Cheap fingerprint of the chapter files, for chapter-index cache validation."""
+
+        signature: list[list[Any]] = []
+        directory = self.chapters_directory
+        for number in self.chapter_numbers():
+            path = directory / f"{number:04d}.json"
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            signature.append([number, stat.st_mtime_ns, stat.st_size])
+        return signature
 
 
 __all__ = ["ChapterStore"]

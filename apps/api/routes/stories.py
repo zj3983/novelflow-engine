@@ -1825,7 +1825,7 @@ def _serialize_project_summary(project: NovelProjectSummary | NovelProject) -> P
 
     if project.active_story_id:
 
-        active_story = store.get(project.active_story_id)
+        active_story = store.get(project.active_story_id, include_history=False)
 
         if active_story is not None:
 
@@ -2628,8 +2628,6 @@ def delete_project(project_id: str, confirm_title: str) -> DeleteProjectResponse
 @router.get("/projects/{project_id}")
 
 def get_project(project_id: str) -> ProjectResponse:
-
-    store.sync_project_context(project_id)
 
     project = store.get_project(project_id)
 

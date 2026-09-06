@@ -865,6 +865,13 @@ _NUMBERED_CHAPTER = re.compile(r"第(?:[一二三四五六七八九十百千万�
 _CLAUSE_SPLIT = re.compile(r"[\n。；;]+")
 
 
+def currency_system_rule() -> str:
+    return (
+        "新手阶段主要用铜币；币制是 1金币=100银币=10000铜币，"
+        "金币只作为大额单位轻量露出。"
+    )
+
+
 def market_rules() -> tuple[str, ...]:
     return _MARKET_RULES
 

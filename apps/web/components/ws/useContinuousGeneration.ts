@@ -12,7 +12,7 @@ import {
   type VolumeWorkflowResponse,
 } from "../../lib/api";
 
-type ContinuousCount = 2 | 5 | 10 | 20;
+export type ContinuousCount = 2 | 5 | 10 | 20;
 type ContinuousAction = "start" | "stop" | null;
 
 type UseContinuousGenerationOptions = {
@@ -51,7 +51,15 @@ export function useContinuousGeneration({
     }
     fetchCurrentContinuousGeneration(projectId)
       .then((current) => {
-        if (!cancelled) setJob(current);
+        if (cancelled) return;
+        setJob(current);
+        if (!current) return;
+        const lastChapter = current.completed_chapters.at(-1);
+        if (current.status === "completed" && lastChapter) {
+          router.replace(`/projects/${encodedProjectId}/write?chapter=${lastChapter}`);
+        } else if (current.status === "stopped") {
+          openStoppedJobDestination(current);
+        }
       })
       .catch(() => {
         if (!cancelled) setJob(null);
@@ -77,6 +85,8 @@ export function useContinuousGeneration({
           const lastChapter = current.completed_chapters.at(-1);
           if (current.status === "completed" && lastChapter) {
             router.replace(`/projects/${encodedProjectId}/write?chapter=${lastChapter}`);
+          } else if (current.status === "stopped") {
+            openStoppedJobDestination(current);
           }
         })
         .catch((reason) => {
@@ -94,6 +104,24 @@ export function useContinuousGeneration({
     router.push(
       `/projects/${encodedProjectId}/outline?tab=${needsVolume ? "arcs" : "chapters"}&chapter=${nextChapterNumber}&reason=${needsVolume ? "volume_missing" : "volume_detail_required"}`,
     );
+  }
+
+  function openStoppedJobDestination(current: ContinuousGenerationJobResponse) {
+    if (current.stop_reason === "next_volume_required") {
+      router.replace(
+        `/projects/${encodedProjectId}/outline?tab=arcs&chapter=${current.current_chapter}&reason=volume_missing`,
+      );
+      return;
+    }
+    if (current.stop_reason === "volume_detail_required") {
+      router.replace(
+        `/projects/${encodedProjectId}/outline?tab=chapters&chapter=${current.current_chapter}&reason=volume_detail_required`,
+      );
+      return;
+    }
+    if (current.stop_reason === "candidate_confirmation_required" && current.current_chapter > 0) {
+      router.replace(`/projects/${encodedProjectId}/write?chapter=${current.current_chapter}`);
+    }
   }
 
   async function start() {

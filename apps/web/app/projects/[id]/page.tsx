@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import Link from "next/link";
 
@@ -37,8 +37,8 @@ function hasFactText(value: unknown): boolean {
 }
 
 export default function ProjectOverviewPage() {
-  const { project, story, chapterIndex, error, encodedProjectId, projectId, refresh } = useProjectWorkspace();
-  const currentChapter = story?.current_chapter ?? 0;
+  const { project, story, chapterIndex, error, loading: workspaceLoading, encodedProjectId, projectId, refresh } = useProjectWorkspace();
+  const currentChapter = story?.current_chapter ?? project?.branches?.[0]?.current_chapter ?? 0;
   const recentBundles = [...chapterIndex].slice(-5).reverse();
   const latest = chapterIndex.at(-1) ?? null;
   const characters = mergeCharacters(project?.character_profiles, story?.characters);
@@ -100,7 +100,9 @@ export default function ProjectOverviewPage() {
                 全部章节
               </Link>
             </div>
-            {recentBundles.length > 0 ? (
+            {workspaceLoading ? (
+              <p className="ws-card__hint">正在加载章节...</p>
+            ) : recentBundles.length > 0 ? (
               <ul className="ws-list">
                 {recentBundles.map((bundle) => {
                   const summary = bundle.summary || "";

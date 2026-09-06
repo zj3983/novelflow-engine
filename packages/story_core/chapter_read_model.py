@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+import json
 import re
 from typing import Any
 
@@ -50,10 +52,19 @@ class FileProjectReadMixin:
         *,
         ignore_errors: bool = False,
     ) -> list[tuple[int, dict[str, Any]]]:
-        return self.chapter_store.read_records(
-            ignore_errors=ignore_errors,
-            include_body=False,
-        )
+        records: list[tuple[int, dict[str, Any]]] = []
+        for number in self.chapter_numbers():
+            try:
+                chapter = self._read_json(
+                    self.story_system_dir / "chapters" / f"{number:04d}.json",
+                    {},
+                )
+            except (OSError, ValueError, json.JSONDecodeError):
+                if not ignore_errors:
+                    raise
+                chapter = {}
+            records.append((number, chapter if isinstance(chapter, dict) else {}))
+        return records
 
     def _visible_state_from_chapters(
         self,

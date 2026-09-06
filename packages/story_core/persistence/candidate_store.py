@@ -1,12 +1,14 @@
-"""Filesystem persistence for candidate chapter drafts."""
-
 from __future__ import annotations
+
+"""Filesystem persistence for candidate chapter drafts."""
 
 import json
 from pathlib import Path
 from typing import Iterable
 
 from packages.story_core.candidate_draft import CandidateDraft
+
+_CANDIDATE_CACHE: dict[Path, tuple[int, CandidateDraft]] = {}
 
 
 class CandidateStore:
@@ -50,10 +52,17 @@ class CandidateStore:
     ) -> list[CandidateDraft]:
         if not self.directory.is_dir():
             return []
+        global _CANDIDATE_CACHE
         items: list[CandidateDraft] = []
         for path in self.directory.glob("cd-*.json"):
             try:
-                draft = CandidateDraft.from_dict(json.loads(path.read_text(encoding="utf-8")))
+                mtime = path.stat().st_mtime_ns
+                cached = _CANDIDATE_CACHE.get(path)
+                if cached is not None and cached[0] == mtime:
+                    draft = cached[1]
+                else:
+                    draft = CandidateDraft.from_dict(json.loads(path.read_text(encoding="utf-8")))
+                    _CANDIDATE_CACHE[path] = (mtime, draft)
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
                 continue
             if project_id is not None and draft.project_id != project_id:

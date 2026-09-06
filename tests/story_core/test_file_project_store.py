@@ -1650,6 +1650,12 @@ def _generated_opening_plan() -> GeneratedOutlinePlan:
                 _planning_card("赵衡", "stage_antagonist"),
                 _planning_card("周满", "supporting"),
                 _planning_card("顾长老", "long_term_antagonist"),
+                _planning_card("沈青", "supporting"),
+                _planning_card("陆九", "supporting"),
+                _planning_card("白芷", "supporting"),
+                _planning_card("韩松", "supporting"),
+                _planning_card("秦霜", "supporting"),
+                _planning_card("陈伯", "supporting"),
             ],
         }
     )
@@ -5061,6 +5067,11 @@ def test_generate_next_chapter_uses_precise_volume_workflow_gate(
             called = True
             raise AssertionError("body generator must not run before the volume gate passes")
 
+    monkeypatch.setattr(
+        store,
+        "rolling_fill_status",
+        lambda target_chapter: {"status": "present"},
+    )
     monkeypatch.setattr(
         store,
         "volume_workflow_status",
@@ -10368,6 +10379,111 @@ def test_sync_project_after_chapter_applies_relationship_state_changes(tmp_path)
     assert edge["tension"] == 85
     assert edge["last_changed_chapter"] == 3
     assert edge["changes"][-1]["chapter_number"] == 3
+
+
+def test_sync_after_chapter_records_only_visible_character_appearances(tmp_path):
+    project = {
+        "project_id": "p-file",
+        "character_profiles": [
+            {"name": "林砚", "role": "主角"},
+            {"name": "林念", "role": "主角妹妹"},
+            {"name": "刘强", "role": "物业帮凶"},
+            {"name": "赵启明", "role": "后续反派"},
+        ],
+    }
+    store = _make_minimal_file_project(tmp_path / "novel", project=project)
+    state = {
+        "characters": [
+            {"name": "林砚", "role": "主角"},
+            {"name": "赵启明", "role": "后续反派"},
+        ]
+    }
+    chapter = {
+        "chapter_number": 1,
+        "chapter_title": "深夜故障",
+        "body": "林砚安顿好林念后，在配电间听见刘强留下的声音。他没有理会赵启明的旧传闻。",
+        "character_moves": [
+            {"kind": "character", "name": "林砚"},
+            {"kind": "character", "name": "林念"},
+            {"kind": "character", "name": "刘强"},
+            {"kind": "equipment", "name": "绝缘工具箱"},
+        ],
+        "chapter_summary": {
+            "summary": "林砚发现刘强破坏设备的证据。",
+            "facts": [],
+            "next_focus": "保留证据。",
+        },
+    }
+
+    synced_state = store._sync_state_after_chapter(state, chapter)
+    synced_project = store._sync_project_after_chapter(project, synced_state, chapter)
+
+    state_by_name = {card["name"]: card for card in synced_state["characters"]}
+    project_by_name = {card["name"]: card for card in synced_project["character_profiles"]}
+    assert set(state_by_name) == {"林砚", "林念", "刘强", "赵启明"}
+    assert state_by_name["林念"]["latest_chapter"] == 1
+    assert state_by_name["刘强"]["latest_chapter"] == 1
+    assert "latest_chapter" not in state_by_name["赵启明"]
+    assert project_by_name["林念"]["latest_chapter"] == 1
+    assert project_by_name["刘强"]["latest_chapter"] == 1
+    assert "latest_chapter" not in project_by_name["赵启明"]
+    assert synced_state["memory_index"][-1]["characters"] == ["林砚", "林念", "刘强"]
+
+
+def test_sync_after_regeneration_preserves_character_appearance_history(tmp_path):
+    project = {
+        "project_id": "p-file",
+        "character_profiles": [
+            {"name": "林砚", "role": "主角"},
+            {"name": "张德富", "role": "物业主管"},
+            {"name": "林念", "role": "主角妹妹"},
+            {"name": "许晴", "role": "护士"},
+        ],
+    }
+    store = _make_minimal_file_project(tmp_path / "novel", project=project)
+    state = {
+        "current_chapter": 1,
+        "characters": [{"name": "林砚", "role": "主角"}],
+        "memory_index": [
+            {
+                "chapter_number": 1,
+                "chapter_title": "讨薪",
+                "summary": "林砚与张德富冲突。",
+                "characters": ["林砚", "张德富", "林念"],
+            }
+        ],
+    }
+    chapter = {
+        "chapter_number": 2,
+        "chapter_title": "诊所",
+        "body": "林砚陪林念来到诊所，许晴接诊。",
+        "character_moves": [
+            {"kind": "character", "name": "林砚"},
+            {"kind": "character", "name": "林念"},
+            {"kind": "character", "name": "许晴"},
+        ],
+        "chapter_summary": {
+            "summary": "林砚陪林念续药。",
+            "facts": [],
+            "next_focus": "继续。",
+        },
+    }
+
+    synced_state = store._sync_state_after_chapter(state, chapter)
+    synced_project = store._sync_project_after_chapter(project, synced_state, chapter)
+
+    state_by_name = {card["name"]: card for card in synced_state["characters"]}
+    project_by_name = {card["name"]: card for card in synced_project["character_profiles"]}
+    assert set(state_by_name) == {"林砚", "张德富", "林念", "许晴"}
+    for cards in (state_by_name, project_by_name):
+        assert cards["林砚"]["first_appearance_chapter"] == 1
+        assert cards["林砚"]["latest_chapter"] == 2
+        assert cards["张德富"]["first_appearance_chapter"] == 1
+        assert cards["张德富"]["latest_chapter"] == 1
+        assert cards["林念"]["first_appearance_chapter"] == 1
+        assert cards["林念"]["latest_chapter"] == 2
+        assert cards["许晴"]["first_appearance_chapter"] == 2
+        assert cards["许晴"]["latest_chapter"] == 2
 
 
 def test_file_project_store_regenerates_target_chapter_with_rotating_variant(tmp_path, monkeypatch):

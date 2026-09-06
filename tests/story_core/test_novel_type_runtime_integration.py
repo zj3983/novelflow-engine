@@ -173,6 +173,12 @@ def _trope_plan(primary_trope_id: str | None, trope_beat: str | None) -> dict:
         ("Rival", "stage_antagonist"),
         ("Patron", "supporting"),
         ("Hidden Hand", "long_term_antagonist"),
+        ("Witness", "supporting"),
+        ("Archivist", "supporting"),
+        ("Clerk", "supporting"),
+        ("Gatekeeper", "supporting"),
+        ("Reporter", "supporting"),
+        ("Mediator", "supporting"),
     ]
     return {
         "outline": {
@@ -188,12 +194,27 @@ def _trope_plan(primary_trope_id: str | None, trope_beat: str | None) -> dict:
                 "growth_path": "Earn the authority to expose the truth.",
                 "ending_direction": "Publish the evidence.",
                 "primary_trope_id": primary_trope_id,
+                "core_ending_chapter": 30,
+                "extension_ceiling_chapter": 30,
             },
             "arcs": [{
                 "id": "opening",
                 "title": "Opening case",
                 "start_chapter": 1,
                 "end_chapter": 30,
+                "is_final_arc": True,
+                "story_nodes": [
+                    {
+                        "start_chapter": start,
+                        "end_chapter": min(start + 14, 30),
+                        "objective": "Advance the investigation.",
+                        "pressure": "Access is restricted.",
+                        "turn": "The record points to a larger scheme.",
+                        "payoff": "One fact becomes public.",
+                        "next_effect": "The hearing moves closer.",
+                    }
+                    for start in range(1, 31, 15)
+                ],
                 "goal": "Secure the first piece of evidence.",
                 "obstacle": "The rival controls access.",
                 "payoff": "The lead earns a formal hearing.",

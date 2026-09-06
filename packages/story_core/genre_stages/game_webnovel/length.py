@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from packages.story_core.genre_stages.length_prompts import LengthPromptContext
+from packages.story_core.genre_stages.length_prompts import (
+    LengthPromptContext,
+    expansion_ending_anchor,
+    render_generic_polish_prompt,
+)
 from packages.story_core.prompt_templates import get_effective_prompt_template, render_prompt_template
 from packages.story_core.web_game_economy import (
     first_chapter_market_exchange_authorized,
@@ -17,25 +21,46 @@ def _trade_payoff_authorized(context: LengthPromptContext) -> bool:
 
 
 def render_game_expansion_prompt(*, context: LengthPromptContext) -> str:
-    expansion_scope = (
-        "第一章按大纲补足以下顺序："
-        + " ".join(opening_market_exchange_flow_lines())
-        + " 不新增公会追查或论坛扩散。"
-        if _trade_payoff_authorized(context)
-        else "第一章未获大纲授权时，不新增交易、提交委托、修理或买药水。"
+    expansion_scope = ""
+    if context.chapter_number == 1:
+        expansion_scope = (
+            "第一章按大纲补足以下顺序："
+            + " ".join(opening_market_exchange_flow_lines())
+            + " 不新增公会追查或论坛扩散。"
+            if _trade_payoff_authorized(context)
+            else "第一章未获大纲授权时，不新增交易、提交委托、修理或买药水。"
+        )
+    expansion_focus = (
+        "扩写已有场景中的行动、对话、阻力和结果，不新增独立的补丁段。"
+        "同一事实、判断和旁人误解只写一次；新增内容必须改变行动、关系或资源。"
+        f"{expansion_scope}"
+        "逐层补足行动链路和场面阻力，不是逐句增肥。"
+        "新增内容默认分到3处关键场面，优先补冲突升级的行动拍；"
+        "禁止扩写环境介绍、氛围铺垫和总结性旁白。"
+        "不输出扩写规划，只输出扩写后的正文。"
     )
+    anchor = expansion_ending_anchor(context.source_body)
+    if anchor:
+        expansion_focus += f"原文结尾「{anchor}」必须原样保留为全文最后一段。"
     rendered = render_prompt_template(
         get_effective_prompt_template("expansion"),
         {
             "target_chars": context.target_chars,
-            "expansion_focus": (
-                "扩写已有场景中的行动、对话、阻力和结果，不新增独立的补丁段。"
-                "同一事实、判断和旁人误解只写一次；新增内容必须改变行动、关系或资源。"
-                f"{expansion_scope}"
-            ),
+            "expansion_focus": expansion_focus,
             "source_body": context.source_body,
         },
     )
+    return str(
+        normalize_legacy_economy_prompt_value(
+            rendered,
+            game_context=True,
+            chapter_number=context.chapter_number,
+        )
+    )
+
+
+def render_game_polish_prompt(*, context: LengthPromptContext) -> str:
+    rendered = render_generic_polish_prompt(context=context)
     return str(
         normalize_legacy_economy_prompt_value(
             rendered,

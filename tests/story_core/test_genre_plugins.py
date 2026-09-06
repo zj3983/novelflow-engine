@@ -89,11 +89,15 @@ def test_game_plugin_builds_npc_quest_server_and_map_modules():
     enriched = _merge_enrichment(project, {})
     world = enriched.world_blueprint
 
-    assert any(npc["name"] == "职业导师艾伦" for npc in world["npc_system"]["npcs"])
+    # 模块骨架存在且规则可用
     assert any("NPC" in rule or "服务" in rule for rule in world["npc_system"]["rules"])
-    assert any(chain["name"] == "元素回廊前置" for chain in world["quest_network"]["active_chains"])
-    assert "世界频道" in world["server_runtime"]["channels"]
-    assert any(zone["name"] == "灰烬村" and "职业导师艾伦" in zone["npcs"] for zone in world["map_ecology"]["zones"])
+    assert world["quest_network"]["quest_types"]
+    assert "channels" in world["server_runtime"]
+    assert "zones" in world["map_ecology"]
+    # 清理规则：默认骨架不再注入旧书的固定 NPC、任务链和地图
+    assert not any(npc.get("name") == "职业导师艾伦" for npc in world["npc_system"]["npcs"])
+    assert not any(chain.get("name") == "元素回廊前置" for chain in world["quest_network"]["active_chains"])
+    assert not any(zone.get("name") == "灰烬村" for zone in world["map_ecology"]["zones"])
 
 
 def test_story_snapshot_and_event_plan_carry_world_reactions():

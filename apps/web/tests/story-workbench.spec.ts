@@ -2153,6 +2153,162 @@ test("write page shows current progress and core writing actions", async ({ page
   await expect(page.getByRole("button", { name: "重新生成本章" })).toBeEnabled();
 });
 
+test("write page exposes continuous production and starts the selected batch", async ({ page }) => {
+  const fixture = await routeCurrentFileProject(page, "continuous-write-actions");
+  await page.route(`**/file-projects/${fixture.encodedId}/outline/volume-workflow**`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        schema_version: "volume-workflow/v1",
+        target_chapter: 2,
+        status: "detail_complete",
+        detail_status: "detail_complete",
+        next_action: "generate_next_chapter",
+        volume_id: "volume-1",
+        volume_range: [1, 60],
+      }),
+    });
+  });
+  await page.route(`**/file-projects/${fixture.encodedId}/continuous-generation-jobs/current`, async (route) => {
+    await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ detail: "continuous_generation_job_not_found" }) });
+  });
+  let requestPayload: Record<string, unknown> | null = null;
+  await page.route(`**/file-projects/${fixture.encodedId}/continuous-generation-jobs`, async (route) => {
+    requestPayload = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        schema_version: "continuous-generation-job/v1",
+        job_id: "continuous-write-actions",
+        project_id: fixture.projectId,
+        story_id: fixture.projectId,
+        status: "queued",
+        phase: "queued",
+        requested_count: 10,
+        completed_count: 0,
+        start_chapter: 2,
+        current_chapter: 1,
+        completed_chapters: [],
+        review_warnings: [],
+        candidate_id: "",
+        stop_requested: false,
+        progress: "连续生成已排队",
+        stop_reason: "",
+        error: "",
+        created_at: "",
+        updated_at: "",
+      }),
+    });
+  });
+  await page.route(`**/file-projects/${fixture.encodedId}/continuous-generation-jobs/continuous-write-actions`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        schema_version: "continuous-generation-job/v1",
+        job_id: "continuous-write-actions",
+        project_id: fixture.projectId,
+        story_id: fixture.projectId,
+        status: "queued",
+        phase: "queued",
+        requested_count: 10,
+        completed_count: 0,
+        start_chapter: 2,
+        current_chapter: 1,
+        completed_chapters: [],
+        review_warnings: [],
+        candidate_id: "",
+        stop_requested: false,
+        progress: "连续生成已排队",
+        stop_reason: "",
+        error: "",
+        created_at: "",
+        updated_at: "",
+      }),
+    });
+  });
+
+  await page.goto(`/projects/${fixture.encodedId}/write?chapter=1`, { waitUntil: "domcontentloaded" });
+  const panel = page.getByLabel("连续生产");
+  await expect(panel).toBeVisible();
+  await expect(panel.getByRole("button", { name: "开始连续生产" })).toBeEnabled();
+  await panel.getByLabel("连续生成章数").selectOption("10");
+  const startButton = panel.getByRole("button", { name: "开始连续生产" });
+  await expect(startButton).toBeEnabled();
+  await startButton.click();
+
+  await expect.poll(() => requestPayload).toEqual({ count: 10 });
+  await expect(panel).toContainText("连续生成已排队");
+  await expect(panel).toContainText("计划生成 10 章");
+});
+
+test("active continuous production restores after reload and blocks competing actions", async ({ page }) => {
+  const fixture = await routeCurrentFileProject(page, "continuous-write-active");
+  await page.route(`**/file-projects/${fixture.encodedId}/outline/volume-workflow**`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        schema_version: "volume-workflow/v1",
+        target_chapter: 2,
+        status: "detail_complete",
+        detail_status: "detail_complete",
+        next_action: "generate_next_chapter",
+        volume_id: "volume-1",
+        volume_range: [1, 60],
+      }),
+    });
+  });
+  const activeJob = {
+    schema_version: "continuous-generation-job/v1",
+    job_id: "continuous-write-active",
+    project_id: fixture.projectId,
+    story_id: fixture.projectId,
+    status: "running",
+    phase: "generating",
+    requested_count: 5,
+    completed_count: 2,
+    start_chapter: 2,
+    current_chapter: 4,
+    completed_chapters: [2, 3],
+    review_warnings: [],
+    candidate_id: "",
+    stop_requested: false,
+    progress: "正在生成第 4 章",
+    stop_reason: "",
+    error: "",
+    created_at: "",
+    updated_at: "",
+  };
+  await page.route(`**/file-projects/${fixture.encodedId}/continuous-generation-jobs/current`, async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(activeJob) });
+  });
+  await page.route(`**/file-projects/${fixture.encodedId}/continuous-generation-jobs/continuous-write-active`, async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(activeJob) });
+  });
+  await page.route(`**/file-projects/${fixture.encodedId}/continuous-generation-jobs/continuous-write-active/stop`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ...activeJob, status: "stopping", stop_requested: true, progress: "当前章节完成后停止" }),
+    });
+  });
+
+  await page.goto(`/projects/${fixture.encodedId}/write?chapter=1`, { waitUntil: "domcontentloaded" });
+  const panel = page.getByLabel("连续生产");
+  await expect(panel).toContainText("已完成 2/5 章");
+  await expect(panel).toContainText("正在生成第 4 章");
+  await expect(panel.getByRole("button", { name: "停止连续生产" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "生成下一章" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "扩写本章" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "重新生成本章" })).toBeDisabled();
+
+  await panel.getByRole("button", { name: "停止连续生产" }).click();
+  await expect(panel).toContainText("当前章节完成后停止");
+});
+
 test("short confirmed chapter can be expanded manually into a candidate", async ({ page }) => {
   const fixture = await routeCurrentFileProject(page, "manual-expand-button");
   fixture.story.history[0].body = "短正文。".repeat(100);

@@ -77,14 +77,32 @@ def _write_json(path: Path, payload: dict) -> None:
 
 
 def _seed_generation_outline(root: Path, chapter_number: int) -> None:
+    volume_start = ((chapter_number - 1) // 50) * 50 + 1
+    volume_end = volume_start + 49
+    _write_json(
+        root / ".webnovel" / "outline.json",
+        {
+            "schema_version": "project-outline/v1",
+            "overall": {"story": "Candidate gate test."},
+            "arcs": [
+                {
+                    "id": f"volume-{volume_start}",
+                    "start_chapter": volume_start,
+                    "end_chapter": volume_end,
+                    "is_final_arc": False,
+                }
+            ],
+            "chapters": [],
+        },
+    )
     _write_json(
         root / ".story-system" / "outline-generation" / "rolling_outline.json",
         {
             "schema_version": "rolling-outline/v1",
             "chapters": [
                 {
-                    "chapter_number": chapter_number,
-                    "title": f"Chapter {chapter_number}",
+                    "chapter_number": number,
+                    "title": f"Chapter {number}",
                     "chapter_goal": "Advance the test chapter.",
                     "core_conflict": "Resolve the test conflict.",
                     "cast": [{"name": "Lead", "role": "protagonist", "this_chapter_role": "act"}],
@@ -96,6 +114,7 @@ def _seed_generation_outline(root: Path, chapter_number: int) -> None:
                     "state_delta": "test state advances",
                     "source": "manual",
                 }
+                for number in range(volume_start, volume_end + 1)
             ],
         },
     )

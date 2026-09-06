@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -1362,9 +1362,8 @@ def _project_payload(store: FileProjectStore) -> dict[str, Any]:
     project = store.project()
     state = store.persisted_state()
     enabled_skill_module_ids = resolve_enabled_skill_module_ids(project, state)
-    summary = store.summary()
-    current_chapter = int(summary.get("current_chapter") or 0)
-    title = _display_title(project, state, summary, store.root.name)
+    current_chapter = int(state.get("current_chapter") or 0)
+    title = _display_title(project, state, {}, store.root.name)
     continuation = project.get("continuation") if isinstance(project.get("continuation"), dict) else {}
     raw_continuation_start = continuation.get("start_after_chapter")
     public_continuation = (
@@ -1567,19 +1566,22 @@ def _file_chapter_payload(store: FileProjectStore, chapter_number: int) -> dict[
 
 
 def _summary_payload(store: FileProjectStore) -> dict[str, Any]:
-    project = _project_payload(store)
+    project = store.project()
+    state = store.persisted_state()
+    current_chapter = int(state.get("current_chapter") or 0)
+    title = _display_title(project, state, {}, store.root.name)
     return {
-        "project_id": project["project_id"],
-        "title": project["title"],
-        "status": project["status"],
-        "pipeline_stage": project["pipeline_stage"],
-        "active_story_id": project["active_story_id"],
-        "current_chapter": store.summary().get("current_chapter") or 0,
-        "source_path": project["source_path"],
+        "project_id": _public_project_id(store),
+        "title": title,
+        "status": project.get("status") or "simulating",
+        "pipeline_stage": project.get("pipeline_stage") or ("simulating" if current_chapter else "environment_ready"),
+        "active_story_id": _story_id_for(store),
+        "current_chapter": current_chapter,
+        "source_path": str(store.root),
         "storage_source": "file",
-        "project_lifecycle": project["project_lifecycle"],
-        "archived_at": project["archived_at"],
-        "trashed_at": project["trashed_at"],
+        "project_lifecycle": str(project.get("project_lifecycle") or "active"),
+        "archived_at": str(project.get("archived_at") or ""),
+        "trashed_at": str(project.get("trashed_at") or ""),
     }
 
 
@@ -2543,59 +2545,6 @@ def init_file_project_routes() -> APIRouter:
             raise HTTPException(status_code=422, detail=detail) from exc
         except ShuangwenReviewError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-    @router.post("/file-projects/{project_id}/outline/rolling-fill")
-    def trigger_file_project_rolling_fill(
-        project_id: str,
-        target_chapter: int = 1,
-    ) -> dict[str, Any]:
-        """Compatibility check for callers of the removed auto-fill route.
-
-        Missing chapter outlines are generated from the outline workspace,
-        never as a side effect of a body-generation request.
-        """
-        if target_chapter is None or int(target_chapter) < 1:
-            raise HTTPException(
-                status_code=422,
-                detail="rolling_fill_invalid_target_chapter",
-            )
-        store = _store_for(project_id)
-        status = store.rolling_fill_status(int(target_chapter))
-        if status.get("status") not in {"present", "legacy"}:
-            raise HTTPException(
-                status_code=409,
-                detail=f"chapter_outline_required:{int(target_chapter)}",
-            )
-        return {
-            "schema_version": "file-project-rolling-fill-response/v1",
-            "project_id": project_id,
-            **status,
-        }
-
-    @router.get("/file-projects/{project_id}/outline/rolling-fill-status")
-    def get_file_project_rolling_fill_status(
-        project_id: str,
-        target_chapter: int = 1,
-    ) -> dict[str, Any]:
-        """Read the rolling-fill status for ``target_chapter``.
-
-        Pure read: no side effects, no generator call. Returns the same
-        status object the writing packet exposes. The frontend uses this
-        to poll after a failed fill so the retry button can be enabled
-        without re-fetching the full writing packet.
-        """
-        if target_chapter is None or int(target_chapter) < 1:
-            raise HTTPException(
-                status_code=422,
-                detail="rolling_fill_invalid_target_chapter",
-            )
-        store = _store_for(project_id)
-        status = store.rolling_fill_status(int(target_chapter))
-        return {
-            "schema_version": "file-project-rolling-fill-status/v1",
-            "project_id": project_id,
-            **status,
-        }
 
     @router.get("/file-projects/{project_id}/outline/rolling")
     def get_file_project_rolling_outline(project_id: str) -> dict[str, Any]:

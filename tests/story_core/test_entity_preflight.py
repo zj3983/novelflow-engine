@@ -23,12 +23,56 @@ from typing import Any
 import pytest
 
 from packages.story_core.agents.contracts import EntityRequirement
+from packages.story_core.agents.pipeline import _canon_view_for
 from packages.story_core.canon.registry import CanonEntity, CanonRegistry
 from packages.story_core.canon.service import (
     CanonService,
     EntityPreflightFailed,
     preflight_requirements,
 )
+from packages.story_core.file_project_store import (
+    _project_canon_registry_for_extractor,
+)
+
+
+def test_canon_view_projects_registry_contract_for_fact_extractor() -> None:
+    registry = CanonRegistry.empty()
+    registry.add_character(
+        name="林修",
+        aliases=("维修工",),
+        entity_id="char-linxiu",
+        lifecycle="active",
+        extensions={"current_state": "被困在大阵核心"},
+    )
+    service = CanonService(registry=registry, designer=_RecordingDesigner())
+
+    assert _canon_view_for(service) == {
+        "by_id": {
+            "char-linxiu": {
+                "kind": "character",
+                "canonical_name": "林修",
+                "aliases": ["维修工"],
+                "lifecycle": "active",
+                "attributes": {"current_state": "被困在大阵核心"},
+            }
+        },
+        "by_kind": {"character": ["char-linxiu"]},
+        "by_alias": {"林修": ["char-linxiu"], "维修工": ["char-linxiu"]},
+    }
+
+
+def test_file_project_canon_view_uses_same_fact_extractor_contract() -> None:
+    registry = CanonRegistry.empty()
+    registry.add_character(
+        name="林修",
+        aliases=("维修工",),
+        entity_id="char-linxiu",
+        lifecycle="active",
+        extensions={"current_state": "被困在大阵核心"},
+    )
+    service = CanonService(registry=registry, designer=_RecordingDesigner())
+
+    assert _project_canon_registry_for_extractor(registry) == _canon_view_for(service)
 
 
 # --- Test doubles -----------------------------------------------------------

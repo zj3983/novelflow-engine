@@ -324,3 +324,62 @@ def merge_character_alias_cards(cards: Iterable[dict[str, Any]]) -> list[dict[st
         result[real_index] = merged
         removed.add(alias_index)
     return [card for index, card in enumerate(result) if index not in removed]
+
+
+def record_character_appearances(
+    cards: Iterable[dict[str, Any]],
+    *,
+    chapter_number: int,
+    visible_names: Iterable[str],
+) -> list[dict[str, Any]]:
+    """Record actual prose appearances without advancing unseen characters."""
+
+    visible = {str(name).strip() for name in visible_names if str(name).strip()}
+    result: list[dict[str, Any]] = []
+    for raw_card in cards:
+        if not isinstance(raw_card, dict):
+            continue
+        card = deepcopy(dict(raw_card))
+        name = str(card.get("name") or "").strip()
+        if chapter_number > 0 and name in visible:
+            first = int(card.get("first_appearance_chapter") or 0)
+            card["first_appearance_chapter"] = (
+                min(first, chapter_number) if first > 0 else chapter_number
+            )
+            card["latest_chapter"] = max(
+                int(card.get("latest_chapter") or 0),
+                chapter_number,
+            )
+        result.append(card)
+    return result
+
+
+def reconcile_character_appearance_history(
+    cards: Iterable[dict[str, Any]],
+    memory_index: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Project first/latest appearance markers from committed chapter memory."""
+
+    appearances: dict[str, list[int]] = {}
+    for entry in memory_index:
+        if not isinstance(entry, dict):
+            continue
+        chapter_number = int(entry.get("chapter_number") or 0)
+        if chapter_number <= 0:
+            continue
+        for raw_name in entry.get("characters", []) or []:
+            name = str(raw_name or "").strip()
+            if name:
+                appearances.setdefault(name, []).append(chapter_number)
+
+    result: list[dict[str, Any]] = []
+    for raw_card in cards:
+        if not isinstance(raw_card, dict):
+            continue
+        card = deepcopy(dict(raw_card))
+        chapters = appearances.get(str(card.get("name") or "").strip())
+        if chapters:
+            card["first_appearance_chapter"] = min(chapters)
+            card["latest_chapter"] = max(chapters)
+        result.append(card)
+    return result

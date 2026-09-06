@@ -46,7 +46,7 @@ def test_fact_extractor_returns_empty_delta_for_empty_body():
 
 
 def test_fact_extractor_detects_named_inventory_gain_deterministically():
-    body = "林昭从包裹里取出一把生锈的铁剑。"
+    body = "林昭获得一把生锈的铁剑。"
     canon_view = {
         "by_id": {"char-linzhao": {"kind": "character", "canonical_name": "林昭"}},
         "by_kind": {"character": ["char-linzhao"]},
@@ -68,7 +68,7 @@ def test_fact_extractor_detects_named_inventory_gain_deterministically():
 
 
 def test_fact_extractor_detects_named_inventory_loss_deterministically():
-    body = "苏婉把旧玉佩塞进了行李底，再没翻出来。"
+    body = "苏婉把旧玉佩交出，再没拿回来。"
     canon_view = {
         "by_id": {"char-suwan": {"kind": "character", "canonical_name": "苏婉"}},
         "by_kind": {"character": ["char-suwan"]},
@@ -79,6 +79,22 @@ def test_fact_extractor_detects_named_inventory_loss_deterministically():
 
     changes = [c for c in delta.inventory_changes if c.entity_id == "char-suwan"]
     assert any(c.item == "旧玉佩" and c.delta < 0 for c in changes)
+
+
+def test_fact_extractor_does_not_change_inventory_for_repositioning_owned_items():
+    body = (
+        "林昭将基础零配件塞进自己的帆布包里。"
+        "林昭又将帆布包从肩上取了下来，放在桌角。"
+    )
+    canon_view = {
+        "by_id": {"char-linzhao": {"kind": "character", "canonical_name": "林昭"}},
+        "by_kind": {"character": ["char-linzhao"]},
+        "by_alias": {"林昭": ["char-linzhao"]},
+    }
+
+    delta = FactExtractor().extract(_context(body, canon_view=canon_view))
+
+    assert delta.inventory_changes == []
 
 
 def test_fact_extractor_detects_location_movement_deterministically():
@@ -93,6 +109,211 @@ def test_fact_extractor_detects_location_movement_deterministically():
 
     moves = [m for m in delta.location_movements if m.entity_id == "char-linzhao"]
     assert any(m.to_location == "驿站" for m in moves)
+
+
+def test_fact_extractor_detects_evidence_backed_clinic_move_and_dawn_advance():
+    body = (
+        "黎明前夕，林砚半拖半扶着林念一步一步向斜对面的社区诊所走去。"
+        "外面的天空彻底亮了起来。"
+    )
+    canon_view = {
+        "by_id": {
+            "char-linyan": {"kind": "character", "canonical_name": "林砚"},
+            "char-linnian": {"kind": "character", "canonical_name": "林念"},
+        },
+        "by_kind": {"character": ["char-linyan", "char-linnian"]},
+        "by_alias": {
+            "林砚": ["char-linyan"],
+            "林念": ["char-linnian"],
+        },
+    }
+
+    delta = FactExtractor().extract(_context(body, chapter_number=2, canon_view=canon_view))
+
+    assert {
+        (movement.entity_id, movement.to_location)
+        for movement in delta.location_movements
+    } == {
+        ("char-linyan", "社区诊所"),
+        ("char-linnian", "社区诊所"),
+    }
+    assert [(item.marker, item.source_sentence) for item in delta.timeline_advances] == [
+        ("天亮", "外面的天空彻底亮了起来。")
+    ]
+
+
+def test_fact_extractor_does_not_treat_static_clock_reference_as_timeline_advance():
+    body = "墙上的钟停在清晨五点四十五分，已经坏了三年。"
+
+    delta = FactExtractor().extract(_context(body, chapter_number=2))
+
+    assert delta.timeline_advances == []
+
+
+def test_fact_extractor_does_not_treat_conditional_dawn_as_timeline_advance():
+    body = "一旦天色大亮，这项能力就会彻底陷入沉寂。"
+
+    delta = FactExtractor().extract(_context(body, chapter_number=2))
+
+    assert delta.timeline_advances == []
+
+
+def test_fact_extractor_trims_quote_boundaries_from_source_sentence():
+    delta = FactExtractor().extract(
+        _context("上一句说完了。\u201d\n\n外面的天空彻底亮了起来。", chapter_number=2)
+    )
+
+    assert [item.source_sentence for item in delta.timeline_advances] == [
+        "外面的天空彻底亮了起来。"
+    ]
+
+
+def test_fact_extractor_does_not_move_non_character_entities_or_bare_hui_phrases():
+    body = "林砚的绝缘工具箱还没回来。"
+    canon_view = {
+        "by_id": {
+            "char-linyan": {"kind": "character", "canonical_name": "林砚"},
+            "equip-toolbox": {
+                "kind": "equipment",
+                "canonical_name": "绝缘工具箱",
+            },
+        },
+        "by_kind": {
+            "character": ["char-linyan"],
+            "equipment": ["equip-toolbox"],
+        },
+        "by_alias": {
+            "林砚": ["char-linyan"],
+            "绝缘工具箱": ["equip-toolbox"],
+        },
+    }
+
+    delta = FactExtractor().extract(_context(body, canon_view=canon_view))
+
+    assert delta.location_movements == []
+
+
+def test_fact_extractor_strips_aspect_particle_from_location():
+    body = "林昭走进了处置室。"
+    canon_view = {
+        "by_id": {"char-linzhao": {"kind": "character", "canonical_name": "林昭"}},
+        "by_kind": {"character": ["char-linzhao"]},
+        "by_alias": {"林昭": ["char-linzhao"]},
+    }
+
+    delta = FactExtractor().extract(_context(body, canon_view=canon_view))
+
+    assert [movement.to_location for movement in delta.location_movements] == ["处置室"]
+
+
+def test_fact_extractor_promotes_body_present_director_entities_before_movement():
+    from packages.story_core.agents.contracts import (
+        DirectorArtifact,
+        EntityRequirement,
+    )
+
+    artifact = DirectorArtifact(
+        chapter_number=2,
+        chapter_goal="陪妹妹续药",
+        opening_state="黎明前离家",
+        scene_beats=[],
+        ending_state="抵达诊所",
+        entity_requirements=[
+            EntityRequirement(kind="character", name="林砚"),
+            EntityRequirement(kind="character", name="林念"),
+            EntityRequirement(kind="location", name="社区诊所"),
+            EntityRequirement(kind="character", name="未出场医生"),
+        ],
+    )
+    context = FactExtractorContext(
+        body="林砚扶着林念一步一步向社区诊所走去。",
+        chapter_number=2,
+        director_artifact=artifact,
+        candidate_entities=[
+            {"kind": "character", "name": "林砚", "role": "主角"},
+            {"kind": "character", "name": "林念", "role": "妹妹"},
+            {"kind": "location", "name": "社区诊所", "summary": "社区医疗点"},
+        ],
+    )
+
+    delta = FactExtractor().extract(context)
+
+    additions = {(item.kind, item.canonical_name): item for item in delta.entity_additions}
+    assert set(additions) == {
+        ("character", "林砚"),
+        ("character", "林念"),
+        ("location", "社区诊所"),
+    }
+    assert additions[("character", "林砚")].attributes["role"] == "主角"
+    assert all(item.entity_id for item in additions.values())
+    assert "未出场医生" not in {item.canonical_name for item in delta.entity_additions}
+    assert {
+        (movement.entity_id, movement.to_location)
+        for movement in delta.location_movements
+    } == {
+        (additions[("character", "林砚")].entity_id, "社区诊所"),
+        (additions[("character", "林念")].entity_id, "社区诊所"),
+    }
+
+
+def test_fact_extractor_reuses_technique_alias_without_duplicate_addition():
+    from packages.story_core.agents.contracts import DirectorArtifact, EntityRequirement
+
+    first_artifact = DirectorArtifact(
+        chapter_number=1,
+        chapter_goal="觉醒能力",
+        opening_state="未觉醒",
+        scene_beats=[],
+        ending_state="能力激活",
+        entity_requirements=[
+            EntityRequirement(kind="technique", name="子夜故障回溯异能")
+        ],
+    )
+    first = FactExtractor().extract(
+        FactExtractorContext(
+            body="林砚觉醒了子夜故障回溯异能。",
+            chapter_number=1,
+            director_artifact=first_artifact,
+            candidate_entities=[
+                {"kind": "technique", "name": "子夜故障回溯异能"}
+            ],
+        )
+    )
+    assert first.entity_additions[0].aliases == ["子夜故障回溯"]
+    canon_view = {
+        "by_id": {
+            first.entity_additions[0].entity_id: {
+                "kind": "technique",
+                "canonical_name": "子夜故障回溯异能",
+                "aliases": ["子夜故障回溯"],
+            }
+        },
+        "by_kind": {"technique": [first.entity_additions[0].entity_id]},
+        "by_alias": {"子夜故障回溯": [first.entity_additions[0].entity_id]},
+    }
+    second_artifact = first_artifact.model_copy(
+        update={
+            "chapter_number": 2,
+            "entity_requirements": [
+                EntityRequirement(kind="technique", name="子夜故障回溯")
+            ],
+        }
+    )
+
+    second = FactExtractor().extract(
+        FactExtractorContext(
+            body="天亮后，子夜故障回溯无法调用。",
+            chapter_number=2,
+            director_artifact=second_artifact,
+            canon_view=canon_view,
+        )
+    )
+
+    assert second.entity_additions == []
+    assert any(
+        item["name"] == "子夜故障回溯" and item["status"] == "valid"
+        for item in second.reference_validation
+    )
 
 
 def test_fact_extractor_detects_numeric_state_deterministically():
@@ -175,6 +396,51 @@ def test_fact_extractor_uses_model_runtime_for_relationships_when_provided():
     )
 
 
+@pytest.mark.parametrize(
+    ("subject_id", "source_sentence"),
+    [
+        ("char-unknown", "并肩走入驿站"),
+        ("char-linzhao", "两人结为终身盟友"),
+    ],
+)
+def test_fact_extractor_rejects_unanchored_model_relationships(
+    subject_id: str,
+    source_sentence: str,
+):
+    class _Runtime:
+        def complete(self, request):
+            return {
+                "relationship_changes": [
+                    {
+                        "subject_id": subject_id,
+                        "predicate": "盟友",
+                        "object_id": "char-suwan",
+                        "polarity": "added",
+                        "source_sentence": source_sentence,
+                        "confidence": 0.7,
+                    }
+                ]
+            }
+
+    canon_view = {
+        "by_id": {
+            "char-linzhao": {"kind": "character", "canonical_name": "林昭"},
+            "char-suwan": {"kind": "character", "canonical_name": "苏婉"},
+        },
+        "by_kind": {"character": ["char-linzhao", "char-suwan"]},
+        "by_alias": {
+            "林昭": ["char-linzhao"],
+            "苏婉": ["char-suwan"],
+        },
+    }
+
+    delta = FactExtractor(runtime=_Runtime()).extract(
+        _context("林昭与苏婉并肩走入驿站。", canon_view=canon_view)
+    )
+
+    assert delta.relationship_changes == []
+
+
 def test_fact_extractor_records_reference_validation_for_each_referenced_id():
     body = "林昭把旧玉佩交给苏婉。"
     canon_view = {
@@ -239,11 +505,9 @@ def test_fact_extractor_does_not_treat_sentence_fragments_as_entities():
     assert orphan_names == set()
 
 
-def test_unknown_director_requirement_is_flagged_as_orphan():
-    """A name the director asked for but the canon does not yet
-    know is the only sanctioned source of new entity ids. The
-    extractor surfaces it as an ``orphan`` so the workbench can
-    prompt the user to confirm or reject.
+def test_body_present_director_requirement_is_proposed_as_valid_addition():
+    """A named director requirement present in the prose is the
+    sanctioned path for proposing a new canon entity.
     """
     from packages.story_core.agents.contracts import (
         DirectorArtifact,
@@ -267,8 +531,9 @@ def test_unknown_director_requirement_is_flagged_as_orphan():
 
     delta = FactExtractor().extract(context)
 
+    assert any(item.canonical_name == "守龛人" for item in delta.entity_additions)
     assert any(
-        item["name"] == "守龛人" and item["status"] == "orphan"
+        item["name"] == "守龛人" and item["status"] == "valid"
         for item in delta.reference_validation
     )
 

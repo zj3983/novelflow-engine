@@ -63,6 +63,12 @@ def test_adapt_modular_bundle_to_legacy_preserves_workbench_contract() -> None:
     modular_bundle = SimpleNamespace(
         director_artifact=director_artifact,
         body="The traveler climbed until the old bell rang.",
+        writer_context=SimpleNamespace(
+            character_cards=[
+                {"name": "the traveler", "role": "protagonist"},
+                {"name": "the future rival", "role": "antagonist"},
+            ]
+        ),
         consistency_findings=[],
         canon_preflight={"ok": True},
         continuity_delta=continuity_delta,
@@ -87,3 +93,6 @@ def test_adapt_modular_bundle_to_legacy_preserves_workbench_contract() -> None:
     assert [item.chapter_number for item in result.updated_story.chapter_summaries] == [1, 2]
     assert result.updated_story.timeline[-1].impact == "Footsteps answer the bell."
     assert result.continuity_delta is continuity_delta
+    assert result.character_cards == [
+        {"name": "the traveler", "role": "protagonist"},
+    ]

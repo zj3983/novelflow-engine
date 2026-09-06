@@ -40,6 +40,7 @@ from packages.story_core.agents.contracts import (
     SceneBeat,
 )
 from packages.story_core.canon.registry import CanonRegistry
+from packages.story_core.continuity.delta import ContinuityDelta
 from packages.story_core.context.writer_context import WriterContext
 from packages.story_core.generation_progress import generation_progress
 from packages.story_core.orchestrator import StoryOrchestrator
@@ -554,6 +555,14 @@ def test_orchestrator_wires_director_writer_and_fact_extractor(tmp_path: Path):
     # zero director calls even though the director agent itself
     # ran.
     _seed_legacy_project(project_root, with_outline=False)
+    state_path = project_root / ".webnovel" / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["progression_ledger"] = {
+        "continuity_ledger": [
+            {"subject": "林昭", "field": "location", "value": "山脚"}
+        ]
+    }
+    _write_json(state_path, state)
 
     director_runtime = _StubDirectorRuntime()
     valid_body = "林昭提灯上山，夜宿山腰。" * 400
@@ -564,6 +573,16 @@ def test_orchestrator_wires_director_writer_and_fact_extractor(tmp_path: Path):
     # effects without writing to a real on-disk registry.
     canon_registry = CanonRegistry()
 
+    class _CapturingFactExtractor:
+        def __init__(self) -> None:
+            self.contexts = []
+
+        def extract(self, context):
+            self.contexts.append(context)
+            return ContinuityDelta(chapter_number=context.chapter_number)
+
+    fact_extractor = _CapturingFactExtractor()
+
     orchestrator = StoryOrchestrator(use_modular_agents=True)
     progress_events: list[Any] = []
     with generation_progress(progress_events.append):
@@ -572,6 +591,7 @@ def test_orchestrator_wires_director_writer_and_fact_extractor(tmp_path: Path):
             chapter_number=1,
             director_runtime=director_runtime,
             writer_runtime=writer_runtime,
+            fact_extractor=fact_extractor,
             canon_registry=canon_registry,
         )
 
@@ -603,6 +623,16 @@ def test_orchestrator_wires_director_writer_and_fact_extractor(tmp_path: Path):
     # The fact extractor produced a delta scoped to the chapter.
     assert bundle.continuity_delta is not None
     assert bundle.continuity_delta.chapter_number == 1
+    assert len(fact_extractor.contexts) == 1
+    fact_context = fact_extractor.contexts[0]
+    assert fact_context.director_artifact is bundle.director_artifact
+    assert fact_context.continuity_facts == [
+        {"subject": "林昭", "field": "location", "value": "山脚"}
+    ]
+    assert any(
+        card.get("kind") == "character" and card.get("name") == "林昭"
+        for card in fact_context.candidate_entities
+    )
 
     # Per-stage trace ids are surfaced for the workbench.
     assert bundle.director_trace_id.startswith("director:")

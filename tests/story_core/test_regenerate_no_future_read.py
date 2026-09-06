@@ -24,7 +24,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 
@@ -142,14 +141,10 @@ def test_regenerate_chapter_does_not_call_ensure_rolling_outline(tmp_path: Path)
         state={"story_id": "s-file", "current_chapter": 3, "world_facts": [], "characters": []},
         chapter=_stub_chapter_payload(1),
     )
-    # Sentinel: any call to ensure_rolling_outline raises.
-    def sentinel(*args, **kwargs):
-        raise AssertionError(
-            "regenerate_chapter must NOT call ensure_rolling_outline"
-        )
-    with patch.object(FileProjectStore, "ensure_rolling_outline", sentinel):
-        engine = _FakeEngine()
-        result = store.regenerate_chapter(1, engine=engine)
+    # The rolling planner was removed; regenerate is structurally a
+    # pure rewrite with no outline-fill path left to trip.
+    engine = _FakeEngine()
+    result = store.regenerate_chapter(1, engine=engine)
     assert result["chapter_number"] == 1
     # The rolling outline file is still empty (no fill was triggered).
     rolling = RollingOutlineStore(tmp_path / "novel").read_rolling_outline()
@@ -192,14 +187,10 @@ def test_regenerate_chapter_uses_existing_outline_for_target_only(tmp_path: Path
         ),
         encoding="utf-8",
     )
-    # No rolling outline exists; verify regenerate doesn't try to create one.
-    with patch.object(
-        FileProjectStore,
-        "ensure_rolling_outline",
-        side_effect=AssertionError("must not be called"),
-    ):
-        engine = _FakeEngine()
-        result = store.regenerate_chapter(1, engine=engine)
+    # No rolling outline exists; the rolling planner is gone, so
+    # regenerate has no fill path left to trigger.
+    engine = _FakeEngine()
+    result = store.regenerate_chapter(1, engine=engine)
     assert result["chapter_number"] == 1
     # No rolling outline on disk after the call.
     rolling = RollingOutlineStore(tmp_path / "novel").read_rolling_outline()
@@ -218,10 +209,5 @@ def test_generate_next_chapter_requires_outline_without_auto_fill(tmp_path: Path
         },
         state={"story_id": "s-file", "current_chapter": 0, "world_facts": [], "characters": []},
     )
-    with patch.object(
-        FileProjectStore,
-        "ensure_rolling_outline",
-        side_effect=AssertionError("body generation must not auto-fill outlines"),
-    ):
-        with pytest.raises(ValueError, match="chapter_outline_required:1"):
-            store.generate_next_chapter(engine=_FakeEngine(), persist=False)
+    with pytest.raises(ValueError, match="chapter_outline_required:1"):
+        store.generate_next_chapter(engine=_FakeEngine(), persist=False)

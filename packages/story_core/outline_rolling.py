@@ -120,36 +120,6 @@ def rolling_chapter_to_outline_entry(payload: Any) -> dict[str, Any]:
     }
 
 
-def _normalize_chapter_numbers(
-    existing_chapters: Iterable[dict[str, Any]],
-) -> set[int]:
-    """Project ``existing_chapters`` to the set of valid
-    chapter numbers the planner must treat as already on
-    disk.
-
-    Rows with a non-positive or non-integer
-    ``chapter_number`` are dropped — the planner cannot
-    anchor a window on a corrupt row, and silently
-    including it would let a malformed outline push the
-    rolling window into the wrong range.
-    """
-    numbers: set[int] = set()
-    for chapter in existing_chapters or []:
-        if not isinstance(chapter, dict):
-            continue
-        number = chapter.get("chapter_number")
-        if isinstance(number, bool):
-            continue
-        if isinstance(number, int) and number > 0:
-            numbers.add(number)
-            continue
-        if isinstance(number, str) and number.strip().isdigit():
-            value = int(number.strip())
-            if value > 0:
-                numbers.add(value)
-    return numbers
-
-
 def _coerce_volume_range(
     volume_range: tuple[int, int] | None,
 ) -> tuple[int, int]:
@@ -222,102 +192,6 @@ def _coerce_non_empty_str(payload: dict[str, Any], field: str) -> str:
             f"rolling_chapter_field_blank: {field}"
         )
     return value.strip()
-
-
-def plan_rolling_window(
-    *,
-    target_chapter: int,
-    existing_chapters: Iterable[dict[str, Any]] | None = None,
-    volume_range: tuple[int, int] | None = None,
-    window: int = _DEFAULT_WINDOW,
-    min_remaining: int = _DEFAULT_MIN_REMAINING,
-) -> list[int]:
-    """Return the chapter numbers the rolling fill must
-    generate so the next ``window`` chapters starting at
-    ``target_chapter`` all have an outline.
-
-    Parameters
-    ----------
-    target_chapter
-        The chapter the caller is about to write.
-    existing_chapters
-        Iterable of outline-chapter dicts already on disk.
-        Each dict must carry ``chapter_number`` and may
-        carry ``source`` (``"generated"``,
-        ``"manual"``, ``"legacy"``); any source marker
-        counts as "filled" — the planner does not
-        regenerate manual or legacy chapters.
-    volume_range
-        ``(start, end)`` inclusive bounds of the current
-        volume. The planner will never suggest a chapter
-        outside this range and will reject ``target_chapter``
-        below ``start``.
-    window
-        How many chapters ahead of the target the planner
-        tries to keep filled. Defaults to 5 (the production
-        rolling fill size).
-    min_remaining
-        Unused at the planner level. Reserved for a future
-        hook (e.g. "fill when fewer than N filled chapters
-        remain after the target"); the buffer model below
-        already covers the production need.
-
-    Returns
-    -------
-    list[int]
-        Sorted ascending list of chapter numbers to fill.
-        Empty when the target chapter is already filled
-        and the next ``window`` chapters ahead of it are
-        all filled too. Raises :class:`RollingPlanError` on
-        invalid input.
-    """
-    target_chapter = _coerce_positive_int("target", target_chapter)
-    window = _coerce_positive_int("window", window)
-    min_remaining = _coerce_positive_int(
-        "min_remaining", min_remaining, allow_zero=True
-    )
-    del min_remaining  # reserved; buffer model below is the active rule
-    start, end = _coerce_volume_range(volume_range)
-
-    if target_chapter < start:
-        raise RollingPlanError(
-            f"rolling_plan_target_out_of_volume: "
-            f"target={target_chapter} start={start}"
-        )
-
-    filled = _normalize_chapter_numbers(existing_chapters)
-
-    # The buffer is the next ``window`` chapters starting at
-    # the target. We count how many of them are already
-    # filled and fill the rest, truncating at the volume's
-    # end. Manual, legacy, and generated chapters all
-    # count as filled — the planner never overwrites a
-    # chapter the operator already has, regardless of
-    # source.
-    buffer: list[int] = []
-    cursor = target_chapter
-    while len(buffer) < window and cursor <= end:
-        buffer.append(cursor)
-        cursor += 1
-    missing = [n for n in buffer if n not in filled]
-    return missing
-
-
-def plan_volume_detail_batches(
-    volume_range: tuple[int, int],
-    *,
-    existing: Iterable[int] = (),
-) -> list[list[int]]:
-    """Return every missing chapter in one volume, grouped by 15 chapters."""
-    start, end = _coerce_volume_range(volume_range)
-    try:
-        return volume_detail_batches_for_missing(
-            start,
-            end,
-            existing=existing,
-        )
-    except ValueError as exc:
-        raise RollingPlanError(str(exc)) from exc
 
 
 def validate_rolling_chapter(
@@ -519,8 +393,6 @@ def validate_rolling_batch(
 __all__ = [
     "RollingPlanError",
     "RollingValidationError",
-    "plan_rolling_window",
-    "plan_volume_detail_batches",
     "rolling_chapter_to_outline_entry",
     "validate_rolling_batch",
     "validate_rolling_chapter",

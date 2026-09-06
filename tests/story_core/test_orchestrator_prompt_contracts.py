@@ -71,8 +71,12 @@ def _make_outline_project(root: Path, *, current_chapter: int) -> FileProjectSto
                 },
             ],
             "chapters": [
+                {"chapter_number": 10, "title": "第10章", "goal": "ACTIVE-ARC-START"},
+                {"chapter_number": 11, "title": "第11章", "goal": "ACTIVE-ARC-COMMITTED"},
                 {"chapter_number": 12, "title": "CHAPTER-12", "goal": "CHAPTER-12-GOAL"},
                 {"chapter_number": 13, "title": "CHAPTER-13-LEAK", "goal": "CHAPTER-13-GOAL-LEAK"},
+                {"chapter_number": 14, "title": "第14章", "goal": "ACTIVE-ARC-LATE"},
+                {"chapter_number": 15, "title": "第15章", "goal": "ACTIVE-ARC-END"},
             ],
         },
     )

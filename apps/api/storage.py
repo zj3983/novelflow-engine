@@ -136,6 +136,10 @@ def _project_world_facts(project: NovelProject) -> list[str]:
         if active_quests:
             facts.append(f"任务账本：进行中 {', '.join(str(item) for item in active_quests[:5])}。")
 
+    if "game_webnovel" in genre_ids:
+        from packages.story_core.web_game_economy import currency_system_rule
+
+        facts.append(f"币制规则：{currency_system_rule()}")
     economy_rules = world.get("economy_rules") if isinstance(world.get("economy_rules"), list) else []
     for value in economy_rules:
         text = str(value).strip()
@@ -861,7 +865,7 @@ class SQLiteStoryStore:
         self._save_record(conn, record)
         return record
 
-    def get(self, story_id: str) -> StoryRecord | None:
+    def get(self, story_id: str, *, include_history: bool = True) -> StoryRecord | None:
         conn = self._conn()
         cursor = conn.execute(
             "SELECT story_state, initial_state, parent_story_id, branched_from_chapter FROM stories WHERE story_id = ?",
@@ -873,7 +877,7 @@ class SQLiteStoryStore:
         return StoryRecord(
             story=self._deserialize_story(row[0]),
             initial_story=self._deserialize_story(row[1]),
-            history=self._load_history(conn, story_id),
+            history=self._load_history(conn, story_id) if include_history else [],
             parent_story_id=row[2],
             branched_from_chapter=row[3],
         )

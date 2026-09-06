@@ -1848,40 +1848,88 @@ def _seed_rolling_outline_for_project(project_id: str, target_chapter: int) -> N
     import json
     from apps.api.routes import file_projects
 
+    def _rolling_row(number: int) -> dict:
+        return {
+            "chapter_number": number,
+            "title": f"第{number}章 测试用",
+            "chapter_goal": "测试用目标",
+            "core_conflict": "测试用冲突",
+            "cast": [
+                {
+                    "name": "林修",
+                    "role": "protagonist",
+                    "character_tier": "protagonist",
+                }
+            ],
+            "scenes": [
+                {
+                    "location": "测试地点",
+                    "action": "测试动作",
+                    "result": "测试结果",
+                },
+                {
+                    "location": "测试地点二",
+                    "action": "测试动作二",
+                    "result": "测试结果二",
+                },
+            ],
+            "gain": "测试收获",
+            "cost": "测试代价",
+            "foreshadowing": [],
+            "hook": "测试钩子",
+            "state_delta": "测试状态",
+        }
+
     store = file_projects._store_for(project_id)
+    workflow = store.volume_workflow_status(target_chapter)
+    if workflow["status"] == "volume_missing":
+        # The import bootstrap produces the volume plan without chapter
+        # detail rows; seed a minimal opening volume so the volume gate
+        # has a range to check, then cover every chapter in it.
+        outline = store.project_outline()
+        outline.pop("source", None)
+        volume_end = max(target_chapter, 1)
+        outline["arcs"] = [
+            {
+                "id": "opening",
+                "title": "开局",
+                "start_chapter": 1,
+                "end_chapter": volume_end,
+                "is_final_arc": True,
+                "story_nodes": [
+                    {
+                        "start_chapter": 1,
+                        "end_chapter": volume_end,
+                        "objective": "测试目标",
+                        "pressure": "测试压力",
+                        "turn": "测试转折",
+                        "payoff": "测试兑现",
+                        "next_effect": "测试后续",
+                    }
+                ],
+                "goal": "测试目标",
+                "obstacle": "测试阻力",
+                "payoff": "测试兑现",
+                "emotional_curve": "测试情绪曲线",
+                "key_results": ["测试一", "测试二", "测试三"],
+                "hook_plan": "测试钩子计划",
+                "irreversible_change": "测试不可逆变化",
+                "end_state": "测试收束",
+                "stage_antagonist": "测试对手",
+                "long_term_antagonist_traces": ["测试长期痕迹"],
+            }
+        ]
+        outline.setdefault("overall", {})
+        outline["overall"]["core_ending_chapter"] = volume_end
+        outline["overall"]["extension_ceiling_chapter"] = volume_end
+        store.update_project_outline(outline)
+        workflow = store.volume_workflow_status(target_chapter)
+    volume_range = workflow.get("volume_range") or [target_chapter, target_chapter]
     rolling_payload = {
         "schema_version": "rolling-outline/v1",
         "chapters": [
-            {
-                "chapter_number": target_chapter,
-                "title": f"第{target_chapter}章 测试用",
-                "chapter_goal": "测试用目标",
-                "core_conflict": "测试用冲突",
-                "cast": [
-                    {
-                        "name": "林修",
-                        "role": "protagonist",
-                        "character_tier": "protagonist",
-                    }
-                ],
-                "scenes": [
-                    {
-                        "location": "测试地点",
-                        "action": "测试动作",
-                        "result": "测试结果",
-                    },
-                    {
-                        "location": "测试地点二",
-                        "action": "测试动作二",
-                        "result": "测试结果二",
-                    },
-                ],
-                "gain": "测试收获",
-                "cost": "测试代价",
-                "foreshadowing": [],
-                "hook": "测试钩子",
-                "state_delta": "测试状态",
-            }
+            _rolling_row(number)
+            for number in range(int(volume_range[0]), int(volume_range[1]) + 1)
         ],
     }
     store_path = (

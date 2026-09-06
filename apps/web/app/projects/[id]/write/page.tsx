@@ -135,7 +135,7 @@ function chapterSearchText(bundle: ChapterIndexEntry): string {
 export default function WritePage() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { project, story, chapterIndex, error, encodedProjectId, projectId, refreshVersion, refresh } = useProjectWorkspace();
+  const { project, story, chapterIndex, error, loading: workspaceLoading, encodedProjectId, projectId, refreshVersion, refresh } = useProjectWorkspace();
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
   const [regenerating, setRegenerating] = useState(false);
@@ -567,6 +567,10 @@ export default function WritePage() {
       {error ? (
         <div className="ws-card" style={{ borderColor: "var(--ws-danger)" }}>
           <p style={{ color: "var(--ws-danger)", margin: 0 }}>加载失败：{userFacingErrorMessage(error)}</p>
+        </div>
+      ) : workspaceLoading ? (
+        <div className="ws-empty">
+          <p className="ws-empty__title">正在加载章节...</p>
         </div>
       ) : chapterIndex.length > 0 ? (
         <div className="ws-editor-layout ws-editor-layout--chapters">

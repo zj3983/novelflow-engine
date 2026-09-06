@@ -311,15 +311,47 @@ def test_file_project_world_enrichment_reports_runtime_failure(creation_api, mon
         json={"mode": "blank", "title": "World failure", "novel_type_id": "urban"},
     ).json()
 
-    def fail_enrich(_project: NovelProject) -> NovelProject:
+    def fail_enrich(_project: NovelProject, progress_callback=None) -> NovelProject:
         raise TimeoutError("planner timed out")
 
     monkeypatch.setattr(file_project_routes, "enrich_project_world", fail_enrich)
 
+    def fake_start(project_id: str) -> dict[str, object]:
+        from apps.api.routes import file_projects as fp
+
+        job_id = "wbg-stub-failure"
+        with fp._world_build_jobs_lock:
+            fp._world_build_jobs[job_id] = {
+                "schema_version": "world-build-job/v1",
+                "job_id": job_id,
+                "project_id": project_id,
+                "status": "queued",
+                "progress": "等待构建核心规则",
+                "active_module_id": "core_rules",
+                "active_module_title": "核心规则",
+                "active_module_status": "queued",
+                "error": "",
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2025-01-01T00:00:00+00:00",
+                "project_revision": "",
+                "_project_root": str(Path(created["source_path"])),
+            }
+            fp._active_world_build_jobs[project_id.replace("file:", "")] = job_id
+        # Run the job loop inline so the test observes the terminal failure
+        # without a real executor.
+        fp._run_world_build_job(job_id, project_id)
+        with fp._world_build_jobs_lock:
+            return fp._world_build_job_response(fp._world_build_jobs[job_id])
+
+    monkeypatch.setattr(file_project_routes, "_start_world_build_job", fake_start)
+
     response = client.post(f"/file-projects/{created['project_id']}/enrich-world")
 
-    assert response.status_code == 502
-    assert response.json()["detail"] == "world_enrichment_failed:TimeoutError:planner timed out"
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["job_id"] == "wbg-stub-failure"
+    assert body["error"]
 
 
 def _write_lazy_story_chapters(store: FileProjectStore) -> None:
@@ -1202,6 +1234,12 @@ def _outline_plan_with_trope(trope_id: str, trope_beat: str) -> dict:
         ("Rival", "stage_antagonist"),
         ("Witness", "supporting"),
         ("Sponsor", "long_term_antagonist"),
+        ("Clerk", "supporting"),
+        ("Archivist", "supporting"),
+        ("Gatekeeper", "supporting"),
+        ("Reporter", "supporting"),
+        ("Mediator", "supporting"),
+        ("Courier", "supporting"),
     ]
     return {
         "outline": {
@@ -1217,12 +1255,27 @@ def _outline_plan_with_trope(trope_id: str, trope_beat: str) -> dict:
                 "growth_path": "Earn authority through verified results.",
                 "ending_direction": "Expose the sponsor.",
                 "primary_trope_id": trope_id,
+                "core_ending_chapter": 30,
+                "extension_ceiling_chapter": 30,
             },
             "arcs": [{
                 "id": "opening",
                 "title": "The sealed record",
                 "start_chapter": 1,
                 "end_chapter": 30,
+                "is_final_arc": True,
+                "story_nodes": [
+                    {
+                        "start_chapter": start,
+                        "end_chapter": min(start + 14, 30),
+                        "objective": "Obtain the first record.",
+                        "pressure": "The rival blocks the archive.",
+                        "turn": "A second record contradicts the first.",
+                        "payoff": "One fact is verified.",
+                        "next_effect": "The dispute becomes official.",
+                    }
+                    for start in range(1, 31, 15)
+                ],
                 "goal": "Obtain the first record.",
                 "obstacle": "The rival blocks the archive.",
                 "payoff": "The record becomes public.",

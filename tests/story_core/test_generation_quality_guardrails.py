@@ -1955,17 +1955,24 @@ def test_game_review_rejects_repeated_newbie_task_loop():
 
 
 def test_game_world_enrichment_seeds_core_character_profiles():
+    """网游世界构建只采用项目自定义角色卡，不注入旧书的固定阵容。"""
+
     project = NovelProject(
         project_id="p-character-profiles",
-        title="苟在网游里成神",
-        seed_outline="网游开服，主角靠千倍爆率低调发育，交易行变现，被商人与公会逐步注意。",
+        title="雾海漫游",
+        seed_outline="周行驾驶纸舟探索不断变化的雾海。",
+        character_profiles=[
+            {"name": "周行", "game_id": "行舟", "role": "主角"},
+            {"name": "雾港向导", "role": "配角"},
+        ],
         world_blueprint={"genre_plugin_ids": ["game_webnovel"]},
     )
 
     enriched = _merge_enrichment(project, {})
     names = {profile["name"] for profile in enriched.character_profiles}
 
-    assert {"苏叶", "赵胖子", "药剂师洛婶", "职业导师艾伦", "白袍公会外围队长"}.issubset(names)
+    assert {"周行", "雾港向导"}.issubset(names)
+    assert not {"苏叶", "赵胖子", "药剂师洛婶", "职业导师艾伦", "白袍公会外围队长"} & names
 
 
 def test_sanitizer_rewrites_reader_facing_bad_game_terms():

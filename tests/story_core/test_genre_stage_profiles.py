@@ -78,6 +78,7 @@ def test_profile_contract_exposes_generation_and_postprocess_stages():
     assert callable(profile.render_revision_prompt)
     assert callable(profile.render_expansion_prompt)
     assert callable(profile.render_compression_prompt)
+    assert profile.render_polish_prompt is None or callable(profile.render_polish_prompt)
     assert callable(profile.postprocess_body)
     assert callable(profile.chapter_phase)
     assert callable(profile.review_director_plan)
@@ -103,6 +104,7 @@ def test_profile_contract_is_frozen_dataclass_with_exact_stage_fields():
         "prepare_scene_cards",
         "prepare_writer_context",
         "stage_modules",
+        "render_polish_prompt",
     )
 
     type_hints = get_type_hints(GenreStageProfile)
@@ -121,6 +123,7 @@ def test_profile_contract_is_frozen_dataclass_with_exact_stage_fields():
         "prepare_scene_cards": SceneCardPreparer,
         "prepare_writer_context": WriterContextPreparer,
         "stage_modules": dict[str, tuple[str, ...]],
+        "render_polish_prompt": LengthPromptRenderer | None,
     }
 
 

@@ -3828,14 +3828,14 @@ export async function fetchFileStoryOverview(storyId: string): Promise<FileStory
   return (await tryFetchJson(`${fileStoryPath(storyId)}/overview`, {
     method: "GET",
     cache: "no-store",
-  }, 30000)) as FileStoryOverview;
+  }, 90000)) as FileStoryOverview;
 }
 
 export async function fetchFileChapter(storyId: string, chapterNumber: number): Promise<ChapterBundle> {
   return (await tryFetchJson(`${fileStoryPath(storyId)}/chapters/${chapterNumber}`, {
     method: "GET",
     cache: "no-store",
-  }, 30000)) as ChapterBundle;
+  }, 90000)) as ChapterBundle;
 }
 
 export async function runFileProjectShuangwenReview(

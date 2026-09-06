@@ -420,14 +420,31 @@ def load_runtime_configuration(path: str | os.PathLike[str] | None = None) -> Ru
         raise ValueError(message) from exc
 
 
+def _strip_model_display_name(value: Any) -> Any:
+    if isinstance(value, str) and "\t" in value:
+        return value.split("\t")[0].strip()
+    return value
+
+
 def _validate_runtime_configuration(
     configuration: RuntimeConfiguration | dict,
 ) -> RuntimeConfiguration:
     data = (
         configuration.model_dump(mode="python", warnings=False)
         if isinstance(configuration, RuntimeConfiguration)
-        else configuration
+        else dict(configuration) if isinstance(configuration, dict) else configuration
     )
+    if isinstance(data, dict):
+        stages = data.get("stages")
+        if isinstance(stages, dict):
+            for stage_name, stage_val in stages.items():
+                if isinstance(stage_val, dict) and "model" in stage_val:
+                    stage_val["model"] = _strip_model_display_name(stage_val["model"])
+        accounts = data.get("accounts")
+        if isinstance(accounts, dict):
+            for acc in accounts.values():
+                if isinstance(acc, dict) and isinstance(acc.get("custom_models"), list):
+                    acc["custom_models"] = [_strip_model_display_name(m) for m in acc["custom_models"]]
     return RuntimeConfiguration.model_validate(data)
 
 
@@ -510,7 +527,7 @@ def resolve_stage_runtime(stage: RuntimeStageInput) -> StageRuntimeSettings:
     return StageRuntimeSettings(
         provider_id=binding.provider_id,
         protocol=definition.protocol,
-        model=binding.model,
+        model=_strip_model_display_name(binding.model),
         api_key=account.api_key,
         base_url=account.base_url.rstrip("/"),
         codex_command=account.codex_command,
