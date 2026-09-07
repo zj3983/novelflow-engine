@@ -26,6 +26,50 @@ from .contracts import ModelRequest, ModelResponse
 JsonTransport = Callable[..., dict[str, Any]]
 
 
+def _read_sse_json_stream(response: Any, max_response_bytes: int | None) -> dict[str, Any]:
+    """Accumulate an SSE ``chat.completion.chunk`` stream into one response.
+
+    Long generations on reasoning models hold the connection open for many
+    minutes; without streaming, a single blocking read can exceed the socket
+    timeout even though tokens are still arriving. Streaming keeps the
+    socket active and gives a per-chunk liveness guarantee instead.
+    """
+
+    parts: list[str] = []
+    response_id = ""
+    usage: dict[str, Any] = {}
+    read = 0
+    for raw_line in response:
+        read += len(raw_line)
+        if max_response_bytes is not None and read > max_response_bytes:
+            raise ResponseTooLargeError("response_too_large")
+        line = raw_line.decode("utf-8", errors="replace").strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            break
+        try:
+            chunk = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+        if not response_id:
+            response_id = str(chunk.get("id") or "")
+        if isinstance(chunk.get("usage"), dict):
+            usage = chunk["usage"]
+        for choice in chunk.get("choices") or []:
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta")
+            if isinstance(delta, dict) and delta.get("content"):
+                parts.append(str(delta["content"]))
+    return {
+        "id": response_id,
+        "choices": [{"message": {"content": "".join(parts)}}],
+        "usage": usage,
+    }
+
+
 def _post_json_with_retry(
     *,
     url: str,
@@ -46,6 +90,8 @@ def _post_json_with_retry(
         )
         try:
             with urllib.request.urlopen(request, timeout=config.timeout) as response:
+                if payload.get("stream") is True:
+                    return _read_sse_json_stream(response, config.max_response_bytes)
                 raw = read_bounded_response_bytes(response, config.max_response_bytes)
             decoded = json.loads(raw.decode("utf-8"))
             if not isinstance(decoded, dict):
@@ -198,6 +244,8 @@ class OpenAICompatibleAdapter(_Adapter):
             payload["max_tokens"] = request.max_tokens
         if request.json_mode:
             payload["response_format"] = {"type": "json_object"}
+        if request.metadata.get("stream"):
+            payload["stream"] = True
         try:
             raw = self._call(
                 request,

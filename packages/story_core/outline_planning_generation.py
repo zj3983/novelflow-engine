@@ -369,6 +369,7 @@ def _complete_payload(
             max_tokens=payload.get("max_tokens"),
             json_mode=payload.get("response_format") == {"type": "json_object"},
             timeout_seconds=_outline_planning_timeout_seconds(),
+            metadata={"stream": os.environ.get("NOVEL_OUTLINE_PLANNING_STREAM", "") == "1"},
         ),
     )
     if not response.ok:
@@ -886,6 +887,7 @@ class LLMOutlinePlanningGenerator:
                 {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
             ],
             "response_format": {"type": "json_object"},
+                "max_tokens": 12000,
             "temperature": float(runtime.temperature),
         }
         response = _complete_payload(
@@ -994,6 +996,7 @@ class LLMOutlinePlanningGenerator:
                 {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
             ],
             "response_format": {"type": "json_object"},
+                "max_tokens": 12000,
             "temperature": float(runtime.temperature),
         }
         response = _complete_payload(
@@ -1262,6 +1265,7 @@ class LLMOutlinePlanningGenerator:
                     },
                 ],
                 "response_format": {"type": "json_object"},
+                "max_tokens": 12000,
                 "temperature": float(runtime.temperature),
             }
             response = _complete_payload(
@@ -1367,6 +1371,7 @@ class LLMOutlinePlanningGenerator:
                     },
                 ],
                 "response_format": {"type": "json_object"},
+                "max_tokens": 12000,
                 "temperature": float(runtime.temperature),
             }
             response = _complete_payload(
@@ -1842,9 +1847,13 @@ class LLMOutlinePlanningGenerator:
                     {"role": "user", "content": json.dumps(prompt_context, ensure_ascii=False)},
                 ],
                 "response_format": {"type": "json_object"},
+                "max_tokens": 12000,
                 "temperature": float(runtime.temperature),
             }
-            split_full_plan = runtime.protocol.endswith("_cli") and (
+            split_full_plan = (
+                runtime.protocol.endswith("_cli")
+                or os.environ.get("NOVEL_OUTLINE_SPLIT_PHASES", "") == "1"
+            ) and (
                 mode == "initial"
                 or (
                     mode == "regenerate"
