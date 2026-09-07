@@ -56,3 +56,11 @@ scripts/export_ch1_resimulation.py
 .code-review-graph/
 .reasonix/
 .superpowers/
+
+# Debug scratch and test residue
+.pytest-*/
+.run/
+_debug_tmpdir/
+.tmp-*.json
+commit_msg*.txt
+*.log.err
