@@ -1,0 +1,635 @@
+name: Temporary complete character PR1 patch
+
+on:
+  push:
+    branches:
+      - fix/character-card-taxonomy-quality
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/character-card-taxonomy-quality
+          fetch-depth: 0
+      - name: Apply remaining PR1 patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def patch(path_name: str, edits: list[tuple[str, str, str]], marker: str) -> None:
+              path = Path(path_name)
+              text = path.read_text(encoding='utf-8')
+              if marker in text:
+                  print(f'{path_name}: already patched')
+                  return
+              for old, new, label in edits:
+                  count = text.count(old)
+                  if count != 1:
+                      raise SystemExit(f'{path_name}::{label}: expected 1 match, found {count}')
+                  text = text.replace(old, new, 1)
+              path.write_text(text, encoding='utf-8')
+
+          patch(
+              'packages/story_core/character_profiles.py',
+              [
+                  (
+                      '''        for section, field in required:
+                          if not _profile_field(card, section, field):
+                              issues.append(f"missing:{section}.{field}")
+
+              return issues
+          ''',
+                      '''        for section, field in required:
+                          if not _profile_field(card, section, field):
+                              issues.append(f"missing:{section}.{field}")
+
+                      function_required: list[tuple[str, str]] = []
+                      if narrative_function == "protagonist":
+                          function_required = [
+                              ("performance_profile", "speech_style"),
+                              ("performance_profile", "action_style"),
+                          ]
+                      elif narrative_function == "stage_antagonist":
+                          function_required = [
+                              ("current_life_profile", "authority_scope"),
+                              ("performance_profile", "action_style"),
+                          ]
+                      elif narrative_function == "long_term_antagonist":
+                          function_required = [
+                              ("current_life_profile", "authority_scope"),
+                              ("story_drive", "long_term_goal"),
+                          ]
+                      for section, field in function_required:
+                          if not _profile_field(card, section, field):
+                              issues.append(f"missing:{section}.{field}")
+
+                      if narrative_function == "long_term_antagonist":
+                          drive = card.get("story_drive")
+                          hidden = drive.get("hidden_matters", []) if isinstance(drive, dict) else []
+                          if not any(str(item).strip() for item in hidden):
+                              issues.append("missing:story_drive.hidden_matters")
+
+                      if len([
+                          item for item in card.get("relationship_notes", []) if isinstance(item, dict)
+                      ]) < 1:
+                          issues.append("missing:relationship_notes")
+                      if len([
+                          item for item in card.get("dialogue_examples", []) if str(item).strip()
+                      ]) < 2:
+                          issues.append("missing:dialogue_examples")
+
+              return issues
+          ''',
+                      'role-specific quality rules',
+                  ),
+              ],
+              'function_required: list[tuple[str, str]]',
+          )
+
+          patch(
+              'packages/story_core/outline_planning.py',
+              [
+                  (
+                      'from pydantic import BaseModel, ConfigDict, Field\n',
+                      'from pydantic import BaseModel, ConfigDict, Field, model_validator\n',
+                      'pydantic model validator import',
+                  ),
+                  (
+                      '''from packages.story_core.character_profiles import (
+                          BackgroundProfile,
+                          CurrentLifeProfile,
+                          IdentityProfile,
+                          RelationshipNote,
+                          StoryDriveProfile,
+                          is_placeholder_character_name,
+                      )
+          ''',
+                      '''from packages.story_core.character_profiles import (
+                          BackgroundProfile,
+                          CharacterImportance,
+                          CharacterNarrativeFunction,
+                          CharacterProfileStatus,
+                          CurrentLifeProfile,
+                          IdentityProfile,
+                          RelationshipNote,
+                          StoryDriveProfile,
+                          character_profile_completeness,
+                          infer_character_profile_status,
+                          infer_character_taxonomy,
+                          is_placeholder_character_name,
+                      )
+          ''',
+                      'character profile imports',
+                  ),
+                  (
+                      '''class PlanningCharacterCard(_PlanningModel):
+                          name: str = Field(min_length=1, max_length=80)
+                          role: str = Field(min_length=1, max_length=80)
+                          character_tier: CharacterTier
+                          first_appearance: int = Field(default=0, ge=0)
+                          identity_profile: IdentityProfile
+                          background_profile: BackgroundProfile
+                          current_life_profile: CurrentLifeProfile
+                          story_drive: StoryDriveProfile
+                          performance_profile: CharacterPerformanceProfile = Field(default_factory=CharacterPerformanceProfile)
+                          dialogue_examples: list[str] = Field(min_length=2, max_length=3)
+                          relationship_notes: list[RelationshipNote] = Field(default_factory=list)
+          ''',
+                      '''class PlanningCharacterCard(_PlanningModel):
+                          name: str = Field(min_length=1, max_length=80)
+                          role: str = Field(min_length=1, max_length=80)
+                          character_tier: CharacterTier
+                          importance: CharacterImportance
+                          narrative_function: CharacterNarrativeFunction
+                          profile_status: CharacterProfileStatus
+                          profile_completeness: int = Field(ge=0, le=100)
+                          first_appearance: int = Field(default=0, ge=0)
+                          identity_profile: IdentityProfile
+                          background_profile: BackgroundProfile
+                          current_life_profile: CurrentLifeProfile
+                          story_drive: StoryDriveProfile
+                          performance_profile: CharacterPerformanceProfile = Field(default_factory=CharacterPerformanceProfile)
+                          dialogue_examples: list[str] = Field(default_factory=list, max_length=3)
+                          relationship_notes: list[RelationshipNote] = Field(default_factory=list)
+
+                          @model_validator(mode="before")
+                          @classmethod
+                          def _migrate_legacy_taxonomy(cls, value):
+                              if not isinstance(value, dict):
+                                  return value
+                              migrated = dict(value)
+                              importance, narrative_function = infer_character_taxonomy(migrated)
+                              migrated.setdefault("importance", importance)
+                              migrated.setdefault("narrative_function", narrative_function)
+                              migrated.setdefault("profile_status", infer_character_profile_status(migrated))
+                              migrated.setdefault("profile_completeness", character_profile_completeness(migrated))
+                              return migrated
+          ''',
+                      'planning character card taxonomy',
+                  ),
+              ],
+              'def _migrate_legacy_taxonomy(cls, value):',
+          )
+
+          patch(
+              'packages/story_core/models.py',
+              [
+                  (
+                      '''from packages.story_core.character_profiles import (
+                          BackgroundProfile,
+                          CurrentLifeProfile,
+                          IdentityProfile,
+                          RelationshipNote,
+                          StoryDriveProfile,
+                      )
+          ''',
+                      '''from packages.story_core.character_profiles import (
+                          BackgroundProfile,
+                          CharacterImportance,
+                          CharacterNarrativeFunction,
+                          CharacterProfileStatus,
+                          CurrentLifeProfile,
+                          IdentityProfile,
+                          RelationshipNote,
+                          StoryDriveProfile,
+                          character_profile_completeness,
+                          infer_character_profile_status,
+                          infer_character_taxonomy,
+                      )
+          ''',
+                      'character state imports',
+                  ),
+                  (
+                      '''class CharacterState(BaseModel):
+                          """Mutable character state used by the story engine."""
+
+                          name: str
+                          role: str
+                          character_tier: str = ""
+                          first_appearance: int = Field(default=0, ge=0)
+          ''',
+                      '''class CharacterState(BaseModel):
+                          """Mutable character state used by the story engine."""
+
+                          name: str
+                          role: str
+                          character_tier: str = ""
+                          importance: CharacterImportance
+                          narrative_function: CharacterNarrativeFunction
+                          profile_status: CharacterProfileStatus
+                          profile_completeness: int = Field(ge=0, le=100)
+                          first_appearance: int = Field(default=0, ge=0)
+          ''',
+                      'character state fields',
+                  ),
+                  (
+                      '''    @field_validator("current_state", mode="before")
+                      @classmethod
+                      def _normalize_legacy_current_state(cls, value):
+          ''',
+                      '''    @model_validator(mode="before")
+                      @classmethod
+                      def _migrate_character_taxonomy(cls, value):
+                          if not isinstance(value, dict):
+                              return value
+                          migrated = dict(value)
+                          importance, narrative_function = infer_character_taxonomy(migrated)
+                          migrated.setdefault("importance", importance)
+                          migrated.setdefault("narrative_function", narrative_function)
+                          migrated.setdefault("profile_status", infer_character_profile_status(migrated))
+                          migrated.setdefault("profile_completeness", character_profile_completeness(migrated))
+                          return migrated
+
+                      @field_validator("current_state", mode="before")
+                      @classmethod
+                      def _normalize_legacy_current_state(cls, value):
+          ''',
+                      'character state migration validator',
+                  ),
+              ],
+              'def _migrate_character_taxonomy(cls, value):',
+          )
+
+          patch(
+              'packages/story_core/outline_planning_generation.py',
+              [
+                  (
+                      'from pydantic import BaseModel, ConfigDict, Field, ValidationError\n',
+                      'from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator\n',
+                      'pydantic validator import',
+                  ),
+                  (
+                      '''from packages.story_core.character_profiles import (
+                          character_profile_quality_issues,
+                          find_character_homogeneity_issues,
+                          normalize_speech_style_for_writing,
+                      )
+          ''',
+                      '''from packages.story_core.character_profiles import (
+                          CharacterImportance,
+                          CharacterNarrativeFunction,
+                          CharacterProfileStatus,
+                          character_profile_quality_issues,
+                          find_character_homogeneity_issues,
+                          infer_character_taxonomy,
+                          normalize_speech_style_for_writing,
+                      )
+          ''',
+                      'generation taxonomy imports',
+                  ),
+                  (
+                      '''class PlanningCharacterSeed(_PlanningInput):
+                          name: str = Field(min_length=1, max_length=80)
+                          role: str = Field(min_length=1, max_length=80)
+                          character_tier: CharacterTier
+                          first_appearance: int = Field(default=0, ge=0)
+                          age: int | None = Field(default=None, ge=0)
+                          origin: str = Field(min_length=1, max_length=300)
+                          current_identity: str = Field(min_length=1, max_length=200)
+                          occupation: str = Field(min_length=1, max_length=120)
+                          authority_scope: str = Field(default="", max_length=300)
+                          immediate_problem: str = Field(min_length=1, max_length=300)
+                          immediate_goal: str = Field(min_length=1, max_length=300)
+                          motivation: str = Field(min_length=1, max_length=300)
+                          long_term_goal: str = Field(default="", max_length=300)
+                          failure_stakes: str = Field(min_length=1, max_length=300)
+                          personality: str = Field(min_length=1, max_length=300)
+                          speech_style: str = Field(min_length=1, max_length=200)
+                          action_style: str = Field(min_length=1, max_length=200)
+                          emotional_trigger: str = Field(default="", max_length=200)
+                          decision_rule: str = Field(min_length=1, max_length=200)
+                          hidden_matter: str = Field(default="", max_length=300)
+                          dialogue_examples: list[str] = Field(min_length=2, max_length=2)
+                          relationship_notes: list[PlanningRelationshipSeed] = Field(min_length=1, max_length=6)
+          ''',
+                      '''class PlanningCharacterSeed(_PlanningInput):
+                          name: str = Field(min_length=1, max_length=80)
+                          role: str = Field(min_length=1, max_length=80)
+                          character_tier: CharacterTier
+                          importance: CharacterImportance
+                          narrative_function: CharacterNarrativeFunction
+                          profile_status: CharacterProfileStatus
+                          first_appearance: int = Field(default=0, ge=0)
+                          age: int | None = Field(default=None, ge=0)
+                          origin: str = Field(default="", max_length=300)
+                          current_identity: str = Field(min_length=1, max_length=200)
+                          occupation: str = Field(default="", max_length=120)
+                          authority_scope: str = Field(default="", max_length=300)
+                          immediate_problem: str = Field(default="", max_length=300)
+                          immediate_goal: str = Field(default="", max_length=300)
+                          motivation: str = Field(default="", max_length=300)
+                          long_term_goal: str = Field(default="", max_length=300)
+                          failure_stakes: str = Field(default="", max_length=300)
+                          personality: str = Field(default="", max_length=300)
+                          speech_style: str = Field(default="", max_length=200)
+                          action_style: str = Field(default="", max_length=200)
+                          emotional_trigger: str = Field(default="", max_length=200)
+                          decision_rule: str = Field(default="", max_length=200)
+                          hidden_matter: str = Field(default="", max_length=300)
+                          dialogue_examples: list[str] = Field(default_factory=list, max_length=2)
+                          relationship_notes: list[PlanningRelationshipSeed] = Field(default_factory=list, max_length=6)
+
+                          @model_validator(mode="before")
+                          @classmethod
+                          def _migrate_legacy_seed(cls, value):
+                              if not isinstance(value, dict):
+                                  return value
+                              migrated = dict(value)
+                              importance, narrative_function = infer_character_taxonomy(migrated)
+                              migrated.setdefault("importance", importance)
+                              migrated.setdefault("narrative_function", narrative_function)
+                              expected_tier = {
+                                  "protagonist": "protagonist",
+                                  "stage_antagonist": "stage_antagonist",
+                                  "long_term_antagonist": "long_term_antagonist",
+                              }.get(str(migrated.get("narrative_function") or narrative_function), "supporting")
+                              if "narrative_function" in migrated:
+                                  migrated["character_tier"] = expected_tier
+                              else:
+                                  migrated.setdefault("character_tier", expected_tier)
+                              if not str(migrated.get("profile_status") or "").strip():
+                                  detail_fields = (
+                                      "current_identity",
+                                      "immediate_problem",
+                                      "immediate_goal",
+                                      "motivation",
+                                      "failure_stakes",
+                                      "speech_style",
+                                      "action_style",
+                                  )
+                                  enough_detail = all(str(migrated.get(field) or "").strip() for field in detail_fields)
+                                  migrated["profile_status"] = (
+                                      "ready"
+                                      if enough_detail and migrated.get("relationship_notes")
+                                      else "stub"
+                                  )
+                              return migrated
+          ''',
+                      'seed taxonomy and stub depth',
+                  ),
+                  (
+                      '''            "character_tier": seed.character_tier,
+                                  "first_appearance": seed.first_appearance,
+          ''',
+                      '''            "character_tier": seed.character_tier,
+                                  "importance": seed.importance,
+                                  "narrative_function": seed.narrative_function,
+                                  "profile_status": seed.profile_status,
+                                  "profile_completeness": 0,
+                                  "first_appearance": seed.first_appearance,
+          ''',
+                      'expanded card taxonomy fields',
+                  ),
+                  (
+                      '''def _validate_character_seed_roster_quality(
+                          seeds: list[PlanningCharacterSeed],
+                          *,
+                          existing_names: set[str] | None = None,
+                      ) -> None:
+                          _validate_character_card_roster_quality(
+                              [_expand_character_seed(seed) for seed in seeds],
+                              existing_names=existing_names,
+                          )
+
+
+                      def _validate_game_dual_line_payoffs(plan: GeneratedOutlinePlan) -> None:
+          ''',
+                      '''def _validate_character_seed_roster_quality(
+                          seeds: list[PlanningCharacterSeed],
+                          *,
+                          existing_names: set[str] | None = None,
+                      ) -> None:
+                          _validate_character_card_roster_quality(
+                              [_expand_character_seed(seed) for seed in seeds],
+                              existing_names=existing_names,
+                          )
+
+
+                      _CHARACTER_QUALITY_ERROR_PREFIX = "character_profile_quality_failed:"
+
+
+                      def _failed_character_names_from_quality_error(error: str) -> list[str]:
+                          if not str(error or "").startswith(_CHARACTER_QUALITY_ERROR_PREFIX):
+                              return []
+                          detail = str(error)[len(_CHARACTER_QUALITY_ERROR_PREFIX):]
+                          names: list[str] = []
+                          for item in detail.split(";"):
+                              name = item.split("[", 1)[0].strip()
+                              if name and name not in names:
+                                  names.append(name)
+                          return names
+
+
+                      def _merge_repaired_character_rows(
+                          original: dict[str, Any],
+                          repaired: dict[str, Any],
+                          failed_names: list[str],
+                      ) -> dict[str, Any]:
+                          original_rows = original.get("characters")
+                          repaired_rows = repaired.get("characters")
+                          if not isinstance(original_rows, list) or not isinstance(repaired_rows, list):
+                              raise ValueError("invalid_character_repair_payload")
+                          expected = set(failed_names)
+                          replacements = {
+                              str(row.get("name") or "").strip(): row
+                              for row in repaired_rows
+                              if isinstance(row, dict) and str(row.get("name") or "").strip()
+                          }
+                          if set(replacements) != expected:
+                              raise ValueError("character_repair_name_mismatch")
+                          merged = deepcopy(original)
+                          merged["characters"] = [
+                              deepcopy(replacements.get(str(row.get("name") or "").strip(), row))
+                              if isinstance(row, dict)
+                              else row
+                              for row in original_rows
+                          ]
+                          return merged
+
+
+                      def _validate_game_dual_line_payoffs(plan: GeneratedOutlinePlan) -> None:
+          ''',
+                      'targeted repair helpers',
+                  ),
+                  (
+                      '''                        if result is None:
+                                      invalid_response = (
+                                          json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+                                          if isinstance(data, dict)
+                                          else "{}"
+                                      )
+                                      retry_payload = {
+                                          **request_payload,
+                                          "messages": [
+                                              *request_payload.get("messages", []),
+                                              {
+                                                  "role": "assistant",
+                                                  "content": invalid_response,
+                                              },
+                                              {
+                                                  "role": "system",
+                                                  "content": (
+                                                      "The JSON immediately above failed schema validation. Edit that object "
+                                                      "to correct only the reported structural or missing-field problems, then return the complete JSON object "
+                                                      "again without markdown or commentary. Validation error: "
+                                                      f"{validation_error}"
+                                                  ),
+                                              },
+                                          ],
+                                      }
+                                      response = _complete_payload(
+                                          self._model_gateway,
+                                          retry_payload,
+                                          operation=f"outline_planning_{phase}_retry",
+                                      )
+                                      data = parse_json_message_content(response)
+                                      if data is None:
+                                          raise ValueError(invalid_json_error)
+                                      if not attribute_allocation_enabled:
+                                          _drop_disabled_attribute_allocations(data)
+                                      _fill_equivalent_arc_handoffs(data)
+                                      result = schema.model_validate(data)
+                                      if result_validator:
+                                          result_validator(result)
+          ''',
+                      '''                        if result is None:
+                                      invalid_response = (
+                                          json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+                                          if isinstance(data, dict)
+                                          else "{}"
+                                      )
+                                      failed_character_names = (
+                                          _failed_character_names_from_quality_error(validation_error)
+                                          if phase == "character_roster"
+                                          else []
+                                      )
+                                      if failed_character_names and isinstance(data, dict):
+                                          original_rows = data.get("characters")
+                                          failed_rows = [
+                                              row
+                                              for row in original_rows or []
+                                              if isinstance(row, dict)
+                                              and str(row.get("name") or "").strip() in set(failed_character_names)
+                                          ]
+                                          locked_rows = [
+                                              row
+                                              for row in original_rows or []
+                                              if isinstance(row, dict)
+                                              and str(row.get("name") or "").strip() not in set(failed_character_names)
+                                          ]
+                                          retry_payload = {
+                                              **request_payload,
+                                              "messages": [
+                                                  *request_payload.get("messages", []),
+                                                  {
+                                                      "role": "system",
+                                                      "content": (
+                                                          "Repair only the failed character cards listed below. "
+                                                          "Return JSON with the single root field characters and include exactly those failed names, no others. "
+                                                          "Do not rewrite, rename, or return the locked valid characters. "
+                                                          f"Failed characters: {json.dumps(failed_rows, ensure_ascii=False)}. "
+                                                          f"Locked valid characters for relationship context only: {json.dumps(locked_rows, ensure_ascii=False)}. "
+                                                          f"Validation error: {validation_error}"
+                                                      ),
+                                                  },
+                                              ],
+                                          }
+                                          response = _complete_payload(
+                                              self._model_gateway,
+                                              retry_payload,
+                                              operation=f"outline_planning_{phase}_retry_failed_characters",
+                                          )
+                                          repaired = parse_json_message_content(response)
+                                          if repaired is None:
+                                              raise ValueError(invalid_json_error)
+                                          data = _merge_repaired_character_rows(
+                                              data,
+                                              repaired,
+                                              failed_character_names,
+                                          )
+                                      else:
+                                          retry_payload = {
+                                              **request_payload,
+                                              "messages": [
+                                                  *request_payload.get("messages", []),
+                                                  {
+                                                      "role": "assistant",
+                                                      "content": invalid_response,
+                                                  },
+                                                  {
+                                                      "role": "system",
+                                                      "content": (
+                                                          "The JSON immediately above failed schema validation. Edit that object "
+                                                          "to correct only the reported structural or missing-field problems, then return the complete JSON object "
+                                                          "again without markdown or commentary. Validation error: "
+                                                          f"{validation_error}"
+                                                      ),
+                                                  },
+                                              ],
+                                          }
+                                          response = _complete_payload(
+                                              self._model_gateway,
+                                              retry_payload,
+                                              operation=f"outline_planning_{phase}_retry",
+                                          )
+                                          data = parse_json_message_content(response)
+                                          if data is None:
+                                              raise ValueError(invalid_json_error)
+                                      if not attribute_allocation_enabled:
+                                          _drop_disabled_attribute_allocations(data)
+                                      _fill_equivalent_arc_handoffs(data)
+                                      result = schema.model_validate(data)
+                                      if result_validator:
+                                          result_validator(result)
+          ''',
+                      'targeted failed-character retry',
+                  ),
+                  (
+                      '''                        "Do not reuse the same motivation, long-term goal, speech style, or action style across multiple characters.",
+                                      ],
+          ''',
+                      '''                        "Do not reuse the same motivation, long-term goal, speech style, or action style across multiple characters.",
+                                          "Set importance and narrative_function explicitly. Core/major characters that matter in the opening must use profile_status=ready; later or ordinary supporting/minor people may use profile_status=stub and stay lightweight until they approach active use.",
+                                          "Aim for roughly 4 to 7 ready core/major characters in the opening roster; do not force every one of the 10 to 15 roster members into a full detail card.",
+                                      ],
+          ''',
+                      'split depth validation rules',
+                  ),
+                  (
+                      '''                                "Do not give multiple characters identical motivation, long-term goal, speech style, or action style. "
+                                      "Follow prompt_context.output_schema exactly."
+          ''',
+                      '''                                "Do not give multiple characters identical motivation, long-term goal, speech style, or action style. "
+                                          "Set importance, narrative_function, and profile_status explicitly. Fully detail only current core/major characters; later or ordinary supporting/minor characters may stay as lightweight stubs. "
+                                          "Follow prompt_context.output_schema exactly."
+          ''',
+                      'split depth system prompt',
+                  ),
+              ],
+              'def _failed_character_names_from_quality_error(error: str)',
+          )
+          PY
+          python -m py_compile \
+            packages/story_core/character_profiles.py \
+            packages/story_core/outline_planning.py \
+            packages/story_core/models.py \
+            packages/story_core/outline_planning_generation.py
+          git diff --check
+      - name: Commit patch
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "No changes"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add packages/story_core/character_profiles.py packages/story_core/outline_planning.py packages/story_core/models.py packages/story_core/outline_planning_generation.py
+          git commit -m "feat: complete character model depth and targeted repair [character-pr1-complete] [skip ci]"
+          git push origin HEAD:fix/character-card-taxonomy-quality
