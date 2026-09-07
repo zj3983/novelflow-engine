@@ -5,14 +5,20 @@ import unicodedata
 from copy import deepcopy
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from packages.story_core.character_profiles import (
     BackgroundProfile,
+    CharacterImportance,
+    CharacterNarrativeFunction,
+    CharacterProfileStatus,
     CurrentLifeProfile,
     IdentityProfile,
     RelationshipNote,
     StoryDriveProfile,
+    character_profile_completeness,
+    infer_character_profile_status,
+    infer_character_taxonomy,
     is_placeholder_character_name,
 )
 from packages.story_core.elastic_outline import DETAIL_WINDOW
@@ -146,14 +152,31 @@ class PlanningCharacterCard(_PlanningModel):
     name: str = Field(min_length=1, max_length=80)
     role: str = Field(min_length=1, max_length=80)
     character_tier: CharacterTier
+    importance: CharacterImportance
+    narrative_function: CharacterNarrativeFunction
+    profile_status: CharacterProfileStatus
+    profile_completeness: int = Field(ge=0, le=100)
     first_appearance: int = Field(default=0, ge=0)
     identity_profile: IdentityProfile
     background_profile: BackgroundProfile
     current_life_profile: CurrentLifeProfile
     story_drive: StoryDriveProfile
     performance_profile: CharacterPerformanceProfile = Field(default_factory=CharacterPerformanceProfile)
-    dialogue_examples: list[str] = Field(min_length=2, max_length=3)
+    dialogue_examples: list[str] = Field(default_factory=list, max_length=3)
     relationship_notes: list[RelationshipNote] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_taxonomy(cls, value):
+        if not isinstance(value, dict):
+            return value
+        migrated = dict(value)
+        importance, narrative_function = infer_character_taxonomy(migrated)
+        migrated.setdefault("importance", importance)
+        migrated.setdefault("narrative_function", narrative_function)
+        migrated.setdefault("profile_status", infer_character_profile_status(migrated))
+        migrated.setdefault("profile_completeness", character_profile_completeness(migrated))
+        return migrated
 
 
 class GeneratedOutlinePlan(_PlanningModel):

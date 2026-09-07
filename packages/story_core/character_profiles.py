@@ -173,6 +173,10 @@ _GENERIC_CHARACTER_CONTENT = frozenset(
         "tbd",
         "todo",
         "placeholder",
+        "冷静聪明谨慎",
+        "冷静谨慎",
+        "观察后行动",
+        "不善言辞",
     }
 )
 _QUALITY_FIELDS = (
@@ -182,6 +186,7 @@ _QUALITY_FIELDS = (
     ("story_drive", "immediate_goal"),
     ("story_drive", "motivation"),
     ("story_drive", "failure_stakes"),
+    ("story_drive", "main_conflict_reason"),
 )
 
 
@@ -286,6 +291,12 @@ def _looks_generic_character_content(value: Any) -> bool:
     return compact in _GENERIC_CHARACTER_CONTENT
 
 
+def is_generic_character_content(value: Any) -> bool:
+    """Public predicate used by seed-level quality gates."""
+
+    return _looks_generic_character_content(value)
+
+
 def character_profile_quality_issues(card: dict[str, Any]) -> list[str]:
     """Return actionable quality failures for a concrete, writer-usable character card.
 
@@ -321,6 +332,49 @@ def character_profile_quality_issues(card: dict[str, Any]) -> list[str]:
         for section, field in required:
             if not _profile_field(card, section, field):
                 issues.append(f"missing:{section}.{field}")
+
+
+    if status != "stub":
+        function_required: list[tuple[str, str]] = []
+        if narrative_function == "protagonist":
+            function_required = [
+                ("identity_profile", "origin"),
+                ("performance_profile", "speech_style"),
+                ("performance_profile", "action_style"),
+            ]
+        elif narrative_function == "stage_antagonist":
+            function_required = [
+                ("current_life_profile", "authority_scope"),
+                ("story_drive", "main_conflict_reason"),
+                ("performance_profile", "action_style"),
+            ]
+        elif narrative_function == "long_term_antagonist":
+            function_required = [
+                ("current_life_profile", "authority_scope"),
+                ("story_drive", "long_term_goal"),
+                ("story_drive", "main_conflict_reason"),
+            ]
+        elif importance in {"supporting", "minor"}:
+            function_required = [("identity_profile", "current_identity")]
+        for section, field in function_required:
+            if not _profile_field(card, section, field):
+                issues.append(f"missing:{section}.{field}")
+
+        if narrative_function in {"protagonist", "long_term_antagonist"}:
+            drive = card.get("story_drive")
+            hidden = drive.get("hidden_matters", []) if isinstance(drive, dict) else []
+            if not any(str(item).strip() for item in hidden):
+                issues.append("missing:story_drive.hidden_matters")
+
+        if not any(
+            isinstance(item, dict) and str(item.get("target") or "").strip()
+            for item in card.get("relationship_notes", [])
+        ):
+            issues.append("missing:relationship_notes")
+        if importance in {"core", "major"} and len(
+            [item for item in card.get("dialogue_examples", []) if str(item).strip()]
+        ) < 2:
+            issues.append("missing:dialogue_examples")
 
     return issues
 

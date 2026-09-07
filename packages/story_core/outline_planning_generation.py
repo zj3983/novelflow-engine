@@ -6,13 +6,18 @@ import re
 from copy import deepcopy
 from typing import Any, Callable, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from packages.story_core.agent_base import parse_json_message_content
 from packages.story_core.attribute_allocation import normalize_attribute_allocation_rule
 from packages.story_core.character_profiles import (
+    CharacterImportance,
+    CharacterNarrativeFunction,
+    CharacterProfileStatus,
     character_profile_quality_issues,
     find_character_homogeneity_issues,
+    infer_character_taxonomy,
+    is_generic_character_content,
     normalize_speech_style_for_writing,
 )
 from packages.story_core.elastic_outline import outline_window_status
@@ -491,6 +496,10 @@ class GeneratedCharacterRoster(_PlanningInput):
     characters: list["PlanningCharacterSeed"]
 
 
+class GeneratedCharacterCardRepair(_PlanningInput):
+    characters: list[PlanningCharacterCard]
+
+
 class PlanningRelationshipSeed(_PlanningInput):
     target: str = Field(min_length=1, max_length=80)
     relation_type: str = Field(min_length=1, max_length=80)
@@ -505,25 +514,64 @@ class PlanningCharacterSeed(_PlanningInput):
     name: str = Field(min_length=1, max_length=80)
     role: str = Field(min_length=1, max_length=80)
     character_tier: CharacterTier
+    importance: CharacterImportance
+    narrative_function: CharacterNarrativeFunction
+    profile_status: CharacterProfileStatus
     first_appearance: int = Field(default=0, ge=0)
     age: int | None = Field(default=None, ge=0)
-    origin: str = Field(min_length=1, max_length=300)
+    origin: str = Field(default="", max_length=300)
     current_identity: str = Field(min_length=1, max_length=200)
-    occupation: str = Field(min_length=1, max_length=120)
+    occupation: str = Field(default="", max_length=120)
     authority_scope: str = Field(default="", max_length=300)
-    immediate_problem: str = Field(min_length=1, max_length=300)
-    immediate_goal: str = Field(min_length=1, max_length=300)
-    motivation: str = Field(min_length=1, max_length=300)
+    immediate_problem: str = Field(default="", max_length=300)
+    immediate_goal: str = Field(default="", max_length=300)
+    motivation: str = Field(default="", max_length=300)
     long_term_goal: str = Field(default="", max_length=300)
-    failure_stakes: str = Field(min_length=1, max_length=300)
-    personality: str = Field(min_length=1, max_length=300)
-    speech_style: str = Field(min_length=1, max_length=200)
-    action_style: str = Field(min_length=1, max_length=200)
+    failure_stakes: str = Field(default="", max_length=300)
+    main_conflict_reason: str = Field(default="", max_length=300)
+    personality: str = Field(default="", max_length=300)
+    speech_style: str = Field(default="", max_length=200)
+    action_style: str = Field(default="", max_length=200)
     emotional_trigger: str = Field(default="", max_length=200)
-    decision_rule: str = Field(min_length=1, max_length=200)
+    decision_rule: str = Field(default="", max_length=200)
     hidden_matter: str = Field(default="", max_length=300)
-    dialogue_examples: list[str] = Field(min_length=2, max_length=2)
-    relationship_notes: list[PlanningRelationshipSeed] = Field(min_length=1, max_length=6)
+    dialogue_examples: list[str] = Field(default_factory=list, max_length=2)
+    relationship_notes: list[PlanningRelationshipSeed] = Field(default_factory=list, max_length=6)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_seed(cls, value):
+        if not isinstance(value, dict):
+            return value
+        migrated = dict(value)
+        importance, narrative_function = infer_character_taxonomy(migrated)
+        migrated.setdefault("importance", importance)
+        migrated.setdefault("narrative_function", narrative_function)
+        effective_function = str(migrated.get("narrative_function") or narrative_function)
+        expected_tier = {
+            "protagonist": "protagonist",
+            "stage_antagonist": "stage_antagonist",
+            "long_term_antagonist": "long_term_antagonist",
+        }.get(effective_function, "supporting")
+        if "narrative_function" in value or "importance" in value:
+            migrated["character_tier"] = expected_tier
+        else:
+            migrated.setdefault("character_tier", expected_tier)
+        if not str(migrated.get("profile_status") or "").strip():
+            detail_fields = (
+                "current_identity",
+                "immediate_problem",
+                "immediate_goal",
+                "motivation",
+                "failure_stakes",
+                "speech_style",
+                "action_style",
+            )
+            enough_detail = all(str(migrated.get(field) or "").strip() for field in detail_fields)
+            migrated["profile_status"] = (
+                "ready" if enough_detail and migrated.get("relationship_notes") else "stub"
+            )
+        return migrated
 
 
 _CHINESE_DIGITS = {
@@ -569,6 +617,7 @@ def _validate_character_seed_chronology(seed: PlanningCharacterSeed) -> None:
         seed.immediate_goal,
         seed.motivation,
         seed.long_term_goal,
+        seed.main_conflict_reason,
         seed.hidden_matter,
         *(note.history for note in seed.relationship_notes),
     )
@@ -614,6 +663,9 @@ def _expand_character_seed(seed: PlanningCharacterSeed) -> PlanningCharacterCard
             "name": seed.name,
             "role": seed.role,
             "character_tier": seed.character_tier,
+            "importance": seed.importance,
+            "narrative_function": seed.narrative_function,
+            "profile_status": seed.profile_status,
             "first_appearance": seed.first_appearance,
             "identity_profile": {
                 "age": seed.age,
@@ -631,6 +683,7 @@ def _expand_character_seed(seed: PlanningCharacterSeed) -> PlanningCharacterCard
                 "immediate_goal": seed.immediate_goal,
                 "motivation": seed.motivation,
                 "failure_stakes": seed.failure_stakes,
+                "main_conflict_reason": seed.main_conflict_reason,
                 "hidden_matters": [seed.hidden_matter] if seed.hidden_matter else [],
             },
             "performance_profile": {
@@ -694,21 +747,24 @@ def _character_card_roster_quality_issues(
     return issues
 
 
+def _raise_character_quality_issues(issues: dict[str, list[str]]) -> None:
+    if not issues:
+        return
+    detail = ";".join(
+        f"{name}[{','.join(dict.fromkeys(values))}]"
+        for name, values in sorted(issues.items())
+    )
+    raise ValueError(f"character_profile_quality_failed:{detail}")
+
+
 def _validate_character_card_roster_quality(
     cards: list[Any],
     *,
     existing_names: set[str] | None = None,
 ) -> None:
-    issues = _character_card_roster_quality_issues(
-        cards,
-        existing_names=existing_names,
+    _raise_character_quality_issues(
+        _character_card_roster_quality_issues(cards, existing_names=existing_names)
     )
-    if not issues:
-        return
-    detail = ";".join(
-        f"{name}[{','.join(values)}]" for name, values in sorted(issues.items())
-    )
-    raise ValueError(f"character_profile_quality_failed:{detail}")
 
 
 def _validate_character_seed_roster_quality(
@@ -716,10 +772,62 @@ def _validate_character_seed_roster_quality(
     *,
     existing_names: set[str] | None = None,
 ) -> None:
-    _validate_character_card_roster_quality(
-        [_expand_character_seed(seed) for seed in seeds],
-        existing_names=existing_names,
-    )
+    cards = [_expand_character_seed(seed) for seed in seeds]
+    issues = _character_card_roster_quality_issues(cards, existing_names=existing_names)
+    for seed in seeds:
+        if seed.importance == "core" and seed.profile_status != "ready":
+            issues.setdefault(seed.name, []).append("core_requires_ready")
+        if (
+            seed.importance == "major"
+            and 0 < seed.first_appearance <= INITIAL_OUTLINE_CHAPTER_COUNT
+            and seed.profile_status != "ready"
+        ):
+            issues.setdefault(seed.name, []).append("opening_major_requires_ready")
+        if seed.profile_status == "ready" and is_generic_character_content(seed.personality):
+            issues.setdefault(seed.name, []).append("generic:personality")
+    _raise_character_quality_issues(issues)
+
+
+_CHARACTER_QUALITY_ERROR_PREFIX = "character_profile_quality_failed:"
+
+
+def _failed_character_names_from_quality_error(error: str) -> list[str]:
+    if not str(error or "").startswith(_CHARACTER_QUALITY_ERROR_PREFIX):
+        return []
+    detail = str(error)[len(_CHARACTER_QUALITY_ERROR_PREFIX):]
+    names: list[str] = []
+    for item in detail.split(";"):
+        name = item.split("[", 1)[0].strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _merge_repaired_character_rows(
+    original: dict[str, Any],
+    repaired: dict[str, Any],
+    failed_names: list[str],
+) -> dict[str, Any]:
+    original_rows = original.get("characters")
+    repaired_rows = repaired.get("characters")
+    if not isinstance(original_rows, list) or not isinstance(repaired_rows, list):
+        raise ValueError("invalid_character_repair_payload")
+    expected = set(failed_names)
+    replacements = {
+        str(row.get("name") or "").strip(): row
+        for row in repaired_rows
+        if isinstance(row, dict) and str(row.get("name") or "").strip()
+    }
+    if set(replacements) != expected:
+        raise ValueError("character_repair_name_mismatch")
+    merged = deepcopy(original)
+    merged["characters"] = [
+        deepcopy(replacements.get(str(row.get("name") or "").strip(), row))
+        if isinstance(row, dict)
+        else row
+        for row in original_rows
+    ]
+    return merged
 
 
 def _validate_game_dual_line_payoffs(plan: GeneratedOutlinePlan) -> None:
@@ -2026,33 +2134,55 @@ class LLMOutlinePlanningGenerator:
                                 if isinstance(data, dict)
                                 else "{}"
                             )
-                            retry_payload = {
-                                **request_payload,
-                                "messages": [
-                                    *request_payload.get("messages", []),
-                                    {
-                                        "role": "assistant",
-                                        "content": invalid_response,
-                                    },
-                                    {
-                                        "role": "system",
-                                        "content": (
-                                            "The JSON immediately above failed schema validation. Edit that object "
-                                            "to correct only the reported structural or missing-field problems, then return the complete JSON object "
-                                            "again without markdown or commentary. Validation error: "
-                                            f"{validation_error}"
-                                        ),
-                                    },
-                                ],
-                            }
-                            response = _complete_payload(
-                                self._model_gateway,
-                                retry_payload,
-                                operation=f"outline_planning_{phase}_retry",
+                            failed_character_names = (
+                                _failed_character_names_from_quality_error(validation_error)
+                                if phase == "character_roster"
+                                else []
                             )
-                            data = parse_json_message_content(response)
-                            if data is None:
-                                raise ValueError(invalid_json_error)
+                            if failed_character_names and isinstance(data, dict):
+                                original_rows = data.get("characters") or []
+                                failed_set = set(failed_character_names)
+                                failed_rows = [row for row in original_rows if isinstance(row, dict) and str(row.get("name") or "").strip() in failed_set]
+                                locked_rows = [row for row in original_rows if isinstance(row, dict) and str(row.get("name") or "").strip() not in failed_set]
+                                retry_payload = {
+                                    **request_payload,
+                                    "messages": [
+                                        *request_payload.get("messages", []),
+                                        {
+                                            "role": "system",
+                                            "content": (
+                                                "Repair only the failed character cards. Return root field characters with exactly the failed names and no locked valid character. Do not rename anyone. "
+                                                f"Failed rows: {json.dumps(failed_rows, ensure_ascii=False)}. "
+                                                f"Locked context: {json.dumps(locked_rows, ensure_ascii=False)}. "
+                                                f"Validation error: {validation_error}"
+                                            ),
+                                        },
+                                    ],
+                                }
+                                response = _complete_payload(self._model_gateway, retry_payload, operation=f"outline_planning_{phase}_retry_failed_characters")
+                                repaired = parse_json_message_content(response)
+                                if repaired is None:
+                                    raise ValueError(invalid_json_error)
+                                data = _merge_repaired_character_rows(data, repaired, failed_character_names)
+                            else:
+                                retry_payload = {
+                                    **request_payload,
+                                    "messages": [
+                                        *request_payload.get("messages", []),
+                                        {"role": "assistant", "content": invalid_response},
+                                        {
+                                            "role": "system",
+                                            "content": (
+                                                "The JSON immediately above failed schema validation. Edit that object to correct only the reported structural or missing-field problems, then return the complete JSON object again without markdown or commentary. Validation error: "
+                                                f"{validation_error}"
+                                            ),
+                                        },
+                                    ],
+                                }
+                                response = _complete_payload(self._model_gateway, retry_payload, operation=f"outline_planning_{phase}_retry")
+                                data = parse_json_message_content(response)
+                                if data is None:
+                                    raise ValueError(invalid_json_error)
                             if not attribute_allocation_enabled:
                                 _drop_disabled_attribute_allocations(data)
                             _fill_equivalent_arc_handoffs(data)
@@ -2215,6 +2345,8 @@ class LLMOutlinePlanningGenerator:
                         "motivation must explain the concrete history, pressure, desire, fear, obligation, or stake that makes immediate_goal matter; it must not copy immediate_goal.",
                         "Every card must include at least one relationship_notes entry linked to another character in this roster, with concrete history, current attitude, and shared interest or conflict.",
                         "Do not reuse the same motivation, long-term goal, speech style, or action style across multiple characters.",
+                        "Set importance, narrative_function, and profile_status explicitly. Core characters and major characters active in the opening use ready; ordinary or later supporting/minor characters may remain stub.",
+                        "Aim for roughly 4 to 7 ready core/major cards in the opening roster; do not force all 10 to 15 members into full detail.",
                     ],
                 }
                 character_payload = {
@@ -2235,6 +2367,7 @@ class LLMOutlinePlanningGenerator:
                                 "immediate_goal is what the character is trying to do now; motivation is why that goal matters to this person, and the two must not repeat each other. "
                                 "Every card must include at least one concrete relationship note linked to another generated character, with history, current attitude, and a shared interest or conflict. "
                                 "Do not give multiple characters identical motivation, long-term goal, speech style, or action style. "
+                                "Set importance, narrative_function, and profile_status explicitly. Fully detail only active core/major characters; ordinary or later supporting/minor characters may remain lightweight stubs. "
                                 "Follow prompt_context.output_schema exactly."
                             ),
                         },
@@ -2518,6 +2651,7 @@ class LLMOutlinePlanningGenerator:
                     )
                     return candidate
 
+                response: dict[str, Any] | None = None
                 try:
                     response = _complete_payload(
                         self._model_gateway,
@@ -2527,27 +2661,47 @@ class LLMOutlinePlanningGenerator:
                     parsed = parse_direct_outline(response)
                 except Exception as exc:
                     validation_error = re.sub(r"\s+", " ", str(exc)).strip()[:1000]
-                    retry_payload = {
-                        **payload,
-                        "messages": [
-                            *payload.get("messages", []),
-                            {
-                                "role": "system",
-                                "content": (
-                                    "The previous JSON failed schema or chapter-title validation. "
-                                    "Correct only the reported problems, then return the complete JSON object "
-                                    "again without markdown or commentary. Validation error: "
-                                    f"{validation_error}"
-                                ),
-                            },
-                        ],
-                    }
-                    response = _complete_payload(
-                        self._model_gateway,
-                        retry_payload,
-                        operation="outline_planning_retry",
-                    )
-                    parsed = parse_direct_outline(response)
+                    failed_character_names = _failed_character_names_from_quality_error(validation_error)
+                    original_candidate = parse_json_message_content(response) if response is not None else None
+                    if failed_character_names and isinstance(original_candidate, dict):
+                        original_rows = original_candidate.get("characters") or []
+                        failed_set = set(failed_character_names)
+                        failed_rows = [row for row in original_rows if isinstance(row, dict) and str(row.get("name") or "").strip() in failed_set]
+                        locked_rows = [row for row in original_rows if isinstance(row, dict) and str(row.get("name") or "").strip() not in failed_set]
+                        repair_payload = {
+                            **payload,
+                            "reasoning_effort": "low",
+                            "messages": [
+                                {"role": "system", "content": "Repair only the failed full character cards. Return JSON with root field characters and exactly the failed names. Keep names unchanged and do not return locked cards."},
+                                {"role": "user", "content": json.dumps({"failed_characters": failed_rows, "locked_characters": locked_rows, "validation_error": validation_error, "output_schema": GeneratedCharacterCardRepair.model_json_schema()}, ensure_ascii=False)},
+                            ],
+                        }
+                        repair_response = _complete_payload(self._model_gateway, repair_payload, operation="outline_planning_retry_failed_characters")
+                        repaired = parse_json_message_content(repair_response)
+                        if repaired is None:
+                            raise ValueError("invalid_character_repair_json")
+                        GeneratedCharacterCardRepair.model_validate(repaired)
+                        merged_candidate = _merge_repaired_character_rows(original_candidate, repaired, failed_character_names)
+                        candidate_plan = GeneratedOutlinePlan.model_validate(merged_candidate)
+                        _validate_character_card_roster_quality(list(candidate_plan.characters), existing_names=(set(existing_character_names) if mode == "extend" else set()))
+                        validate_chapter_title_window(
+                            [chapter.model_dump(mode="python") for chapter in candidate_plan.outline.chapters],
+                            genre_id=effective_novel_type_id,
+                            previous_chapters=previous_chapters,
+                            known_chapters=existing_outline_chapters,
+                            generated_chapter_numbers=target_chapter_numbers,
+                        )
+                        parsed = merged_candidate
+                    else:
+                        retry_payload = {
+                            **payload,
+                            "messages": [
+                                *payload.get("messages", []),
+                                {"role": "system", "content": ("The previous JSON failed schema or chapter-title validation. Correct only the reported problems, then return the complete JSON object again without markdown or commentary. Validation error: " f"{validation_error}")},
+                            ],
+                        }
+                        response = _complete_payload(self._model_gateway, retry_payload, operation="outline_planning_retry")
+                        parsed = parse_direct_outline(response)
             if not chapter_contracts_enabled:
                 _drop_disabled_chapter_contracts(parsed)
             parsed = sanitize_generated_outline_amounts(parsed)
