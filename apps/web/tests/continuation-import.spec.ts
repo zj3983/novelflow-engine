@@ -138,7 +138,7 @@ test("happy path confirms analysis, sends settings, and follows next_path", asyn
   await page.getByRole("button", { name: "适度改编" }).click();
   await page.getByRole("button", { name: "创建续写项目" }).click();
 
-  await expect(page).toHaveURL(/file%3Ap-continued\/outline$/);
+  await expect(page).toHaveURL(/file%3Ap-continued\/outline\?bootstrap=1$/);
   expect(createPayload.expected_revision).toBe(4);
   expect(createPayload.settings).toMatchObject({ fidelity: "adaptive", target_chars: 5200, direction: "先查城北，再揭开旧友隐瞒的身份。", novel_type_id: "generic_webnovel" });
 });

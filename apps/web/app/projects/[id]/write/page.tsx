@@ -10,6 +10,8 @@ import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceP
 import { useChapterDetail } from "../../../../components/ws/useChapterDetail";
 import { SimplifiedReview } from "../../../../components/ws/SimplifiedReview";
 import { RollingOutlineCard } from "../../../../components/ws/RollingOutlineCard";
+import { ContinuousGenerationPanel } from "../../../../components/ws/ContinuousGenerationPanel";
+import { useContinuousGeneration } from "../../../../components/ws/useContinuousGeneration";
 import {
   downstreamRewriteNotice,
   confirmFileProjectCandidate,
@@ -337,6 +339,16 @@ export default function WritePage() {
   const rollingFill = nextWritingPacket?.rolling_fill ?? null;
   const nextChapterNeedsOutline = isFileProject
     && (volumeWorkflowLoading || Boolean(volumeWorkflowError) || volumeWorkflow?.status !== "detail_complete");
+  const continuousGeneration = useContinuousGeneration({
+    enabled: isFileProject,
+    projectId,
+    encodedProjectId,
+    nextChapterNumber,
+    nextChapterNeedsOutline,
+    volumeWorkflowStatus: volumeWorkflow?.status,
+    busy: expanding || regenerating || generatingNext,
+    refresh,
+  });
   const nextChapterActionLabel = volumeWorkflow?.status === "volume_missing"
     ? "先设计下一卷"
     : volumeWorkflow?.status === "volume_plan_ready"
@@ -674,7 +686,7 @@ export default function WritePage() {
                 <button
                   className="ws-btn ws-btn--sm ws-btn--primary"
                   type="button"
-                  disabled={!canGenerateNext || expanding || regenerating || generatingNext || nextChapterNeedsOutline}
+                  disabled={!canGenerateNext || expanding || regenerating || generatingNext || nextChapterNeedsOutline || continuousGeneration.active}
                   onClick={() => void handleGenerateNextChapter()}
                 >
                   {generatingNext ? "生成中..." : "生成下一章"}
@@ -682,7 +694,7 @@ export default function WritePage() {
                 <button
                   className="ws-btn ws-btn--sm"
                   type="button"
-                  disabled={expanding || regenerating || generatingNext}
+                  disabled={expanding || regenerating || generatingNext || continuousGeneration.active}
                   onClick={() => void handleExpandChapter()}
                 >
                   <Expand size={15} aria-hidden="true" />
@@ -691,7 +703,7 @@ export default function WritePage() {
                 <button
                   className="ws-btn ws-btn--sm"
                   type="button"
-                  disabled={!canRegenerate || expanding || regenerating || generatingNext}
+                  disabled={!canRegenerate || expanding || regenerating || generatingNext || continuousGeneration.active}
                   onClick={() => void handleRegenerateChapter()}
                 >
                   {regenerating ? "重新生成中..." : "重新生成本章"}
@@ -745,6 +757,22 @@ export default function WritePage() {
                 error={rollingFill.error ?? ""}
                 filledChapterNumbers={rollingFill.filled_chapter_numbers ?? []}
                 outlineHref={`/projects/${encodedProjectId}/outline?tab=chapters&chapter=${nextChapterNumber}`}
+              />
+            ) : null}
+            {isFileProject ? (
+              <ContinuousGenerationPanel
+                action={continuousGeneration.action}
+                active={continuousGeneration.active}
+                busy={expanding || regenerating || generatingNext}
+                count={continuousGeneration.count}
+                error={continuousGeneration.error}
+                job={continuousGeneration.job}
+                nextChapterNeedsOutline={nextChapterNeedsOutline}
+                workflowError={volumeWorkflowError}
+                workflowLoading={volumeWorkflowLoading}
+                onCountChange={continuousGeneration.setCount}
+                onStart={() => void continuousGeneration.start()}
+                onStop={() => void continuousGeneration.stop()}
               />
             ) : null}
             {isFileProject && (volumeWorkflowLoading || volumeWorkflowError || (volumeWorkflow && volumeWorkflow.status !== "detail_complete")) ? (
@@ -841,7 +869,7 @@ export default function WritePage() {
           <button
             className="ws-btn ws-btn--primary"
             type="button"
-            disabled={!canGenerateNext || generatingNext || nextChapterNeedsOutline}
+            disabled={!canGenerateNext || generatingNext || nextChapterNeedsOutline || continuousGeneration.active}
             onClick={() => void handleGenerateNextChapter()}
           >
             {generatingNext ? "生成中..." : "生成第一章"}

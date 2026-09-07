@@ -3609,11 +3609,21 @@ export async function startFileProjectRegenerationJob(
   })) as GenerationJobResponse;
 }
 
-// Backwards-compatible alias.  The legacy "expansion" entry point used
-// the same shape as a chapter regeneration job (project + chapter
-// number); keep the named export so the write-page button still
-// resolves even after the dedicated endpoint was removed.
-export const startFileProjectExpansionJob = startFileProjectRegenerationJob;
+// The write page's 扩写本章 button sends an explicit expand operation so
+// the backend routes the job through the adaptive length-expansion path.
+export async function startFileProjectExpansionJob(
+  projectId: string,
+  chapterNumber: number,
+): Promise<GenerationJobResponse> {
+  if (!isFileProjectId(projectId)) {
+    throw new Error("expand_chapter_only_supports_file_projects");
+  }
+  return (await tryFetchJson(`${fileProjectPath(projectId)}/generation-jobs`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ chapter_number: chapterNumber, operation: "expand" }),
+  })) as GenerationJobResponse;
+}
 
 export async function startFileProjectPolishJob(
   projectId: string,

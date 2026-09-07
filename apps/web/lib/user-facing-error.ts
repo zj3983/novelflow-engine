@@ -79,11 +79,14 @@ export function userFacingErrorMessage(
   if (text.toLowerCase().includes("timeout") || text.includes("超时")) {
     return "请求超时，请重新尝试。";
   }
+  // A leading Chinese context label (e.g. "故事加载失败：") is useful to the
+  // reader even when the technical suffix falls back to a generic message.
+  const contextPrefix = /^[一-龥][^\n：:]{1,20}[：:]/.exec(text)?.[0] ?? "";
   if (/^[A-Za-z]+Error:/.test(text) || /[a-z]{3,}_[a-z_]{3,}/.test(text)) {
-    return fallback;
+    return contextPrefix ? `${contextPrefix}${fallback}` : fallback;
   }
   if (/^https?:\/\//.test(text) && text.includes(" failed:")) {
-    return fallback;
+    return contextPrefix ? `${contextPrefix}${fallback}` : fallback;
   }
   return text;
 }

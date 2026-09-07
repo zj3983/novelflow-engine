@@ -56,7 +56,9 @@ export function useChapterDetail({
       };
     }
 
-    setChapter(null);
+    // Keep the previous chapter visible while the selected detail loads
+    // (stale-while-revalidate); the reader is replaced only once the new
+    // chapter (or an error) arrives.
     setLoading(true);
     setError(null);
     fetchFileChapter(fileStoryId, chapterNumber)
@@ -65,6 +67,7 @@ export function useChapterDetail({
       })
       .catch((reason) => {
         if (!cancelled && sequence === requestSequence.current) {
+          setChapter(null);
           setError(reason instanceof Error ? reason.message : String(reason));
         }
       })

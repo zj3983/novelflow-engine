@@ -975,6 +975,30 @@ async function routeCurrentFileProject(
       body: JSON.stringify(chapter && !shouldFail ? chapter : { detail: shouldFail ? "chapter_load_failed" : `chapter_not_found:${chapterNumber}` }),
     });
   });
+  await page.route(`**/file-projects/${encodedId}/outline/rolling`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ schema_version: "rolling-outline/v1", chapters: [] }),
+    });
+  });
+  await page.route(`**/file-projects/${encodedId}/outline/volume-workflow**`, async (route) => {
+    const url = new URL(route.request().url());
+    const targetChapter = Number(url.searchParams.get("target_chapter")) || ((story.current_chapter ?? 0) + 1);
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        schema_version: "volume-workflow/v1",
+        target_chapter: targetChapter,
+        status: "detail_complete",
+        detail_status: "detail_complete",
+        next_action: "generate_next_chapter",
+        volume_id: "volume-1",
+        volume_range: [1, 60],
+      }),
+    });
+  });
   await page.route(`**/file-stories/${encodedId}`, async (route) => {
     options.calls?.push(new URL(route.request().url()).pathname);
     throw new Error(`legacy full story endpoint requested: ${route.request().url()}`);
@@ -1689,11 +1713,24 @@ test("candidate with review warnings can still be accepted explicitly", async ({
 test("file novel world page completes setup and links to first chapter", async ({ page }) => {
   const fixture = await routeCurrentFileProject(page, "opening-world", { chapterCount: 0 });
   let enrichCalls = 0;
-  await page.route(`**/file-projects/${fixture.encodedId}/enrich-world`, async (route) => {
+  const job = {
+    schema_version: "world-build-job/v1",
+    job_id: "wbg-opening-world",
+    project_id: fixture.projectId,
+    status: "completed",
+    progress: "世界观构建完成",
+    active_module_id: "",
+    active_module_title: "",
+    active_module_status: "",
+    error: "",
+    created_at: "",
+    updated_at: "",
+  };
+  await page.route(`**/file-projects/${fixture.encodedId}/world-build-jobs`, async (route) => {
     enrichCalls += 1;
     fixture.project.world_summary = "补全后的世界摘要";
     fixture.project.pipeline_stage = "environment_ready";
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(fixture.project) });
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(job) });
   });
 
   await page.goto(`/projects/${fixture.encodedId}/world`);
@@ -1709,36 +1746,49 @@ test("file novel world page completes setup and links to first chapter", async (
   );
 });
 
-test("world enrichment waits for the backend long-running request", async ({ page }) => {
-  await page.addInitScript(() => {
-    const nativeSetTimeout = window.setTimeout.bind(window);
-    const observed: number[] = [];
-    (window as unknown as { __worldRequestTimeouts: number[] }).__worldRequestTimeouts = observed;
-    window.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
-      const delay = Number(timeout ?? 0);
-      if (delay >= 100_000) {
-        observed.push(delay);
-      }
-      return nativeSetTimeout(handler, delay === 180_000 ? 5 : delay, ...args);
-    }) as typeof window.setTimeout;
-  });
-
+test("world enrichment waits for the backend long-running job", async ({ page }) => {
   const fixture = await routeCurrentFileProject(page, "slow-opening-world", { chapterCount: 0 });
-  await page.route(`**/file-projects/${fixture.encodedId}/enrich-world`, async (route) => {
-    await new Promise((resolve) => setTimeout(resolve, 50));
+  const baseJob = {
+    schema_version: "world-build-job/v1",
+    job_id: "wbg-slow-opening-world",
+    project_id: fixture.projectId,
+    active_module_id: "core_rules",
+    active_module_title: "核心规则",
+    error: "",
+    created_at: "",
+    updated_at: "",
+  };
+  let polls = 0;
+  await page.route(`**/file-projects/${fixture.encodedId}/world-build-jobs`, async (route) => {
     fixture.project.world_summary = "补全后的世界摘要";
     fixture.project.pipeline_stage = "environment_ready";
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(fixture.project) });
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ...baseJob, status: "running", progress: "正在构建核心规则" }),
+    });
+  });
+  await page.route(`**/file-projects/${fixture.encodedId}/world-build-jobs/${baseJob.job_id}`, async (route) => {
+    polls += 1;
+    const done = polls >= 2;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ...baseJob,
+        status: done ? "completed" : "running",
+        progress: done ? "世界观构建完成" : "正在构建核心规则",
+      }),
+    });
   });
 
   await page.goto(`/projects/${fixture.encodedId}/world`);
   await page.getByRole("button", { name: "AI 补全世界观", exact: true }).click();
 
+  // The page keeps polling the job until it reaches a terminal state
+  // instead of assuming the first response is finished.
   await expect(page.getByText("世界观已补全，可以继续检查或直接开始写作。", { exact: true })).toBeVisible();
-  const requestTimeouts = await page.evaluate(
-    () => (window as unknown as { __worldRequestTimeouts: number[] }).__worldRequestTimeouts,
-  );
-  expect(requestTimeouts).toContain(1_800_000);
+  expect(polls).toBeGreaterThanOrEqual(2);
 });
 
 test("file novel overview continues every opening stage", async ({ page }) => {

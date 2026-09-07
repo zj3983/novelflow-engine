@@ -104,6 +104,19 @@ async function mockWorkspace(page: Page, characters = [character]) {
     branched_from_chapter: null,
   }));
   await page.route(`**/file-projects/${ENCODED_PROJECT_ID}/outline`, (route) => fulfill(route, outline));
+  await page.route(`**/file-projects/${ENCODED_PROJECT_ID}/outline/rolling`, (route) => fulfill(route, {
+    schema_version: "rolling-outline/v1",
+    chapters: [],
+  }));
+  await page.route(`**/file-projects/${ENCODED_PROJECT_ID}/outline/volume-workflow**`, (route) => fulfill(route, {
+    schema_version: "volume-workflow/v1",
+    target_chapter: 5,
+    status: "detail_complete",
+    detail_status: "detail_complete",
+    next_action: "generate_next_chapter",
+    volume_id: "volume-1",
+    volume_range: [1, 60],
+  }));
 }
 
 test("伏笔 tab 独立加载、编辑并保存标准化返回", async ({ page }) => {
