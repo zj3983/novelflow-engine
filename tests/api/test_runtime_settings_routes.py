@@ -87,6 +87,46 @@ def test_masked_update_preserves_stored_account_key_and_reveal_is_no_store():
     assert reveal.headers["pragma"] == "no-cache"
 
 
+def test_outline_planning_settings_round_trip_and_legacy_default():
+    # Old saved payloads without the section keep working with defaults.
+    legacy = runtime_configuration()
+    legacy.pop("outline_planning", None)
+    updated = client.put("/runtime-settings", json=legacy)
+    assert updated.status_code == 200
+    assert updated.json()["outline_planning"] == {
+        "split_phases": False,
+        "stream": False,
+        "timeout_seconds": 900,
+    }
+
+    candidate = runtime_configuration()
+    candidate["outline_planning"] = {
+        "split_phases": True,
+        "stream": True,
+        "timeout_seconds": 1500,
+    }
+    saved = client.put("/runtime-settings", json=candidate)
+    assert saved.status_code == 200
+    assert saved.json()["outline_planning"] == {
+        "split_phases": True,
+        "stream": True,
+        "timeout_seconds": 1500,
+    }
+    persisted = client.get("/runtime-settings").json()
+    assert persisted["outline_planning"]["split_phases"] is True
+    assert persisted["outline_planning"]["stream"] is True
+    assert persisted["outline_planning"]["timeout_seconds"] == 1500
+
+    invalid = runtime_configuration()
+    invalid["outline_planning"] = {
+        "split_phases": True,
+        "stream": True,
+        "timeout_seconds": 10,
+    }
+    rejected = client.put("/runtime-settings", json=invalid)
+    assert rejected.status_code == 422
+
+
 def test_connection_test_uses_gateway_candidate_without_saving(monkeypatch):
     captured = {}
 

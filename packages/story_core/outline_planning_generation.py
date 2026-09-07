@@ -29,6 +29,7 @@ from packages.story_core.outline_planning import (
 )
 from packages.story_core.runtime_config import (
     StageRuntimeSettings,
+    get_outline_planning_settings,
     resolve_stage_runtime,
 )
 from packages.story_core.skill_packs import skill_pack_prompt_context
@@ -343,12 +344,7 @@ def _runtime_gateway_for_legacy_injection(
 def _outline_planning_timeout_seconds() -> int | None:
     """Per-call timeout for outline planning; big single-shot plans need it."""
 
-    raw = os.environ.get("NOVEL_OUTLINE_PLANNING_TIMEOUT_SECONDS", "")
-    try:
-        value = int(raw)
-    except ValueError:
-        return None
-    return value if value > 0 else None
+    return get_outline_planning_settings().timeout_seconds
 
 
 def _complete_payload(
@@ -369,7 +365,7 @@ def _complete_payload(
             max_tokens=payload.get("max_tokens"),
             json_mode=payload.get("response_format") == {"type": "json_object"},
             timeout_seconds=_outline_planning_timeout_seconds(),
-            metadata={"stream": os.environ.get("NOVEL_OUTLINE_PLANNING_STREAM", "") == "1"},
+            metadata={"stream": get_outline_planning_settings().stream},
         ),
     )
     if not response.ok:
@@ -1852,7 +1848,7 @@ class LLMOutlinePlanningGenerator:
             }
             split_full_plan = (
                 runtime.protocol.endswith("_cli")
-                or os.environ.get("NOVEL_OUTLINE_SPLIT_PHASES", "") == "1"
+                or get_outline_planning_settings().split_phases
             ) and (
                 mode == "initial"
                 or (

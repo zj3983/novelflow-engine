@@ -54,6 +54,11 @@ def _runtime_configuration(*, provider="openai"):
             "base_url": "",
             "model": "",
         },
+        "outline_planning": {
+            "split_phases": False,
+            "stream": False,
+            "timeout_seconds": 900,
+        },
         "temperature": 0.7,
         "new_character_policy": "Director review",
     }
@@ -397,6 +402,7 @@ def test_runtime_settings_get_returns_only_provider_stage_contract():
         "accounts",
         "stages",
         "image",
+        "outline_planning",
         "temperature",
         "new_character_policy",
     }

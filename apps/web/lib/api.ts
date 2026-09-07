@@ -112,11 +112,18 @@ export type RuntimeImageSettings = {
   model: string;
 };
 
+export type RuntimeOutlinePlanningSettings = {
+  split_phases: boolean;
+  stream: boolean;
+  timeout_seconds: number;
+};
+
 export type RuntimeSettings = {
   schema_version: "runtime-config/v2";
   accounts: Record<string, RuntimeProviderAccount>;
   stages: Record<RuntimeStageName, RuntimeStageBinding>;
   image: RuntimeImageSettings;
+  outline_planning: RuntimeOutlinePlanningSettings;
   temperature: number;
   new_character_policy: AgentSettings["new_character_policy"];
 };
@@ -2513,6 +2520,11 @@ export function createDefaultRuntimeSettings(): RuntimeSettings {
       base_url: "",
       model: "",
     },
+    outline_planning: {
+      split_phases: false,
+      stream: false,
+      timeout_seconds: 900,
+    },
     temperature: 0.7,
     new_character_policy: "Director review",
   };
@@ -2760,6 +2772,14 @@ function normalizeRuntimeSettings(value?: Partial<RuntimeSettings>): RuntimeSett
       },
     },
     image: normalizeRuntimeImage(value.image),
+    outline_planning: {
+      split_phases: Boolean(value.outline_planning?.split_phases ?? base.outline_planning.split_phases),
+      stream: Boolean(value.outline_planning?.stream ?? base.outline_planning.stream),
+      timeout_seconds: Math.min(
+        7200,
+        Math.max(60, Number(value.outline_planning?.timeout_seconds ?? base.outline_planning.timeout_seconds) || 900),
+      ),
+    },
     temperature: Number(value.temperature ?? base.temperature),
     new_character_policy: value.new_character_policy ?? base.new_character_policy,
   };

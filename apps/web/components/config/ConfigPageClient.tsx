@@ -12,6 +12,7 @@ import {
   type RuntimeSettings,
 } from "../../lib/api";
 import { CoverImageConfigCard } from "./CoverImageConfigCard";
+import { OutlinePlanningCard } from "./OutlinePlanningCard";
 import { ProviderAccountsCard } from "./ProviderAccountsCard";
 import { StageBindingsCard } from "./StageBindingsCard";
 import type { RuntimeConnectionMap } from "./types";
@@ -182,6 +183,11 @@ export function ConfigPageClient() {
       <div className="config-shell__primary">
         <ProviderAccountsCard value={settings} providers={providers} statuses={connections} disabled={busy} onChange={setSettings} onTest={(providerId, model) => void testProvider(providerId, model)} />
         <StageBindingsCard value={settings} providers={providers} disabled={busy} onChange={setSettings} />
+        <OutlinePlanningCard
+          value={settings.outline_planning}
+          disabled={busy}
+          onChange={(outline_planning) => setSettings((current) => ({ ...current, outline_planning }))}
+        />
         <CoverImageConfigCard
           value={settings.image}
           errors={imageErrors}

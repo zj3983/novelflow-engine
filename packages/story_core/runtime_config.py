@@ -165,11 +165,22 @@ def _default_stage_bindings() -> StageBindings:
     return StageBindings(planner=_default_binding("planner"), writer=_default_binding("writer"))
 
 
+class OutlinePlanningConfiguration(_StrictModel):
+    """开书大纲规划的可调参数；推理型模型（k3 等）需要分相与流式才能跑完。"""
+
+    split_phases: bool = False
+    stream: bool = False
+    timeout_seconds: int = Field(default=900, ge=60, le=7200)
+
+
 class RuntimeConfiguration(_StrictModel):
     schema_version: Literal["runtime-config/v2"] = "runtime-config/v2"
     accounts: dict[str, ProviderAccount] = Field(default_factory=_default_accounts)
     stages: StageBindings = Field(default_factory=_default_stage_bindings)
     image: ImageRuntimeConfiguration = Field(default_factory=ImageRuntimeConfiguration)
+    outline_planning: OutlinePlanningConfiguration = Field(
+        default_factory=OutlinePlanningConfiguration
+    )
     temperature: float = 0.7
     new_character_policy: NewCharacterPolicy = "Director review"
 
@@ -497,6 +508,28 @@ def _commit_runtime_update(update: Callable[[RuntimeConfiguration], None]) -> Ru
 def get_runtime_configuration() -> RuntimeConfiguration:
     with _lock:
         return _runtime_configuration.model_copy(deep=True)
+
+
+def get_outline_planning_settings() -> OutlinePlanningConfiguration:
+    """开书大纲规划参数：配置页为准，同名环境变量可临时覆盖。"""
+
+    settings = get_runtime_configuration().outline_planning
+    if os.environ.get("NOVEL_OUTLINE_SPLIT_PHASES", ""):
+        settings = settings.model_copy(
+            update={"split_phases": os.environ["NOVEL_OUTLINE_SPLIT_PHASES"] == "1"}
+        )
+    if os.environ.get("NOVEL_OUTLINE_PLANNING_STREAM", ""):
+        settings = settings.model_copy(
+            update={"stream": os.environ["NOVEL_OUTLINE_PLANNING_STREAM"] == "1"}
+        )
+    if os.environ.get("NOVEL_OUTLINE_PLANNING_TIMEOUT_SECONDS", ""):
+        try:
+            override = int(os.environ["NOVEL_OUTLINE_PLANNING_TIMEOUT_SECONDS"])
+        except ValueError:
+            override = 0
+        if override > 0:
+            settings = settings.model_copy(update={"timeout_seconds": override})
+    return settings
 
 
 def set_runtime_configuration(configuration: RuntimeConfiguration | dict) -> RuntimeConfiguration:
