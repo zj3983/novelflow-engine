@@ -47,37 +47,8 @@ jobs:
           )
 
           replace_once(
-              '''class GeneratedCharacterRoster(_PlanningInput):
-              characters: list["PlanningCharacterSeed"]
-
-
-          class PlanningCharacterSeed(_PlanningInput):
-              name: str = Field(min_length=1, max_length=80)
-              role: str = Field(min_length=1, max_length=80)
-              character_tier: CharacterTier
-              first_appearance: int = Field(default=0, ge=0)
-              age: int | None = Field(default=None, ge=0)
-              origin: str = Field(min_length=1, max_length=300)
-              current_identity: str = Field(min_length=1, max_length=200)
-              occupation: str = Field(min_length=1, max_length=120)
-              authority_scope: str = Field(default="", max_length=300)
-              immediate_problem: str = Field(min_length=1, max_length=300)
-              immediate_goal: str = Field(min_length=1, max_length=300)
-              long_term_goal: str = Field(default="", max_length=300)
-              failure_stakes: str = Field(min_length=1, max_length=300)
-              personality: str = Field(min_length=1, max_length=300)
-              speech_style: str = Field(min_length=1, max_length=200)
-              action_style: str = Field(min_length=1, max_length=200)
-              emotional_trigger: str = Field(default="", max_length=200)
-              decision_rule: str = Field(min_length=1, max_length=200)
-              hidden_matter: str = Field(default="", max_length=300)
-              dialogue_examples: list[str] = Field(min_length=2, max_length=2)
-          ''',
-              '''class GeneratedCharacterRoster(_PlanningInput):
-              characters: list["PlanningCharacterSeed"]
-
-
-          class PlanningRelationshipSeed(_PlanningInput):
+              'class PlanningCharacterSeed(_PlanningInput):\n',
+              '''class PlanningRelationshipSeed(_PlanningInput):
               target: str = Field(min_length=1, max_length=80)
               relation_type: str = Field(min_length=1, max_length=80)
               history: str = Field(min_length=1, max_length=300)
@@ -88,30 +59,20 @@ jobs:
 
 
           class PlanningCharacterSeed(_PlanningInput):
-              name: str = Field(min_length=1, max_length=80)
-              role: str = Field(min_length=1, max_length=80)
-              character_tier: CharacterTier
-              first_appearance: int = Field(default=0, ge=0)
-              age: int | None = Field(default=None, ge=0)
-              origin: str = Field(min_length=1, max_length=300)
-              current_identity: str = Field(min_length=1, max_length=200)
-              occupation: str = Field(min_length=1, max_length=120)
-              authority_scope: str = Field(default="", max_length=300)
-              immediate_problem: str = Field(min_length=1, max_length=300)
-              immediate_goal: str = Field(min_length=1, max_length=300)
-              motivation: str = Field(min_length=1, max_length=300)
-              long_term_goal: str = Field(default="", max_length=300)
-              failure_stakes: str = Field(min_length=1, max_length=300)
-              personality: str = Field(min_length=1, max_length=300)
-              speech_style: str = Field(min_length=1, max_length=200)
-              action_style: str = Field(min_length=1, max_length=200)
-              emotional_trigger: str = Field(default="", max_length=200)
-              decision_rule: str = Field(min_length=1, max_length=200)
-              hidden_matter: str = Field(default="", max_length=300)
-              dialogue_examples: list[str] = Field(min_length=2, max_length=2)
-              relationship_notes: list[PlanningRelationshipSeed] = Field(min_length=1, max_length=6)
           ''',
-              'character seed schema',
+              'relationship seed schema',
+          )
+          replace_once(
+              '    immediate_goal: str = Field(min_length=1, max_length=300)\n',
+              '    immediate_goal: str = Field(min_length=1, max_length=300)\n'
+              '    motivation: str = Field(min_length=1, max_length=300)\n',
+              'motivation seed field',
+          )
+          replace_once(
+              '    dialogue_examples: list[str] = Field(min_length=2, max_length=2)\n\n\n_CHINESE_DIGITS',
+              '    dialogue_examples: list[str] = Field(min_length=2, max_length=2)\n'
+              '    relationship_notes: list[PlanningRelationshipSeed] = Field(min_length=1, max_length=6)\n\n\n_CHINESE_DIGITS',
+              'relationship seed field',
           )
 
           replace_once(
@@ -135,29 +96,20 @@ jobs:
           ''',
               'chronology source fields',
           )
-
           replace_once(
               '                "motivation": seed.immediate_goal,\n',
               '                "motivation": seed.motivation,\n',
               'motivation expansion',
           )
-
           replace_once(
-              '''            "dialogue_examples": dialogue_examples,
-                          "relationship_notes": [],
-                      }
-                  )
+              '            "relationship_notes": [],\n',
+              '            "relationship_notes": [\n'
+              '                note.model_dump(mode="json") for note in seed.relationship_notes\n'
+              '            ],\n',
+              'relationship expansion',
+          )
 
-
-          def _validate_game_dual_line_payoffs(plan: GeneratedOutlinePlan) -> None:
-          ''',
-              '''            "dialogue_examples": dialogue_examples,
-                          "relationship_notes": [
-                              note.model_dump(mode="json") for note in seed.relationship_notes
-                          ],
-                      }
-                  )
-
+          helper_block = '''
 
           def _character_card_roster_quality_issues(
               cards: list[Any],
@@ -232,51 +184,43 @@ jobs:
                   [_expand_character_seed(seed) for seed in seeds],
                   existing_names=existing_names,
               )
-
-
-          def _validate_game_dual_line_payoffs(plan: GeneratedOutlinePlan) -> None:
-          ''',
-              'relationship expansion and quality helpers',
+          '''
+          replace_once(
+              '\n\ndef _validate_game_dual_line_payoffs(plan: GeneratedOutlinePlan) -> None:\n',
+              helper_block + '\n\ndef _validate_game_dual_line_payoffs(plan: GeneratedOutlinePlan) -> None:\n',
+              'quality helper insertion',
           )
 
           replace_once(
-              '''                "Do not redesign the volume, story nodes, world, or existing characters.",
-                              "Dialogue examples must be complete, natural Chinese utterances suited to the relationship and situation.",
-          ''',
-              '''                "Do not redesign the volume, story nodes, world, or existing characters.",
-                              "motivation must explain why immediate_goal matters and must not repeat or paraphrase immediate_goal.",
-                              "relationship_notes must contain at least one concrete tie to an existing or newly generated named character, including history, current attitude, and shared interest or conflict.",
-                              "For supporting characters, role should name the recurring narrative function such as ally, rival, mentor, resource contact, or relationship anchor instead of only saying supporting.",
-                              "Dialogue examples must be complete, natural Chinese utterances suited to the relationship and situation.",
-          ''',
+              '                "Do not redesign the volume, story nodes, world, or existing characters.",\n'
+              '                "Dialogue examples must be complete, natural Chinese utterances suited to the relationship and situation.",\n',
+              '                "Do not redesign the volume, story nodes, world, or existing characters.",\n'
+              '                "motivation must explain why immediate_goal matters and must not repeat or paraphrase immediate_goal.",\n'
+              '                "relationship_notes must contain at least one concrete tie to an existing or newly generated named character, including history, current attitude, and shared interest or conflict.",\n'
+              '                "For supporting characters, role should name the recurring narrative function such as ally, rival, mentor, resource contact, or relationship anchor instead of only saying supporting.",\n'
+              '                "Dialogue examples must be complete, natural Chinese utterances suited to the relationship and situation.",\n',
               'volume character validation rules',
           )
-
           replace_once(
-              '''                        "characters. Do not generate chapters, prose, groups, unnamed roles, "
-                                      "or replacements for existing characters."
-          ''',
-              '''                        "characters. Do not generate chapters, prose, groups, unnamed roles, "
-                                      "or replacements for existing characters. Every character must have an independent "
-                                      "motivation that explains why the immediate goal matters, plus at least one concrete "
-                                      "relationship note linked to the existing or newly generated cast."
-          ''',
+              '                        "characters. Do not generate chapters, prose, groups, unnamed roles, "\n'
+              '                        "or replacements for existing characters."\n',
+              '                        "characters. Do not generate chapters, prose, groups, unnamed roles, "\n'
+              '                        "or replacements for existing characters. Every character must have an independent "\n'
+              '                        "motivation that explains why the immediate goal matters, plus at least one concrete "\n'
+              '                        "relationship note linked to the existing or newly generated cast."\n',
               'volume character system prompt',
           )
-
           replace_once(
-              '''            generated_names.add(name)
-                          result.append(_expand_character_seed(seed))
-                      return result
-          ''',
-              '''            generated_names.add(name)
-                          result.append(_expand_character_seed(seed))
-                      _validate_character_seed_roster_quality(
-                          new_seeds,
-                          existing_names=existing_names,
-                      )
-                      return result
-          ''',
+              '            generated_names.add(name)\n'
+              '            result.append(_expand_character_seed(seed))\n'
+              '        return result\n',
+              '            generated_names.add(name)\n'
+              '            result.append(_expand_character_seed(seed))\n'
+              '        _validate_character_seed_roster_quality(\n'
+              '            new_seeds,\n'
+              '            existing_names=existing_names,\n'
+              '        )\n'
+              '        return result\n',
               'volume quality validation',
           )
 
@@ -285,13 +229,11 @@ jobs:
               '                    "Every new character must have non-empty identity_profile.origin, identity_profile.current_identity, identity_profile.occupation, story_drive.immediate_goal, story_drive.motivation, story_drive.failure_stakes, and at least one relationship_notes entry; motivation must explain why the goal matters and must not repeat immediate_goal.",\n',
               'direct extend character rule',
           )
-
           replace_once(
               '                    "Every character must have non-empty identity_profile.origin, identity_profile.current_identity, identity_profile.occupation, story_drive.immediate_goal, and story_drive.failure_stakes.",\n',
               '                    "Every character must have non-empty identity_profile.origin, identity_profile.current_identity, identity_profile.occupation, story_drive.immediate_goal, story_drive.motivation, story_drive.failure_stakes, and at least one relationship_notes entry; motivation must explain why the goal matters and must not repeat immediate_goal.",\n',
               'direct opening character rule',
           )
-
           replace_once(
               '                            "并写清年龄或身份、来历、职业、当前生活、目标、失败代价、可观察行为和两句自然对白。"\n',
               '                            "并写清年龄或身份、来历、职业、当前生活、即时目标、独立动机、失败代价、具体人物关系、可观察行为和两句自然对白。"\n'
@@ -300,60 +242,49 @@ jobs:
           )
 
           replace_once(
-              '''                        "Do not assign two different dates to the same historical event inside one card.",
-                                  ],
-          ''',
-              '''                        "Do not assign two different dates to the same historical event inside one card.",
-                                      "motivation must explain the concrete history, pressure, desire, fear, obligation, or stake that makes immediate_goal matter; it must not copy immediate_goal.",
-                                      "Every card must include at least one relationship_notes entry linked to another character in this roster, with concrete history, current attitude, and shared interest or conflict.",
-                                      "Do not reuse the same motivation, long-term goal, speech style, or action style across multiple characters.",
-                                  ],
-          ''',
+              '                        "Do not assign two different dates to the same historical event inside one card.",\n'
+              '                    ],\n',
+              '                        "Do not assign two different dates to the same historical event inside one card.",\n'
+              '                        "motivation must explain the concrete history, pressure, desire, fear, obligation, or stake that makes immediate_goal matter; it must not copy immediate_goal.",\n'
+              '                        "Every card must include at least one relationship_notes entry linked to another character in this roster, with concrete history, current attitude, and shared interest or conflict.",\n'
+              '                        "Do not reuse the same motivation, long-term goal, speech style, or action style across multiple characters.",\n'
+              '                    ],\n',
               'split roster validation rules',
           )
-
           replace_once(
-              '''                                "Professional terms belong only in scenes where the current topic requires them. "
-                                              "Follow prompt_context.output_schema exactly."
-          ''',
-              '''                                "Professional terms belong only in scenes where the current topic requires them. "
-                                              "immediate_goal is what the character is trying to do now; motivation is why that goal matters to this person, and the two must not repeat each other. "
-                                              "Every card must include at least one concrete relationship note linked to another generated character, with history, current attitude, and a shared interest or conflict. "
-                                              "Do not give multiple characters identical motivation, long-term goal, speech style, or action style. "
-                                              "Follow prompt_context.output_schema exactly."
-          ''',
+              '                                "Professional terms belong only in scenes where the current topic requires them. "\n'
+              '                                "Follow prompt_context.output_schema exactly."\n',
+              '                                "Professional terms belong only in scenes where the current topic requires them. "\n'
+              '                                "immediate_goal is what the character is trying to do now; motivation is why that goal matters to this person, and the two must not repeat each other. "\n'
+              '                                "Every card must include at least one concrete relationship note linked to another generated character, with history, current attitude, and a shared interest or conflict. "\n'
+              '                                "Do not give multiple characters identical motivation, long-term goal, speech style, or action style. "\n'
+              '                                "Follow prompt_context.output_schema exactly."\n',
               'split roster system prompt',
           )
-
           replace_once(
-              '''                    for character in characters:
-                                      _validate_character_seed_chronology(character)
-          ''',
-              '''                    for character in characters:
-                                      _validate_character_seed_chronology(character)
-                                  _validate_character_seed_roster_quality(list(characters))
-          ''',
+              '                    for character in characters:\n'
+              '                        _validate_character_seed_chronology(character)\n',
+              '                    for character in characters:\n'
+              '                        _validate_character_seed_chronology(character)\n'
+              '                    _validate_character_seed_roster_quality(list(characters))\n',
               'split roster quality validator',
           )
-
           replace_once(
-              '''                    candidate_plan = GeneratedOutlinePlan.model_validate(candidate)
-                                  validate_chapter_title_window(
-          ''',
-              '''                    candidate_plan = GeneratedOutlinePlan.model_validate(candidate)
-                                  if (
-                                      mode == "initial"
-                                      or mode == "extend"
-                                      or (mode == "regenerate" and validated.current_chapter == 0)
-                                  ):
-                                      _validate_character_card_roster_quality(
-                                          list(candidate_plan.characters),
-                                          existing_names=(
-                                              set(existing_character_names) if mode == "extend" else set()
-                                          ),
-                                      )
-                                  validate_chapter_title_window(
-          ''',
+              '                    candidate_plan = GeneratedOutlinePlan.model_validate(candidate)\n'
+              '                    validate_chapter_title_window(\n',
+              '                    candidate_plan = GeneratedOutlinePlan.model_validate(candidate)\n'
+              '                    if (\n'
+              '                        mode == "initial"\n'
+              '                        or mode == "extend"\n'
+              '                        or (mode == "regenerate" and validated.current_chapter == 0)\n'
+              '                    ):\n'
+              '                        _validate_character_card_roster_quality(\n'
+              '                            list(candidate_plan.characters),\n'
+              '                            existing_names=(\n'
+              '                                set(existing_character_names) if mode == "extend" else set()\n'
+              '                            ),\n'
+              '                        )\n'
+              '                    validate_chapter_title_window(\n',
               'direct character quality validation',
           )
 
