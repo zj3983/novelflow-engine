@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from copy import deepcopy
 from typing import Any, Callable, Literal
@@ -339,6 +340,17 @@ def _runtime_gateway_for_legacy_injection(
     return RuntimeModelGateway(runtime_resolver=compatible_runtime, transport=transport)
 
 
+def _outline_planning_timeout_seconds() -> int | None:
+    """Per-call timeout for outline planning; big single-shot plans need it."""
+
+    raw = os.environ.get("NOVEL_OUTLINE_PLANNING_TIMEOUT_SECONDS", "")
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
 def _complete_payload(
     gateway: RuntimeModelGateway,
     payload: dict[str, Any],
@@ -356,6 +368,7 @@ def _complete_payload(
             temperature=payload.get("temperature"),
             max_tokens=payload.get("max_tokens"),
             json_mode=payload.get("response_format") == {"type": "json_object"},
+            timeout_seconds=_outline_planning_timeout_seconds(),
         ),
     )
     if not response.ok:
