@@ -4,6 +4,7 @@ import json
 from copy import deepcopy
 import inspect
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -749,12 +750,22 @@ def _codex_phase_content(prompt: dict) -> dict:
             *plan["characters"],
             *(_card(f"配角{suffix}", "supporting") for suffix in "甲乙丙丁戊己"),
         ]
+        roster_names = [card["name"] for card in roster_cards]
+        taxonomy_by_tier = {
+            "protagonist": ("core", "protagonist"),
+            "stage_antagonist": ("major", "stage_antagonist"),
+            "long_term_antagonist": ("core", "long_term_antagonist"),
+            "supporting": ("supporting", "ally"),
+        }
         return {
             "characters": [
                 {
                     "name": card["name"],
                     "role": card["role"],
                     "character_tier": card["character_tier"],
+                    "importance": taxonomy_by_tier[card["character_tier"]][0],
+                    "narrative_function": taxonomy_by_tier[card["character_tier"]][1],
+                    "profile_status": "ready",
                     "first_appearance": card["first_appearance"],
                     "age": card["identity_profile"].get("age"),
                     "origin": card["identity_profile"]["origin"],
@@ -762,18 +773,29 @@ def _codex_phase_content(prompt: dict) -> dict:
                     "occupation": card["identity_profile"]["occupation"],
                     "authority_scope": "只处理职责范围内的事",
                     "immediate_problem": "眼前的冲突正在逼近",
-                    "immediate_goal": card["story_drive"]["immediate_goal"],
-                    "long_term_goal": "完成自己的长期目标",
+                    "immediate_goal": f"{card['name']}先处理眼前的冲突",
+                    "motivation": f"{card['name']}必须保住这条线索，才有机会继续追查旧案",
+                    "long_term_goal": f"{card['name']}完成自己的长期目标",
                     "failure_stakes": card["story_drive"]["failure_stakes"],
+                    "main_conflict_reason": f"{card['name']}与阻止查案的人存在直接利益冲突",
                     "personality": "做事有明确取舍",
-                    "speech_style": "按关系和场合说完整的话",
-                    "action_style": "先观察再行动",
+                    "speech_style": f"{card['name']}会按关系和场合把话说完整",
+                    "action_style": f"{card['name']}先观察再采取下一步行动",
                     "emotional_trigger": "利益受损",
                     "decision_rule": "先保住最重要的目标",
-                    "hidden_matter": "",
+                    "hidden_matter": f"{card['name']}没有告诉别人自己掌握的一条旧案线索",
                     "dialogue_examples": card["dialogue_examples"],
+                    "relationship_notes": [
+                        {
+                            "target": roster_names[(index + 1) % len(roster_names)],
+                            "relation_type": "ally",
+                            "history": "两人曾共同处理过一份关键旧档",
+                            "current_attitude": "愿意合作但仍保留一层戒心",
+                            "shared_interest_or_conflict": "都要追查旧案但对风险判断不同",
+                        }
+                    ],
                 }
-                for card in roster_cards
+                for index, card in enumerate(roster_cards)
             ]
         }
     template = plan["outline"]["chapters"][0]
@@ -1176,6 +1198,89 @@ def test_outline_generation_routes_through_planner_gateway() -> None:
     assert calls[0][0] == "planner"
     assert calls[0][1].operation == "outline_planning"
     assert calls[0][1].json_mode is True
+
+
+def test_direct_regenerate_checks_explicit_character_status_after_committed_chapters(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        outline_generation_module,
+        "get_outline_planning_settings",
+        lambda: SimpleNamespace(split_phases=False, timeout_seconds=900, stream=False),
+    )
+    bad_plan = _model_valid_plan()
+    taxonomy_by_tier = {
+        "protagonist": ("core", "protagonist"),
+        "stage_antagonist": ("major", "stage_antagonist"),
+        "long_term_antagonist": ("core", "long_term_antagonist"),
+        "supporting": ("supporting", "ally"),
+    }
+    names = [card["name"] for card in bad_plan["characters"]]
+    for index, card in enumerate(bad_plan["characters"]):
+        importance, narrative_function = taxonomy_by_tier[card["character_tier"]]
+        card.update(
+            {
+                "importance": importance,
+                "narrative_function": narrative_function,
+                "profile_status": "stub",
+                "relationship_notes": [
+                    {
+                        "target": names[(index + 1) % len(names)],
+                        "relation_type": "ally",
+                        "history": "两人曾共同处理过一份关键旧档",
+                        "current_attitude": "愿意合作但仍保留一层戒心",
+                        "shared_interest_or_conflict": "都要追查旧案但对风险判断不同",
+                    }
+                ],
+            }
+        )
+
+    calls = 0
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        nonlocal calls
+        calls += 1
+        prompt = json.loads(payload["messages"][1]["content"])
+        if calls > 1 and "failed_characters" in prompt:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {"characters": prompt["failed_characters"]},
+                                ensure_ascii=False,
+                            )
+                        }
+                    }
+                ]
+            }
+        plan = deepcopy(bad_plan)
+        plan["outline"]["chapters"] = [
+            {
+                **plan["outline"]["chapters"][0],
+                "chapter_number": number,
+            }
+            for number in prompt["target_chapter_numbers"]
+        ]
+        return {
+            "choices": [
+                {"message": {"content": json.dumps(plan, ensure_ascii=False)}}
+            ]
+        }
+
+    fixture = RecordingRuntime()
+    with pytest.raises(ValueError, match="outline_planning_generation_failed") as exc_info:
+        LLMOutlinePlanningGenerator(
+            post_json=fake_post,
+            runtime_resolver=fixture.resolve,
+        ).generate(
+            fixture.brief(current_chapter=30, existing_chapters=list(range(1, 31))),
+            mode="regenerate",
+        )
+
+    assert calls == 2
+    assert exc_info.value.__cause__ is not None
+    assert "core_requires_ready" in str(exc_info.value.__cause__)
 
 
 def test_generate_chapter_batch_uses_complete_volume_context_and_exact_numbers() -> None:
@@ -2227,33 +2332,7 @@ def test_codexcli_full_plan_is_generated_in_three_bounded_phases(scenario: str) 
             plan["outline"]["chapters"] = []
             content = {"outline": plan["outline"]}
         elif prompt["generation_phase"] == "characters":
-            content = {
-                "characters": [
-                    {
-                        "name": card["name"],
-                        "role": card["role"],
-                        "character_tier": card["character_tier"],
-                        "first_appearance": card["first_appearance"],
-                        "age": card["identity_profile"].get("age"),
-                        "origin": card["identity_profile"]["origin"],
-                        "current_identity": card["identity_profile"]["current_identity"],
-                        "occupation": card["identity_profile"]["occupation"],
-                        "authority_scope": "只处理职责范围内的事",
-                        "immediate_problem": "眼前的冲突正在逼近",
-                        "immediate_goal": card["story_drive"]["immediate_goal"],
-                        "long_term_goal": "完成自己的长期目标",
-                        "failure_stakes": card["story_drive"]["failure_stakes"],
-                        "personality": "做事有明确取舍",
-                        "speech_style": "按关系和场合说完整的话",
-                        "action_style": "先观察再行动",
-                        "emotional_trigger": "利益受损",
-                        "decision_rule": "先保住最重要的目标",
-                        "hidden_matter": "",
-                        "dialogue_examples": card["dialogue_examples"],
-                    }
-                    for card in plan["characters"]
-                ]
-            }
+            content = _codex_phase_content(prompt)
         else:
             template = plan["outline"]["chapters"][0]
             detailed = _detailed_chapter_template()

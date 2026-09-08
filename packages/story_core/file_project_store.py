@@ -5344,12 +5344,18 @@ class FileProjectStore(
                         "name",
                         "role",
                         "character_tier",
+                        "importance",
+                        "narrative_function",
+                        "profile_status",
+                        "profile_completeness",
                         "first_appearance",
                         "identity_profile",
                         "background_profile",
                         "current_life_profile",
                         "story_drive",
+                        "performance_profile",
                         "dialogue_examples",
+                        "relationship_notes",
                     )
                 }
             )
@@ -5817,6 +5823,10 @@ class FileProjectStore(
                     mode == "initial" and current_chapter == 0
                 ),
                 allow_established_roster=(mode == "regenerate"),
+                # The generator applies the character quality gate.  This
+                # persistence boundary must keep accepting migrated legacy
+                # models whose inferred taxonomy is not an explicit claim.
+                enforce_character_quality=False,
             )
         else:
             existing_character_names: set[str] = set()
@@ -5848,6 +5858,7 @@ class FileProjectStore(
                 expected_primary_trope_id=expected_primary_trope_id,
                 fallback_outline=current_outline,
                 committed_through_chapter=current_chapter,
+                enforce_character_quality=False,
             )
 
         generated_outline = validated.outline.model_dump(mode="json")

@@ -7,10 +7,16 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from packages.story_core.character_profiles import (
     BackgroundProfile,
+    CharacterImportance,
+    CharacterNarrativeFunction,
+    CharacterProfileStatus,
     CurrentLifeProfile,
     IdentityProfile,
     RelationshipNote,
     StoryDriveProfile,
+    character_profile_completeness,
+    infer_character_profile_status,
+    infer_character_taxonomy,
 )
 
 from packages.story_core.env import load_environment_files
@@ -384,6 +390,10 @@ class CharacterState(BaseModel):
     name: str
     role: str
     character_tier: str = ""
+    importance: CharacterImportance
+    narrative_function: CharacterNarrativeFunction
+    profile_status: CharacterProfileStatus
+    profile_completeness: int = Field(ge=0, le=100)
     first_appearance: int = Field(default=0, ge=0)
     identity_profile: IdentityProfile = Field(default_factory=IdentityProfile)
     background_profile: BackgroundProfile = Field(default_factory=BackgroundProfile)
@@ -421,6 +431,19 @@ class CharacterState(BaseModel):
     last_proposed_chapter: int = 0
     last_approved_chapter: int = 0
     introduced_by: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_character_taxonomy(cls, value):
+        if not isinstance(value, dict):
+            return value
+        migrated = dict(value)
+        importance, narrative_function = infer_character_taxonomy(migrated)
+        migrated.setdefault("importance", importance)
+        migrated.setdefault("narrative_function", narrative_function)
+        migrated.setdefault("profile_status", infer_character_profile_status(migrated))
+        migrated.setdefault("profile_completeness", character_profile_completeness(migrated))
+        return migrated
 
     @field_validator("current_state", mode="before")
     @classmethod

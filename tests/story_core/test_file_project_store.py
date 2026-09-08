@@ -4233,6 +4233,48 @@ def test_planning_brief_keeps_all_character_names_while_limiting_detailed_cards(
     ]
 
 
+def test_planning_brief_preserves_character_taxonomy_and_relationship_context(tmp_path) -> None:
+    card = _planning_card("林照", "supporting")
+    card.update(
+        {
+            "importance": "major",
+            "narrative_function": "ally",
+            "profile_status": "stub",
+            "profile_completeness": 42,
+            "performance_profile": {
+                "speech_style": "先问清楚证据再表态",
+                "action_style": "先留证再试探",
+            },
+            "relationship_notes": [
+                {
+                    "target": "苏叶",
+                    "relation_type": "ally",
+                    "history": "两人共同守住过一份旧档",
+                    "current_attitude": "愿意合作但保留一层戒心",
+                    "shared_interest_or_conflict": "都要追查旧案但对风险判断不同",
+                }
+            ],
+        }
+    )
+    store = _make_minimal_file_project(
+        tmp_path / "novel",
+        project={
+            "seed_outline": "林照从旧档查出宗门旧案。",
+            "character_profiles": [card],
+        },
+        state={"characters": []},
+    )
+
+    projected = store._planning_brief().existing_characters[0]
+
+    assert projected["importance"] == "major"
+    assert projected["narrative_function"] == "ally"
+    assert projected["profile_status"] == "stub"
+    assert isinstance(projected["profile_completeness"], int)
+    assert projected["performance_profile"]["action_style"] == "先留证再试探"
+    assert projected["relationship_notes"][0]["target"] == "苏叶"
+
+
 def test_continuation_planning_brief_loads_all_imported_history_summaries(tmp_path) -> None:
     store = _make_minimal_file_project(
         tmp_path / "continuation",

@@ -5,14 +5,21 @@ import unicodedata
 from copy import deepcopy
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from packages.story_core.character_profiles import (
     BackgroundProfile,
+    CharacterImportance,
+    CharacterNarrativeFunction,
+    CharacterProfileStatus,
     CurrentLifeProfile,
     IdentityProfile,
     RelationshipNote,
     StoryDriveProfile,
+    character_profile_completeness,
+    character_profile_roster_quality_issues,
+    infer_character_profile_status,
+    infer_character_taxonomy,
     is_placeholder_character_name,
 )
 from packages.story_core.elastic_outline import DETAIL_WINDOW
@@ -35,6 +42,51 @@ CharacterTier = Literal[
 ]
 
 INITIAL_OUTLINE_CHAPTER_COUNT = DETAIL_WINDOW
+
+_CHARACTER_TAXONOMY_FIELDS = frozenset(
+    {"importance", "narrative_function", "profile_status", "profile_completeness"}
+)
+
+
+def _explicit_character_taxonomy_names(payload: Any) -> set[str]:
+    rows = payload.get("characters") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return set()
+    return {
+        str(row.get("name") or "").strip()
+        for row in rows
+        if isinstance(row, dict)
+        and _CHARACTER_TAXONOMY_FIELDS.intersection(row)
+        and str(row.get("name") or "").strip()
+    }
+
+
+def _validate_explicit_character_roster(
+    plan: "GeneratedOutlinePlan",
+    payload: Any,
+    *,
+    existing_names: set[str] | None = None,
+) -> None:
+    explicit_names = _explicit_character_taxonomy_names(payload)
+    if not explicit_names:
+        return
+    all_names = {
+        *(str(name).strip() for name in (existing_names or set()) if str(name).strip()),
+        *(card.name.strip() for card in plan.characters if card.name.strip()),
+    }
+    issues = character_profile_roster_quality_issues(
+        [card for card in plan.characters if card.name in explicit_names],
+        existing_names=all_names,
+        enforce_tier_status=True,
+        require_concrete_relationships=True,
+    )
+    if not issues:
+        return
+    detail = ";".join(
+        f"{name}[{','.join(dict.fromkeys(values))}]"
+        for name, values in sorted(issues.items())
+    )
+    raise ValueError(f"character_profile_quality_failed:{detail}")
 
 
 def _volume_validation_input(
@@ -146,14 +198,31 @@ class PlanningCharacterCard(_PlanningModel):
     name: str = Field(min_length=1, max_length=80)
     role: str = Field(min_length=1, max_length=80)
     character_tier: CharacterTier
+    importance: CharacterImportance
+    narrative_function: CharacterNarrativeFunction
+    profile_status: CharacterProfileStatus
+    profile_completeness: int = Field(ge=0, le=100)
     first_appearance: int = Field(default=0, ge=0)
     identity_profile: IdentityProfile
     background_profile: BackgroundProfile
     current_life_profile: CurrentLifeProfile
     story_drive: StoryDriveProfile
     performance_profile: CharacterPerformanceProfile = Field(default_factory=CharacterPerformanceProfile)
-    dialogue_examples: list[str] = Field(min_length=2, max_length=3)
+    dialogue_examples: list[str] = Field(default_factory=list, max_length=3)
     relationship_notes: list[RelationshipNote] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_taxonomy(cls, value):
+        if not isinstance(value, dict):
+            return value
+        migrated = dict(value)
+        importance, narrative_function = infer_character_taxonomy(migrated)
+        migrated.setdefault("importance", importance)
+        migrated.setdefault("narrative_function", narrative_function)
+        migrated.setdefault("profile_status", infer_character_profile_status(migrated))
+        migrated.setdefault("profile_completeness", character_profile_completeness(migrated))
+        return migrated
 
 
 class GeneratedOutlinePlan(_PlanningModel):
@@ -557,6 +626,9 @@ def _sanitize_generated_narrative_value(value: str) -> str:
 def sanitize_generated_outline_amounts(payload: Any) -> dict[str, Any]:
     """Remove accidental financial hard anchors before strict validation."""
 
+    source_characters = (
+        payload.get("characters") if isinstance(payload, dict) else None
+    )
     plan = GeneratedOutlinePlan.model_validate(payload)
     for field_name in _GENERATED_OVERALL_NARRATIVE_FIELDS:
         setattr(
@@ -608,7 +680,26 @@ def sanitize_generated_outline_amounts(payload: Any) -> dict[str, Any]:
                         getattr(section, field_name)
                     ),
                 )
-    return plan.model_dump(mode="json")
+    sanitized = plan.model_dump(mode="json")
+    # ``GeneratedOutlinePlan`` migrates legacy cards by adding the new taxonomy
+    # fields.  Keep that internal migration from turning an old payload into an
+    # explicitly-taxonomized payload at the next validation boundary: explicit
+    # taxonomy is the opt-in signal for the stricter character quality gate.
+    if isinstance(source_characters, list) and isinstance(
+        sanitized.get("characters"), list
+    ):
+        for index, card in enumerate(sanitized["characters"]):
+            source = (
+                source_characters[index]
+                if index < len(source_characters)
+                else None
+            )
+            if not isinstance(card, dict) or not isinstance(source, dict):
+                continue
+            for field_name in _CHARACTER_TAXONOMY_FIELDS:
+                if field_name not in source:
+                    card.pop(field_name, None)
+    return sanitized
 
 
 def _validate_generated_narrative_value(value: str, location: str) -> None:
@@ -677,10 +768,13 @@ def validate_generated_opening_plan(
     require_chapter_contracts: bool = False,
     enforce_full_opening_roster: bool = False,
     allow_established_roster: bool = False,
+    enforce_character_quality: bool = True,
 ) -> GeneratedOutlinePlan:
     """Validate an AI-generated opening plan without constraining manual drafts."""
 
     plan = GeneratedOutlinePlan.model_validate(payload)
+    if enforce_character_quality:
+        _validate_explicit_character_roster(plan, payload)
     _validate_generated_outline_amounts(plan)
     volume_arcs, volume_ending = _volume_validation_input(
         plan.outline.arcs,
@@ -793,11 +887,14 @@ def validate_generated_opening_plan(
                 raise ValueError(f"missing_character_card:{name}")
 
     for card in plan.characters:
-        _require_text(card.identity_profile.origin, f"missing_character_origin:{card.name}")
+        if card.profile_status == "stub":
+            continue
         _require_text(card.identity_profile.current_identity, f"missing_character_identity:{card.name}")
-        _require_text(card.identity_profile.occupation, f"missing_character_occupation:{card.name}")
-        _require_text(card.story_drive.immediate_goal, f"missing_character_goal:{card.name}")
-        _require_text(card.story_drive.failure_stakes, f"missing_character_stakes:{card.name}")
+        if card.importance in {"core", "major"}:
+            _require_text(card.identity_profile.origin, f"missing_character_origin:{card.name}")
+            _require_text(card.identity_profile.occupation, f"missing_character_occupation:{card.name}")
+            _require_text(card.story_drive.immediate_goal, f"missing_character_goal:{card.name}")
+            _require_text(card.story_drive.failure_stakes, f"missing_character_stakes:{card.name}")
     if trope_templates is not None:
         validate_generated_trope_selection(
             plan,
@@ -819,10 +916,21 @@ def validate_generated_continuation_plan(
     fallback_outline: dict[str, Any] | None = None,
     committed_through_chapter: int | None = None,
     require_chapter_contracts: bool = False,
+    enforce_character_quality: bool = True,
 ) -> GeneratedOutlinePlan:
     """Validate an incremental plan without requiring opening-only structure."""
 
     plan = GeneratedOutlinePlan.model_validate(payload)
+    if enforce_character_quality:
+        _validate_explicit_character_roster(
+            plan,
+            payload,
+            existing_names={
+                str(name).strip()
+                for name in existing_character_names
+                if str(name).strip()
+            },
+        )
     _validate_generated_outline_amounts(plan)
     volume_arcs, volume_ending = _volume_validation_input(
         plan.outline.arcs,
@@ -859,11 +967,14 @@ def validate_generated_continuation_plan(
                 raise ValueError(f"missing_character_card:{name}")
 
     for card in plan.characters:
-        _require_text(card.identity_profile.origin, f"missing_character_origin:{card.name}")
+        if card.profile_status == "stub":
+            continue
         _require_text(card.identity_profile.current_identity, f"missing_character_identity:{card.name}")
-        _require_text(card.identity_profile.occupation, f"missing_character_occupation:{card.name}")
-        _require_text(card.story_drive.immediate_goal, f"missing_character_goal:{card.name}")
-        _require_text(card.story_drive.failure_stakes, f"missing_character_stakes:{card.name}")
+        if card.importance in {"core", "major"}:
+            _require_text(card.identity_profile.origin, f"missing_character_origin:{card.name}")
+            _require_text(card.identity_profile.occupation, f"missing_character_occupation:{card.name}")
+            _require_text(card.story_drive.immediate_goal, f"missing_character_goal:{card.name}")
+            _require_text(card.story_drive.failure_stakes, f"missing_character_stakes:{card.name}")
     if trope_templates is not None:
         validate_generated_trope_selection(
             plan,

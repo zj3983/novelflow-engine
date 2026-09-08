@@ -212,6 +212,36 @@ def test_initial_opening_plan_accepts_full_generated_roster(valid_payload) -> No
     assert len(plan.characters) == 10
 
 
+def test_opening_plan_allows_later_supporting_stub_without_ready_only_fields(valid_payload) -> None:
+    stub = valid_payload["characters"][2]
+    stub.update(
+        {
+            "importance": "supporting",
+            "narrative_function": "resource_contact",
+            "profile_status": "stub",
+            "first_appearance": 48,
+            "identity_profile": {"current_identity": "灰港旧货商"},
+            "current_life_profile": {},
+            "story_drive": {},
+            "performance_profile": {},
+            "dialogue_examples": [],
+            "relationship_notes": [
+                {
+                    "target": "林照",
+                    "relation_type": "resource_contact",
+                    "history": "林照曾通过旧货市场向她求购一件封存物",
+                    "current_attitude": "只交换可验证的物品情报",
+                    "shared_interest_or_conflict": "双方都想避开宗门审查",
+                }
+            ],
+        }
+    )
+
+    plan = validate_generated_opening_plan(valid_payload)
+
+    assert plan.characters[2].profile_status == "stub"
+
+
 def test_generated_opening_plan_rejects_core_ending_before_planned_arc(valid_payload) -> None:
     valid_payload["outline"]["overall"]["planned_length"] = 10
     valid_payload["outline"]["overall"]["core_ending_chapter"] = 10

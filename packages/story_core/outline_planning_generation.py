@@ -6,11 +6,19 @@ import re
 from copy import deepcopy
 from typing import Any, Callable, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from packages.story_core.agent_base import parse_json_message_content
 from packages.story_core.attribute_allocation import normalize_attribute_allocation_rule
-from packages.story_core.character_profiles import normalize_speech_style_for_writing
+from packages.story_core.character_profiles import (
+    CharacterImportance,
+    CharacterNarrativeFunction,
+    CharacterProfileStatus,
+    character_profile_roster_quality_issues,
+    infer_character_taxonomy,
+    is_generic_character_content,
+    normalize_speech_style_for_writing,
+)
 from packages.story_core.elastic_outline import outline_window_status
 from packages.story_core.http_retry import post_json_with_retry
 from packages.story_core.model_gateway import ModelRequest, RuntimeModelGateway
@@ -487,27 +495,82 @@ class GeneratedCharacterRoster(_PlanningInput):
     characters: list["PlanningCharacterSeed"]
 
 
+class GeneratedCharacterCardRepair(_PlanningInput):
+    characters: list[PlanningCharacterCard]
+
+
+class PlanningRelationshipSeed(_PlanningInput):
+    target: str = Field(min_length=1, max_length=80)
+    relation_type: str = Field(min_length=1, max_length=80)
+    history: str = Field(min_length=1, max_length=300)
+    current_attitude: str = Field(min_length=1, max_length=300)
+    shared_interest_or_conflict: str = Field(min_length=1, max_length=300)
+    known_facts: list[str] = Field(default_factory=list, max_length=6)
+    unknown_facts: list[str] = Field(default_factory=list, max_length=6)
+
+
 class PlanningCharacterSeed(_PlanningInput):
     name: str = Field(min_length=1, max_length=80)
     role: str = Field(min_length=1, max_length=80)
     character_tier: CharacterTier
+    importance: CharacterImportance
+    narrative_function: CharacterNarrativeFunction
+    profile_status: CharacterProfileStatus
     first_appearance: int = Field(default=0, ge=0)
     age: int | None = Field(default=None, ge=0)
-    origin: str = Field(min_length=1, max_length=300)
+    origin: str = Field(default="", max_length=300)
     current_identity: str = Field(min_length=1, max_length=200)
-    occupation: str = Field(min_length=1, max_length=120)
+    occupation: str = Field(default="", max_length=120)
     authority_scope: str = Field(default="", max_length=300)
-    immediate_problem: str = Field(min_length=1, max_length=300)
-    immediate_goal: str = Field(min_length=1, max_length=300)
+    immediate_problem: str = Field(default="", max_length=300)
+    immediate_goal: str = Field(default="", max_length=300)
+    motivation: str = Field(default="", max_length=300)
     long_term_goal: str = Field(default="", max_length=300)
-    failure_stakes: str = Field(min_length=1, max_length=300)
-    personality: str = Field(min_length=1, max_length=300)
-    speech_style: str = Field(min_length=1, max_length=200)
-    action_style: str = Field(min_length=1, max_length=200)
+    failure_stakes: str = Field(default="", max_length=300)
+    main_conflict_reason: str = Field(default="", max_length=300)
+    personality: str = Field(default="", max_length=300)
+    speech_style: str = Field(default="", max_length=200)
+    action_style: str = Field(default="", max_length=200)
     emotional_trigger: str = Field(default="", max_length=200)
-    decision_rule: str = Field(min_length=1, max_length=200)
+    decision_rule: str = Field(default="", max_length=200)
     hidden_matter: str = Field(default="", max_length=300)
-    dialogue_examples: list[str] = Field(min_length=2, max_length=2)
+    dialogue_examples: list[str] = Field(default_factory=list, max_length=2)
+    relationship_notes: list[PlanningRelationshipSeed] = Field(default_factory=list, max_length=6)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_seed(cls, value):
+        if not isinstance(value, dict):
+            return value
+        migrated = dict(value)
+        importance, narrative_function = infer_character_taxonomy(migrated)
+        migrated.setdefault("importance", importance)
+        migrated.setdefault("narrative_function", narrative_function)
+        effective_function = str(migrated.get("narrative_function") or narrative_function)
+        expected_tier = {
+            "protagonist": "protagonist",
+            "stage_antagonist": "stage_antagonist",
+            "long_term_antagonist": "long_term_antagonist",
+        }.get(effective_function, "supporting")
+        if "narrative_function" in value or "importance" in value:
+            migrated["character_tier"] = expected_tier
+        else:
+            migrated.setdefault("character_tier", expected_tier)
+        if not str(migrated.get("profile_status") or "").strip():
+            detail_fields = (
+                "current_identity",
+                "immediate_problem",
+                "immediate_goal",
+                "motivation",
+                "failure_stakes",
+                "speech_style",
+                "action_style",
+            )
+            enough_detail = all(str(migrated.get(field) or "").strip() for field in detail_fields)
+            migrated["profile_status"] = (
+                "ready" if enough_detail and migrated.get("relationship_notes") else "stub"
+            )
+        return migrated
 
 
 _CHINESE_DIGITS = {
@@ -551,8 +614,11 @@ def _validate_character_seed_chronology(seed: PlanningCharacterSeed) -> None:
         seed.origin,
         seed.immediate_problem,
         seed.immediate_goal,
+        seed.motivation,
         seed.long_term_goal,
+        seed.main_conflict_reason,
         seed.hidden_matter,
+        *(note.history for note in seed.relationship_notes),
     )
     clauses = [
         clause.strip()
@@ -596,6 +662,9 @@ def _expand_character_seed(seed: PlanningCharacterSeed) -> PlanningCharacterCard
             "name": seed.name,
             "role": seed.role,
             "character_tier": seed.character_tier,
+            "importance": seed.importance,
+            "narrative_function": seed.narrative_function,
+            "profile_status": seed.profile_status,
             "first_appearance": seed.first_appearance,
             "identity_profile": {
                 "age": seed.age,
@@ -611,8 +680,9 @@ def _expand_character_seed(seed: PlanningCharacterSeed) -> PlanningCharacterCard
             "story_drive": {
                 "long_term_goal": seed.long_term_goal,
                 "immediate_goal": seed.immediate_goal,
-                "motivation": seed.immediate_goal,
+                "motivation": seed.motivation,
                 "failure_stakes": seed.failure_stakes,
+                "main_conflict_reason": seed.main_conflict_reason,
                 "hidden_matters": [seed.hidden_matter] if seed.hidden_matter else [],
             },
             "performance_profile": {
@@ -622,8 +692,130 @@ def _expand_character_seed(seed: PlanningCharacterSeed) -> PlanningCharacterCard
                 "decision_rules": [seed.decision_rule],
             },
             "dialogue_examples": dialogue_examples,
-            "relationship_notes": [],
+            "relationship_notes": [
+                note.model_dump(mode="json") for note in seed.relationship_notes
+            ],
         }
+    )
+
+
+def _character_card_roster_quality_issues(
+    cards: list[Any],
+    *,
+    existing_names: set[str] | None = None,
+    enforce_tier_status: bool = False,
+) -> dict[str, list[str]]:
+    return character_profile_roster_quality_issues(
+        cards,
+        existing_names=existing_names,
+        enforce_tier_status=enforce_tier_status,
+        require_concrete_relationships=True,
+    )
+
+
+def _raise_character_quality_issues(issues: dict[str, list[str]]) -> None:
+    if not issues:
+        return
+    detail = ";".join(
+        f"{name}[{','.join(dict.fromkeys(values))}]"
+        for name, values in sorted(issues.items())
+    )
+    raise ValueError(f"character_profile_quality_failed:{detail}")
+
+
+def _validate_character_card_roster_quality(
+    cards: list[Any],
+    *,
+    existing_names: set[str] | None = None,
+    enforce_tier_status: bool = False,
+) -> None:
+    _raise_character_quality_issues(
+        _character_card_roster_quality_issues(
+            cards,
+            existing_names=existing_names,
+            enforce_tier_status=enforce_tier_status,
+        )
+    )
+
+
+def _validate_character_seed_roster_quality(
+    seeds: list[PlanningCharacterSeed],
+    *,
+    existing_names: set[str] | None = None,
+) -> None:
+    cards = [_expand_character_seed(seed) for seed in seeds]
+    issues = _character_card_roster_quality_issues(
+        cards,
+        existing_names=existing_names,
+        enforce_tier_status=True,
+    )
+    for seed in seeds:
+        if seed.importance == "core" and seed.profile_status != "ready":
+            issues.setdefault(seed.name, []).append("core_requires_ready")
+        if (
+            seed.importance == "major"
+            and 0 < seed.first_appearance <= INITIAL_OUTLINE_CHAPTER_COUNT
+            and seed.profile_status != "ready"
+        ):
+            issues.setdefault(seed.name, []).append("opening_major_requires_ready")
+        if seed.profile_status == "ready" and is_generic_character_content(seed.personality):
+            issues.setdefault(seed.name, []).append("generic:personality")
+    _raise_character_quality_issues(issues)
+
+
+_CHARACTER_QUALITY_ERROR_PREFIX = "character_profile_quality_failed:"
+
+
+def _failed_character_names_from_quality_error(error: str) -> list[str]:
+    if not str(error or "").startswith(_CHARACTER_QUALITY_ERROR_PREFIX):
+        return []
+    detail = str(error)[len(_CHARACTER_QUALITY_ERROR_PREFIX):]
+    names: list[str] = []
+    for item in detail.split(";"):
+        name = item.split("[", 1)[0].strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _merge_repaired_character_rows(
+    original: dict[str, Any],
+    repaired: dict[str, Any],
+    failed_names: list[str],
+) -> dict[str, Any]:
+    original_rows = original.get("characters")
+    repaired_rows = repaired.get("characters")
+    if not isinstance(original_rows, list) or not isinstance(repaired_rows, list):
+        raise ValueError("invalid_character_repair_payload")
+    expected = set(failed_names)
+    replacements = {
+        str(row.get("name") or "").strip(): row
+        for row in repaired_rows
+        if isinstance(row, dict) and str(row.get("name") or "").strip()
+    }
+    if set(replacements) != expected:
+        raise ValueError("character_repair_name_mismatch")
+    merged = deepcopy(original)
+    merged["characters"] = [
+        deepcopy(replacements.get(str(row.get("name") or "").strip(), row))
+        if isinstance(row, dict)
+        else row
+        for row in original_rows
+    ]
+    return merged
+
+
+_CHARACTER_TAXONOMY_FIELDS = frozenset(
+    {"importance", "narrative_function", "profile_status", "profile_completeness"}
+)
+
+
+def _character_payload_has_explicit_taxonomy(payload: Any) -> bool:
+    rows = payload.get("characters") if isinstance(payload, dict) else None
+    return isinstance(rows, list) and any(
+        isinstance(row, dict)
+        and bool(_CHARACTER_TAXONOMY_FIELDS.intersection(row))
+        for row in rows
     )
 
 
@@ -974,6 +1166,9 @@ class LLMOutlinePlanningGenerator:
                 "Names must be concrete personal names, never placeholders, occupations, factions, crowds, monsters, or generic labels such as commander, guard, elder, or manager.",
                 "first_appearance must fall inside volume_range.",
                 "Do not redesign the volume, story nodes, world, or existing characters.",
+                "motivation must explain why immediate_goal matters and must not repeat or paraphrase immediate_goal.",
+                "relationship_notes must contain at least one concrete tie to an existing or newly generated named character, including history, current attitude, and shared interest or conflict.",
+                "For supporting characters, role should name the recurring narrative function such as ally, rival, mentor, resource contact, or relationship anchor instead of only saying supporting.",
                 "Dialogue examples must be complete, natural Chinese utterances suited to the relationship and situation.",
             ],
         }
@@ -986,7 +1181,9 @@ class LLMOutlinePlanningGenerator:
                         "Generate only the new named-character roster required by one fixed "
                         "Chinese webnovel volume. Return JSON with the single root field "
                         "characters. Do not generate chapters, prose, groups, unnamed roles, "
-                        "or replacements for existing characters."
+                        "or replacements for existing characters. Every character must have an independent "
+                        "motivation that explains why the immediate goal matters, plus at least one concrete "
+                        "relationship note linked to the existing or newly generated cast."
                     ),
                 },
                 {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
@@ -1021,6 +1218,10 @@ class LLMOutlinePlanningGenerator:
                 raise ValueError(f"volume_character_first_appearance_out_of_range:{name}")
             generated_names.add(name)
             result.append(_expand_character_seed(seed))
+        _validate_character_seed_roster_quality(
+            new_seeds,
+            existing_names=existing_names,
+        )
         return result
 
     def generate_chapter_batch(
@@ -1630,7 +1831,7 @@ class LLMOutlinePlanningGenerator:
                     "chapter_number values must exactly equal prompt_context.target_chapter_numbers in order.",
                     "characters must contain only newly introduced character cards; do not repeat cards named in prompt_context.existing_character_names.",
                     "Every chapter cast name must equal either a name in prompt_context.existing_character_names or a name in characters.",
-                    "Every new character must have non-empty identity_profile.origin, identity_profile.current_identity, identity_profile.occupation, story_drive.immediate_goal, and story_drive.failure_stakes.",
+                    "Every new character must have non-empty identity_profile.origin, identity_profile.current_identity, identity_profile.occupation, story_drive.immediate_goal, story_drive.motivation, story_drive.failure_stakes, and at least one relationship_notes entry; motivation must explain why the goal matters and must not repeat immediate_goal.",
                     *trope_validation_rules,
                 ]
             else:
@@ -1642,7 +1843,7 @@ class LLMOutlinePlanningGenerator:
                     "The opening arc must contain at least one long_term_antagonist_traces item.",
                     "chapter_number values must exactly equal prompt_context.target_chapter_numbers in order.",
                     "Every name in every chapter cast must exactly equal a name in characters.",
-                    "Every character must have non-empty identity_profile.origin, identity_profile.current_identity, identity_profile.occupation, story_drive.immediate_goal, and story_drive.failure_stakes.",
+                    "Every character must have non-empty identity_profile.origin, identity_profile.current_identity, identity_profile.occupation, story_drive.immediate_goal, story_drive.motivation, story_drive.failure_stakes, and at least one relationship_notes entry; motivation must explain why the goal matters and must not repeat immediate_goal.",
                     *trope_validation_rules,
                 ]
 
@@ -1834,7 +2035,8 @@ class LLMOutlinePlanningGenerator:
                             "每卷必须写清情绪曲线、三个可验证结果、核心循环、三次升级、中段转折、"
                             "卷末高潮、关系变化、伏笔承接与新埋伏笔，以及卷尾不可逆变化。"
                             "但细纲只能覆盖目标章节，并给出10至15张具体角色卡。角色卡必须恰好1位主角，并包括阶段对手、长期反派和至少5位重要配角，"
-                            "并写清年龄或身份、来历、职业、当前生活、目标、失败代价、可观察行为和两句自然对白。"
+                            "并写清年龄或身份、来历、职业、当前生活、即时目标、独立动机、失败代价、具体人物关系、可观察行为和两句自然对白。"
+                            "immediate_goal 写角色现在要做什么，motivation 写为什么这件事对他重要，两者不得同义复述；每张新角色卡至少有一条 relationship_notes。"
                             "阶段对手要有现实利益和权力边界；长期反派只把允许露出的痕迹写进大纲。"
                             "章节字段为 chapter_number/title/goal/obstacle/action/turn/payoff/ending_hook/cast。"
                             "extend 模式只生成 target_chapter_numbers 指定的缺章，并只补充确实要出场的新角色卡。"
@@ -1921,33 +2123,55 @@ class LLMOutlinePlanningGenerator:
                                 if isinstance(data, dict)
                                 else "{}"
                             )
-                            retry_payload = {
-                                **request_payload,
-                                "messages": [
-                                    *request_payload.get("messages", []),
-                                    {
-                                        "role": "assistant",
-                                        "content": invalid_response,
-                                    },
-                                    {
-                                        "role": "system",
-                                        "content": (
-                                            "The JSON immediately above failed schema validation. Edit that object "
-                                            "to correct only the reported structural or missing-field problems, then return the complete JSON object "
-                                            "again without markdown or commentary. Validation error: "
-                                            f"{validation_error}"
-                                        ),
-                                    },
-                                ],
-                            }
-                            response = _complete_payload(
-                                self._model_gateway,
-                                retry_payload,
-                                operation=f"outline_planning_{phase}_retry",
+                            failed_character_names = (
+                                _failed_character_names_from_quality_error(validation_error)
+                                if phase == "character_roster"
+                                else []
                             )
-                            data = parse_json_message_content(response)
-                            if data is None:
-                                raise ValueError(invalid_json_error)
+                            if failed_character_names and isinstance(data, dict):
+                                original_rows = data.get("characters") or []
+                                failed_set = set(failed_character_names)
+                                failed_rows = [row for row in original_rows if isinstance(row, dict) and str(row.get("name") or "").strip() in failed_set]
+                                locked_rows = [row for row in original_rows if isinstance(row, dict) and str(row.get("name") or "").strip() not in failed_set]
+                                retry_payload = {
+                                    **request_payload,
+                                    "messages": [
+                                        *request_payload.get("messages", []),
+                                        {
+                                            "role": "system",
+                                            "content": (
+                                                "Repair only the failed character cards. Return root field characters with exactly the failed names and no locked valid character. Do not rename anyone. "
+                                                f"Failed rows: {json.dumps(failed_rows, ensure_ascii=False)}. "
+                                                f"Locked context: {json.dumps(locked_rows, ensure_ascii=False)}. "
+                                                f"Validation error: {validation_error}"
+                                            ),
+                                        },
+                                    ],
+                                }
+                                response = _complete_payload(self._model_gateway, retry_payload, operation=f"outline_planning_{phase}_retry_failed_characters")
+                                repaired = parse_json_message_content(response)
+                                if repaired is None:
+                                    raise ValueError(invalid_json_error)
+                                data = _merge_repaired_character_rows(data, repaired, failed_character_names)
+                            else:
+                                retry_payload = {
+                                    **request_payload,
+                                    "messages": [
+                                        *request_payload.get("messages", []),
+                                        {"role": "assistant", "content": invalid_response},
+                                        {
+                                            "role": "system",
+                                            "content": (
+                                                "The JSON immediately above failed schema validation. Edit that object to correct only the reported structural or missing-field problems, then return the complete JSON object again without markdown or commentary. Validation error: "
+                                                f"{validation_error}"
+                                            ),
+                                        },
+                                    ],
+                                }
+                                response = _complete_payload(self._model_gateway, retry_payload, operation=f"outline_planning_{phase}_retry")
+                                data = parse_json_message_content(response)
+                                if data is None:
+                                    raise ValueError(invalid_json_error)
                             if not attribute_allocation_enabled:
                                 _drop_disabled_attribute_allocations(data)
                             _fill_equivalent_arc_handoffs(data)
@@ -2107,6 +2331,11 @@ class LLMOutlinePlanningGenerator:
                         "Copy organization, faction, location, historical-event, and era names exactly from outline_foundation and world_facts; do not invent near-synonyms.",
                         "A character cannot personally witness, oppose, lead, or sign an event that happened before their current age unless reincarnation or inherited memory is explicitly established.",
                         "Do not assign two different dates to the same historical event inside one card.",
+                        "motivation must explain the concrete history, pressure, desire, fear, obligation, or stake that makes immediate_goal matter; it must not copy immediate_goal.",
+                        "Every card must include at least one relationship_notes entry linked to another character in this roster, with concrete history, current attitude, and shared interest or conflict.",
+                        "Do not reuse the same motivation, long-term goal, speech style, or action style across multiple characters.",
+                        "Set importance, narrative_function, and profile_status explicitly. Core characters and major characters active in the opening use ready; ordinary or later supporting/minor characters may remain stub.",
+                        "Aim for roughly 4 to 7 ready core/major cards in the opening roster; do not force all 10 to 15 members into full detail.",
                     ],
                 }
                 character_payload = {
@@ -2124,6 +2353,10 @@ class LLMOutlinePlanningGenerator:
                                 "speech_style must describe everyday speech across different relationships and emotions, not a professional resume. "
                                 "Dialogue examples must be complete natural Chinese utterances that answer the immediate conversation before adding needed reasons or attitude. "
                                 "Professional terms belong only in scenes where the current topic requires them. "
+                                "immediate_goal is what the character is trying to do now; motivation is why that goal matters to this person, and the two must not repeat each other. "
+                                "Every card must include at least one concrete relationship note linked to another generated character, with history, current attitude, and a shared interest or conflict. "
+                                "Do not give multiple characters identical motivation, long-term goal, speech style, or action style. "
+                                "Set importance, narrative_function, and profile_status explicitly. Fully detail only active core/major characters; ordinary or later supporting/minor characters may remain lightweight stubs. "
                                 "Follow prompt_context.output_schema exactly."
                             ),
                         },
@@ -2154,6 +2387,7 @@ class LLMOutlinePlanningGenerator:
                         raise ValueError("insufficient_supporting_characters")
                     for character in characters:
                         _validate_character_seed_chronology(character)
+                    _validate_character_seed_roster_quality(list(characters))
 
                 character_roster = run_phase(
                     "character_roster",
@@ -2383,6 +2617,17 @@ class LLMOutlinePlanningGenerator:
                     if not attribute_allocation_enabled:
                         _drop_disabled_attribute_allocations(candidate)
                     candidate_plan = GeneratedOutlinePlan.model_validate(candidate)
+                    if (
+                        mode in {"initial", "extend", "regenerate"}
+                        and _character_payload_has_explicit_taxonomy(candidate)
+                    ):
+                        _validate_character_card_roster_quality(
+                            list(candidate_plan.characters),
+                            existing_names=(
+                                set(existing_character_names) if mode == "extend" else set()
+                            ),
+                            enforce_tier_status=True,
+                        )
                     validate_chapter_title_window(
                         [
                             chapter.model_dump(mode="python")
@@ -2395,6 +2640,7 @@ class LLMOutlinePlanningGenerator:
                     )
                     return candidate
 
+                response: dict[str, Any] | None = None
                 try:
                     response = _complete_payload(
                         self._model_gateway,
@@ -2404,27 +2650,55 @@ class LLMOutlinePlanningGenerator:
                     parsed = parse_direct_outline(response)
                 except Exception as exc:
                     validation_error = re.sub(r"\s+", " ", str(exc)).strip()[:1000]
-                    retry_payload = {
-                        **payload,
-                        "messages": [
-                            *payload.get("messages", []),
-                            {
-                                "role": "system",
-                                "content": (
-                                    "The previous JSON failed schema or chapter-title validation. "
-                                    "Correct only the reported problems, then return the complete JSON object "
-                                    "again without markdown or commentary. Validation error: "
-                                    f"{validation_error}"
-                                ),
-                            },
-                        ],
-                    }
-                    response = _complete_payload(
-                        self._model_gateway,
-                        retry_payload,
-                        operation="outline_planning_retry",
-                    )
-                    parsed = parse_direct_outline(response)
+                    failed_character_names = _failed_character_names_from_quality_error(validation_error)
+                    original_candidate = parse_json_message_content(response) if response is not None else None
+                    if failed_character_names and isinstance(original_candidate, dict):
+                        original_rows = original_candidate.get("characters") or []
+                        failed_set = set(failed_character_names)
+                        failed_rows = [row for row in original_rows if isinstance(row, dict) and str(row.get("name") or "").strip() in failed_set]
+                        locked_rows = [row for row in original_rows if isinstance(row, dict) and str(row.get("name") or "").strip() not in failed_set]
+                        repair_payload = {
+                            **payload,
+                            "reasoning_effort": "low",
+                            "messages": [
+                                {"role": "system", "content": "Repair only the failed full character cards. Return JSON with root field characters and exactly the failed names. Keep names unchanged and do not return locked cards."},
+                                {"role": "user", "content": json.dumps({"failed_characters": failed_rows, "locked_characters": locked_rows, "validation_error": validation_error, "output_schema": GeneratedCharacterCardRepair.model_json_schema()}, ensure_ascii=False)},
+                            ],
+                        }
+                        repair_response = _complete_payload(self._model_gateway, repair_payload, operation="outline_planning_retry_failed_characters")
+                        repaired = parse_json_message_content(repair_response)
+                        if repaired is None:
+                            raise ValueError("invalid_character_repair_json")
+                        GeneratedCharacterCardRepair.model_validate(repaired)
+                        merged_candidate = _merge_repaired_character_rows(original_candidate, repaired, failed_character_names)
+                        candidate_plan = GeneratedOutlinePlan.model_validate(merged_candidate)
+                        _validate_character_card_roster_quality(
+                            list(candidate_plan.characters),
+                            existing_names=(
+                                set(existing_character_names) if mode == "extend" else set()
+                            ),
+                            enforce_tier_status=_character_payload_has_explicit_taxonomy(
+                                original_candidate
+                            ),
+                        )
+                        validate_chapter_title_window(
+                            [chapter.model_dump(mode="python") for chapter in candidate_plan.outline.chapters],
+                            genre_id=effective_novel_type_id,
+                            previous_chapters=previous_chapters,
+                            known_chapters=existing_outline_chapters,
+                            generated_chapter_numbers=target_chapter_numbers,
+                        )
+                        parsed = merged_candidate
+                    else:
+                        retry_payload = {
+                            **payload,
+                            "messages": [
+                                *payload.get("messages", []),
+                                {"role": "system", "content": ("The previous JSON failed schema or chapter-title validation. Correct only the reported problems, then return the complete JSON object again without markdown or commentary. Validation error: " f"{validation_error}")},
+                            ],
+                        }
+                        response = _complete_payload(self._model_gateway, retry_payload, operation="outline_planning_retry")
+                        parsed = parse_direct_outline(response)
             if not chapter_contracts_enabled:
                 _drop_disabled_chapter_contracts(parsed)
             parsed = sanitize_generated_outline_amounts(parsed)
