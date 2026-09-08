@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import pytest
+
 from packages.story_core.character_profiles import character_profile_quality_issues
 from packages.story_core.models import CharacterState
 from packages.story_core.outline_planning import PlanningCharacterCard
+from packages.story_core.outline_planning_generation import (
+    _validate_character_card_roster_quality,
+)
 
 
 def _card(
@@ -158,6 +163,34 @@ def test_supporting_stub_can_remain_lightweight_without_full_ready_fields() -> N
     }
 
     assert character_profile_quality_issues(card) == []
+
+
+def test_card_roster_quality_rejects_core_stub_and_hollow_relationship_note() -> None:
+    card = _card(profile_status="stub")
+    card["relationship_notes"] = [{"target": "林澈"}]
+    parsed = PlanningCharacterCard.model_validate(card)
+
+    with pytest.raises(ValueError) as exc_info:
+        _validate_character_card_roster_quality([parsed], enforce_tier_status=True)
+
+    message = str(exc_info.value)
+    assert "core_requires_ready" in message
+    assert "missing:relationship_notes.relation_type" in message
+    assert "missing:relationship_notes.history" in message
+    assert "missing:relationship_notes.current_attitude" in message
+    assert "missing:relationship_notes.shared_interest_or_conflict" in message
+
+
+def test_card_roster_quality_rejects_generic_performance_content() -> None:
+    card = _card()
+    card["performance_profile"] = {
+        "speech_style": "不善言辞",
+        "action_style": "观察后行动",
+    }
+    parsed = PlanningCharacterCard.model_validate(card)
+
+    with pytest.raises(ValueError, match=r"generic:performance_profile\.speech_style"):
+        _validate_character_card_roster_quality([parsed], enforce_tier_status=True)
 
 
 def test_planning_character_card_migrates_legacy_tier_without_manual_new_fields() -> None:

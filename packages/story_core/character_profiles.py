@@ -188,6 +188,17 @@ _QUALITY_FIELDS = (
     ("story_drive", "failure_stakes"),
     ("story_drive", "main_conflict_reason"),
 )
+_PERFORMANCE_QUALITY_FIELDS = (
+    ("performance_profile", "speech_style"),
+    ("performance_profile", "action_style"),
+)
+_RELATIONSHIP_REQUIRED_FIELDS = (
+    "target",
+    "relation_type",
+    "history",
+    "current_attitude",
+    "shared_interest_or_conflict",
+)
 
 
 def is_placeholder_character_name(value: Any) -> bool:
@@ -229,6 +240,14 @@ def _taxonomy_token(value: Any) -> str:
         "_",
         unicodedata.normalize("NFKC", str(value or "")).strip().casefold(),
     ).strip("_")
+
+
+def _as_mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="python")
+    return {}
 
 
 def infer_character_taxonomy(
@@ -277,10 +296,14 @@ def infer_character_taxonomy(
 
 
 def _profile_field(card: dict[str, Any], section: str, field: str) -> str:
-    raw_section = card.get(section)
-    if not isinstance(raw_section, dict):
-        return ""
+    raw_section = _as_mapping(_as_mapping(card).get(section))
     return str(raw_section.get(field) or "").strip()
+
+
+def _profile_list(card: dict[str, Any], section: str, field: str) -> list[Any]:
+    raw_section = _as_mapping(_as_mapping(card).get(section))
+    value = raw_section.get(field)
+    return value if isinstance(value, list) else []
 
 
 def _looks_generic_character_content(value: Any) -> bool:
@@ -297,6 +320,20 @@ def is_generic_character_content(value: Any) -> bool:
     return _looks_generic_character_content(value)
 
 
+def relationship_note_quality_issues(note: Any) -> list[str]:
+    """Return missing or placeholder fields for one generated relationship note."""
+
+    payload = _as_mapping(note)
+    issues: list[str] = []
+    for field in _RELATIONSHIP_REQUIRED_FIELDS:
+        value = str(payload.get(field) or "").strip()
+        if not value:
+            issues.append(f"missing:relationship_notes.{field}")
+        elif field != "target" and _looks_generic_character_content(value):
+            issues.append(f"generic:relationship_notes.{field}")
+    return issues
+
+
 def character_profile_quality_issues(card: dict[str, Any]) -> list[str]:
     """Return actionable quality failures for a concrete, writer-usable character card.
 
@@ -305,6 +342,7 @@ def character_profile_quality_issues(card: dict[str, Any]) -> list[str]:
     still checked for mechanically duplicated motivation so bad generated data is visible.
     """
 
+    card = _as_mapping(card)
     importance, narrative_function = infer_character_taxonomy(card)
     status = _taxonomy_token(card.get("profile_status"))
     issues: list[str] = []
@@ -314,7 +352,7 @@ def character_profile_quality_issues(card: dict[str, Any]) -> list[str]:
     if immediate_goal and motivation and _taxonomy_token(immediate_goal) == _taxonomy_token(motivation):
         issues.append("motivation_duplicates_immediate_goal")
 
-    for section, field in _QUALITY_FIELDS:
+    for section, field in (*_QUALITY_FIELDS, *_PERFORMANCE_QUALITY_FIELDS):
         value = _profile_field(card, section, field)
         if value and _looks_generic_character_content(value):
             issues.append(f"generic:{section}.{field}")
@@ -361,8 +399,7 @@ def character_profile_quality_issues(card: dict[str, Any]) -> list[str]:
                 issues.append(f"missing:{section}.{field}")
 
         if narrative_function in {"protagonist", "long_term_antagonist"}:
-            drive = card.get("story_drive")
-            hidden = drive.get("hidden_matters", []) if isinstance(drive, dict) else []
+            hidden = _profile_list(card, "story_drive", "hidden_matters")
             if not any(str(item).strip() for item in hidden):
                 issues.append("missing:story_drive.hidden_matters")
 
@@ -371,6 +408,10 @@ def character_profile_quality_issues(card: dict[str, Any]) -> list[str]:
             for item in card.get("relationship_notes", [])
         ):
             issues.append("missing:relationship_notes")
+        else:
+            for note in card.get("relationship_notes", []):
+                if isinstance(note, dict):
+                    issues.extend(relationship_note_quality_issues(note))
         if importance in {"core", "major"} and len(
             [item for item in card.get("dialogue_examples", []) if str(item).strip()]
         ) < 2:
@@ -382,19 +423,69 @@ def character_profile_quality_issues(card: dict[str, Any]) -> list[str]:
 def character_profile_completeness(card: dict[str, Any]) -> int:
     """Return a conservative 0-100 completeness score for workbench status display."""
 
-    values = [_profile_field(card, section, field) for section, field in _QUALITY_FIELDS]
-    dialogue = [str(item).strip() for item in card.get("dialogue_examples", []) if str(item).strip()]
-    relations = [item for item in card.get("relationship_notes", []) if isinstance(item, dict)]
-    checks = [*map(bool, values), bool(dialogue), bool(relations)]
+    card = _as_mapping(card)
+    importance, narrative_function = infer_character_taxonomy(card)
+
+    def meaningful(value: Any) -> bool:
+        text = str(value or "").strip()
+        return bool(text) and not _looks_generic_character_content(text)
+
+    checks = [
+        meaningful(_profile_field(card, section, field))
+        for section, field in _QUALITY_FIELDS
+    ]
+    role_specific_fields: list[tuple[str, str]] = []
+    if narrative_function == "protagonist":
+        role_specific_fields = [
+            ("identity_profile", "origin"),
+            *_PERFORMANCE_QUALITY_FIELDS,
+        ]
+    elif narrative_function == "stage_antagonist":
+        role_specific_fields = [
+            ("current_life_profile", "authority_scope"),
+            ("performance_profile", "action_style"),
+        ]
+    elif narrative_function == "long_term_antagonist":
+        role_specific_fields = [("current_life_profile", "authority_scope")]
+    checks.extend(
+        meaningful(_profile_field(card, section, field))
+        for section, field in role_specific_fields
+    )
+    if narrative_function in {"protagonist", "long_term_antagonist"}:
+        checks.append(
+            any(
+                meaningful(item)
+                for item in _profile_list(card, "story_drive", "hidden_matters")
+            )
+        )
+    dialogue = [
+        str(item).strip()
+        for item in card.get("dialogue_examples", [])
+        if str(item).strip()
+    ]
+    checks.append(len(dialogue) >= (2 if importance in {"core", "major"} else 1))
+    relations = [
+        item
+        for item in card.get("relationship_notes", [])
+        if _as_mapping(item)
+    ]
+    checks.append(bool(relations) and all(not relationship_note_quality_issues(item) for item in relations))
     return round(sum(checks) * 100 / len(checks)) if checks else 0
 
 
 def infer_character_profile_status(card: dict[str, Any]) -> CharacterProfileStatus:
     """Treat incomplete important characters as stubs instead of completed detail cards."""
 
+    card = _as_mapping(card)
     explicit = _taxonomy_token(card.get("profile_status"))
-    if explicit in {"stub", "ready"}:
-        return explicit  # type: ignore[return-value]
+    if explicit == "stub":
+        return "stub"
+    if explicit == "ready":
+        return (
+            "ready"
+            if not character_profile_quality_issues({**card, "profile_status": "ready"})
+            else "stub"
+        )
 
     importance, narrative_function = infer_character_taxonomy(card)
     if importance in {"core", "major"}:
@@ -413,13 +504,81 @@ def infer_character_profile_status(card: dict[str, Any]) -> CharacterProfileStat
             return "stub"
         return "ready"
 
-    identity = card.get("identity_profile")
-    identity = identity if isinstance(identity, dict) else {}
+    identity = _as_mapping(card.get("identity_profile"))
     has_identity = any(str(identity.get(key) or "").strip() for key in ("current_identity", "occupation", "origin"))
-    drive = card.get("story_drive")
-    drive = drive if isinstance(drive, dict) else {}
+    drive = _as_mapping(card.get("story_drive"))
     has_drive = any(str(drive.get(key) or "").strip() for key in ("immediate_goal", "long_term_goal", "motivation"))
     return "ready" if has_identity and has_drive else "stub"
+
+
+def character_profile_roster_quality_issues(
+    cards: Iterable[Any],
+    *,
+    existing_names: set[str] | None = None,
+    enforce_tier_status: bool = False,
+    require_concrete_relationships: bool = True,
+) -> dict[str, list[str]]:
+    """Validate generated cards as a linked roster, including tier and relation rules."""
+
+    payloads = [
+        deepcopy(_as_mapping(card))
+        for card in cards
+        if _as_mapping(card)
+    ]
+    known_names = {
+        str(name).strip() for name in (existing_names or set()) if str(name).strip()
+    } | {
+        str(card.get("name") or "").strip()
+        for card in payloads
+        if str(card.get("name") or "").strip()
+    }
+    issues: dict[str, list[str]] = {}
+    for card in payloads:
+        name = str(card.get("name") or "").strip() or "<unnamed>"
+        current = list(character_profile_quality_issues(card))
+        relations = [
+            _as_mapping(note)
+            for note in card.get("relationship_notes", [])
+            if _as_mapping(note)
+        ]
+        if not relations:
+            current.append("missing:relationship_notes")
+        else:
+            links_roster = False
+            for note in relations:
+                if require_concrete_relationships:
+                    current.extend(relationship_note_quality_issues(note))
+                target = str(note.get("target") or "").strip()
+                if target == name:
+                    current.append("relationship_targets_self")
+                elif target in known_names:
+                    links_roster = True
+            if not links_roster:
+                current.append("relationship_notes_missing_roster_link")
+        if enforce_tier_status:
+            importance, _ = infer_character_taxonomy(card)
+            status = _taxonomy_token(card.get("profile_status"))
+            first_appearance = card.get("first_appearance")
+            first_appearance = (
+                int(first_appearance)
+                if isinstance(first_appearance, int) and not isinstance(first_appearance, bool)
+                else 0
+            )
+            if importance == "core" and status != "ready":
+                current.append("core_requires_ready")
+            if (
+                importance == "major"
+                and 0 < first_appearance <= 15
+                and status != "ready"
+            ):
+                current.append("opening_major_requires_ready")
+        if current:
+            issues[name] = list(dict.fromkeys(current))
+
+    for name, duplicate_issues in find_character_homogeneity_issues(payloads).items():
+        issues.setdefault(name, []).extend(duplicate_issues)
+        issues[name] = list(dict.fromkeys(issues[name]))
+    return issues
 
 
 def find_character_homogeneity_issues(cards: Iterable[dict[str, Any]]) -> dict[str, list[str]]:

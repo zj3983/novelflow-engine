@@ -14,8 +14,7 @@ from packages.story_core.character_profiles import (
     CharacterImportance,
     CharacterNarrativeFunction,
     CharacterProfileStatus,
-    character_profile_quality_issues,
-    find_character_homogeneity_issues,
+    character_profile_roster_quality_issues,
     infer_character_taxonomy,
     is_generic_character_content,
     normalize_speech_style_for_writing,
@@ -704,47 +703,14 @@ def _character_card_roster_quality_issues(
     cards: list[Any],
     *,
     existing_names: set[str] | None = None,
+    enforce_tier_status: bool = False,
 ) -> dict[str, list[str]]:
-    payloads = [
-        card.model_dump(mode="json") if isinstance(card, BaseModel) else deepcopy(card)
-        for card in cards
-        if isinstance(card, (BaseModel, dict))
-    ]
-    known_names = {
-        str(name).strip() for name in (existing_names or set()) if str(name).strip()
-    } | {
-        str(card.get("name") or "").strip()
-        for card in payloads
-        if str(card.get("name") or "").strip()
-    }
-    issues: dict[str, list[str]] = {}
-    for card in payloads:
-        name = str(card.get("name") or "").strip() or "<unnamed>"
-        current = list(character_profile_quality_issues(card))
-        relations = [
-            note
-            for note in card.get("relationship_notes", [])
-            if isinstance(note, dict)
-        ]
-        if not relations:
-            current.append("missing:relationship_notes")
-        else:
-            links_roster = False
-            for note in relations:
-                target = str(note.get("target") or "").strip()
-                if target == name:
-                    current.append("relationship_targets_self")
-                elif target in known_names:
-                    links_roster = True
-            if not links_roster:
-                current.append("relationship_notes_missing_roster_link")
-        if current:
-            issues[name] = list(dict.fromkeys(current))
-
-    for name, duplicate_issues in find_character_homogeneity_issues(payloads).items():
-        issues.setdefault(name, []).extend(duplicate_issues)
-        issues[name] = list(dict.fromkeys(issues[name]))
-    return issues
+    return character_profile_roster_quality_issues(
+        cards,
+        existing_names=existing_names,
+        enforce_tier_status=enforce_tier_status,
+        require_concrete_relationships=True,
+    )
 
 
 def _raise_character_quality_issues(issues: dict[str, list[str]]) -> None:
@@ -761,9 +727,14 @@ def _validate_character_card_roster_quality(
     cards: list[Any],
     *,
     existing_names: set[str] | None = None,
+    enforce_tier_status: bool = False,
 ) -> None:
     _raise_character_quality_issues(
-        _character_card_roster_quality_issues(cards, existing_names=existing_names)
+        _character_card_roster_quality_issues(
+            cards,
+            existing_names=existing_names,
+            enforce_tier_status=enforce_tier_status,
+        )
     )
 
 
@@ -773,7 +744,11 @@ def _validate_character_seed_roster_quality(
     existing_names: set[str] | None = None,
 ) -> None:
     cards = [_expand_character_seed(seed) for seed in seeds]
-    issues = _character_card_roster_quality_issues(cards, existing_names=existing_names)
+    issues = _character_card_roster_quality_issues(
+        cards,
+        existing_names=existing_names,
+        enforce_tier_status=True,
+    )
     for seed in seeds:
         if seed.importance == "core" and seed.profile_status != "ready":
             issues.setdefault(seed.name, []).append("core_requires_ready")
@@ -828,6 +803,20 @@ def _merge_repaired_character_rows(
         for row in original_rows
     ]
     return merged
+
+
+_CHARACTER_TAXONOMY_FIELDS = frozenset(
+    {"importance", "narrative_function", "profile_status", "profile_completeness"}
+)
+
+
+def _character_payload_has_explicit_taxonomy(payload: Any) -> bool:
+    rows = payload.get("characters") if isinstance(payload, dict) else None
+    return isinstance(rows, list) and any(
+        isinstance(row, dict)
+        and bool(_CHARACTER_TAXONOMY_FIELDS.intersection(row))
+        for row in rows
+    )
 
 
 def _validate_game_dual_line_payoffs(plan: GeneratedOutlinePlan) -> None:
@@ -2629,15 +2618,15 @@ class LLMOutlinePlanningGenerator:
                         _drop_disabled_attribute_allocations(candidate)
                     candidate_plan = GeneratedOutlinePlan.model_validate(candidate)
                     if (
-                        mode == "initial"
-                        or mode == "extend"
-                        or (mode == "regenerate" and validated.current_chapter == 0)
+                        mode in {"initial", "extend", "regenerate"}
+                        and _character_payload_has_explicit_taxonomy(candidate)
                     ):
                         _validate_character_card_roster_quality(
                             list(candidate_plan.characters),
                             existing_names=(
                                 set(existing_character_names) if mode == "extend" else set()
                             ),
+                            enforce_tier_status=True,
                         )
                     validate_chapter_title_window(
                         [
@@ -2683,7 +2672,15 @@ class LLMOutlinePlanningGenerator:
                         GeneratedCharacterCardRepair.model_validate(repaired)
                         merged_candidate = _merge_repaired_character_rows(original_candidate, repaired, failed_character_names)
                         candidate_plan = GeneratedOutlinePlan.model_validate(merged_candidate)
-                        _validate_character_card_roster_quality(list(candidate_plan.characters), existing_names=(set(existing_character_names) if mode == "extend" else set()))
+                        _validate_character_card_roster_quality(
+                            list(candidate_plan.characters),
+                            existing_names=(
+                                set(existing_character_names) if mode == "extend" else set()
+                            ),
+                            enforce_tier_status=_character_payload_has_explicit_taxonomy(
+                                original_candidate
+                            ),
+                        )
                         validate_chapter_title_window(
                             [chapter.model_dump(mode="python") for chapter in candidate_plan.outline.chapters],
                             genre_id=effective_novel_type_id,

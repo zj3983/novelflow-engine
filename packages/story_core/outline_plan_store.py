@@ -318,12 +318,18 @@ class OutlinePlanStoreMixin:
                         "name",
                         "role",
                         "character_tier",
+                        "importance",
+                        "narrative_function",
+                        "profile_status",
+                        "profile_completeness",
                         "first_appearance",
                         "identity_profile",
                         "background_profile",
                         "current_life_profile",
                         "story_drive",
+                        "performance_profile",
                         "dialogue_examples",
+                        "relationship_notes",
                     )
                 }
             )
@@ -863,6 +869,9 @@ class OutlinePlanStoreMixin:
                     mode == "initial" and current_chapter == 0
                 ),
                 allow_established_roster=(mode == "regenerate"),
+                # The generator applies the character quality gate.  Keep
+                # migrated legacy models compatible at this persistence edge.
+                enforce_character_quality=False,
             )
         else:
             existing_character_names: set[str] = set()
@@ -894,6 +903,7 @@ class OutlinePlanStoreMixin:
                 expected_primary_trope_id=expected_primary_trope_id,
                 fallback_outline=current_outline,
                 committed_through_chapter=current_chapter,
+                enforce_character_quality=False,
             )
 
         generated_outline = validated.outline.model_dump(mode="json")

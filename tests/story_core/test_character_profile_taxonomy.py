@@ -27,6 +27,11 @@ def _complete_core_card(**overrides: object) -> dict[str, object]:
             "immediate_goal": "在下一次结算前找出异常日志保存位置并做一份离线证据副本",
             "motivation": "三年前哥哥因同类异常被永久封号后失踪，他不愿再次让线索被系统抹掉",
             "failure_stakes": "账号会被永久冻结，哥哥留下的最后一条调查线索也会随日志一起被删除",
+            "hidden_matters": ["他没有告诉队友哥哥也遇到过相同异常"],
+        },
+        "performance_profile": {
+            "speech_style": "先确认事实再表态，熟人面前会把担心和理由说完整",
+            "action_style": "先留证据，再做可逆试探，确认异常后才扩大行动",
         },
         "dialogue_examples": [
             "先别急着交任务，我要把这条异常日志的时间戳抄下来。",
@@ -37,6 +42,8 @@ def _complete_core_card(**overrides: object) -> dict[str, object]:
                 "target": "林澈",
                 "relation_type": "ally",
                 "history": "两人在新手副本因共享隐藏任务认识",
+                "current_attitude": "认可对方判断力，但还没有完全坦白哥哥失踪的旧事",
+                "shared_interest_or_conflict": "都想查清异常来源，但风险偏好不同",
             }
         ],
     }
@@ -80,6 +87,21 @@ def test_incomplete_important_character_is_marked_stub_instead_of_ready() -> Non
 
     assert normalized["importance"] == "core"
     assert normalized["narrative_function"] == "long_term_antagonist"
+    assert normalized["profile_status"] == "stub"
+
+
+def test_explicit_ready_is_downgraded_when_role_specific_fields_are_missing() -> None:
+    card = _complete_core_card(
+        profile_status="ready",
+        performance_profile={"speech_style": "", "action_style": ""},
+        story_drive={
+            **_complete_core_card()["story_drive"],
+            "hidden_matters": [],
+        },
+    )
+
+    normalized = normalize_character_profile(card)
+
     assert normalized["profile_status"] == "stub"
 
 
@@ -177,3 +199,19 @@ def test_completeness_score_does_not_treat_empty_structural_fields_as_content() 
     )
 
     assert score == 0
+
+
+def test_completeness_score_counts_role_specific_fields_and_concrete_relationships() -> None:
+    card = _complete_core_card()
+    card["identity_profile"] = {
+        "current_identity": "自由职业者兼玩家",
+        "occupation": "自由职业者",
+    }
+    card["performance_profile"] = {"speech_style": "", "action_style": ""}
+    card["story_drive"] = {
+        **card["story_drive"],
+        "hidden_matters": [],
+    }
+    card["relationship_notes"] = [{"target": "林澈"}]
+
+    assert character_profile_completeness(card) < 100
