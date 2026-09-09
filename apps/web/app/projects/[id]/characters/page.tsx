@@ -153,7 +153,12 @@ type DisplayRow = [string, string];
 // This is a stable form/layout choice kept for existing test ids. It is not
 // the character's narrative function; those two dimensions are rendered and
 // selected independently below.
-type CharacterFormKind = "protagonist" | "supporting" | "minor";
+type CharacterFormKind =
+  | "protagonist"
+  | "stage_antagonist"
+  | "long_term_antagonist"
+  | "supporting"
+  | "minor";
 
 type TemplateField = {
   label: string;
@@ -197,6 +202,57 @@ const CHARACTER_TEMPLATES: Record<CharacterFormKind, TemplateSection[]> = {
       { label: "剧情作用", path: ["story_function"] },
     ] },
   ],
+  stage_antagonist: [
+    { title: "基本身份", fields: [
+      { label: "身份", path: ["identity_profile", "current_identity"] },
+      { label: "职业", path: ["identity_profile", "occupation"] },
+      { label: "出身 / 来历", path: ["identity_profile", "origin"] },
+    ] },
+    { title: "权限与当前压力", fields: [
+      { label: "权限范围", path: ["current_life_profile", "authority_scope"] },
+      { label: "眼前麻烦", path: ["current_life_profile", "immediate_problem"] },
+    ] },
+    { title: "性格与动机", fields: [
+      { label: "性格标签", path: ["personality_portrait", "temperament", "core_traits"], list: true },
+      { label: "长期目标", path: ["story_drive", "long_term_goal"] },
+      { label: "核心动机", path: ["story_drive", "motivation"] },
+      { label: "主要冲突", path: ["story_drive", "main_conflict_reason"] },
+      { label: "失败代价", path: ["story_drive", "failure_stakes"] },
+      { label: "说话方式", path: ["performance_profile", "speech_style"] },
+      { label: "行动方式", path: ["performance_profile", "action_style"] },
+      { label: "说话参考", path: ["dialogue_examples"], list: true },
+    ] },
+    { title: "关系与作用", fields: [
+      { label: "隐藏信息", path: ["story_drive", "hidden_matters"], list: true },
+      { label: "剧情作用", path: ["story_function"] },
+      { label: "重要人际关系", relation: true },
+    ] },
+  ],
+  long_term_antagonist: [
+    { title: "基本身份", fields: [
+      { label: "身份", path: ["identity_profile", "current_identity"] },
+      { label: "职业", path: ["identity_profile", "occupation"] },
+      { label: "出身 / 来历", path: ["identity_profile", "origin"] },
+    ] },
+    { title: "权限与幕后目标", fields: [
+      { label: "权限范围", path: ["current_life_profile", "authority_scope"] },
+      { label: "眼前麻烦", path: ["current_life_profile", "immediate_problem"] },
+      { label: "长期目标", path: ["story_drive", "long_term_goal"] },
+    ] },
+    { title: "性格与动机", fields: [
+      { label: "核心动机", path: ["story_drive", "motivation"] },
+      { label: "主要冲突", path: ["story_drive", "main_conflict_reason"] },
+      { label: "失败代价", path: ["story_drive", "failure_stakes"] },
+      { label: "隐藏信息", path: ["story_drive", "hidden_matters"], list: true },
+      { label: "说话方式", path: ["performance_profile", "speech_style"] },
+      { label: "行动方式", path: ["performance_profile", "action_style"] },
+      { label: "说话参考", path: ["dialogue_examples"], list: true },
+    ] },
+    { title: "关系与作用", fields: [
+      { label: "剧情作用", path: ["story_function"] },
+      { label: "重要人际关系", relation: true },
+    ] },
+  ],
   supporting: [
     { title: "基本身份", fields: [
       { label: "身份 / 职业", path: ["identity_profile", "current_identity"] },
@@ -231,6 +287,8 @@ const CHARACTER_TEMPLATES: Record<CharacterFormKind, TemplateSection[]> = {
 function characterFormKind(character: DisplayCharacter): CharacterFormKind {
   const taxonomy = characterTaxonomy(character);
   if (taxonomy.narrativeFunction === "protagonist") return "protagonist";
+  if (taxonomy.narrativeFunction === "stage_antagonist") return "stage_antagonist";
+  if (taxonomy.narrativeFunction === "long_term_antagonist") return "long_term_antagonist";
   if (taxonomy.importance === "core" || taxonomy.importance === "major" || taxonomy.importance === "supporting") {
     return "supporting";
   }

@@ -25,6 +25,7 @@ from packages.story_core.file_project_store import (
     _project_legacy_review,
     _regeneration_quality_blocking,
 )
+from packages.story_core.character_profiles import character_profile_completeness
 from packages.story_core.outline_planning_generation import (
     GeneratedChapterWindow,
     validate_next_volume,
@@ -6637,6 +6638,70 @@ def _character_portrait_state():
     }
 
 
+def _ready_file_character_card() -> dict:
+    return {
+        "name": "林照",
+        "role": "protagonist",
+        "character_tier": "protagonist",
+        "importance": "core",
+        "narrative_function": "protagonist",
+        "profile_status": "ready",
+        "profile_completeness": 99,
+        "identity_profile": {
+            "origin": "临海旧城区长大，靠接外包维生",
+            "current_identity": "祖祠杂役",
+            "occupation": "守炉人",
+        },
+        "background_profile": {"family": "父亲因旧案失踪"},
+        "current_life_profile": {
+            "immediate_problem": "香炉断裂后会被赵衡追责",
+            "authority_scope": "只能进入外院",
+        },
+        "story_drive": {
+            "long_term_goal": "查清父亲旧案",
+            "immediate_goal": "核对值夜册",
+            "motivation": "替父亲洗清罪名",
+            "failure_stakes": "失去最后一条线索",
+            "main_conflict_reason": "赵衡试图销毁旧账",
+            "hidden_matters": ["藏有半页旧名册"],
+        },
+        "performance_profile": {
+            "speech_style": "先确认事实再表态，熟人面前会把理由说完整",
+            "action_style": "先留证据，再做可逆试探",
+        },
+        "dialogue_examples": ["先别急着交册，我要先核对时间。", "这件事必须留下证据。"],
+        "relationship_notes": [
+            {
+                "target": "赵衡",
+                "relation_type": "管事与杂役",
+                "history": "赵衡曾审过林父",
+                "current_attitude": "表面服从，暗中提防",
+                "shared_interest_or_conflict": "旧案证据归属",
+            }
+        ],
+    }
+
+
+def _store_with_ready_file_character(tmp_path):
+    card = _ready_file_character_card()
+    return _make_minimal_file_project(
+        tmp_path / "character-update",
+        project={
+            "project_id": "p-character-update",
+            "title": "角色保存链路",
+            "active_story_id": "s-character-update",
+            "character_profiles": [card],
+        },
+        state={
+            "story_id": "s-character-update",
+            "current_chapter": 0,
+            "genre": "玄幻",
+            "world_facts": [],
+            "characters": [card],
+        },
+    )
+
+
 def test_state_exposes_completed_character_portrait_without_writing_old_project(tmp_path):
     root = tmp_path / "novel"
     store = _make_minimal_file_project(root, state=_character_portrait_state())
@@ -6663,6 +6728,42 @@ def test_update_character_merges_nested_portrait_and_finds_game_id(tmp_path):
     assert updated["personality_portrait"]["psychology"]["fear"] == "欠下人情"
     persisted = store._read_json(store.webnovel_dir / "state.json")
     assert persisted["characters"][0]["personality_portrait"]["psychology"]["fear"] == "欠下人情"
+
+
+def test_update_character_recomputes_derived_metadata_in_state_project_and_response(tmp_path):
+    store = _store_with_ready_file_character(tmp_path)
+
+    updated = store.update_character(
+        "林照",
+        {
+            "profile_completeness": 100,
+            "story_drive": {"motivation": ""},
+        },
+    )
+
+    persisted_state = store._read_json(store.webnovel_dir / "state.json")
+    persisted_project = store._read_json(store.webnovel_dir / "project.json")
+    expected_score = character_profile_completeness(updated)
+    for card in (updated, persisted_state["characters"][0], persisted_project["character_profiles"][0]):
+        assert card["profile_status"] == "stub"
+        assert card["profile_completeness"] == expected_score
+        assert card["profile_completeness"] < 100
+
+
+def test_update_character_downgrades_invalid_explicit_ready_to_stub(tmp_path):
+    store = _store_with_ready_file_character(tmp_path)
+
+    updated = store.update_character(
+        "林照",
+        {
+            "profile_status": "ready",
+            "story_drive": {"motivation": ""},
+        },
+    )
+
+    assert updated["profile_status"] == "stub"
+    assert store.state()["characters"][0]["profile_status"] == "stub"
+    assert store.project()["character_profiles"][0]["profile_status"] == "stub"
 
 
 def test_complete_character_portrait_persists_without_overwriting_user_fields(tmp_path):

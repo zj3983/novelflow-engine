@@ -400,12 +400,16 @@ test("角色卡支持按分类状态和叙事功能筛选，并保存可编辑�
       profile_completeness: undefined,
     },
   ];
-  let savedBody: Record<string, unknown> | null = null;
+  const savedBodies: Record<string, Record<string, unknown>> = {};
   await mockWorkspace(page, taxonomyCharacters);
-  await page.route(`**/file-projects/${ENCODED_PROJECT_ID}/characters/%E6%9E%97%E7%85%A7`, async (route) => {
-    savedBody = route.request().postDataJSON() as Record<string, unknown>;
-    taxonomyCharacters[0] = { ...taxonomyCharacters[0], ...savedBody };
-    return fulfill(route, { ...taxonomyCharacters[0], ...savedBody });
+  await page.route(`**/file-projects/${ENCODED_PROJECT_ID}/characters/**`, async (route) => {
+    if (route.request().method() !== "PUT") return route.continue();
+    const characterName = decodeURIComponent(new URL(route.request().url()).pathname.split("/").pop() ?? "");
+    const savedBody = route.request().postDataJSON() as Record<string, unknown>;
+    savedBodies[characterName] = savedBody;
+    const index = taxonomyCharacters.findIndex((item) => item.name === characterName);
+    if (index >= 0) taxonomyCharacters[index] = { ...taxonomyCharacters[index], ...savedBody };
+    return fulfill(route, { ...taxonomyCharacters[index], ...savedBody });
   });
 
   await page.goto(`/projects/${ENCODED_PROJECT_ID}/characters`);
@@ -435,7 +439,7 @@ test("角色卡支持按分类状态和叙事功能筛选，并保存可编辑�
   await protagonistCard.getByLabel("行动方式").fill("先把证据分层保存，再决定是否公开。");
   await protagonistCard.getByRole("button", { name: "保存角色卡", exact: true }).click();
 
-  await expect.poll(() => savedBody).toMatchObject({
+  await expect.poll(() => savedBodies["林照"]).toMatchObject({
     importance: "major",
     narrative_function: "ally",
     performance_profile: {
@@ -443,8 +447,45 @@ test("角色卡支持按分类状态和叙事功能筛选，并保存可编辑�
       action_style: "先把证据分层保存，再决定是否公开。",
     },
   });
-  expect(savedBody).not.toHaveProperty("profile_status");
-  expect(savedBody).not.toHaveProperty("profile_completeness");
+  expect(savedBodies["林照"]).not.toHaveProperty("profile_status");
+  expect(savedBodies["林照"]).not.toHaveProperty("profile_completeness");
   await expect(protagonistCard.getByText("重要 · major", { exact: true })).toBeVisible();
   await expect(protagonistCard.getByText("盟友 · ally", { exact: true })).toBeVisible();
+
+  const stageCard = cards.filter({ has: page.getByRole("heading", { name: "赵衡", exact: true }) });
+  await stageCard.getByRole("button", { name: "编辑", exact: true }).click();
+  await expect(stageCard.getByLabel("权限范围")).toBeVisible();
+  await expect(stageCard.getByLabel("主要冲突")).toBeVisible();
+  await expect(stageCard.getByLabel("行动方式")).toBeVisible();
+  await stageCard.getByLabel("权限范围").fill("可封存外院档案并调度巡夜人");
+  await stageCard.getByLabel("主要冲突").fill("他必须销毁旧账，才能保住手里的调度权");
+  await stageCard.getByLabel("行动方式").fill("先封锁权限，再逼对方当场表态");
+  await stageCard.getByRole("button", { name: "保存角色卡", exact: true }).click();
+  await expect.poll(() => savedBodies["赵衡"]).toMatchObject({
+    current_life_profile: { authority_scope: "可封存外院档案并调度巡夜人" },
+    story_drive: { main_conflict_reason: "他必须销毁旧账，才能保住手里的调度权" },
+    performance_profile: { action_style: "先封锁权限，再逼对方当场表态" },
+  });
+
+  const longTermCard = cards.filter({ has: page.getByRole("heading", { name: "顾闻舟", exact: true }) });
+  await longTermCard.getByRole("button", { name: "编辑", exact: true }).click();
+  await expect(longTermCard.getByLabel("权限范围")).toBeVisible();
+  await expect(longTermCard.getByLabel("长期目标")).toBeVisible();
+  await expect(longTermCard.getByLabel("主要冲突")).toBeVisible();
+  await expect(longTermCard.getByLabel("隐藏信息")).toBeVisible();
+  await longTermCard.getByLabel("权限范围").fill("可调阅全部审计记录并决定哪些异常进入公开流程");
+  await longTermCard.getByLabel("长期目标").fill("把所有异常协议纳入自己的权限网络");
+  await longTermCard.getByLabel("主要冲突").fill("旧协议一旦公开，他经营多年的权限网络就会失效");
+  await longTermCard.getByLabel("隐藏信息").fill("他曾亲自修改过第一版审计规则");
+  await longTermCard.getByRole("button", { name: "保存角色卡", exact: true }).click();
+  await expect.poll(() => savedBodies["顾闻舟"]).toMatchObject({
+    current_life_profile: { authority_scope: "可调阅全部审计记录并决定哪些异常进入公开流程" },
+    story_drive: {
+      long_term_goal: "把所有异常协议纳入自己的权限网络",
+      main_conflict_reason: "旧协议一旦公开，他经营多年的权限网络就会失效",
+      hidden_matters: ["他曾亲自修改过第一版审计规则"],
+    },
+  });
+  await expect(stageCard.getByText("权限与当前压力", { exact: true })).toHaveCount(1);
+  await expect(longTermCard.getByText("权限与幕后目标", { exact: true })).toHaveCount(1);
 });
