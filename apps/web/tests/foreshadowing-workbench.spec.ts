@@ -363,6 +363,20 @@ test("角色卡支持按分类状态和叙事功能筛选，并保存可编辑�
     },
     {
       ...character,
+      name: "顾闻舟",
+      role: "long term antagonist",
+      character_tier: "long_term_antagonist",
+      importance: "core",
+      narrative_function: "long_term_antagonist",
+      profile_status: "ready",
+      profile_completeness: 92,
+      performance_profile: {
+        speech_style: "只谈已经掌握的条件，不先暴露真正目的。",
+        action_style: "先让别人承担代价，再收拢可逆的退路。",
+      },
+    },
+    {
+      ...character,
       name: "周满",
       role: "supporting",
       character_tier: "supporting",
@@ -375,19 +389,36 @@ test("角色卡支持按分类状态和叙事功能筛选，并保存可编辑�
         action_style: "先递出资源，再观察对方是否守约。",
       },
     },
+    {
+      ...character,
+      name: "旧卡",
+      role: "supporting",
+      character_tier: "supporting",
+      importance: undefined,
+      narrative_function: undefined,
+      profile_status: undefined,
+      profile_completeness: undefined,
+    },
   ];
   let savedBody: Record<string, unknown> | null = null;
   await mockWorkspace(page, taxonomyCharacters);
   await page.route(`**/file-projects/${ENCODED_PROJECT_ID}/characters/%E6%9E%97%E7%85%A7`, async (route) => {
     savedBody = route.request().postDataJSON() as Record<string, unknown>;
+    taxonomyCharacters[0] = { ...taxonomyCharacters[0], ...savedBody };
     return fulfill(route, { ...taxonomyCharacters[0], ...savedBody });
   });
 
   await page.goto(`/projects/${ENCODED_PROJECT_ID}/characters`);
   const cards = page.locator(".ws-character-card");
-  await expect(cards).toHaveCount(3);
-  await expect(page.locator(".ws-character-taxonomy__badge", { hasText: "核心 · core" })).toBeVisible();
-  await expect(page.locator(".ws-character-taxonomy__badge", { hasText: "阶段对手 · stage_antagonist" })).toBeVisible();
+  const protagonistCard = cards.filter({ has: page.getByRole("heading", { name: "林照", exact: true }) });
+  await expect(cards).toHaveCount(5);
+  await expect(protagonistCard.getByText("核心 · core", { exact: true })).toBeVisible();
+  await expect(page.locator(".ws-character-taxonomy__badge", { hasText: "阶段反派 · stage_antagonist" })).toBeVisible();
+  await expect(page.locator(".ws-character-taxonomy__badge", { hasText: "长期反派 · long_term_antagonist" })).toBeVisible();
+  await expect(cards.filter({ has: page.getByRole("heading", { name: "赵衡", exact: true }) }).getByText(/阶段反派待补全卡/)).toBeVisible();
+  await expect(cards.filter({ has: page.getByRole("heading", { name: "顾闻舟", exact: true }) }).getByText(/长期反派完整模板/)).toBeVisible();
+  await expect(cards.filter({ has: page.getByRole("heading", { name: "旧卡", exact: true }) }).getByText("配角 · supporting", { exact: true })).toBeVisible();
+  await expect(cards.filter({ has: page.getByRole("heading", { name: "赵衡", exact: true }) }).locator(".ws-character-card__head > div:first-child > p").filter({ hasText: "重要配角卡" })).toHaveCount(0);
   await page.getByLabel("角色分类筛选").selectOption("stub");
   await expect(cards).toHaveCount(1);
   await expect(cards.first().getByRole("heading", { name: "赵衡", exact: true })).toBeVisible();
@@ -397,7 +428,6 @@ test("角色卡支持按分类状态和叙事功能筛选，并保存可编辑�
   await expect(cards.first().getByRole("heading", { name: "周满", exact: true })).toBeVisible();
   await page.getByLabel("叙事功能筛选").selectOption("all");
 
-  const protagonistCard = cards.filter({ has: page.getByRole("heading", { name: "林照", exact: true }) });
   await protagonistCard.getByRole("button", { name: "编辑", exact: true }).click();
   await protagonistCard.getByLabel("重要级别").selectOption("major");
   await protagonistCard.getByLabel("叙事功能").selectOption("ally");
@@ -415,4 +445,6 @@ test("角色卡支持按分类状态和叙事功能筛选，并保存可编辑�
   });
   expect(savedBody).not.toHaveProperty("profile_status");
   expect(savedBody).not.toHaveProperty("profile_completeness");
+  await expect(protagonistCard.getByText("重要 · major", { exact: true })).toBeVisible();
+  await expect(protagonistCard.getByText("盟友 · ally", { exact: true })).toBeVisible();
 });

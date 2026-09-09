@@ -57,8 +57,8 @@ const NARRATIVE_FUNCTION_LABELS: Record<CharacterNarrativeFunction, string> = {
   rival: "竞争者",
   mentor: "导师",
   love_interest: "感情线",
-  stage_antagonist: "阶段对手",
-  long_term_antagonist: "长期对手",
+  stage_antagonist: "阶段反派",
+  long_term_antagonist: "长期反派",
   resource_contact: "资源联系人",
   other: "其他",
 };
@@ -150,7 +150,10 @@ function mirrorGamePanel(panel: GamePanel, layer: CharacterStateLayer): GamePane
 
 type DisplayRow = [string, string];
 
-type CharacterTemplateKind = "protagonist" | "supporting" | "minor";
+// This is a stable form/layout choice kept for existing test ids. It is not
+// the character's narrative function; those two dimensions are rendered and
+// selected independently below.
+type CharacterFormKind = "protagonist" | "supporting" | "minor";
 
 type TemplateField = {
   label: string;
@@ -169,7 +172,7 @@ type TemplateSection = {
 // current relations) live in the 当前状态 section, not here, so the workbench
 // can clearly separate what the chapter generator is allowed to rewrite from
 // the long-term identity of the character.
-const CHARACTER_TEMPLATES: Record<CharacterTemplateKind, TemplateSection[]> = {
+const CHARACTER_TEMPLATES: Record<CharacterFormKind, TemplateSection[]> = {
   protagonist: [
     { title: "基本身份", fields: [
       { label: "年龄", path: ["identity_profile", "age"], number: true },
@@ -225,7 +228,7 @@ const CHARACTER_TEMPLATES: Record<CharacterTemplateKind, TemplateSection[]> = {
   ],
 };
 
-function characterTemplateKind(character: DisplayCharacter): CharacterTemplateKind {
+function characterFormKind(character: DisplayCharacter): CharacterFormKind {
   const taxonomy = characterTaxonomy(character);
   if (taxonomy.narrativeFunction === "protagonist") return "protagonist";
   if (taxonomy.importance === "core" || taxonomy.importance === "major" || taxonomy.importance === "supporting") {
@@ -237,8 +240,27 @@ function characterTemplateKind(character: DisplayCharacter): CharacterTemplateKi
   return "minor";
 }
 
-function templateKindLabel(kind: CharacterTemplateKind): string {
-  return kind === "protagonist" ? "主角详卡" : kind === "supporting" ? "重要配角卡" : "普通配角卡";
+type CharacterProfileDepth = "stub" | "light" | "full";
+
+function characterProfileDepth(character: DisplayCharacter): CharacterProfileDepth {
+  const taxonomy = characterTaxonomy(character);
+  if (taxonomy.status === "stub") return "stub";
+  if (taxonomy.importance === "core" || taxonomy.importance === "major") return "full";
+  return "light";
+}
+
+function characterTemplateLabel(character: DisplayCharacter): string {
+  const taxonomy = characterTaxonomy(character);
+  const depth = characterProfileDepth(character);
+  const functionLabel = taxonomy.narrativeFunction
+    ? NARRATIVE_FUNCTION_LABELS[taxonomy.narrativeFunction]
+    : undefined;
+  if (functionLabel && taxonomy.narrativeFunction !== "other") {
+    return `${functionLabel}${depth === "stub" ? "待补全卡" : depth === "full" ? "完整模板" : "轻量模板"}`;
+  }
+  if (depth === "stub") return "普通角色待补全卡";
+  if (depth === "full") return `${importanceLabel(taxonomy.importance)}完整模板`;
+  return "普通角色轻量模板";
 }
 
 function nestedValue(character: DisplayCharacter, path: string[]): string | string[] {
@@ -387,8 +409,8 @@ function StableProfileSection({
   relationsText: string;
 }) {
   const shown = isEditing && draft ? draft : character;
-  const templateKind = characterTemplateKind(shown as DisplayCharacter);
-  const templateSections = CHARACTER_TEMPLATES[templateKind];
+  const formKind = characterFormKind(shown as DisplayCharacter);
+  const templateSections = CHARACTER_TEMPLATES[formKind];
   const relatedEdges = relations.filter((edge) => edge.source === shown?.name || edge.target === shown?.name);
   const hasRelations = relatedEdges.length > 0;
   const hasStableTemplate = templateSections.some((section) => section.fields.some((field) => {
@@ -407,7 +429,7 @@ function StableProfileSection({
       <h2>稳定档案</h2>
       <p className="ws-card__hint">不随章节自动改写</p>
       {isEditing ? <TaxonomyEditor character={shown} onChange={onChangeTaxonomy} /> : null}
-      <div className={`ws-character-template ws-character-template--${templateKind}`}>
+      <div className={`ws-character-template ws-character-template--${formKind}`}>
         {templateSections.map((section) => {
           const fields = section.fields.filter((field) => {
             if (isEditing) return true;
@@ -750,8 +772,8 @@ export default function CharactersPage() {
             >
               <option value="all">全部功能</option>
               <option value="protagonist">主角 · protagonist</option>
-              <option value="stage_antagonist">阶段对手 · stage_antagonist</option>
-              <option value="long_term_antagonist">长期对手 · long_term_antagonist</option>
+              <option value="stage_antagonist">阶段反派 · stage_antagonist</option>
+              <option value="long_term_antagonist">长期反派 · long_term_antagonist</option>
               <option value="ally">盟友 · ally</option>
               <option value="rival">竞争者 · rival</option>
               <option value="mentor">导师 · mentor</option>
@@ -788,11 +810,11 @@ export default function CharactersPage() {
               ] as Array<[StateNamespace, CharacterStateLayer | undefined]>).filter((entry): entry is [StateNamespace, CharacterStateLayer] => Boolean(entry[1]));
 
               return (
-                <article className="ws-character-card" data-testid={`character-card-${characterTemplateKind(shown as DisplayCharacter)}`} key={character.name}>
+                <article className="ws-character-card" data-testid={`character-card-${characterFormKind(shown as DisplayCharacter)}`} key={character.name}>
                   <div className="ws-character-card__head">
                     <div>
                       <h2>{shown?.name}</h2>
-                      <p>{[templateKindLabel(characterTemplateKind(shown as DisplayCharacter)), characterRoleLabel(shown?.role), displayedGameId].filter(Boolean).join(" / ")}</p>
+                      <p>{[characterTemplateLabel(shown as DisplayCharacter), characterRoleLabel(shown?.role), displayedGameId].filter(Boolean).join(" / ")}</p>
                       <div className="ws-character-taxonomy" aria-label="角色分类信息">
                         <span className="ws-character-taxonomy__badge">{importanceLabel(taxonomy.importance)}</span>
                         <span className="ws-character-taxonomy__badge">{narrativeFunctionLabel(taxonomy.narrativeFunction)}</span>
