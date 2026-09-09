@@ -336,3 +336,83 @@ test("角色卡动态与稳定字段真正分区、去重且仍可编辑保存",
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   expect(keyWarnings).toEqual([]);
 });
+
+test("角色卡支持按分类状态和叙事功能筛选，并保存可编辑的表现字段", async ({ page }) => {
+  const taxonomyCharacters = [
+    {
+      ...character,
+      importance: "core",
+      narrative_function: "protagonist",
+      profile_status: "ready",
+      profile_completeness: 100,
+      performance_profile: {
+        speech_style: "先核实证据，再把理由说完整。",
+        action_style: "先留证，再做可逆试探。",
+      },
+    },
+    {
+      ...character,
+      name: "赵衡",
+      role: "stage antagonist",
+      character_tier: "stage_antagonist",
+      importance: "major",
+      narrative_function: "stage_antagonist",
+      profile_status: "stub",
+      profile_completeness: 42,
+      performance_profile: { action_style: "先封锁权限，再逼对方表态。" },
+    },
+    {
+      ...character,
+      name: "周满",
+      role: "supporting",
+      character_tier: "supporting",
+      importance: "supporting",
+      narrative_function: "ally",
+      profile_status: "ready",
+      profile_completeness: 78,
+      performance_profile: {
+        speech_style: "只说自己确认过的半句话。",
+        action_style: "先递出资源，再观察对方是否守约。",
+      },
+    },
+  ];
+  let savedBody: Record<string, unknown> | null = null;
+  await mockWorkspace(page, taxonomyCharacters);
+  await page.route(`**/file-projects/${ENCODED_PROJECT_ID}/characters/%E6%9E%97%E7%85%A7`, async (route) => {
+    savedBody = route.request().postDataJSON() as Record<string, unknown>;
+    return fulfill(route, { ...taxonomyCharacters[0], ...savedBody });
+  });
+
+  await page.goto(`/projects/${ENCODED_PROJECT_ID}/characters`);
+  const cards = page.locator(".ws-character-card");
+  await expect(cards).toHaveCount(3);
+  await expect(page.locator(".ws-character-taxonomy__badge", { hasText: "核心 · core" })).toBeVisible();
+  await expect(page.locator(".ws-character-taxonomy__badge", { hasText: "阶段对手 · stage_antagonist" })).toBeVisible();
+  await page.getByLabel("角色分类筛选").selectOption("stub");
+  await expect(cards).toHaveCount(1);
+  await expect(cards.first().getByRole("heading", { name: "赵衡", exact: true })).toBeVisible();
+  await page.getByLabel("角色分类筛选").selectOption("all");
+  await page.getByLabel("叙事功能筛选").selectOption("ally");
+  await expect(cards).toHaveCount(1);
+  await expect(cards.first().getByRole("heading", { name: "周满", exact: true })).toBeVisible();
+  await page.getByLabel("叙事功能筛选").selectOption("all");
+
+  const protagonistCard = cards.filter({ has: page.getByRole("heading", { name: "林照", exact: true }) });
+  await protagonistCard.getByRole("button", { name: "编辑", exact: true }).click();
+  await protagonistCard.getByLabel("重要级别").selectOption("major");
+  await protagonistCard.getByLabel("叙事功能").selectOption("ally");
+  await protagonistCard.getByLabel("说话方式").fill("面对质疑时先复述事实，再明确自己的判断。");
+  await protagonistCard.getByLabel("行动方式").fill("先把证据分层保存，再决定是否公开。");
+  await protagonistCard.getByRole("button", { name: "保存角色卡", exact: true }).click();
+
+  await expect.poll(() => savedBody).toMatchObject({
+    importance: "major",
+    narrative_function: "ally",
+    performance_profile: {
+      speech_style: "面对质疑时先复述事实，再明确自己的判断。",
+      action_style: "先把证据分层保存，再决定是否公开。",
+    },
+  });
+  expect(savedBody).not.toHaveProperty("profile_status");
+  expect(savedBody).not.toHaveProperty("profile_completeness");
+});

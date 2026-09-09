@@ -756,6 +756,29 @@ export type CharacterStateLayer = {
   recent_changes?: Array<{ chapter?: number; fact: string }>;
 };
 
+export type CharacterImportance = "core" | "major" | "supporting" | "minor";
+export type CharacterNarrativeFunction =
+  | "protagonist"
+  | "ally"
+  | "rival"
+  | "mentor"
+  | "love_interest"
+  | "stage_antagonist"
+  | "long_term_antagonist"
+  | "resource_contact"
+  | "other";
+export type CharacterProfileStatus = "stub" | "ready";
+
+export type CharacterPerformanceProfile = {
+  speech_style?: string;
+  action_style?: string;
+  risk_posture?: string;
+  emotional_triggers?: string[];
+  decision_rules?: string[];
+  reveal_limits?: string[];
+  voice?: Record<string, unknown>;
+};
+
 export type StoryResponse = {
   story_id: string;
   outline: string;
@@ -785,11 +808,16 @@ export type StoryResponse = {
     real_state?: CharacterStateLayer;
     game_state?: CharacterStateLayer;
     character_tier?: string;
+    importance?: CharacterImportance;
+    narrative_function?: CharacterNarrativeFunction;
+    profile_status?: CharacterProfileStatus;
+    profile_completeness?: number;
     first_appearance?: number | null;
     identity_profile?: CharacterIdentityProfile;
     background_profile?: CharacterBackgroundProfile;
     current_life_profile?: CharacterCurrentLifeProfile;
     story_drive?: CharacterStoryDrive;
+    performance_profile?: CharacterPerformanceProfile;
     dialogue_examples?: string[];
     relationship_notes?: CharacterRelationshipNote[];
     character_type?: string;
@@ -801,7 +829,6 @@ export type StoryResponse = {
     psychological_profile?: Record<string, unknown>;
     moral_profile?: Record<string, unknown>;
     personality_portrait?: CharacterPortrait;
-    performance_profile?: Record<string, unknown>;
     story_function?: string;
     chapter_role?: string;
     goals: string[];
@@ -996,11 +1023,16 @@ export type ImportedCharacterProfile = {
   game_panel?: GamePanel;
   role?: string;
   character_tier?: string;
+  importance?: CharacterImportance;
+  narrative_function?: CharacterNarrativeFunction;
+  profile_status?: CharacterProfileStatus;
+  profile_completeness?: number;
   first_appearance?: number | null;
   identity_profile?: CharacterIdentityProfile;
   background_profile?: CharacterBackgroundProfile;
   current_life_profile?: CharacterCurrentLifeProfile;
   story_drive?: CharacterStoryDrive;
+  performance_profile?: CharacterPerformanceProfile;
   dialogue_examples?: string[];
   relationship_notes?: CharacterRelationshipNote[];
   character_type?: string;

@@ -1773,6 +1773,45 @@ fieldset.ws-outline-grid {
   letter-spacing: 0;
 }
 
+.ws-character-filters {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 12px 18px;
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--ws-line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.42);
+}
+
+.ws-character-filters label,
+.ws-character-taxonomy-editor label {
+  display: grid;
+  gap: 5px;
+  color: var(--ws-ink-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ws-character-filters select,
+.ws-character-taxonomy-editor select {
+  min-height: 34px;
+  border: 1px solid var(--ws-line);
+  border-radius: 6px;
+  padding: 6px 28px 6px 9px;
+  background: var(--ws-surface);
+  color: var(--ws-ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+.ws-character-filters > p {
+  margin: 0 0 7px auto;
+  color: var(--ws-ink-muted);
+  font-size: 12px;
+}
+
 .ws-character-card,
 .ws-reaction-item,
 .ws-rule-item {
@@ -1805,6 +1844,44 @@ fieldset.ws-outline-grid {
   color: var(--ws-ink-muted);
   font-size: 13px;
   line-height: 1.55;
+}
+
+.ws-character-taxonomy {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.ws-character-taxonomy__badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border: 1px solid var(--ws-line);
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: rgba(255, 255, 255, 0.66);
+  color: var(--ws-ink-muted) !important;
+  font-size: 11px !important;
+  line-height: 1.35 !important;
+}
+
+.ws-character-taxonomy-editor {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 220px));
+  gap: 12px 16px;
+  margin-top: 14px;
+  padding: 12px 0;
+  border-top: 1px solid var(--ws-line);
+  border-bottom: 1px solid var(--ws-line);
+}
+
+.ws-character-taxonomy-editor__hint {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--ws-ink-muted);
+  font-size: 12px;
+  font-weight: 400;
 }
 
 .ws-panel-grid {
@@ -2170,6 +2247,19 @@ fieldset.ws-outline-grid {
 }
 
 @media (max-width: 760px) {
+  .ws-character-filters > p {
+    width: 100%;
+    margin: 0;
+  }
+
+  .ws-character-taxonomy-editor {
+    grid-template-columns: 1fr;
+  }
+
+  .ws-character-taxonomy-editor__hint {
+    grid-column: auto;
+  }
+
   .ws-character-template__fields,
   .ws-character-template--supporting .ws-character-template__fields,
   .ws-character-template--minor .ws-character-template__fields {

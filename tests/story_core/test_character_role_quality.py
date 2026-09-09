@@ -238,4 +238,27 @@ def test_explicit_new_taxonomy_wins_during_legacy_compatible_read() -> None:
     assert state.importance == "major"
     assert state.narrative_function == "ally"
     assert state.profile_status == "stub"
-    assert state.profile_completeness == 25
+    assert state.profile_completeness == 0
+
+
+def test_character_state_recomputes_stale_ready_and_completeness_metadata() -> None:
+    state = CharacterState(
+        name="林澈",
+        role="protagonist",
+        character_tier="protagonist",
+        profile_status="ready",
+        profile_completeness=99,
+        identity_profile={"current_identity": "灰港调查员"},
+        story_drive={"immediate_goal": "保住证据"},
+    )
+
+    assert state.profile_status == "stub"
+    assert state.profile_completeness < 99
+
+
+def test_explicit_stub_intent_survives_a_complete_card_but_score_is_derived() -> None:
+    card = _card(profile_status="stub")
+    state = CharacterState.model_validate({**card, "profile_completeness": 100})
+
+    assert state.profile_status == "stub"
+    assert state.profile_completeness == 100

@@ -716,11 +716,7 @@ def _character_card_roster_quality_issues(
 def _raise_character_quality_issues(issues: dict[str, list[str]]) -> None:
     if not issues:
         return
-    detail = ";".join(
-        f"{name}[{','.join(dict.fromkeys(values))}]"
-        for name, values in sorted(issues.items())
-    )
-    raise ValueError(f"character_profile_quality_failed:{detail}")
+    raise CharacterQualityValidationError(issues)
 
 
 def _validate_character_card_roster_quality(
@@ -764,6 +760,38 @@ def _validate_character_seed_roster_quality(
 
 
 _CHARACTER_QUALITY_ERROR_PREFIX = "character_profile_quality_failed:"
+
+
+class CharacterQualityValidationError(ValueError):
+    """Keep failed-card identity available even when UI error text is capped."""
+
+    def __init__(self, issues: dict[str, list[str]]) -> None:
+        self.issues = {
+            str(name): list(dict.fromkeys(values))
+            for name, values in issues.items()
+        }
+        self.failed_character_names = tuple(
+            name for name in sorted(self.issues) if name and name != "<unnamed>"
+        )
+        detail = ";".join(
+            f"{name}[{','.join(values)}]"
+            for name, values in sorted(self.issues.items())
+        )
+        super().__init__(f"{_CHARACTER_QUALITY_ERROR_PREFIX}{detail}")
+
+
+def _quality_error_context(error: BaseException) -> tuple[str, list[str]]:
+    """Return full diagnostic text and all failed names before display truncation."""
+
+    full_error = re.sub(r"\s+", " ", str(error)).strip()
+    names = [
+        str(name).strip()
+        for name in getattr(error, "failed_character_names", ())
+        if str(name).strip()
+    ]
+    if not names:
+        names = _failed_character_names_from_quality_error(full_error)
+    return full_error, list(dict.fromkeys(names))
 
 
 def _failed_character_names_from_quality_error(error: str) -> list[str]:
@@ -2104,6 +2132,7 @@ class LLMOutlinePlanningGenerator:
                         if isinstance(data, dict):
                             _fill_equivalent_arc_handoffs(data)
                         validation_error = ""
+                        validation_exception: BaseException | None = None
                         result: BaseModel | None = None
                         if data is None:
                             validation_error = invalid_json_error
@@ -2113,9 +2142,9 @@ class LLMOutlinePlanningGenerator:
                                 if result_validator:
                                     result_validator(result)
                             except Exception as exc:
-                                validation_error = re.sub(
-                                    r"\s+", " ", str(exc)
-                                ).strip()[:1000]
+                                validation_exception = exc
+                                full_validation_error, _ = _quality_error_context(exc)
+                                validation_error = full_validation_error[:1000]
                                 result = None
                         if result is None:
                             invalid_response = (
@@ -2123,11 +2152,9 @@ class LLMOutlinePlanningGenerator:
                                 if isinstance(data, dict)
                                 else "{}"
                             )
-                            failed_character_names = (
-                                _failed_character_names_from_quality_error(validation_error)
-                                if phase == "character_roster"
-                                else []
-                            )
+                            failed_character_names = []
+                            if phase == "character_roster" and validation_exception is not None:
+                                _, failed_character_names = _quality_error_context(validation_exception)
                             if failed_character_names and isinstance(data, dict):
                                 original_rows = data.get("characters") or []
                                 failed_set = set(failed_character_names)
@@ -2649,8 +2676,8 @@ class LLMOutlinePlanningGenerator:
                     )
                     parsed = parse_direct_outline(response)
                 except Exception as exc:
-                    validation_error = re.sub(r"\s+", " ", str(exc)).strip()[:1000]
-                    failed_character_names = _failed_character_names_from_quality_error(validation_error)
+                    full_validation_error, failed_character_names = _quality_error_context(exc)
+                    validation_error = full_validation_error[:1000]
                     original_candidate = parse_json_message_content(response) if response is not None else None
                     if failed_character_names and isinstance(original_candidate, dict):
                         original_rows = original_candidate.get("characters") or []

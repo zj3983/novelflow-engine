@@ -141,14 +141,14 @@ _LEGACY_TIER_TAXONOMY: dict[str, tuple[CharacterImportance, CharacterNarrativeFu
     "recurring_npc": ("supporting", "other"),
 }
 _NARRATIVE_FUNCTION_MARKERS: tuple[tuple[CharacterNarrativeFunction, tuple[str, ...]], ...] = (
-    ("protagonist", ("protagonist", "主角")),
     ("long_term_antagonist", ("long_term_antagonist", "long term antagonist", "长期反派", "最终反派", "幕后反派")),
     ("stage_antagonist", ("stage_antagonist", "stage antagonist", "阶段反派", "阶段对手")),
     ("mentor", ("mentor", "导师", "师父", "师傅")),
     ("love_interest", ("love_interest", "love interest", "感情线", "恋爱对象")),
     ("rival", ("rival", "竞争者", "竞争对手", "宿敌")),
-    ("ally", ("ally", "盟友", "伙伴", "队友")),
+    ("ally", ("ally", "盟友", "伙伴", "队友", "好友", "阵营成员")),
     ("resource_contact", ("resource_contact", "resource contact", "资源联系人", "情报联系人")),
+    ("protagonist", ("protagonist", "主角")),
 )
 _GENERIC_CHARACTER_CONTENT = frozenset(
     {
@@ -264,8 +264,10 @@ def infer_character_taxonomy(
     role_text = unicodedata.normalize("NFKC", str(card.get("role") or "")).strip().casefold()
     role_token = _taxonomy_token(role_text)
     role_candidates = (role_text, role_token)
+    role_inferred_function: CharacterNarrativeFunction | None = None
     for narrative_function, markers in _NARRATIVE_FUNCTION_MARKERS:
         if any(marker.casefold() in candidate for marker in markers for candidate in role_candidates):
+            role_inferred_function = narrative_function
             inferred_function = narrative_function
             break
 
@@ -273,6 +275,11 @@ def infer_character_taxonomy(
         inferred_importance = "core"
     elif inferred_function in {"stage_antagonist", "mentor", "love_interest"} and not legacy_tier:
         inferred_importance = "major"
+    elif role_inferred_function == "ally" and legacy_tier in {"", "protagonist"}:
+        # Legacy cards occasionally called an ally a protagonist because the old
+        # tier was the only available bucket.  A specific role phrase such as
+        # "主角的盟友" should not make that person a core character.
+        inferred_importance = "supporting"
 
     explicit_importance = _taxonomy_token(card.get("importance"))
     if explicit_importance in {"core", "major", "supporting", "minor"}:
