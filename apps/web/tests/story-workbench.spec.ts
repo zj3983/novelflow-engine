@@ -3423,7 +3423,7 @@ test("concrete character card shows and saves factual profile fields", async ({ 
   await expect(page.getByRole("heading", { name: "角色板", exact: true }).first()).toBeVisible();
   const board = page.getByLabel("角色摘要");
   await expect(board).toContainText("首次出场：第1章");
-  await expect(board).toContainText("最近出场：第1章");
+  await expect(board).not.toContainText("最近出场");
   await expect(board).toContainText("活跃");
   await expect(board).toContainText("找出断炉的人");
   await expect(board).toContainText("香炉断裂会被问责");

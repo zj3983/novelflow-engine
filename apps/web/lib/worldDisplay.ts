@@ -474,7 +474,7 @@ export function characterBoardSummary(
       .filter((entry) => !entry.characters?.length || entry.characters.includes(character.name))
       .map((entry) => entry.chapter_number),
   ].map(boardChapter).filter((chapter): chapter is number => chapter !== undefined);
-  const latestChapter = appearanceChapters.length ? Math.max(...appearanceChapters) : firstAppearanceChapter;
+  const latestChapter = appearanceChapters.length ? Math.max(...appearanceChapters) : undefined;
   const relations = (project?.relationship_graph ?? [])
     .filter((edge) => edge.source === character.name || edge.target === character.name)
     .map((edge): CharacterBoardRelation => ({
