@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import ntpath
 import os
 import re
 import shutil
@@ -577,10 +578,15 @@ def _resolve_openclaw_command(openclaw_command: str) -> list[str]:
         resolved_command = shutil.which(f"{openclaw_command}.cmd")
     command_path = resolved_command or openclaw_command
     if command_path.lower().endswith("openclaw.cmd"):
-        cli_dir = os.path.dirname(command_path)
+        path_ops = (
+            ntpath
+            if "\\" in command_path or ntpath.splitdrive(command_path)[0]
+            else os.path
+        )
+        cli_dir = path_ops.dirname(command_path)
         if cli_dir:
-            node_exe = os.path.normpath(os.path.join(cli_dir, "..", "bin", "node.exe"))
-            entrypoint = os.path.normpath(os.path.join(cli_dir, "..", "openclaw", "openclaw.mjs"))
+            node_exe = path_ops.normpath(path_ops.join(cli_dir, "..", "bin", "node.exe"))
+            entrypoint = path_ops.normpath(path_ops.join(cli_dir, "..", "openclaw", "openclaw.mjs"))
             if os.path.exists(node_exe) and os.path.exists(entrypoint):
                 return [node_exe, entrypoint]
     return [command_path]

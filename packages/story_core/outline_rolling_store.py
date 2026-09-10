@@ -105,18 +105,22 @@ def _read_existing_rolling_outline(
     the next rolling fill is a fresh start.
     """
     target = project_root / _GENERATION_DIR / _ROLLING_OUTLINE_NAME
-    if not target.is_file():
-        return {
-            "schema_version": _ROLLING_SCHEMA_VERSION,
-            "chapters": [],
-        }
     try:
+        if not target.is_file():
+            return {
+                "schema_version": _ROLLING_SCHEMA_VERSION,
+                "chapters": [],
+            }
         payload = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except json.JSONDecodeError:
         return {
             "schema_version": _ROLLING_SCHEMA_VERSION,
             "chapters": [],
         }
+    except OSError as exc:
+        raise RollingOutlineStoreError(
+            f"rolling_outline_read_failed: {exc}"
+        ) from exc
     if not isinstance(payload, dict):
         return {
             "schema_version": _ROLLING_SCHEMA_VERSION,
@@ -139,12 +143,16 @@ def _read_legacy_outline_chapter_numbers(
     later rolling fill.
     """
     target = project_root / ".webnovel" / "outline.json"
-    if not target.is_file():
-        return set()
     try:
+        if not target.is_file():
+            return set()
         payload = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except json.JSONDecodeError:
         return set()
+    except OSError as exc:
+        raise RollingOutlineStoreError(
+            f"legacy_outline_read_failed: {exc}"
+        ) from exc
     if not isinstance(payload, dict):
         return set()
     chapters = payload.get("chapters")

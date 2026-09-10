@@ -1,14 +1,27 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from apps.api.main import app
 
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def allow_test_source_paths(monkeypatch, tmp_path: Path):
+    # Skill-pack imports use the same filesystem allowlist as book
+    # imports; keep temp fixtures in scope without changing production
+    # defaults.
+    monkeypatch.setenv(
+        "NOVEL_AUTOGROWTH_ALLOWED_FS_ROOTS",
+        os.pathsep.join((str(tmp_path), str(Path.cwd()))),
+    )
 
 
 def test_skill_pack_import_and_list(tmp_path: Path, monkeypatch) -> None:

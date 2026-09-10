@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 import re
 import shutil
@@ -49,21 +50,28 @@ def _build_prompt(payload: dict[str, Any]) -> str:
 def _codex_command_prefix(command: str) -> list[str]:
     command = command or "codex"
     resolved_command = shutil.which(command) or command
-    if os.name == "nt" and Path(resolved_command).is_absolute() and not Path(resolved_command).suffix:
+    if os.name == "nt" and ntpath.isabs(resolved_command) and not ntpath.splitext(resolved_command)[1]:
         resolved_command = shutil.which(f"{command}.exe") or resolved_command
     lowered = resolved_command.lower()
     if os.name == "nt" and lowered.endswith((".cmd", ".bat")):
-        npm_entrypoint = (
-            Path(resolved_command).parent
-            / "node_modules"
-            / "@openai"
-            / "codex"
-            / "bin"
-            / "codex.js"
+        path_ops = (
+            ntpath
+            if "\\" in resolved_command or ntpath.splitdrive(resolved_command)[0]
+            else os.path
         )
-        if npm_entrypoint.is_file():
+        npm_entrypoint = path_ops.normpath(
+            path_ops.join(
+                path_ops.dirname(resolved_command),
+                "node_modules",
+                "@openai",
+                "codex",
+                "bin",
+                "codex.js",
+            )
+        )
+        if os.path.isfile(npm_entrypoint):
             node_command = shutil.which("node.exe") or shutil.which("node") or "node"
-            return [node_command, str(npm_entrypoint)]
+            return [node_command, npm_entrypoint]
     if lowered.endswith(".ps1"):
         return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", resolved_command]
     if lowered.endswith((".cmd", ".bat")):
