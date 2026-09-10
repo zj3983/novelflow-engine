@@ -756,6 +756,17 @@ export type CharacterStateLayer = {
   recent_changes?: Array<{ chapter?: number; fact: string }>;
 };
 
+export type MemoryIndexEntry = {
+  chapter_number: number;
+  chapter_title?: string;
+  summary?: string;
+  characters?: string[];
+  locations?: string[];
+  facts?: string[];
+  unresolved_threads?: string[];
+  resolved_threads?: string[];
+};
+
 export type CharacterImportance = "core" | "major" | "supporting" | "minor";
 export type CharacterNarrativeFunction =
   | "protagonist"
@@ -797,6 +808,7 @@ export type StoryResponse = {
     status?: string;
     updated_chapter?: number;
   }>;
+  memory_index?: MemoryIndexEntry[];
   parent_story_id?: string | null;
   branched_from_chapter?: number | null;
   characters: Array<{
@@ -813,6 +825,8 @@ export type StoryResponse = {
     profile_status?: CharacterProfileStatus;
     profile_completeness?: number;
     first_appearance?: number | null;
+    first_appearance_chapter?: number;
+    latest_chapter?: number;
     identity_profile?: CharacterIdentityProfile;
     background_profile?: CharacterBackgroundProfile;
     current_life_profile?: CharacterCurrentLifeProfile;
@@ -1028,6 +1042,8 @@ export type ImportedCharacterProfile = {
   profile_status?: CharacterProfileStatus;
   profile_completeness?: number;
   first_appearance?: number | null;
+  first_appearance_chapter?: number;
+  latest_chapter?: number;
   identity_profile?: CharacterIdentityProfile;
   background_profile?: CharacterBackgroundProfile;
   current_life_profile?: CharacterCurrentLifeProfile;

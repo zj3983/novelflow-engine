@@ -3,6 +3,8 @@ import type {
   CharacterStateLayer,
   GamePanel,
   ImportedCharacterProfile,
+  ImportedRelationshipEdge,
+  MemoryIndexEntry,
   ProjectResponse,
   StoryCharacter,
 } from "./api";
@@ -70,6 +72,7 @@ type ProfileWithRuntime = ImportedCharacterProfile & {
   location?: string;
   lifecycle_state?: string;
   personality_portrait?: CharacterPortrait;
+  first_appearance_chapter?: number;
   latest_chapter?: number;
 };
 
@@ -319,6 +322,185 @@ export function formatDisplayValue(value: unknown): string {
       .join("；");
   }
   return String(value ?? "").trim();
+}
+
+export type CharacterBoardRecentChange = {
+  chapter?: number;
+  fact: string;
+  namespace: "current_state" | "real_state" | "game_state";
+};
+
+export type CharacterBoardRelation = {
+  other: string;
+  relationType?: string;
+  bond?: string;
+  currentState?: string;
+  trust?: number;
+  tension?: number;
+  latestChange?: { chapter?: number; summary?: string };
+};
+
+export type CharacterBoardSummary = {
+  location?: string;
+  emotion?: string;
+  realm?: string;
+  level?: string;
+  immediateGoal?: string;
+  immediateProblem?: string;
+  longTermConflict?: string;
+  lifecycleState?: string;
+  firstAppearanceChapter?: number;
+  latestChapter?: number;
+  recentChanges: CharacterBoardRecentChange[];
+  relations: CharacterBoardRelation[];
+};
+
+type BoardStateCandidate = {
+  namespace: CharacterBoardRecentChange["namespace"];
+  layer: CharacterStateLayer;
+};
+
+function boardStateLayer(value: CharacterStateLayer | string | undefined): CharacterStateLayer | undefined {
+  if (typeof value === "string") {
+    const summary = value.trim();
+    return summary ? { current: { summary }, recent_changes: [] } : undefined;
+  }
+  return value;
+}
+
+function boardStateCandidates(character: DisplayCharacter, gameStory: boolean): BoardStateCandidate[] {
+  const ordered: Array<[BoardStateCandidate["namespace"], CharacterStateLayer | string | undefined]> = gameStory
+    ? [["real_state", character.real_state], ["game_state", character.game_state]]
+    : [["current_state", character.current_state], ["real_state", character.real_state], ["game_state", character.game_state]];
+  return ordered
+    .map(([namespace, value]) => ({ namespace, layer: boardStateLayer(value) }))
+    .filter((entry): entry is BoardStateCandidate => Boolean(entry.layer));
+}
+
+function boardRecordValue(record: Record<string, unknown> | undefined, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = formatDisplayValue(record?.[key]);
+    if (isReadableLine(value)) return value;
+  }
+  return undefined;
+}
+
+function boardFirstValue(records: Array<Record<string, unknown> | undefined>, keys: string[]): string | undefined {
+  for (const record of records) {
+    const value = boardRecordValue(record, keys);
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function boardChapter(value: unknown): number | undefined {
+  const chapter = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(chapter) && chapter > 0 ? chapter : undefined;
+}
+
+function boardLatestRelationshipChange(edge: ImportedRelationshipEdge): { chapter?: number; summary?: string } | undefined {
+  const changes = [...(edge.changes ?? [])]
+    .filter((change) => isReadableLine(change.summary))
+    .sort((left, right) => (right.chapter_number ?? 0) - (left.chapter_number ?? 0));
+  const latest = changes[0];
+  return latest ? { chapter: boardChapter(latest.chapter_number), summary: latest.summary?.trim() } : undefined;
+}
+
+export function characterBoardSummary(
+  character: DisplayCharacter,
+  project?: Pick<ProjectResponse, "relationship_graph"> | null,
+  options: { gameStory?: boolean; memoryIndex?: MemoryIndexEntry[] } = {},
+): CharacterBoardSummary {
+  const gameStory = options.gameStory ?? false;
+  const candidates = boardStateCandidates(character, gameStory);
+  const currentRecords = candidates.map(({ layer }) => layer.current);
+  const rawCharacter = character as DisplayCharacter & Record<string, unknown>;
+  const life = character.current_life_profile as Record<string, unknown> | undefined;
+  const drive = character.story_drive as Record<string, unknown> | undefined;
+  const topLevel = rawCharacter;
+
+  const location = boardFirstValue([
+    ...currentRecords,
+    topLevel,
+  ], ["location", "current_location"]);
+  const emotion = boardFirstValue([
+    ...currentRecords,
+    topLevel,
+  ], ["emotion", "current_emotion"]);
+  const gameRecord = candidates.find(({ namespace }) => namespace === "game_state")?.layer.current;
+  const realm = boardFirstValue([
+    ...currentRecords,
+    topLevel,
+  ], ["realm", "cultivation", "cultivation_realm"]);
+  const level = boardFirstValue([
+    ...(gameStory ? [gameRecord, ...currentRecords] : currentRecords),
+    character.game_panel as unknown as Record<string, unknown> | undefined,
+  ], ["level"]);
+  const immediateGoal = boardFirstValue([
+    drive,
+    ...currentRecords,
+    topLevel,
+  ], ["immediate_goal", "current_goal", "goal", "goals"]);
+  const immediateProblem = boardFirstValue([
+    life,
+    ...currentRecords,
+    topLevel,
+  ], ["immediate_problem", "current_problem", "problem", "trouble"]);
+  const longTermConflict = boardFirstValue([
+    drive,
+    topLevel,
+  ], ["main_conflict_reason", "long_term_conflict"]);
+
+  const recentChanges: CharacterBoardRecentChange[] = [];
+  const seenChanges = new Set<string>();
+  for (const { namespace, layer } of candidates) {
+    for (const change of layer.recent_changes ?? []) {
+      const fact = cleanText(change.fact);
+      if (!isReadableLine(fact)) continue;
+      const key = `${change.chapter ?? ""}:${fact}`;
+      if (seenChanges.has(key)) continue;
+      seenChanges.add(key);
+      recentChanges.push({ chapter: boardChapter(change.chapter), fact, namespace });
+    }
+  }
+  recentChanges.sort((left, right) => (left.chapter ?? Number.MAX_SAFE_INTEGER) - (right.chapter ?? Number.MAX_SAFE_INTEGER));
+
+  const firstAppearanceChapter = boardChapter(character.first_appearance_chapter ?? character.first_appearance);
+  const appearanceChapters = [
+    character.latest_chapter,
+    character.game_panel?.updated_chapter,
+    ...recentChanges.map((change) => change.chapter),
+    ...(options.memoryIndex ?? [])
+      .filter((entry) => !entry.characters?.length || entry.characters.includes(character.name))
+      .map((entry) => entry.chapter_number),
+  ].map(boardChapter).filter((chapter): chapter is number => chapter !== undefined);
+  const latestChapter = appearanceChapters.length ? Math.max(...appearanceChapters) : firstAppearanceChapter;
+  const relations = (project?.relationship_graph ?? [])
+    .filter((edge) => edge.source === character.name || edge.target === character.name)
+    .map((edge): CharacterBoardRelation => ({
+      other: edge.source === character.name ? edge.target : edge.source,
+      relationType: cleanText(edge.relation_type) || undefined,
+      bond: cleanText(edge.bond) || undefined,
+      currentState: cleanText(edge.current_state) || undefined,
+      trust: typeof edge.trust === "number" ? edge.trust : undefined,
+      tension: typeof edge.tension === "number" ? edge.tension : undefined,
+      latestChange: boardLatestRelationshipChange(edge),
+    }));
+
+  return {
+    location,
+    emotion,
+    realm,
+    level,
+    immediateGoal,
+    immediateProblem,
+    longTermConflict,
+    lifecycleState: cleanText(character.lifecycle_state) || undefined,
+    firstAppearanceChapter,
+    latestChapter,
+    recentChanges: recentChanges.slice(-5),
+    relations,
+  };
 }
 
 function formatStateValue(value: unknown): string {

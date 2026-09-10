@@ -47,13 +47,77 @@ import {
   type ImportedWorldBlueprint,
   type updateProject,
 } from "../lib/api";
-import { displayNovelTypeMetadata, groupWorldFacts, mergeCharacters } from "../lib/worldDisplay";
+import { characterBoardSummary, displayNovelTypeMetadata, groupWorldFacts, mergeCharacters, type DisplayCharacter } from "../lib/worldDisplay";
 import { buildWritingFlow, writingFlowPlanningSourceText } from "../components/ws/WritingFlow";
 import { resolveChapterDirectionId } from "../lib/chapterDirections";
 
 test("file story lazy-loading clients are exported", () => {
   expect(typeof fetchFileStoryOverview).toBe("function");
   expect(typeof fetchFileChapter).toBe("function");
+});
+
+test("character board summary selects current aliases without collapsing stable and dynamic fields", () => {
+  const character = {
+    name: "林照",
+    role: "protagonist",
+    lifecycle_state: "active",
+    first_appearance_chapter: 1,
+    current_life_profile: { immediate_problem: "铜牌主人正在灭口。" },
+    story_drive: { immediate_goal: "查出铜牌来源。", main_conflict_reason: "他必须在商会封锁前揭开旧案。" },
+    current_state: {
+      current: { current_location: "灰狼坡北口", current_emotion: "克制着焦躁", realm: "凝气三层", goal: "不让线索断掉" },
+      recent_changes: [
+        { chapter: 264, fact: "发现旧铜牌。" },
+        { chapter: 265, fact: "确认商会印记。" },
+        { chapter: 266, fact: "跟踪到北口。" },
+        { chapter: 267, fact: "遭遇灭口者。" },
+      ],
+    },
+  } as DisplayCharacter;
+  const summary = characterBoardSummary(character, {
+    relationship_graph: [{
+      source: "林照",
+      target: "顾闻舟",
+      relation_type: "竞争者",
+      bond: "共享旧案线索",
+      current_state: "互相试探",
+      trust: 35,
+      tension: 72,
+      changes: [{ chapter_number: 268, summary: "顾闻舟提出交换账册。" }],
+    }],
+  }, { memoryIndex: [{ chapter_number: 268, characters: ["林照"], summary: "抢回关键账册。" }] });
+
+  expect(summary).toMatchObject({
+    location: "灰狼坡北口",
+    emotion: "克制着焦躁",
+    realm: "凝气三层",
+    immediateGoal: "查出铜牌来源。",
+    immediateProblem: "铜牌主人正在灭口。",
+    longTermConflict: "他必须在商会封锁前揭开旧案。",
+    firstAppearanceChapter: 1,
+    latestChapter: 268,
+  });
+  expect(summary.recentChanges.map((change) => change.chapter)).toEqual([264, 265, 266, 267]);
+  expect(summary.relations[0]).toMatchObject({
+    other: "顾闻舟",
+    relationType: "竞争者",
+    currentState: "互相试探",
+    trust: 35,
+    tension: 72,
+    latestChange: { chapter: 268, summary: "顾闻舟提出交换账册。" },
+  });
+});
+
+test("character board summary keeps game level in game state and tolerates missing panels", () => {
+  const summary = characterBoardSummary({
+    name: "旧卡",
+    role: "supporting",
+    game_state: { current: { level: 12, location: "新手村" }, recent_changes: [] },
+  } as DisplayCharacter, undefined, { gameStory: true });
+  expect(summary.level).toBe("12");
+  expect(summary.location).toBe("新手村");
+  expect(summary.relations).toEqual([]);
+  expect(summary.recentChanges).toEqual([]);
 });
 
 test("file story lazy-loading clients request encoded GET endpoints and pass responses through", async () => {
@@ -3356,6 +3420,14 @@ test("concrete character card shows and saves factual profile fields", async ({ 
   });
 
   await page.goto("/projects/file%3Acharacter-fixture/characters");
+  await expect(page.getByRole("heading", { name: "角色板", exact: true }).first()).toBeVisible();
+  const board = page.getByLabel("角色摘要");
+  await expect(board).toContainText("首次出场：第1章");
+  await expect(board).toContainText("最近出场：第1章");
+  await expect(board).toContainText("活跃");
+  await expect(board).toContainText("找出断炉的人");
+  await expect(board).toContainText("香炉断裂会被问责");
+  await expect(board.getByLabel("关键关系")).toContainText("赵衡");
   await expect(page.getByText("19岁", { exact: true })).toBeVisible();
   await expect(page.getByText("守祠人之子", { exact: true })).toBeVisible();
   await expect(page.getByText("会被逐出祖祠并失去线索", { exact: true })).toBeVisible();
@@ -3424,9 +3496,9 @@ test("character cards use fixed detail levels for protagonists and supporting ro
   const supporting = page.getByTestId("character-card-supporting");
   const minor = page.getByTestId("character-card-minor");
 
-  await expect(protagonist.getByRole("heading", { level: 3 })).toHaveText(["基本身份", "性格与动机", "当前剧情"]);
-  await expect(supporting.getByRole("heading", { level: 3 })).toHaveText(["基本身份", "性格与动机", "关系与作用"]);
-  await expect(minor.getByRole("heading", { level: 3 })).toHaveText(["角色摘要"]);
+  await expect(protagonist.getByLabel("稳定档案").getByRole("heading", { level: 3 })).toHaveText(["基本身份", "性格与动机", "当前剧情"]);
+  await expect(supporting.getByLabel("稳定档案").getByRole("heading", { level: 3 })).toHaveText(["基本身份", "性格与动机", "关系与作用"]);
+  await expect(minor.getByLabel("稳定档案").getByRole("heading", { level: 3 })).toHaveText(["角色摘要"]);
   await expect(supporting.getByText("人物弧光", { exact: true })).toHaveCount(0);
   await expect(minor.getByText("成长经历", { exact: true })).toHaveCount(0);
   await page.setViewportSize({ width: 360, height: 780 });
@@ -4043,13 +4115,16 @@ test("角色卡状态显示和编辑保存遵循网游插件", async ({ page }) 
   });
 
   await page.goto("/projects/file%3Adual-state-fixture/characters");
+  await expect(page.locator(".ws-character-board-summary")).toContainText("等级");
+  await expect(page.locator(".ws-character-board-summary")).toContainText("7");
+  await expect(page.getByLabel("关键关系")).toContainText("暂无关系记录。");
   await expect(page.getByRole("heading", { name: "现实状态" })).toBeVisible();
   await expect(page.getByText("身份", { exact: true })).toBeVisible();
   await expect(page.getByText("兼职店员", { exact: true })).toBeVisible();
   await expect(page.getByText("第 2 章：开始接夜班", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "游戏状态" })).toBeVisible();
   await expect(page.getByText("旧夜烬", { exact: true })).toHaveCount(0);
-  await expect(page.getByText("等级", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("游戏状态").getByText("等级", { exact: true })).toBeVisible();
   await expect(page.getByText("基础：力量：12；加成：专注、精准；深层：来源：装备", { exact: true })).toBeVisible();
   await expect(page.locator("body")).not.toContainText("[object Object]");
   await expect(page.getByText("第 3 章：完成隐藏任务", { exact: true })).toBeVisible();
@@ -4127,7 +4202,7 @@ test("非法状态 JSON 页面内报错且不发请求，非网游隐藏游戏�
   await page.goto("/projects/file%3Areal-state-fixture/characters");
   await expect(page.getByRole("heading", { name: "当前状态", exact: true })).toBeVisible();
   await expect(page.getByText("修为境界", { exact: true })).toBeVisible();
-  await expect(page.getByText("筑基初期", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("当前状态").getByText("筑基初期", { exact: true })).toBeVisible();
   await expect(page.getByText("守祠人之子", { exact: true })).toBeVisible();
   await expect(page.locator("body")).not.toContainText("##");
   await expect(page.locator("body")).not.toContainText("aliases");
@@ -4174,7 +4249,7 @@ test("网游角色卡兼容仅有旧游戏面板的角色状态", async ({ page 
   await page.goto("/projects/file%3Alegacy-panel-fixture/characters");
   await expect(page.getByRole("heading", { name: "游戏状态" })).toBeVisible();
   await expect(page.getByText("旧夜烬", { exact: true })).toHaveCount(1);
-  await expect(page.getByText("4", { exact: true })).toHaveCount(1);
+  await expect(page.getByLabel("游戏状态").getByText("4", { exact: true })).toHaveCount(1);
   await page.getByRole("button", { name: "编辑", exact: true }).click();
   await expect(page.getByLabel("游戏状态 JSON")).toBeVisible();
   await page.getByLabel("游戏状态 JSON").fill(JSON.stringify({ current: { game_id: "新夜烬", level: 5, class_path: "刺客" }, recent_changes: [] }));

@@ -14,12 +14,28 @@ import {
   type GamePanel,
   type ImportedRelationshipEdge,
 } from "../../../../lib/api";
-import { isGameWebnovel, mergeCharacters, stateRows, type DisplayCharacter } from "../../../../lib/worldDisplay";
+import {
+  characterBoardSummary,
+  isGameWebnovel,
+  mergeCharacters,
+  stateRows,
+  type CharacterBoardRelation,
+  type CharacterBoardSummary,
+  type DisplayCharacter,
+} from "../../../../lib/worldDisplay";
 
 function characterCardBadge(state: string | undefined): string {
   if (state === "proposed") return "待出场卡";
   if (state === "active") return "确定性角色卡";
   return "记录卡";
+}
+
+function lifecycleStateLabel(state: string | undefined): string {
+  if (state === "active") return "活跃";
+  if (state === "proposed") return "待出场";
+  if (state === "frozen") return "已冻结";
+  if (state === "rejected") return "已拒绝";
+  return "状态未标注";
 }
 
 import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
@@ -401,6 +417,75 @@ function recentStateChanges(layer: CharacterStateLayer | undefined): string[] {
   return (layer?.recent_changes ?? [])
     .map((change) => `${change.chapter ? `第 ${change.chapter} 章：` : ""}${change.fact}`)
     .filter(Boolean);
+}
+
+function boardChapterLabel(chapter: number | undefined): string {
+  return chapter ? `第${chapter}章` : "未标注章节";
+}
+
+function boardRelationLabel(relation: CharacterBoardRelation): string {
+  return [relation.relationType, relation.bond].filter(Boolean).join(" · ") || "关系未标注";
+}
+
+function CharacterBoardSummarySection({ summary }: { summary: CharacterBoardSummary }) {
+  const fields: Array<[string, string | undefined]> = [
+    ["当前地点", summary.location],
+    ["当前情绪", summary.emotion],
+    ["能力层级", summary.realm],
+    ["等级", summary.level],
+    ["当前目标", summary.immediateGoal],
+    ["眼前麻烦", summary.immediateProblem],
+    ["长期主要冲突", summary.longTermConflict],
+  ];
+  return (
+    <section aria-label="角色摘要" className="ws-character-board-summary">
+      <div className="ws-character-board-summary__heading">
+        <div>
+          <h3>当前摘要</h3>
+          <p>先看正在发生什么，再展开稳定档案。</p>
+        </div>
+        <div className="ws-character-board-summary__chapters">
+          {summary.firstAppearanceChapter ? <span>首次出场：{boardChapterLabel(summary.firstAppearanceChapter)}</span> : null}
+          {summary.latestChapter ? <span>最近出场：{boardChapterLabel(summary.latestChapter)}</span> : null}
+          {summary.lifecycleState ? <span>{lifecycleStateLabel(summary.lifecycleState)}</span> : null}
+        </div>
+      </div>
+      <dl className="ws-character-board-summary__facts">
+        {fields.map(([label, value]) => value ? <div key={label}><dt>{label}</dt><dd>{value}</dd></div> : null)}
+      </dl>
+      <div className="ws-character-board-summary__columns">
+        <section className="ws-character-board-summary__module" aria-label="近期变化">
+          <h4>近期变化</h4>
+          {summary.recentChanges.length > 0 ? (
+            <ul>
+              {summary.recentChanges.map((change, index) => (
+                <li key={`${change.namespace}-${change.chapter ?? "unknown"}-${index}`}>
+                  <span>{change.chapter ? boardChapterLabel(change.chapter) : "近期"}</span>{change.fact}
+                </li>
+              ))}
+            </ul>
+          ) : <p className="is-empty">暂无近期状态变化。</p>}
+        </section>
+        <section className="ws-character-board-summary__module" aria-label="关键关系">
+          <h4>关键关系</h4>
+          {summary.relations.length > 0 ? (
+            <ul>
+              {summary.relations.map((relation) => (
+                <li key={relation.other}>
+                  <div><strong>{relation.other}</strong><span>{boardRelationLabel(relation)}</span></div>
+                  {relation.currentState ? <p>{relation.currentState}</p> : null}
+                  {relation.latestChange?.summary ? <p>{relation.latestChange.chapter ? `${boardChapterLabel(relation.latestChange.chapter)}：` : ""}{relation.latestChange.summary}</p> : null}
+                  {relation.trust !== undefined || relation.tension !== undefined ? (
+                    <small>{relation.trust !== undefined ? `信任 ${relation.trust}` : ""}{relation.trust !== undefined && relation.tension !== undefined ? " · " : ""}{relation.tension !== undefined ? `张力 ${relation.tension}` : ""}</small>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          ) : <p className="is-empty">暂无关系记录。</p>}
+        </section>
+      </div>
+    </section>
+  );
 }
 
 function TaxonomyEditor({
@@ -794,15 +879,15 @@ export default function CharactersPage() {
     <div className="ws-page">
       <PageHeader
         crumbs={[{ label: "我的作品", href: "/projects" }, { label: project?.title || "作品", href: `/projects/${encodedProjectId}` }]}
-        title="角色卡"
-        subtitle="只显示正文需要的关键信息。"
+        title="角色板"
+        subtitle="先看当前剧情，再展开稳定档案与状态证据。"
       />
       {error ? <div className="ws-card" style={{ borderColor: "var(--ws-danger)" }}><p className="ws-error-text">加载失败：{userFacingErrorMessage(error)}</p></div> : null}
       {message ? <p className="ws-inline-message">{message}</p> : null}
 
       <section className="ws-character-workspace" aria-labelledby="character-workspace-title">
         <div className="ws-section-head">
-          <h2 className="ws-character-workspace__title" id="character-workspace-title">人物档案</h2>
+          <h2 className="ws-character-workspace__title" id="character-workspace-title">角色板</h2>
         </div>
         <div className="ws-character-filters" aria-label="角色筛选">
           <label>
@@ -866,6 +951,7 @@ export default function CharactersPage() {
               ] : [
                 ["current_state", genericState],
               ] as Array<[StateNamespace, CharacterStateLayer | undefined]>).filter((entry): entry is [StateNamespace, CharacterStateLayer] => Boolean(entry[1]));
+              const boardSummary = characterBoardSummary(shown as DisplayCharacter, project, { gameStory, memoryIndex: story?.memory_index });
 
               return (
                 <article className="ws-character-card" data-testid={`character-card-${characterFormKind(shown as DisplayCharacter)}`} key={character.name}>
@@ -891,6 +977,7 @@ export default function CharactersPage() {
                       )}
                     </div>
                   </div>
+                  <CharacterBoardSummarySection summary={boardSummary} />
                   <StableProfileSection
                     character={character}
                     relations={graphRelations}
