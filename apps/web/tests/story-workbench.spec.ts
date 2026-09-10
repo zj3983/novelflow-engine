@@ -62,6 +62,7 @@ test("character board summary selects current aliases without collapsing stable 
     role: "protagonist",
     lifecycle_state: "active",
     first_appearance_chapter: 1,
+    game_panel: { updated_chapter: 400 },
     current_life_profile: { immediate_problem: "铜牌主人正在灭口。" },
     story_drive: { immediate_goal: "查出铜牌来源。", main_conflict_reason: "他必须在商会封锁前揭开旧案。" },
     current_state: {
@@ -71,6 +72,7 @@ test("character board summary selects current aliases without collapsing stable 
         { chapter: 265, fact: "确认商会印记。" },
         { chapter: 266, fact: "跟踪到北口。" },
         { chapter: 267, fact: "遭遇灭口者。" },
+        { chapter: 999, fact: "仅更新角色状态字段，未提供正文出场证据。" },
       ],
     },
   } as DisplayCharacter;
@@ -85,7 +87,14 @@ test("character board summary selects current aliases without collapsing stable 
       tension: 72,
       changes: [{ chapter_number: 268, summary: "顾闻舟提出交换账册。" }],
     }],
-  }, { memoryIndex: [{ chapter_number: 268, characters: ["林照"], summary: "抢回关键账册。" }] });
+  }, {
+    memoryIndex: [
+      { chapter_number: 268, characters: ["林照"], summary: "抢回关键账册。" },
+      { chapter_number: 300, characters: undefined, summary: "未标注角色。" },
+      { chapter_number: 301, characters: [], summary: "空角色标注。" },
+      { chapter_number: 302, characters: ["顾闻舟"], summary: "只标注其他角色。" },
+    ],
+  });
 
   expect(summary).toMatchObject({
     location: "灰狼坡北口",
@@ -97,7 +106,7 @@ test("character board summary selects current aliases without collapsing stable 
     firstAppearanceChapter: 1,
     latestChapter: 268,
   });
-  expect(summary.recentChanges.map((change) => change.chapter)).toEqual([264, 265, 266, 267]);
+  expect(summary.recentChanges.map((change) => change.chapter)).toEqual([264, 265, 266, 267, 999]);
   expect(summary.relations[0]).toMatchObject({
     other: "顾闻舟",
     relationType: "竞争者",
@@ -106,6 +115,20 @@ test("character board summary selects current aliases without collapsing stable 
     tension: 72,
     latestChange: { chapter: 268, summary: "顾闻舟提出交换账册。" },
   });
+
+  const withoutAppearanceEvidence = characterBoardSummary({
+    name: "无证据角色",
+    role: "supporting",
+    first_appearance_chapter: 3,
+    game_panel: { updated_chapter: 400 },
+    current_state: {
+      recent_changes: [{ chapter: 999, fact: "仅有状态变化。" }],
+    },
+  } as DisplayCharacter, undefined, {
+    memoryIndex: [{ chapter_number: 500, summary: "未标注角色的章节。" }],
+  });
+  expect(withoutAppearanceEvidence.firstAppearanceChapter).toBe(3);
+  expect(withoutAppearanceEvidence.latestChapter).toBeUndefined();
 });
 
 test("character board summary keeps game level in game state and tolerates missing panels", () => {

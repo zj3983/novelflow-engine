@@ -468,10 +468,8 @@ export function characterBoardSummary(
   const firstAppearanceChapter = boardChapter(character.first_appearance_chapter ?? character.first_appearance);
   const appearanceChapters = [
     character.latest_chapter,
-    character.game_panel?.updated_chapter,
-    ...recentChanges.map((change) => change.chapter),
     ...(options.memoryIndex ?? [])
-      .filter((entry) => !entry.characters?.length || entry.characters.includes(character.name))
+      .filter((entry) => entry.characters?.includes(character.name) === true)
       .map((entry) => entry.chapter_number),
   ].map(boardChapter).filter((chapter): chapter is number => chapter !== undefined);
   const latestChapter = appearanceChapters.length ? Math.max(...appearanceChapters) : undefined;
