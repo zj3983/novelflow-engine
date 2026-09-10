@@ -73,6 +73,9 @@ from packages.story_core.web_game_economy import (
     normalize_legacy_economy_prompt_value,
 )
 from packages.story_core.character_portraits import complete_character_portrait as complete_portrait
+from packages.story_core.character_persistence import (
+    normalize_character_persistence_card as _normalize_shared_character_persistence_card,
+)
 from packages.story_core.cover_renderer import CoverRenderError, normalize_cover_title
 from packages.story_core.character_profiles import (
     filter_character_cards,
@@ -80,7 +83,6 @@ from packages.story_core.character_profiles import (
     merge_character_alias_cards,
     merge_character_profile,
     normalize_character_profile,
-    normalize_speech_style_for_writing,
     reconcile_character_appearance_history,
     record_character_appearances,
     remove_cross_character_aliases,
@@ -96,7 +98,6 @@ from packages.story_core.equipment_cards import (
 from packages.story_core.elastic_outline import outline_window_status, validate_outline_for_project
 from packages.story_core.dual_state import (
     merge_state_change,
-    normalize_character_state,
     project_character_for_scene,
     scene_kind_for_cards,
 )
@@ -337,58 +338,15 @@ def _with_project_update_lock(method):
     return locked
 
 
-def _state_namespace_has_content(value: Any) -> bool:
-    if not isinstance(value, dict):
-        return False
-    current = value.get("current")
-    if isinstance(current, dict) and any(item not in (None, "", [], {}) for item in current.values()):
-        return True
-    recent_changes = value.get("recent_changes")
-    return isinstance(recent_changes, list) and bool(recent_changes)
-
-
 def _normalize_character_persistence_card(
     card: dict[str, Any],
     *,
     is_game_story: bool,
 ) -> dict[str, Any]:
-    normalized = normalize_character_state(card, is_game_story=is_game_story)
-    performance = normalized.get("performance_profile")
-    if isinstance(performance, dict):
-        performance = dict(performance)
-        performance["speech_style"] = normalize_speech_style_for_writing(
-            performance.get("speech_style")
-        )
-        if performance.get("speech_style") == "白话、完整、少装腔；解释选择时把原因说清。":
-            performance["speech_style"] = "白话、完整、少装腔；只说当下会说的话，理由藏在语气、动作和必要回答里。"
-        normalized["performance_profile"] = performance
-    if is_game_story:
-        current = normalized.get("game_state", {}).get("current") if isinstance(normalized.get("game_state"), dict) else None
-        if isinstance(current, dict):
-            panel = dict(normalized.get("game_panel") or {})
-            for field in (
-                "game_id",
-                "level",
-                "class_path",
-                "exp",
-                "hp",
-                "mp",
-                "attributes",
-                "skills",
-                "equipment",
-                "inventory",
-                "currency",
-                "quests",
-                "risk",
-            ):
-                value = current.get(field)
-                if value not in (None, "", [], {}):
-                    panel[field] = value
-            normalized["game_panel"] = panel
-    for state_name in ("current_state", "real_state", "game_state"):
-        if not _state_namespace_has_content(normalized.get(state_name)):
-            normalized.pop(state_name, None)
-    return normalized
+    return _normalize_shared_character_persistence_card(
+        card,
+        is_game_story=is_game_story,
+    )
 
 
 _GAME_STATE_FIELDS = (

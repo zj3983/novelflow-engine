@@ -7,6 +7,9 @@ import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceP
 import {
   completeFileProjectCharacterPortrait,
   updateFileProjectCharacter,
+  type CharacterImportance,
+  type CharacterNarrativeFunction,
+  type CharacterProfileStatus,
   type CharacterStateLayer,
   type GamePanel,
   type ImportedRelationshipEdge,
@@ -36,6 +39,83 @@ function characterRoleLabel(role: string | undefined): string {
     "long term antagonist": "长期反派",
   };
   return labels[normalized] ?? String(role ?? "");
+}
+
+type CharacterFilter = "all" | CharacterImportance | CharacterProfileStatus;
+type NarrativeFunctionFilter = "all" | CharacterNarrativeFunction;
+
+const IMPORTANCE_LABELS: Record<CharacterImportance, string> = {
+  core: "核心",
+  major: "重要",
+  supporting: "配角",
+  minor: "次要",
+};
+
+const NARRATIVE_FUNCTION_LABELS: Record<CharacterNarrativeFunction, string> = {
+  protagonist: "主角",
+  ally: "盟友",
+  rival: "竞争者",
+  mentor: "导师",
+  love_interest: "感情线",
+  stage_antagonist: "阶段反派",
+  long_term_antagonist: "长期反派",
+  resource_contact: "资源联系人",
+  other: "其他",
+};
+
+const PROFILE_STATUS_LABELS: Record<CharacterProfileStatus, string> = {
+  stub: "待补全",
+  ready: "已就绪",
+};
+
+const LEGACY_TAXONOMY: Record<string, { importance: CharacterImportance; narrativeFunction: CharacterNarrativeFunction }> = {
+  protagonist: { importance: "core", narrativeFunction: "protagonist" },
+  主角: { importance: "core", narrativeFunction: "protagonist" },
+  stage_antagonist: { importance: "major", narrativeFunction: "stage_antagonist" },
+  "stage antagonist": { importance: "major", narrativeFunction: "stage_antagonist" },
+  阶段反派: { importance: "major", narrativeFunction: "stage_antagonist" },
+  long_term_antagonist: { importance: "core", narrativeFunction: "long_term_antagonist" },
+  "long term antagonist": { importance: "core", narrativeFunction: "long_term_antagonist" },
+  长期反派: { importance: "core", narrativeFunction: "long_term_antagonist" },
+  supporting: { importance: "supporting", narrativeFunction: "other" },
+  配角: { importance: "supporting", narrativeFunction: "other" },
+  recurring: { importance: "supporting", narrativeFunction: "other" },
+  "recurring npc": { importance: "supporting", narrativeFunction: "other" },
+};
+
+function taxonomyToken(value: unknown): string {
+  return String(value ?? "").trim().toLowerCase().replaceAll("-", "_").replaceAll(" ", "_");
+}
+
+function characterTaxonomy(character: DisplayCharacter): {
+  importance?: CharacterImportance;
+  narrativeFunction?: CharacterNarrativeFunction;
+  status?: CharacterProfileStatus;
+} {
+  const legacyKey = taxonomyToken(character.character_tier || character.role).replaceAll("_", " ");
+  const legacy = LEGACY_TAXONOMY[legacyKey] ?? LEGACY_TAXONOMY[taxonomyToken(character.character_tier || character.role)];
+  const importance = IMPORTANCE_LABELS[character.importance as CharacterImportance]
+    ? character.importance
+    : legacy?.importance;
+  const narrativeFunction = NARRATIVE_FUNCTION_LABELS[character.narrative_function as CharacterNarrativeFunction]
+    ? character.narrative_function
+    : legacy?.narrativeFunction;
+  const status = character.profile_status === "stub" || character.profile_status === "ready"
+    ? character.profile_status
+    : undefined;
+  return { importance, narrativeFunction, status };
+}
+
+function importanceLabel(value: CharacterImportance | undefined): string {
+  return value ? `${IMPORTANCE_LABELS[value] ?? value} · ${value}` : "未标注分类";
+}
+
+function narrativeFunctionLabel(value: CharacterNarrativeFunction | undefined): string {
+  return value ? `${NARRATIVE_FUNCTION_LABELS[value] ?? value} · ${value}` : "未标注功能";
+}
+
+function profileStatusLabel(value: CharacterProfileStatus | undefined): string {
+  return value ? `${PROFILE_STATUS_LABELS[value]} · ${value}` : "未标注状态";
 }
 
 type StateNamespace = "current_state" | "real_state" | "game_state";
@@ -70,7 +150,15 @@ function mirrorGamePanel(panel: GamePanel, layer: CharacterStateLayer): GamePane
 
 type DisplayRow = [string, string];
 
-type CharacterTemplateKind = "protagonist" | "supporting" | "minor";
+// This is a stable form/layout choice kept for existing test ids. It is not
+// the character's narrative function; those two dimensions are rendered and
+// selected independently below.
+type CharacterFormKind =
+  | "protagonist"
+  | "stage_antagonist"
+  | "long_term_antagonist"
+  | "supporting"
+  | "minor";
 
 type TemplateField = {
   label: string;
@@ -89,7 +177,7 @@ type TemplateSection = {
 // current relations) live in the 当前状态 section, not here, so the workbench
 // can clearly separate what the chapter generator is allowed to rewrite from
 // the long-term identity of the character.
-const CHARACTER_TEMPLATES: Record<CharacterTemplateKind, TemplateSection[]> = {
+const CHARACTER_TEMPLATES: Record<CharacterFormKind, TemplateSection[]> = {
   protagonist: [
     { title: "基本身份", fields: [
       { label: "年龄", path: ["identity_profile", "age"], number: true },
@@ -102,6 +190,8 @@ const CHARACTER_TEMPLATES: Record<CharacterTemplateKind, TemplateSection[]> = {
       { label: "长期目标", path: ["story_drive", "long_term_goal"] },
       { label: "核心动机", path: ["story_drive", "motivation"] },
       { label: "软肋 / 顾虑", path: ["personality_portrait", "psychology", "fear"] },
+      { label: "说话方式", path: ["performance_profile", "speech_style"] },
+      { label: "行动方式", path: ["performance_profile", "action_style"] },
       { label: "说话参考", path: ["dialogue_examples"], list: true },
     ] },
     { title: "当前剧情", fields: [
@@ -110,6 +200,57 @@ const CHARACTER_TEMPLATES: Record<CharacterTemplateKind, TemplateSection[]> = {
       { label: "主要冲突", path: ["story_drive", "main_conflict_reason"] },
       { label: "隐藏信息", path: ["story_drive", "hidden_matters"], list: true },
       { label: "剧情作用", path: ["story_function"] },
+    ] },
+  ],
+  stage_antagonist: [
+    { title: "基本身份", fields: [
+      { label: "身份", path: ["identity_profile", "current_identity"] },
+      { label: "职业", path: ["identity_profile", "occupation"] },
+      { label: "出身 / 来历", path: ["identity_profile", "origin"] },
+    ] },
+    { title: "权限与当前压力", fields: [
+      { label: "权限范围", path: ["current_life_profile", "authority_scope"] },
+      { label: "眼前麻烦", path: ["current_life_profile", "immediate_problem"] },
+    ] },
+    { title: "性格与动机", fields: [
+      { label: "性格标签", path: ["personality_portrait", "temperament", "core_traits"], list: true },
+      { label: "长期目标", path: ["story_drive", "long_term_goal"] },
+      { label: "核心动机", path: ["story_drive", "motivation"] },
+      { label: "主要冲突", path: ["story_drive", "main_conflict_reason"] },
+      { label: "失败代价", path: ["story_drive", "failure_stakes"] },
+      { label: "说话方式", path: ["performance_profile", "speech_style"] },
+      { label: "行动方式", path: ["performance_profile", "action_style"] },
+      { label: "说话参考", path: ["dialogue_examples"], list: true },
+    ] },
+    { title: "关系与作用", fields: [
+      { label: "隐藏信息", path: ["story_drive", "hidden_matters"], list: true },
+      { label: "剧情作用", path: ["story_function"] },
+      { label: "重要人际关系", relation: true },
+    ] },
+  ],
+  long_term_antagonist: [
+    { title: "基本身份", fields: [
+      { label: "身份", path: ["identity_profile", "current_identity"] },
+      { label: "职业", path: ["identity_profile", "occupation"] },
+      { label: "出身 / 来历", path: ["identity_profile", "origin"] },
+    ] },
+    { title: "权限与幕后目标", fields: [
+      { label: "权限范围", path: ["current_life_profile", "authority_scope"] },
+      { label: "眼前麻烦", path: ["current_life_profile", "immediate_problem"] },
+      { label: "长期目标", path: ["story_drive", "long_term_goal"] },
+    ] },
+    { title: "性格与动机", fields: [
+      { label: "核心动机", path: ["story_drive", "motivation"] },
+      { label: "主要冲突", path: ["story_drive", "main_conflict_reason"] },
+      { label: "失败代价", path: ["story_drive", "failure_stakes"] },
+      { label: "隐藏信息", path: ["story_drive", "hidden_matters"], list: true },
+      { label: "说话方式", path: ["performance_profile", "speech_style"] },
+      { label: "行动方式", path: ["performance_profile", "action_style"] },
+      { label: "说话参考", path: ["dialogue_examples"], list: true },
+    ] },
+    { title: "关系与作用", fields: [
+      { label: "剧情作用", path: ["story_function"] },
+      { label: "重要人际关系", relation: true },
     ] },
   ],
   supporting: [
@@ -122,6 +263,8 @@ const CHARACTER_TEMPLATES: Record<CharacterTemplateKind, TemplateSection[]> = {
       { label: "长期目标", path: ["story_drive", "long_term_goal"] },
       { label: "核心动机", path: ["story_drive", "motivation"] },
       { label: "软肋 / 顾虑", path: ["personality_portrait", "psychology", "fear"] },
+      { label: "说话方式", path: ["performance_profile", "speech_style"] },
+      { label: "行动方式", path: ["performance_profile", "action_style"] },
       { label: "说话参考", path: ["dialogue_examples"], list: true },
     ] },
     { title: "关系与作用", fields: [
@@ -135,19 +278,47 @@ const CHARACTER_TEMPLATES: Record<CharacterTemplateKind, TemplateSection[]> = {
       { label: "身份 / 职业", path: ["identity_profile", "current_identity"] },
       { label: "长期目标", path: ["story_drive", "long_term_goal"] },
       { label: "剧情作用", path: ["story_function"] },
+      { label: "说话方式", path: ["performance_profile", "speech_style"] },
+      { label: "行动方式", path: ["performance_profile", "action_style"] },
     ] },
   ],
 };
 
-function characterTemplateKind(character: DisplayCharacter): CharacterTemplateKind {
+function characterFormKind(character: DisplayCharacter): CharacterFormKind {
+  const taxonomy = characterTaxonomy(character);
+  if (taxonomy.narrativeFunction === "protagonist") return "protagonist";
+  if (taxonomy.narrativeFunction === "stage_antagonist") return "stage_antagonist";
+  if (taxonomy.narrativeFunction === "long_term_antagonist") return "long_term_antagonist";
+  if (taxonomy.importance === "core" || taxonomy.importance === "major" || taxonomy.importance === "supporting") {
+    return "supporting";
+  }
   const tier = String(character.character_tier || character.role || "").trim().toLowerCase().replaceAll("_", " ");
   if (tier === "protagonist" || tier === "主角") return "protagonist";
   if (["supporting", "recurring", "recurring npc", "stage antagonist", "long term antagonist", "配角", "重要配角"].includes(tier)) return "supporting";
   return "minor";
 }
 
-function templateKindLabel(kind: CharacterTemplateKind): string {
-  return kind === "protagonist" ? "主角详卡" : kind === "supporting" ? "重要配角卡" : "普通配角卡";
+type CharacterProfileDepth = "stub" | "light" | "full";
+
+function characterProfileDepth(character: DisplayCharacter): CharacterProfileDepth {
+  const taxonomy = characterTaxonomy(character);
+  if (taxonomy.status === "stub") return "stub";
+  if (taxonomy.importance === "core" || taxonomy.importance === "major") return "full";
+  return "light";
+}
+
+function characterTemplateLabel(character: DisplayCharacter): string {
+  const taxonomy = characterTaxonomy(character);
+  const depth = characterProfileDepth(character);
+  const functionLabel = taxonomy.narrativeFunction
+    ? NARRATIVE_FUNCTION_LABELS[taxonomy.narrativeFunction]
+    : undefined;
+  if (functionLabel && taxonomy.narrativeFunction !== "other") {
+    return `${functionLabel}${depth === "stub" ? "待补全卡" : depth === "full" ? "完整模板" : "轻量模板"}`;
+  }
+  if (depth === "stub") return "普通角色待补全卡";
+  if (depth === "full") return `${importanceLabel(taxonomy.importance)}完整模板`;
+  return "普通角色轻量模板";
 }
 
 function nestedValue(character: DisplayCharacter, path: string[]): string | string[] {
@@ -232,6 +403,47 @@ function recentStateChanges(layer: CharacterStateLayer | undefined): string[] {
     .filter(Boolean);
 }
 
+function TaxonomyEditor({
+  character,
+  onChange,
+}: {
+  character: DisplayCharacter;
+  onChange: (field: "importance" | "narrative_function", value: string) => void;
+}) {
+  const taxonomy = characterTaxonomy(character);
+  return (
+    <div className="ws-character-taxonomy-editor">
+      <label>
+        <span>重要级别</span>
+        <select
+          aria-label="重要级别"
+          value={taxonomy.importance ?? ""}
+          onChange={(event) => onChange("importance", event.target.value)}
+        >
+          <option value="">未标注</option>
+          {(Object.keys(IMPORTANCE_LABELS) as CharacterImportance[]).map((value) => (
+            <option key={value} value={value}>{importanceLabel(value)}</option>
+          ))}
+        </select>
+      </label>
+      <label>
+        <span>叙事功能</span>
+        <select
+          aria-label="叙事功能"
+          value={taxonomy.narrativeFunction ?? ""}
+          onChange={(event) => onChange("narrative_function", event.target.value)}
+        >
+          <option value="">未标注</option>
+          {(Object.keys(NARRATIVE_FUNCTION_LABELS) as CharacterNarrativeFunction[]).map((value) => (
+            <option key={value} value={value}>{narrativeFunctionLabel(value)}</option>
+          ))}
+        </select>
+      </label>
+      <p className="ws-character-taxonomy-editor__hint">状态与完成度由档案内容自动计算，保存时不会覆盖。</p>
+    </div>
+  );
+}
+
 // Stable-profile display: identity, background, long-term motivation, and the
 // long-running history of each relationship. Chapter generator must NOT touch
 // any of this without an explicit user edit.
@@ -241,6 +453,7 @@ function StableProfileSection({
   isEditing,
   draft,
   onChangeNested,
+  onChangeTaxonomy,
   onUpdateRelationField,
   relationsText,
 }: {
@@ -249,12 +462,13 @@ function StableProfileSection({
   isEditing: boolean;
   draft: DisplayCharacter | null;
   onChangeNested: (field: TemplateField, value: string) => void;
+  onChangeTaxonomy: (field: "importance" | "narrative_function", value: string) => void;
   onUpdateRelationField: (edge: ImportedRelationshipEdge, key: "history" | "shared_interest_or_conflict", value: string) => void;
   relationsText: string;
 }) {
   const shown = isEditing && draft ? draft : character;
-  const templateKind = characterTemplateKind(shown as DisplayCharacter);
-  const templateSections = CHARACTER_TEMPLATES[templateKind];
+  const formKind = characterFormKind(shown as DisplayCharacter);
+  const templateSections = CHARACTER_TEMPLATES[formKind];
   const relatedEdges = relations.filter((edge) => edge.source === shown?.name || edge.target === shown?.name);
   const hasRelations = relatedEdges.length > 0;
   const hasStableTemplate = templateSections.some((section) => section.fields.some((field) => {
@@ -272,7 +486,8 @@ function StableProfileSection({
     <section aria-label="稳定档案" className="ws-character-stable">
       <h2>稳定档案</h2>
       <p className="ws-card__hint">不随章节自动改写</p>
-      <div className={`ws-character-template ws-character-template--${templateKind}`}>
+      {isEditing ? <TaxonomyEditor character={shown} onChange={onChangeTaxonomy} /> : null}
+      <div className={`ws-character-template ws-character-template--${formKind}`}>
         {templateSections.map((section) => {
           const fields = section.fields.filter((field) => {
             if (isEditing) return true;
@@ -480,11 +695,23 @@ function CurrentStateSection({
 export default function CharactersPage() {
   const { project, story, error, encodedProjectId, projectId, refresh } = useProjectWorkspace();
   const characters = mergeCharacters(project?.character_profiles, story?.characters);
+  const [characterFilter, setCharacterFilter] = useState<CharacterFilter>("all");
+  const [narrativeFunctionFilter, setNarrativeFunctionFilter] = useState<NarrativeFunctionFilter>("all");
   const [editingName, setEditingName] = useState<string | null>(null);
   const [draft, setDraft] = useState<DisplayCharacter | null>(null);
   const [stateDrafts, setStateDrafts] = useState<Partial<Record<StateNamespace, string>>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+
+  const visibleCharacters = characters.filter((character) => {
+    const taxonomy = characterTaxonomy(character);
+    const matchesPrimary = characterFilter === "all"
+      || taxonomy.importance === characterFilter
+      || taxonomy.status === characterFilter;
+    const matchesFunction = narrativeFunctionFilter === "all"
+      || taxonomy.narrativeFunction === narrativeFunctionFilter;
+    return matchesPrimary && matchesFunction;
+  });
 
   const beginEdit = (character: DisplayCharacter) => {
     const gameStory = isGameWebnovel(project);
@@ -523,11 +750,14 @@ export default function CharactersPage() {
     try {
       await updateFileProjectCharacter(projectId, editingName, {
         character_tier: draft.character_tier,
+        importance: draft.importance,
+        narrative_function: draft.narrative_function,
         first_appearance: draft.first_appearance,
         identity_profile: draft.identity_profile,
         background_profile: draft.background_profile,
         current_life_profile: draft.current_life_profile,
         story_drive: draft.story_drive,
+        performance_profile: draft.performance_profile,
         dialogue_examples: draft.dialogue_examples,
         personality_portrait: draft.personality_portrait,
         story_function: draft.story_function,
@@ -538,7 +768,7 @@ export default function CharactersPage() {
       setDraft(null);
       setStateDrafts({});
       setMessage("角色卡已保存。");
-      void refresh().catch(() => undefined);
+      await refresh();
     } catch (saveError) {
       setMessage(`保存失败：${saveError instanceof Error ? saveError.message : String(saveError)}`);
     } finally {
@@ -552,7 +782,7 @@ export default function CharactersPage() {
     try {
       await completeFileProjectCharacterPortrait(projectId, character.name);
       setMessage(`${character.name} 的基础侧写已补全。`);
-      void refresh().catch(() => undefined);
+      await refresh();
     } catch (completeError) {
       setMessage(`补全失败：${completeError instanceof Error ? completeError.message : String(completeError)}`);
     } finally {
@@ -574,12 +804,51 @@ export default function CharactersPage() {
         <div className="ws-section-head">
           <h2 className="ws-character-workspace__title" id="character-workspace-title">人物档案</h2>
         </div>
-        {characters.length > 0 ? (
+        <div className="ws-character-filters" aria-label="角色筛选">
+          <label>
+            <span>角色分类</span>
+            <select
+              aria-label="角色分类筛选"
+              value={characterFilter}
+              onChange={(event) => setCharacterFilter(event.target.value as CharacterFilter)}
+            >
+              <option value="all">全部</option>
+              <option value="core">核心角色 · core</option>
+              <option value="major">重要角色 · major</option>
+              <option value="supporting">配角 · supporting</option>
+              <option value="minor">次要角色 · minor</option>
+              <option value="stub">待补全 · stub</option>
+              <option value="ready">已就绪 · ready</option>
+            </select>
+          </label>
+          <label>
+            <span>叙事功能</span>
+            <select
+              aria-label="叙事功能筛选"
+              value={narrativeFunctionFilter}
+              onChange={(event) => setNarrativeFunctionFilter(event.target.value as NarrativeFunctionFilter)}
+            >
+              <option value="all">全部功能</option>
+              <option value="protagonist">主角 · protagonist</option>
+              <option value="stage_antagonist">阶段反派 · stage_antagonist</option>
+              <option value="long_term_antagonist">长期反派 · long_term_antagonist</option>
+              <option value="ally">盟友 · ally</option>
+              <option value="rival">竞争者 · rival</option>
+              <option value="mentor">导师 · mentor</option>
+              <option value="love_interest">感情线 · love_interest</option>
+              <option value="resource_contact">资源联系人 · resource_contact</option>
+              <option value="other">其他 · other</option>
+            </select>
+          </label>
+          <p role="status">显示 {visibleCharacters.length} / {characters.length} 张角色卡</p>
+        </div>
+        {visibleCharacters.length > 0 ? (
           <div className="ws-character-list">
-            {characters.map((character) => {
+            {visibleCharacters.map((character) => {
               const gameStory = isGameWebnovel(project);
               const isEditing = editingName === character.name && draft;
               const shown = isEditing ? draft : character;
+              const taxonomy = characterTaxonomy(shown as DisplayCharacter);
               const effectiveGameState = shown?.game_state ?? (shown?.game_panel ? { current: shown.game_panel } : undefined);
               const showGameState = gameStory && Boolean(effectiveGameState);
               const panel = showGameState && !shown?.game_state ? shown?.game_panel : undefined;
@@ -599,9 +868,20 @@ export default function CharactersPage() {
               ] as Array<[StateNamespace, CharacterStateLayer | undefined]>).filter((entry): entry is [StateNamespace, CharacterStateLayer] => Boolean(entry[1]));
 
               return (
-                <article className="ws-character-card" data-testid={`character-card-${characterTemplateKind(shown as DisplayCharacter)}`} key={character.name}>
+                <article className="ws-character-card" data-testid={`character-card-${characterFormKind(shown as DisplayCharacter)}`} key={character.name}>
                   <div className="ws-character-card__head">
-                    <div><h2>{shown?.name}</h2><p>{[templateKindLabel(characterTemplateKind(shown as DisplayCharacter)), characterRoleLabel(shown?.role), displayedGameId].filter(Boolean).join(" / ")}</p></div>
+                    <div>
+                      <h2>{shown?.name}</h2>
+                      <p>{[characterTemplateLabel(shown as DisplayCharacter), characterRoleLabel(shown?.role), displayedGameId].filter(Boolean).join(" / ")}</p>
+                      <div className="ws-character-taxonomy" aria-label="角色分类信息">
+                        <span className="ws-character-taxonomy__badge">{importanceLabel(taxonomy.importance)}</span>
+                        <span className="ws-character-taxonomy__badge">{narrativeFunctionLabel(taxonomy.narrativeFunction)}</span>
+                        <span className="ws-character-taxonomy__badge">{profileStatusLabel(taxonomy.status)}</span>
+                        {shown?.profile_completeness !== undefined && shown?.profile_completeness !== null ? (
+                          <span className="ws-character-taxonomy__badge">完成度 · {shown.profile_completeness}%</span>
+                        ) : null}
+                      </div>
+                    </div>
                     <div className="ws-character-card__actions">
                       <span>{characterCardBadge(shown?.lifecycle_state)}{panel?.updated_chapter ? ` · 第 ${panel.updated_chapter} 章更新` : ""}</span>
                       {isEditing ? (
@@ -617,6 +897,7 @@ export default function CharactersPage() {
                     isEditing={Boolean(isEditing)}
                     draft={isEditing ? draft : null}
                     onChangeNested={(field, value) => draft && setDraft(updateNestedValue(draft, field, value))}
+                    onChangeTaxonomy={(field, value) => draft && setDraft({ ...draft, [field]: value })}
                     onUpdateRelationField={() => {
                       // Relationship graph is edited via the project API, not per-character.
                       // For the workbench this is read-only.
@@ -638,7 +919,11 @@ export default function CharactersPage() {
               );
             })}
           </div>
-        ) : <p className="ws-card__hint">暂无角色档案。</p>}
+        ) : (
+          <p className="ws-card__hint">
+            {characters.length > 0 ? "当前筛选没有匹配的角色卡。" : "暂无角色档案。"}
+          </p>
+        )}
       </section>
     </div>
   );

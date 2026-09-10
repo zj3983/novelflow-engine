@@ -439,10 +439,18 @@ class CharacterState(BaseModel):
             return value
         migrated = dict(value)
         importance, narrative_function = infer_character_taxonomy(migrated)
-        migrated.setdefault("importance", importance)
-        migrated.setdefault("narrative_function", narrative_function)
-        migrated.setdefault("profile_status", infer_character_profile_status(migrated))
-        migrated.setdefault("profile_completeness", character_profile_completeness(migrated))
+        migrated["importance"] = importance
+        migrated["narrative_function"] = narrative_function
+        # An explicit stub is a deliberate author/workbench choice.  Every
+        # other value is derived from the card instead of trusting stale client
+        # metadata (especially an optimistic "ready").
+        if str(migrated.get("profile_status") or "").strip().casefold() == "stub":
+            migrated["profile_status"] = "stub"
+        else:
+            migrated["profile_status"] = infer_character_profile_status(
+                {**migrated, "profile_status": ""}
+            )
+        migrated["profile_completeness"] = character_profile_completeness(migrated)
         return migrated
 
     @field_validator("current_state", mode="before")

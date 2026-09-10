@@ -1,4 +1,11 @@
-import type { CharacterPortrait, CharacterStateLayer, GamePanel, ImportedCharacterProfile, ProjectResponse, StoryCharacter } from "./api";
+import type {
+  CharacterPortrait,
+  CharacterStateLayer,
+  GamePanel,
+  ImportedCharacterProfile,
+  ProjectResponse,
+  StoryCharacter,
+} from "./api";
 
 export type GroupedWorldFacts = {
   projectFacts: string[];
@@ -159,6 +166,18 @@ function mergeDisplayCharacter(previous: DisplayCharacter, character: ProfileWit
     name,
     role: character.role || previous.role,
     game_id: character.game_id || previous.game_id,
+    character_tier: character.character_tier || previous.character_tier,
+    importance: character.importance || previous.importance,
+    narrative_function: character.narrative_function || previous.narrative_function,
+    profile_status: character.profile_status || previous.profile_status,
+    profile_completeness: character.profile_completeness ?? previous.profile_completeness,
+    identity_profile: character.identity_profile ?? previous.identity_profile,
+    background_profile: character.background_profile ?? previous.background_profile,
+    current_life_profile: character.current_life_profile ?? previous.current_life_profile,
+    story_drive: character.story_drive ?? previous.story_drive,
+    performance_profile: character.performance_profile ?? previous.performance_profile,
+    dialogue_examples: character.dialogue_examples?.length ? character.dialogue_examples : previous.dialogue_examples,
+    relationship_notes: character.relationship_notes?.length ? character.relationship_notes : previous.relationship_notes,
     character_type: character.character_type || previous.character_type,
     core_motivation: character.core_motivation || previous.core_motivation,
     behavior_logic: character.behavior_logic || previous.behavior_logic,

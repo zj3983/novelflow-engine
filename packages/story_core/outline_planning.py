@@ -200,8 +200,11 @@ class PlanningCharacterCard(_PlanningModel):
     character_tier: CharacterTier
     importance: CharacterImportance
     narrative_function: CharacterNarrativeFunction
-    profile_status: CharacterProfileStatus
-    profile_completeness: int = Field(ge=0, le=100)
+    # These are derived from the final card.  They remain optional in the LLM
+    # contract so a model cannot satisfy validation by copying optimistic
+    # metadata into its response.
+    profile_status: CharacterProfileStatus = "stub"
+    profile_completeness: int = Field(default=0, ge=0, le=100)
     first_appearance: int = Field(default=0, ge=0)
     identity_profile: IdentityProfile
     background_profile: BackgroundProfile
@@ -220,8 +223,19 @@ class PlanningCharacterCard(_PlanningModel):
         importance, narrative_function = infer_character_taxonomy(migrated)
         migrated.setdefault("importance", importance)
         migrated.setdefault("narrative_function", narrative_function)
-        migrated.setdefault("profile_status", infer_character_profile_status(migrated))
-        migrated.setdefault("profile_completeness", character_profile_completeness(migrated))
+        explicit_status = str(migrated.get("profile_status") or "").strip().casefold()
+        if explicit_status == "stub":
+            # A deliberate stub is an allowed author/workbench downgrade, but
+            # the score is still derived from the actual content below.
+            migrated["profile_status"] = "stub"
+        else:
+            # Treat an omitted status and an optimistic LLM-provided ready as
+            # candidates for the same quality check.  Only the validator may
+            # promote the card to ready.
+            migrated["profile_status"] = infer_character_profile_status(
+                {**migrated, "profile_status": ""}
+            )
+        migrated["profile_completeness"] = character_profile_completeness(migrated)
         return migrated
 
 

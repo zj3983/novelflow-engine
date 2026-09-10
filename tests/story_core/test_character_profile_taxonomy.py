@@ -7,6 +7,7 @@ from packages.story_core.character_profiles import (
     infer_character_taxonomy,
     normalize_character_profile,
 )
+from packages.story_core.character_persistence import normalize_character_persistence_card
 
 
 def _complete_core_card(**overrides: object) -> dict[str, object]:
@@ -62,6 +63,19 @@ def test_legacy_character_tier_maps_to_two_axis_taxonomy() -> None:
 
     assert importance == "major"
     assert narrative_function == "stage_antagonist"
+
+
+def test_specific_legacy_ally_role_does_not_get_misclassified_as_protagonist() -> None:
+    importance, narrative_function = infer_character_taxonomy(
+        {
+            "name": "林澈",
+            "role": "主角的盟友",
+            "character_tier": "protagonist",
+        }
+    )
+
+    assert importance == "supporting"
+    assert narrative_function == "ally"
 
 
 def test_normalizer_adds_taxonomy_status_and_completeness_without_removing_legacy_tier() -> None:
@@ -215,3 +229,26 @@ def test_completeness_score_counts_role_specific_fields_and_concrete_relationshi
     card["relationship_notes"] = [{"target": "林澈"}]
 
     assert character_profile_completeness(card) < 100
+
+
+def test_persistence_normalizer_recomputes_metadata_without_materializing_empty_profile_blocks() -> None:
+    normalized = normalize_character_persistence_card(
+        {
+            "name": "旧卡",
+            "role": "supporting",
+            "origin": "海边小镇",
+            "current_identity": "账房学徒",
+            "immediate_goal": "查清旧账",
+            "motivation": "保住师父留下的铺子",
+        },
+        is_game_story=False,
+    )
+
+    assert normalized["origin"] == "海边小镇"
+    assert normalized["current_identity"] == "账房学徒"
+    assert normalized["immediate_goal"] == "查清旧账"
+    assert normalized["importance"] == "supporting"
+    assert normalized["narrative_function"] == "other"
+    assert normalized["profile_status"] == "stub"
+    assert "identity_profile" not in normalized
+    assert "current_life_profile" not in normalized

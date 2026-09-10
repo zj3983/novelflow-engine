@@ -1236,12 +1236,18 @@ def test_direct_regenerate_checks_explicit_character_status_after_committed_chap
         )
 
     calls = 0
+    failed_names_seen: list[str] = []
 
     def fake_post(base_url, path, payload, api_key, **kwargs):
         nonlocal calls
         calls += 1
         prompt = json.loads(payload["messages"][1]["content"])
         if calls > 1 and "failed_characters" in prompt:
+            failed_names_seen.extend(
+                str(row.get("name") or "").strip()
+                for row in prompt["failed_characters"]
+                if isinstance(row, dict)
+            )
             return {
                 "choices": [
                     {
@@ -1279,8 +1285,109 @@ def test_direct_regenerate_checks_explicit_character_status_after_committed_chap
         )
 
     assert calls == 2
+    assert set(failed_names_seen) == {"林照", "赵衡", "顾长老"}
     assert exc_info.value.__cause__ is not None
     assert "core_requires_ready" in str(exc_info.value.__cause__)
+
+
+def test_direct_character_retry_keeps_all_failed_names_when_quality_error_is_long(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        outline_generation_module,
+        "get_outline_planning_settings",
+        lambda: SimpleNamespace(split_phases=False, timeout_seconds=900, stream=False),
+    )
+    quality_calls = 0
+
+    def long_quality_error(cards, **_kwargs):
+        nonlocal quality_calls
+        quality_calls += 1
+        if quality_calls == 1:
+            return {
+                str(card.name): [f"missing:{'x' * 220}"]
+                for card in cards
+            }
+        return {}
+
+    monkeypatch.setattr(
+        outline_generation_module,
+        "_character_card_roster_quality_issues",
+        long_quality_error,
+    )
+    plan = _model_valid_plan()
+    taxonomy_by_tier = {
+        "protagonist": ("core", "protagonist"),
+        "stage_antagonist": ("major", "stage_antagonist"),
+        "long_term_antagonist": ("core", "long_term_antagonist"),
+        "supporting": ("supporting", "ally"),
+    }
+    for card in plan["characters"]:
+        importance, narrative_function = taxonomy_by_tier[card["character_tier"]]
+        card.update(
+            importance=importance,
+            narrative_function=narrative_function,
+            profile_status="ready",
+        )
+    names = [card["name"] for card in plan["characters"]]
+    for index, card in enumerate(plan["characters"]):
+        card["current_life_profile"] = {
+            "immediate_problem": f"{card['name']}眼前的查案压力正在加重",
+            "authority_scope": f"{card['name']}只能调用自己掌握的宗门权限",
+        }
+        card["story_drive"] = {
+            **card["story_drive"],
+            "long_term_goal": f"{card['name']}要查清旧案并保住自己的立足之处",
+            "motivation": f"{card['name']}必须守住这条线索，才有机会继续追查旧案",
+            "main_conflict_reason": f"{card['name']}与阻止查案的人存在直接利益冲突",
+            "hidden_matters": [f"{card['name']}还没有公开一条关键旧案线索"],
+        }
+        card["performance_profile"] = {
+            "speech_style": f"{card['name']}会按关系和场合把理由说完整",
+            "action_style": f"{card['name']}先核对证据，再采取可逆的下一步行动",
+        }
+        card["relationship_notes"] = [
+            {
+                "target": names[(index + 1) % len(names)],
+                "relation_type": "ally",
+                "history": "两人曾共同处理过一份关键旧档",
+                "current_attitude": "愿意合作但仍保留一层戒心",
+                "shared_interest_or_conflict": "都要追查旧案但对风险判断不同",
+            }
+        ]
+    calls = 0
+    failed_names_seen: list[str] = []
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        nonlocal calls
+        calls += 1
+        prompt = json.loads(payload["messages"][1]["content"])
+        if "failed_characters" in prompt:
+            failed_names_seen.extend(
+                str(row.get("name") or "").strip()
+                for row in prompt["failed_characters"]
+                if isinstance(row, dict)
+            )
+            return {"choices": [{"message": {"content": json.dumps(
+                {"characters": prompt["failed_characters"]}, ensure_ascii=False
+            )}}]}
+        return {"choices": [{"message": {"content": json.dumps(
+            plan, ensure_ascii=False
+        )}}]}
+
+    fixture = RecordingRuntime()
+    result = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=fixture.resolve,
+    ).generate(
+        fixture.brief(current_chapter=0, existing_chapters=[]),
+        mode="initial",
+    )
+
+    assert result.outline.chapters
+    assert calls == 2
+    assert sorted(failed_names_seen) == sorted(names)
+    assert quality_calls == 2
 
 
 def test_generate_chapter_batch_uses_complete_volume_context_and_exact_numbers() -> None:

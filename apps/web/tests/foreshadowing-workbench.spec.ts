@@ -336,3 +336,156 @@ test("角色卡动态与稳定字段真正分区、去重且仍可编辑保存",
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   expect(keyWarnings).toEqual([]);
 });
+
+test("角色卡支持按分类状态和叙事功能筛选，并保存可编辑的表现字段", async ({ page }) => {
+  const taxonomyCharacters = [
+    {
+      ...character,
+      importance: "core",
+      narrative_function: "protagonist",
+      profile_status: "ready",
+      profile_completeness: 100,
+      performance_profile: {
+        speech_style: "先核实证据，再把理由说完整。",
+        action_style: "先留证，再做可逆试探。",
+      },
+    },
+    {
+      ...character,
+      name: "赵衡",
+      role: "stage antagonist",
+      character_tier: "stage_antagonist",
+      importance: "major",
+      narrative_function: "stage_antagonist",
+      profile_status: "stub",
+      profile_completeness: 42,
+      performance_profile: { action_style: "先封锁权限，再逼对方表态。" },
+    },
+    {
+      ...character,
+      name: "顾闻舟",
+      role: "long term antagonist",
+      character_tier: "long_term_antagonist",
+      importance: "core",
+      narrative_function: "long_term_antagonist",
+      profile_status: "ready",
+      profile_completeness: 92,
+      performance_profile: {
+        speech_style: "只谈已经掌握的条件，不先暴露真正目的。",
+        action_style: "先让别人承担代价，再收拢可逆的退路。",
+      },
+    },
+    {
+      ...character,
+      name: "周满",
+      role: "supporting",
+      character_tier: "supporting",
+      importance: "supporting",
+      narrative_function: "ally",
+      profile_status: "ready",
+      profile_completeness: 78,
+      performance_profile: {
+        speech_style: "只说自己确认过的半句话。",
+        action_style: "先递出资源，再观察对方是否守约。",
+      },
+    },
+    {
+      ...character,
+      name: "旧卡",
+      role: "supporting",
+      character_tier: "supporting",
+      importance: undefined,
+      narrative_function: undefined,
+      profile_status: undefined,
+      profile_completeness: undefined,
+    },
+  ];
+  const savedBodies: Record<string, Record<string, unknown>> = {};
+  await mockWorkspace(page, taxonomyCharacters);
+  await page.route(`**/file-projects/${ENCODED_PROJECT_ID}/characters/**`, async (route) => {
+    if (route.request().method() !== "PUT") return route.continue();
+    const characterName = decodeURIComponent(new URL(route.request().url()).pathname.split("/").pop() ?? "");
+    const savedBody = route.request().postDataJSON() as Record<string, unknown>;
+    savedBodies[characterName] = savedBody;
+    const index = taxonomyCharacters.findIndex((item) => item.name === characterName);
+    if (index >= 0) taxonomyCharacters[index] = { ...taxonomyCharacters[index], ...savedBody };
+    return fulfill(route, { ...taxonomyCharacters[index], ...savedBody });
+  });
+
+  await page.goto(`/projects/${ENCODED_PROJECT_ID}/characters`);
+  const cards = page.locator(".ws-character-card");
+  const protagonistCard = cards.filter({ has: page.getByRole("heading", { name: "林照", exact: true }) });
+  await expect(cards).toHaveCount(5);
+  await expect(protagonistCard.getByText("核心 · core", { exact: true })).toBeVisible();
+  await expect(page.locator(".ws-character-taxonomy__badge", { hasText: "阶段反派 · stage_antagonist" })).toBeVisible();
+  await expect(page.locator(".ws-character-taxonomy__badge", { hasText: "长期反派 · long_term_antagonist" })).toBeVisible();
+  await expect(cards.filter({ has: page.getByRole("heading", { name: "赵衡", exact: true }) }).getByText(/阶段反派待补全卡/)).toBeVisible();
+  await expect(cards.filter({ has: page.getByRole("heading", { name: "顾闻舟", exact: true }) }).getByText(/长期反派完整模板/)).toBeVisible();
+  await expect(cards.filter({ has: page.getByRole("heading", { name: "旧卡", exact: true }) }).getByText("配角 · supporting", { exact: true })).toBeVisible();
+  await expect(cards.filter({ has: page.getByRole("heading", { name: "赵衡", exact: true }) }).locator(".ws-character-card__head > div:first-child > p").filter({ hasText: "重要配角卡" })).toHaveCount(0);
+  await page.getByLabel("角色分类筛选").selectOption("stub");
+  await expect(cards).toHaveCount(1);
+  await expect(cards.first().getByRole("heading", { name: "赵衡", exact: true })).toBeVisible();
+  await page.getByLabel("角色分类筛选").selectOption("all");
+  await page.getByLabel("叙事功能筛选").selectOption("ally");
+  await expect(cards).toHaveCount(1);
+  await expect(cards.first().getByRole("heading", { name: "周满", exact: true })).toBeVisible();
+  await page.getByLabel("叙事功能筛选").selectOption("all");
+
+  await protagonistCard.getByRole("button", { name: "编辑", exact: true }).click();
+  await protagonistCard.getByLabel("重要级别").selectOption("major");
+  await protagonistCard.getByLabel("叙事功能").selectOption("ally");
+  await protagonistCard.getByLabel("说话方式").fill("面对质疑时先复述事实，再明确自己的判断。");
+  await protagonistCard.getByLabel("行动方式").fill("先把证据分层保存，再决定是否公开。");
+  await protagonistCard.getByRole("button", { name: "保存角色卡", exact: true }).click();
+
+  await expect.poll(() => savedBodies["林照"]).toMatchObject({
+    importance: "major",
+    narrative_function: "ally",
+    performance_profile: {
+      speech_style: "面对质疑时先复述事实，再明确自己的判断。",
+      action_style: "先把证据分层保存，再决定是否公开。",
+    },
+  });
+  expect(savedBodies["林照"]).not.toHaveProperty("profile_status");
+  expect(savedBodies["林照"]).not.toHaveProperty("profile_completeness");
+  await expect(protagonistCard.getByText("重要 · major", { exact: true })).toBeVisible();
+  await expect(protagonistCard.getByText("盟友 · ally", { exact: true })).toBeVisible();
+
+  const stageCard = cards.filter({ has: page.getByRole("heading", { name: "赵衡", exact: true }) });
+  await stageCard.getByRole("button", { name: "编辑", exact: true }).click();
+  await expect(stageCard.getByLabel("权限范围")).toBeVisible();
+  await expect(stageCard.getByLabel("主要冲突")).toBeVisible();
+  await expect(stageCard.getByLabel("行动方式")).toBeVisible();
+  await stageCard.getByLabel("权限范围").fill("可封存外院档案并调度巡夜人");
+  await stageCard.getByLabel("主要冲突").fill("他必须销毁旧账，才能保住手里的调度权");
+  await stageCard.getByLabel("行动方式").fill("先封锁权限，再逼对方当场表态");
+  await stageCard.getByRole("button", { name: "保存角色卡", exact: true }).click();
+  await expect.poll(() => savedBodies["赵衡"]).toMatchObject({
+    current_life_profile: { authority_scope: "可封存外院档案并调度巡夜人" },
+    story_drive: { main_conflict_reason: "他必须销毁旧账，才能保住手里的调度权" },
+    performance_profile: { action_style: "先封锁权限，再逼对方当场表态" },
+  });
+
+  const longTermCard = cards.filter({ has: page.getByRole("heading", { name: "顾闻舟", exact: true }) });
+  await longTermCard.getByRole("button", { name: "编辑", exact: true }).click();
+  await expect(longTermCard.getByLabel("权限范围")).toBeVisible();
+  await expect(longTermCard.getByLabel("长期目标")).toBeVisible();
+  await expect(longTermCard.getByLabel("主要冲突")).toBeVisible();
+  await expect(longTermCard.getByLabel("隐藏信息")).toBeVisible();
+  await longTermCard.getByLabel("权限范围").fill("可调阅全部审计记录并决定哪些异常进入公开流程");
+  await longTermCard.getByLabel("长期目标").fill("把所有异常协议纳入自己的权限网络");
+  await longTermCard.getByLabel("主要冲突").fill("旧协议一旦公开，他经营多年的权限网络就会失效");
+  await longTermCard.getByLabel("隐藏信息").fill("他曾亲自修改过第一版审计规则");
+  await longTermCard.getByRole("button", { name: "保存角色卡", exact: true }).click();
+  await expect.poll(() => savedBodies["顾闻舟"]).toMatchObject({
+    current_life_profile: { authority_scope: "可调阅全部审计记录并决定哪些异常进入公开流程" },
+    story_drive: {
+      long_term_goal: "把所有异常协议纳入自己的权限网络",
+      main_conflict_reason: "旧协议一旦公开，他经营多年的权限网络就会失效",
+      hidden_matters: ["他曾亲自修改过第一版审计规则"],
+    },
+  });
+  await expect(stageCard.getByText("权限与当前压力", { exact: true })).toHaveCount(1);
+  await expect(longTermCard.getByText("权限与幕后目标", { exact: true })).toHaveCount(1);
+});

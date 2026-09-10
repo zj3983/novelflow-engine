@@ -30,3 +30,5 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
       - run: npm ci
       - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e -- tests/foreshadowing-workbench.spec.ts

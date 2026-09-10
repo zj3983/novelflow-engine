@@ -207,6 +207,37 @@ def test_planning_character_card_migrates_legacy_tier_without_manual_new_fields(
     assert 0 < card.profile_completeness <= 100
 
 
+def test_planning_character_card_derives_status_and_completeness_instead_of_trusting_llm() -> None:
+    payload = _card(profile_status="ready")
+    payload["profile_completeness"] = 100
+    payload["story_drive"] = {
+        **payload["story_drive"],
+        "motivation": "",
+    }
+
+    card = PlanningCharacterCard.model_validate(payload)
+
+    assert card.profile_status == "stub"
+    assert card.profile_completeness < 100
+
+
+def test_planning_character_card_preserves_explicit_stub_intent_but_derives_score() -> None:
+    payload = _card(profile_status="stub")
+    payload["profile_completeness"] = 0
+
+    card = PlanningCharacterCard.model_validate(payload)
+
+    assert card.profile_status == "stub"
+    assert card.profile_completeness > 0
+
+
+def test_planning_character_card_metadata_is_optional_from_llm_schema() -> None:
+    required = set(PlanningCharacterCard.model_json_schema().get("required", []))
+
+    assert "profile_status" not in required
+    assert "profile_completeness" not in required
+
+
 def test_character_state_migrates_legacy_tier_without_manual_new_fields() -> None:
     state = CharacterState(
         name="赵衡",
@@ -238,4 +269,27 @@ def test_explicit_new_taxonomy_wins_during_legacy_compatible_read() -> None:
     assert state.importance == "major"
     assert state.narrative_function == "ally"
     assert state.profile_status == "stub"
-    assert state.profile_completeness == 25
+    assert state.profile_completeness == 0
+
+
+def test_character_state_recomputes_stale_ready_and_completeness_metadata() -> None:
+    state = CharacterState(
+        name="林澈",
+        role="protagonist",
+        character_tier="protagonist",
+        profile_status="ready",
+        profile_completeness=99,
+        identity_profile={"current_identity": "灰港调查员"},
+        story_drive={"immediate_goal": "保住证据"},
+    )
+
+    assert state.profile_status == "stub"
+    assert state.profile_completeness < 99
+
+
+def test_explicit_stub_intent_survives_a_complete_card_but_score_is_derived() -> None:
+    card = _card(profile_status="stub")
+    state = CharacterState.model_validate({**card, "profile_completeness": 100})
+
+    assert state.profile_status == "stub"
+    assert state.profile_completeness == 100
