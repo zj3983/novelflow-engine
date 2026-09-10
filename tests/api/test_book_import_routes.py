@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,17 @@ from apps.api.main import app
 
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def allow_test_source_paths(monkeypatch, tmp_path: Path):
+    # The production default intentionally allows the home and current
+    # directories.  Pytest's isolated temp directory is outside both,
+    # so include it explicitly while retaining the cwd case below.
+    monkeypatch.setenv(
+        "NOVEL_AUTOGROWTH_ALLOWED_FS_ROOTS",
+        os.pathsep.join((str(tmp_path), str(Path.cwd()))),
+    )
 
 
 def _write(path: Path, content: str) -> None:

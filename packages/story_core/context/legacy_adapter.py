@@ -73,6 +73,12 @@ def _normalize_character_inventory(card: dict[str, Any]) -> dict[str, Any]:
 
 
 def _system_path(system_root: Path, *parts: str) -> Path:
+    # ``system_root / ".."`` is not safe when ``system_root`` has not
+    # been created yet: POSIX path lookup must traverse the missing
+    # directory before it can resolve ``..``.  Resolve the parent
+    # directly so the legacy fallback works on both POSIX and Windows.
+    if parts and parts[0] == "..":
+        return system_root.parent.joinpath(*parts[1:])
     return system_root.joinpath(*parts)
 
 
