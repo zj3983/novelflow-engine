@@ -278,6 +278,26 @@ def test_latest_only_values_stay_unknown_when_no_historical_event_exists() -> No
     assert "game_state.level" in result.unknown_fields
 
 
+def test_non_protagonist_progression_unknown_fields_are_not_global_ledger_markers() -> None:
+    story = _story()
+    story["characters"].append(
+        {
+            "name": "顾闻舟",
+            "role": "supporting",
+            "current_state": {
+                "recent_changes": [
+                    {"chapter": 10, "current": {"location": "北岸"}},
+                ],
+            },
+        }
+    )
+
+    result = get_character_state(story, "顾闻舟", as_of_chapter=15)
+
+    assert result.progression == {}
+    assert not any(field.startswith("progression.") for field in result.unknown_fields)
+
+
 def test_equipment_without_historical_owner_is_not_attached_to_character() -> None:
     story = _story()
     card = story["equipment_cards"][0]

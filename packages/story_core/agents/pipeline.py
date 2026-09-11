@@ -106,6 +106,10 @@ from packages.story_core.context.writer_context import (
     WriterContext,
     build_writer_context,
 )
+from packages.story_core.writer_character_context import (
+    historical_writer_character_cards,
+    writer_historical_chapter,
+)
 from packages.story_core.continuity.delta import ContinuityDelta
 from packages.story_core.skill_packs import resolve_enabled_skill_module_ids
 
@@ -338,6 +342,38 @@ def _legacy_writer_context(
     previous = legacy_previous_chapter(system_root_path, chapter_number) or {}
     character_cards = legacy_active_characters(system_root_path)
     state = legacy_state_view(system_root_path) or {}
+    replay_state = dict(state)
+    if not isinstance(replay_state.get("characters"), list) or not replay_state.get("characters"):
+        replay_state["characters"] = [dict(card) for card in character_cards]
+    else:
+        state_characters = replay_state["characters"]
+        known_state_names = {
+            str(item.get("name") or "").strip()
+            for item in state_characters
+            if isinstance(item, dict)
+        }
+        replay_state["characters"] = [
+            *state_characters,
+            *[
+                dict(card)
+                for card in character_cards
+                if str(card.get("name") or "").strip() not in known_state_names
+            ],
+        ]
+    historical_cards = historical_writer_character_cards(
+        replay_state,
+        as_of_chapter=writer_historical_chapter(chapter_number),
+    )
+    historical_by_name = {
+        str(card.get("name") or "").strip(): card
+        for card in historical_cards
+        if str(card.get("name") or "").strip()
+    }
+    character_cards = [
+        historical_by_name[str(card.get("name") or "").strip()]
+        for card in character_cards
+        if str(card.get("name") or "").strip() in historical_by_name
+    ]
     world_facts = list(state.get("world_facts") or [])
     progression_ledger = state.get("progression_ledger")
     continuity_facts = (

@@ -197,6 +197,22 @@ class MemoryIndexEntry(BaseModel):
     resolved_threads: list[str] = Field(default_factory=list)
 
 
+class KnowledgeFact(BaseModel):
+    """A structured fact known by one or more story actors."""
+
+    fact_id: str = Field(min_length=1)
+    fact: str = Field(min_length=1)
+    learned_chapter: int = Field(default=0, ge=0)
+    known_by: list[str] = Field(default_factory=list)
+    source: str = ""
+    certainty: str = "certain"
+    visibility: Literal["public", "private", "secret"] = "private"
+    reveal_chapter: int | None = Field(default=None, ge=0)
+    invalidated_chapter: int | None = Field(default=None, ge=0)
+    supersedes: str = ""
+    tags: list[str] = Field(default_factory=list)
+
+
 class ArcRecap(BaseModel):
     start_chapter: int
     end_chapter: int
@@ -623,6 +639,10 @@ class StoryState(BaseModel):
     world_facts: list[str] = Field(default_factory=list)
     world_snapshot: dict = Field(default_factory=dict)
     continuity_facts: list[dict] = Field(default_factory=list)
+    # Structured, character-scoped knowledge.  Keep the persisted envelope
+    # permissive so legacy state files can be read while the ledger service
+    # validates records at its boundary.
+    knowledge_ledger: list[dict] = Field(default_factory=list)
     progression_ledger: dict = Field(default_factory=dict)
     story_core: dict = Field(default_factory=dict, exclude=True)
     world_context: dict = Field(default_factory=dict, exclude=True)

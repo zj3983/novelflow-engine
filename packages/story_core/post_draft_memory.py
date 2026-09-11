@@ -25,6 +25,9 @@ def _empty_result() -> dict[str, Any]:
         "chapter_title": "",
         "character_updates": [],
         "equipment_updates": [],
+        # Reserved for explicit structured commits supplied by the caller;
+        # this is intentionally not extracted from prose by the memory agent.
+        "knowledge_updates": [],
         "ledger_updates": {},
         "ledger_evidence": {},
         "rejected_updates": [],
@@ -849,6 +852,11 @@ def normalize_post_draft_memory(
         chapter_number=chapter_number,
         rejected=rejected,
     )
+    raw_knowledge_updates = payload.get("knowledge_updates")
+    if isinstance(raw_knowledge_updates, list):
+        result["knowledge_updates"] = [
+            dict(item) for item in raw_knowledge_updates if isinstance(item, dict)
+        ]
     alias_map = _normalized_character_aliases_by_name(character_aliases_by_name)
     flattened_aliases = set(alias_map).union(*alias_map.values()) if alias_map else set()
     other_character_names = (

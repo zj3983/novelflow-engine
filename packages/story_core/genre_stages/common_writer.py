@@ -582,7 +582,12 @@ def _writer_fact_section_from_context(context: WriterContext) -> list[str]:
     return lines
 
 
-def _writer_character_section(character_context: dict[str, Any], dialogue_context: dict[str, Any]) -> list[str]:
+def _writer_character_section(
+    character_context: dict[str, Any],
+    dialogue_context: dict[str, Any],
+    *,
+    is_game_story: bool = False,
+) -> list[str]:
     lines = ["## 出场人物"]
     cards = character_context.get("cards") if isinstance(character_context, dict) else []
     for card in cards[:4] if isinstance(cards, list) else []:
@@ -603,6 +608,23 @@ def _writer_character_section(character_context: dict[str, Any], dialogue_contex
                 parts.append(text)
         rendered = "；".join(part for part in parts if part)
         lines.append(f"{name}：{rendered or '按既有角色卡行动和说话'}")
+        if not is_game_story:
+            for field, label in (
+                ("current_state", "历史状态"),
+                ("real_state", "历史现实状态"),
+                ("progression", "历史成长"),
+                ("equipment", "历史装备"),
+                ("relationship_context", "历史关系"),
+            ):
+                value = card.get(field)
+                if value not in (None, "", [], {}):
+                    lines.append(f"{name}{label}：{compact_text(prompt_json(value), 320)}")
+            knowledge = card.get("knowledge")
+            if knowledge:
+                lines.append(
+                    f"{name}角色已知（仅结构化事实，不等同于作者隐藏信息）："
+                    f"{compact_text(prompt_json(knowledge), 320)}"
+                )
     conversation_reason = compact_text(str(dialogue_context.get("conversation_reason") or ""), 100)
     tone_boundary = compact_text(str(dialogue_context.get("tone_boundary") or ""), 100)
     if conversation_reason:
@@ -747,7 +769,11 @@ def build_common_writer_sections(context: WriterContext) -> dict[str, list[str]]
         "output_section": _writer_output_section(context.chapter_number, context.plan),
         "chapter_direction": _writer_direction_section(context.chapter_number, context.plan),
         "chapter_facts": _writer_fact_section_from_context(context),
-        "character_context": _writer_character_section(context.character_context, context.dialogue_context),
+        "character_context": _writer_character_section(
+            context.character_context,
+            context.dialogue_context,
+            is_game_story=is_game_story(context.story),
+        ),
         "prose_method": _writer_craft_section(
             genre_context,
             context.skill_context,

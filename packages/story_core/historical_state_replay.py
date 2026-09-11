@@ -715,10 +715,12 @@ def _replay_equipment(
     return sorted(projected, key=lambda item: (str(item.get("id") or ""), str(item.get("name") or "")))
 
 
-def get_character_state(
+def _get_character_state(
     story_state: StoryState | Mapping[str, Any],
     character_name: str,
     as_of_chapter: int,
+    *,
+    allow_zero: bool,
 ) -> HistoricalCharacterState:
     """Return the character state at the end of ``as_of_chapter``.
 
@@ -730,9 +732,10 @@ def get_character_state(
     if isinstance(as_of_chapter, bool) or not isinstance(as_of_chapter, int):
         target = None
     else:
-        target = _chapter_number(as_of_chapter, allow_zero=False)
+        target = _chapter_number(as_of_chapter, allow_zero=allow_zero)
     if target is None:
-        raise ValueError("as_of_chapter must be a positive integer")
+        boundary_label = "non-negative integer" if allow_zero else "positive integer"
+        raise ValueError(f"as_of_chapter must be a {boundary_label}")
     story = _replay_payload(story_state)
     wanted = str(character_name or "").strip()
     characters = story.get("characters")
@@ -773,7 +776,7 @@ def get_character_state(
         evidence=evidence,
     )
     ledger = story.get("progression_ledger")
-    if isinstance(ledger, Mapping):
+    if _is_protagonist_character(character) and isinstance(ledger, Mapping):
         protagonist = ledger.get("protagonist") if isinstance(ledger.get("protagonist"), Mapping) else ledger
         if isinstance(protagonist, Mapping):
             for field in ("level", "skills", "attributes", "inventory", "currency", "quests"):
@@ -806,6 +809,36 @@ def get_character_state(
         equipment=equipment,
         evidence=evidence,
         unknown_fields=tuple(sorted(unknown_fields)),
+    )
+
+
+def get_character_state(
+    story_state: StoryState | Mapping[str, Any],
+    character_name: str,
+    as_of_chapter: int,
+) -> HistoricalCharacterState:
+    """Return a positive-chapter historical state projection."""
+
+    return _get_character_state(
+        story_state,
+        character_name,
+        as_of_chapter,
+        allow_zero=False,
+    )
+
+
+def get_character_state_for_writer(
+    story_state: StoryState | Mapping[str, Any],
+    character_name: str,
+    as_of_chapter: int,
+) -> HistoricalCharacterState:
+    """Return a writer boundary projection, including the chapter-zero baseline."""
+
+    return _get_character_state(
+        story_state,
+        character_name,
+        as_of_chapter,
+        allow_zero=True,
     )
 
 

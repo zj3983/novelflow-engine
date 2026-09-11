@@ -13,6 +13,7 @@ from packages.story_core.models import (
 from packages.story_core.character_portraits import complete_character_portrait
 from packages.story_core.foreshadowing import select_unresolved_foreshadowing
 from packages.story_core.equipment_cards import merge_equipment_cards, normalize_equipment_card
+from packages.story_core.knowledge_ledger import apply_knowledge_updates
 from packages.story_core.genre_plugins import is_game_genre
 from packages.story_core.novel_type_catalog import normalize_novel_type_id
 from packages.story_core.planner import build_chapter_title
@@ -370,6 +371,13 @@ def apply_post_chapter_updates(
         equipment_updates,
     )
     story.equipment_cards = equipment_merge.cards
+    # Knowledge is an explicit structured commit surface.  Do not infer it
+    # from prose, summaries, relationships, or the free-text memory list.
+    apply_knowledge_updates(
+        story,
+        memory.get("knowledge_updates", []),
+        chapter_number=chapter_number,
+    )
     summary_text = str(memory.get("summary") or "").strip() or body.strip()[:240]
     facts = [str(item).strip() for item in memory.get("facts", []) if str(item).strip()][:12]
     unresolved_threads = [

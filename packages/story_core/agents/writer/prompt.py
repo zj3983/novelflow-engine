@@ -82,6 +82,13 @@ def _current_character_state(card: dict[str, Any]) -> dict[str, Any]:
             current = value.get("current") if isinstance(value.get("current"), dict) else value
             if current:
                 state[namespace] = current
+    # These fields are already chapter-bounded by the writer context builder.
+    # Keep them in the same explicit state slice so the prompt cannot confuse
+    # author-only canon with what a character actually knows.
+    for field in ("progression", "equipment", "relationships"):
+        value = card.get(field)
+        if value not in (None, "", [], {}):
+            state[field] = value
     return state
 
 
@@ -164,6 +171,12 @@ def _render_character_cards(request: WriterRequest) -> str:
         blocks.append(header)
         for detail in _compact_character_direction(card):
             blocks.append(f"  {detail}")
+        knowledge = card.get("knowledge")
+        if knowledge:
+            blocks.append(
+                "  角色已知（仅结构化事实，不等同于作者隐藏信息）："
+                + json.dumps(knowledge, ensure_ascii=False, separators=(",", ":"))
+            )
         boundary = card.get("knowledge_boundary")
         if boundary:
             boundary_text = "、".join(str(item) for item in boundary)

@@ -34,6 +34,10 @@ from packages.story_core.skill_packs import (
 
 from ..agents.contracts import DirectorArtifact
 from .project_reader import ProjectContextReader
+from ..writer_character_context import (
+    historical_writer_character_cards,
+    writer_historical_chapter,
+)
 
 
 def _entity_referenced_names(artifact: DirectorArtifact) -> set[str]:
@@ -172,8 +176,15 @@ def build_writer_context(
     referenced = _entity_referenced_names(director_artifact)
     scene_locations = {beat.location for beat in director_artifact.scene_beats}
 
-    previous_path = f"chapters/{max(chapter_number - 1, 1):04d}.json"
-    previous_chapter = reader.try_read_json(previous_path, kind="chapter") or {}
+    previous_chapter = (
+        reader.try_read_json(
+            f"chapters/{chapter_number - 1:04d}.json",
+            kind="chapter",
+        )
+        or {}
+        if chapter_number > 1
+        else {}
+    )
     previous_tail = ""
     continuity_facts: list[dict[str, Any]] = []
     if isinstance(previous_chapter, dict):
@@ -191,7 +202,7 @@ def build_writer_context(
                 continue
             if not isinstance(card, dict):
                 continue
-            if card.get("lifecycle") != "active":
+            if card.get("lifecycle") not in (None, "active"):
                 continue
             name = str(card.get("name") or "")
             requirement_names = {
@@ -201,6 +212,57 @@ def build_writer_context(
             }
             if name in requirement_names or name in referenced or not requirement_names:
                 character_cards.append(card)
+
+    # Replace the latest character mirrors with a chapter-bounded projection.
+    # The canonical state file carries the replay sources; a characters/
+    # directory card is used as the fallback source for migrated projects.
+    replay_state = dict(state_payload) if isinstance(state_payload, dict) else {}
+    state_characters = replay_state.get("characters")
+    if not isinstance(state_characters, list) or not state_characters:
+        replay_state["characters"] = [dict(card) for card in character_cards]
+    elif not character_cards:
+        # Some canonical projects keep character mirrors only in state.json.
+        # Use the same scope filter as the directory-backed path, then apply
+        # the historical projection below before exposing them to the writer.
+        requirement_names = {
+            str(req.name)
+            for req in director_artifact.entity_requirements
+            if req.kind == "character"
+        }
+        for raw in state_characters:
+            if not isinstance(raw, dict) or raw.get("lifecycle") not in (None, "active"):
+                continue
+            name = str(raw.get("name") or "")
+            if name and (name in requirement_names or name in referenced or not requirement_names):
+                character_cards.append(dict(raw))
+    else:
+        known_state_names = {
+            str(item.get("name") or "").strip()
+            for item in state_characters
+            if isinstance(item, dict)
+        }
+        replay_state["characters"] = [
+            *state_characters,
+            *[
+                dict(card)
+                for card in character_cards
+                if str(card.get("name") or "").strip() not in known_state_names
+            ],
+        ]
+    historical_cards = historical_writer_character_cards(
+        replay_state,
+        as_of_chapter=writer_historical_chapter(chapter_number),
+    )
+    historical_by_name = {
+        str(card.get("name") or "").strip(): card
+        for card in historical_cards
+        if str(card.get("name") or "").strip()
+    }
+    character_cards = [
+        historical_by_name[str(card.get("name") or "").strip()]
+        for card in character_cards
+        if str(card.get("name") or "").strip() in historical_by_name
+    ]
 
     # Active entity cards for locations in scope, never retired.
     entity_cards: list[dict[str, Any]] = []

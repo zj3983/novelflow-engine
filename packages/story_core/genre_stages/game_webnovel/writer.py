@@ -6,6 +6,10 @@ from typing import Any
 
 from packages.story_core.agent_base import compact_list, compact_text
 from packages.story_core.dual_state import project_character_for_scene, scene_kind_for_cards
+from packages.story_core.writer_character_context import (
+    historical_writer_character_cards,
+    writer_historical_chapter,
+)
 from packages.story_core.genre_stages.common_writer import (
     WriterContext,
     build_common_writer_sections,
@@ -147,6 +151,17 @@ def _augment_game_character_section(
             current = state.get("current") if isinstance(state, dict) else None
             if isinstance(current, dict) and (values := _writer_state_values(current)):
                 game_lines.append(f"{name}{label}：{'；'.join(values[:6])}")
+            elif isinstance(state, dict):
+                game_lines.append(f"{name}{label}：章前无明确记录")
+        for field, label in (
+            ("progression", "历史成长"),
+            ("equipment", "历史装备"),
+            ("relationships", "历史关系"),
+            ("knowledge", "角色已知"),
+        ):
+            value = card.get(field)
+            if values := _writer_state_values(value):
+                game_lines.append(f"{name}{label}：{'；'.join(values[:6])}")
     if game_lines:
         augmented = [augmented[0], *game_lines, *augmented[1:]]
     return augmented
@@ -204,11 +219,23 @@ def _raw_game_character_context(context: WriterContext, *, max_items: int = 4) -
 
     scene_cards = plan.get("scene_cards") if isinstance(plan.get("scene_cards"), list) else []
     scene_kind = scene_kind_for_cards(scene_cards, is_game_story=True)
+    historical_cards = historical_writer_character_cards(
+        story.model_dump(mode="python"),
+        as_of_chapter=writer_historical_chapter(context.chapter_number),
+        scene_kind=scene_kind,
+        is_game_story=True,
+    )
+    historical_by_name = {
+        str(item.get("name") or "").strip(): item
+        for item in historical_cards
+        if str(item.get("name") or "").strip()
+    }
     compact_cards: list[dict[str, Any]] = []
     for card in selected:
         identity = card.get("identity") if isinstance(card.get("identity"), dict) else {}
         name = str(identity.get("name") or "").strip()
         raw = raw_cards.get(name, {})
+        historical = historical_by_name.get(name)
         base = dict(generic_by_name.get(name, {}))
         if not base:
             profile = card.get("webnovel_profile") if isinstance(card.get("webnovel_profile"), dict) else {}
@@ -233,10 +260,13 @@ def _raw_game_character_context(context: WriterContext, *, max_items: int = 4) -
         base_identity = dict(base.get("identity") or {})
         base_identity["game_id"] = identity.get("game_id") or raw.get("game_id") or ""
         base["identity"] = base_identity
-        source = dict(card)
-        for key in ("real_state", "game_state", "game_panel", "secrets", "story_drive", "relationship_notes"):
-            if key in raw:
-                source[key] = raw[key]
+        # The generic context is already historical; use the same bounded
+        # projection here instead of re-reading latest mirrors for game mode.
+        source = dict(historical or base)
+        if historical is not None:
+            for key in ("real_state", "game_state", "progression", "equipment", "relationships", "knowledge"):
+                if key in historical:
+                    base[key] = historical[key]
         base["state_context"] = project_character_for_scene(source, scene_kind=scene_kind)["state_context"]
         compact_cards.append(base)
     return {"cards": compact_cards, "scene_kind": scene_kind}

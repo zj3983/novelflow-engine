@@ -129,6 +129,11 @@ from packages.story_core.prose_rule_review import (
 )
 from packages.story_core.prose_style_review import review_prose_style
 from packages.story_core.character_portraits import build_scene_portrait_slice
+from packages.story_core.writer_character_context import (
+    historical_writer_character_cards,
+    historical_writer_dynamic_fields,
+    writer_historical_chapter,
+)
 from packages.story_core.reader_feel_review import review_reader_feel
 from packages.story_core.plot_spine_review import review_plot_spine_completion
 from packages.story_core.quality import validate_bundle
@@ -646,6 +651,7 @@ def _character_context_for_prompt(
     *,
     max_items: int = 4,
     include_memory: bool = False,
+    as_of_chapter: int | None = None,
 ) -> dict[str, Any]:
     known_names = tuple(character.name for character in story.characters if character.name)
     requested = _planned_character_names(plan, known_names)
@@ -656,6 +662,17 @@ def _character_context_for_prompt(
         for character in story.characters
         if character.name
     }
+    historical_by_name: dict[str, dict[str, Any]] = {}
+    if as_of_chapter is not None:
+        historical_cards = historical_writer_character_cards(
+            story.model_dump(mode="python"),
+            as_of_chapter=as_of_chapter,
+        )
+        historical_by_name = {
+            str(card.get("name") or "").strip(): card
+            for card in historical_cards
+            if str(card.get("name") or "").strip()
+        }
     selected: list[dict[str, Any]] = []
     for card in cards:
         identity = card.get("identity") if isinstance(card.get("identity"), dict) else {}
@@ -687,9 +704,49 @@ def _character_context_for_prompt(
         relationships = locks.get("relationships") if isinstance(locks.get("relationships"), dict) else {}
         chapter_usage = usage.get("this_chapter_usage") if isinstance(usage.get("this_chapter_usage"), dict) else {}
         raw = raw_cards.get(name, {})
+        historical = historical_by_name.get(name)
+        dynamic = historical if historical is not None else raw
         raw_identity = raw.get("identity_profile") if isinstance(raw.get("identity_profile"), dict) else {}
-        raw_drive = raw.get("story_drive") if isinstance(raw.get("story_drive"), dict) else {}
+        raw_drive = dynamic.get("story_drive") if isinstance(dynamic.get("story_drive"), dict) else {}
         raw_performance = raw.get("performance_profile") if isinstance(raw.get("performance_profile"), dict) else {}
+        historical_current_state = dynamic.get("current_state") if isinstance(dynamic.get("current_state"), dict) else {}
+        historical_current = historical_current_state.get("current") if isinstance(historical_current_state.get("current"), dict) else {}
+        dynamic_goals = (
+            [historical_current.get("current_goal")]
+            if historical is not None and historical_current.get("current_goal") not in (None, "")
+            else (list(raw.get("goals", [])) if historical is None else [])
+        )
+        historical_relationships = historical.get("relationships") if isinstance(historical, dict) else None
+        relationship_context = (
+            [
+                {
+                    "target": str(relation.get("target") or ""),
+                    "trust": relation.get("trust", 0),
+                    "tension": relation.get("tension", 0),
+                    "bond": str(relation.get("bond") or ""),
+                }
+                for relation in historical_relationships
+                if isinstance(relation, dict) and str(relation.get("target") or "").strip()
+            ]
+            if historical_relationships is not None
+            else [
+                {
+                    "target": str(target),
+                    "trust": relation.get("trust", 0),
+                    "tension": relation.get("tension", 0),
+                    "bond": str(relation.get("bond") or ""),
+                }
+                for target, relation in list(relationships.items())[:3]
+                if isinstance(relation, dict)
+            ]
+        )
+        scene_portrait = build_scene_portrait_slice(card)
+        if historical is not None:
+            scene_portrait["current_emotion"] = str(
+                historical_current.get("emotion")
+                or historical_current.get("current_emotion")
+                or "neutral"
+            )
         compact_card = {
                 "identity": {
                     "name": identity.get("name", ""),
@@ -702,7 +759,7 @@ def _character_context_for_prompt(
                         ),
                         100,
                     ),
-                    "location": compact_text(str(identity.get("location", "")), 60),
+                    "location": compact_text(str(historical_current.get("location") or identity.get("location", "")), 60),
                 },
                 "motivation": _concrete_character_signal(
                     profile.get("core_motivation"),
@@ -719,24 +776,17 @@ def _character_context_for_prompt(
                     profile.get("interaction_mode"),
                     limit=120,
                 ),
-                "goals": compact_list(raw.get("goals", []), max_items=2, item_chars=120),
+                "goals": compact_list(dynamic_goals, max_items=2, item_chars=120),
                 "speech_tendency": compact_text(str(chapter_usage.get("speech_tendency", "")), 100),
                 "action_tendency": compact_text(str(chapter_usage.get("action_tendency", "")), 100),
                 "risk_posture": compact_text(str(voice.get("risk_posture", "")), 100),
                 "speech_style": compact_text(str(voice.get("speech_style", "")), 100),
                 "poison_points": compact_list(profile.get("poison_points", []), max_items=4, item_chars=80),
-                "relationship_context": [
-                    {
-                        "target": str(target),
-                        "trust": relation.get("trust", 0),
-                        "tension": relation.get("tension", 0),
-                        "bond": str(relation.get("bond") or ""),
-                    }
-                    for target, relation in list(relationships.items())[:3]
-                    if isinstance(relation, dict)
-                ],
-                "scene_portrait": build_scene_portrait_slice(card),
+                "relationship_context": relationship_context[:3],
+                "scene_portrait": scene_portrait,
             }
+        if historical is not None:
+            compact_card.update(historical_writer_dynamic_fields(historical))
         if include_memory:
             compact_card["memory"] = compact_list(raw.get("memory", []), max_items=2, item_chars=70)
         compact_cards.append(compact_card)
@@ -3704,7 +3754,12 @@ class StoryOrchestrator:
                 style=story.style,
                 chapter_number=chapter_number,
             )
-        character_context = _character_context_for_prompt(story, plan, max_items=4)
+        character_context = _character_context_for_prompt(
+            story,
+            plan,
+            max_items=4,
+            as_of_chapter=writer_historical_chapter(chapter_number),
+        )
         dialogue_context = build_dialogue_context(character_context, plan)
         skill_context = _skill_context_for_prompt(story, ("writer", "dialogue", "style", "genre"))
         replaced_defaults = set(skill_context.get("_replaced_defaults", []))
@@ -3870,6 +3925,7 @@ class StoryOrchestrator:
                 "resolved_threads",
                 "character_updates",
                 "equipment_updates",
+                "knowledge_updates",
                 "ledger_updates",
             )
         )
