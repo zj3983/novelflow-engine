@@ -3,6 +3,7 @@
 import { useState } from "react";
 
 import { PageHeader } from "../../../../components/ws/PageHeader";
+import { CharacterInspectionPanel } from "../../../../components/ws/CharacterInspectionPanel";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
 import {
   completeFileProjectCharacterPortrait,
@@ -478,7 +479,7 @@ function CurrentStateSection({
 }
 
 export default function CharactersPage() {
-  const { project, story, error, encodedProjectId, projectId, refresh } = useProjectWorkspace();
+  const { project, story, error, encodedProjectId, projectId, refreshVersion, refresh } = useProjectWorkspace();
   const characters = mergeCharacters(project?.character_profiles, story?.characters);
   const [editingName, setEditingName] = useState<string | null>(null);
   const [draft, setDraft] = useState<DisplayCharacter | null>(null);
@@ -569,6 +570,14 @@ export default function CharactersPage() {
       />
       {error ? <div className="ws-card" style={{ borderColor: "var(--ws-danger)" }}><p className="ws-error-text">加载失败：{userFacingErrorMessage(error)}</p></div> : null}
       {message ? <p className="ws-inline-message">{message}</p> : null}
+
+      <CharacterInspectionPanel
+        projectId={projectId}
+        encodedProjectId={encodedProjectId}
+        characters={characters}
+        currentChapter={story?.current_chapter ?? 0}
+        refreshVersion={refreshVersion}
+      />
 
       <section className="ws-character-workspace" aria-labelledby="character-workspace-title">
         <div className="ws-section-head">

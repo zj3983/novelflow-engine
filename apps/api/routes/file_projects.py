@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
@@ -16,6 +17,10 @@ from fastapi import APIRouter, HTTPException, Path as ApiPath, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from packages.story_core.book_dissection import diagnose_project_chapter, dissect_reference_text
+from packages.story_core.character_inspection import (
+    check_character_consistency,
+    get_character_timeline,
+)
 from packages.story_core.file_project_creation import FileProjectCreateSpec, create_file_project
 from packages.story_core.generation_progress import generation_progress
 from packages.story_core.file_project_store import FileProjectStore
@@ -102,6 +107,11 @@ class FileProjectRegenerateRequest(BaseModel):
 
 class FileProjectGenerateNextRequest(BaseModel):
     chapter_direction_id: str | None = None
+
+
+class CharacterConsistencyCheckRequest(BaseModel):
+    target_chapter: int = Field(ge=1)
+    planned_context: dict[str, Any] = Field(default_factory=dict)
 
 
 class OpeningDirectionGenerationRequest(BaseModel):
@@ -1537,6 +1547,38 @@ def _story_overview_payload(store: FileProjectStore) -> dict[str, Any]:
     }
 
 
+def _character_inspection_payload(store: FileProjectStore) -> dict[str, Any]:
+    """Build a read-only inspection input from the existing file-project state."""
+
+    state = store.state()
+    project = store.project()
+    payload = deepcopy(state)
+    payload["relationship_graph"] = deepcopy(
+        project.get("relationship_graph")
+        if isinstance(project.get("relationship_graph"), list)
+        else state.get("relationship_graph") or []
+    )
+
+    blueprint = project.get("world_blueprint")
+    blueprint_cards = blueprint.get("equipment_cards") if isinstance(blueprint, dict) else []
+    state_cards = state.get("equipment_cards")
+    cards: list[dict[str, Any]] = []
+    seen_cards: set[str] = set()
+    for raw in [
+        *(state_cards if isinstance(state_cards, list) else []),
+        *(blueprint_cards if isinstance(blueprint_cards, list) else []),
+    ]:
+        if not isinstance(raw, dict):
+            continue
+        identity = str(raw.get("id") or raw.get("name") or "").strip().casefold()
+        if not identity or identity in seen_cards:
+            continue
+        seen_cards.add(identity)
+        cards.append(deepcopy(raw))
+    payload["equipment_cards"] = cards
+    return payload
+
+
 def _file_story_store(story_id: str) -> FileProjectStore:
     wanted = _strip_file_prefix(story_id)
     try:
@@ -2471,6 +2513,61 @@ def init_file_project_routes() -> APIRouter:
     def get_file_project_characters(project_id: str) -> list[dict[str, Any]]:
         store = _store_for(project_id)
         return [item for item in store.state().get("characters", []) if isinstance(item, dict)]
+
+    @router.get("/file-projects/{project_id}/characters/{character_name}/timeline")
+    def get_file_project_character_timeline(
+        project_id: str,
+        character_name: str,
+        start_chapter: int | None = None,
+        end_chapter: int | None = None,
+    ) -> dict[str, Any]:
+        store = _store_for(project_id)
+        payload = _character_inspection_payload(store)
+        try:
+            all_events = get_character_timeline(payload, character_name)
+            events = get_character_timeline(
+                payload,
+                character_name,
+                start_chapter=start_chapter,
+                end_chapter=end_chapter,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {
+            "character_name": character_name,
+            "start_chapter": start_chapter,
+            "end_chapter": end_chapter,
+            "history_status": "available" if all_events else "no_evidence",
+            "events_in_range": len(events),
+            "events": [item.model_dump(mode="json") for item in events],
+        }
+
+    @router.post("/file-projects/{project_id}/characters/{character_name}/consistency-check")
+    def check_file_project_character_consistency(
+        project_id: str,
+        character_name: str,
+        payload: CharacterConsistencyCheckRequest,
+    ) -> dict[str, Any]:
+        store = _store_for(project_id)
+        try:
+            warnings = check_character_consistency(
+                _character_inspection_payload(store),
+                character_name,
+                target_chapter=payload.target_chapter,
+                planned_context=payload.planned_context,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {
+            "character_name": character_name,
+            "target_chapter": payload.target_chapter,
+            "historical_boundary": payload.target_chapter - 1,
+            "warnings": [item.model_dump(mode="json") for item in warnings],
+        }
 
     @router.put("/file-projects/{project_id}/characters/{character_name}")
     def update_file_project_character(project_id: str, character_name: str, payload: dict[str, Any]) -> dict[str, Any]:

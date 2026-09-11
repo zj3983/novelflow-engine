@@ -2107,6 +2107,71 @@ export type DeleteStoryResponse = {
 
 export type StoryCharacter = StoryResponse["characters"][number];
 
+export type CharacterTimelineCategory =
+  | "state"
+  | "location"
+  | "emotion"
+  | "relationship"
+  | "progression"
+  | "skill"
+  | "equipment"
+  | "knowledge"
+  | "appearance";
+
+export type CharacterTimelineEvent = {
+  event_id: string;
+  chapter_number: number;
+  character_name: string;
+  category: CharacterTimelineCategory;
+  title: string;
+  summary: string;
+  before?: unknown;
+  after?: unknown;
+  source: string;
+  source_id?: string;
+  confidence?: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type CharacterTimelineResponse = {
+  character_name: string;
+  start_chapter?: number | null;
+  end_chapter?: number | null;
+  history_status: "available" | "no_evidence";
+  events_in_range: number;
+  events: CharacterTimelineEvent[];
+};
+
+export type CharacterConsistencyWarning = {
+  code: string;
+  severity: "error" | "warning" | "info";
+  character_name: string;
+  target_chapter: number;
+  message: string;
+  expected?: unknown;
+  observed?: unknown;
+  evidence?: Record<string, unknown>;
+  source?: string;
+  suggestion?: string;
+};
+
+export type CharacterConsistencyResponse = {
+  character_name: string;
+  target_chapter: number;
+  historical_boundary: number;
+  warnings: CharacterConsistencyWarning[];
+};
+
+export type CharacterPlanContext = {
+  character_name?: string;
+  location?: string;
+  skills_used?: Array<string | Record<string, unknown>>;
+  equipment_used?: Array<string | Record<string, unknown>>;
+  knowledge_fact_ids?: string[];
+  knowledge_facts?: string[];
+  relationship_expectations?: unknown;
+};
+
 export async function fetchFileProjectCharacters(projectId: string): Promise<StoryCharacter[]> {
   return (await tryFetchJson(`${apiBase()}/file-projects/${encodeURIComponent(projectId)}/characters`, {
     method: "GET",
@@ -2133,6 +2198,37 @@ export async function completeFileProjectCharacterPortrait(projectId: string, ch
     `${apiBase()}/file-projects/${encodeURIComponent(projectId)}/characters/${encodeURIComponent(characterName)}/complete-portrait`,
     { method: "POST" },
   )) as StoryCharacter;
+}
+
+export async function fetchFileProjectCharacterTimeline(
+  projectId: string,
+  characterName: string,
+  options: { startChapter?: number; endChapter?: number } = {},
+): Promise<CharacterTimelineResponse> {
+  const query = new URLSearchParams();
+  if (options.startChapter !== undefined) query.set("start_chapter", String(options.startChapter));
+  if (options.endChapter !== undefined) query.set("end_chapter", String(options.endChapter));
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return (await tryFetchJson(
+    `${apiBase()}/file-projects/${encodeURIComponent(projectId)}/characters/${encodeURIComponent(characterName)}/timeline${suffix}`,
+    { method: "GET", cache: "no-store" },
+  )) as CharacterTimelineResponse;
+}
+
+export async function checkFileProjectCharacterConsistency(
+  projectId: string,
+  characterName: string,
+  targetChapter: number,
+  plannedContext: CharacterPlanContext = {},
+): Promise<CharacterConsistencyResponse> {
+  return (await tryFetchJson(
+    `${apiBase()}/file-projects/${encodeURIComponent(projectId)}/characters/${encodeURIComponent(characterName)}/consistency-check`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ target_chapter: targetChapter, planned_context: plannedContext }),
+    },
+  )) as CharacterConsistencyResponse;
 }
 
 export type BookImportScanRequest = {

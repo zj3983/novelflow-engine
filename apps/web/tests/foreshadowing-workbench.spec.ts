@@ -336,3 +336,79 @@ test("角色卡动态与稳定字段真正分区、去重且仍可编辑保存",
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   expect(keyWarnings).toEqual([]);
 });
+
+test("角色历史检查展示时间线并以结构化计划运行一致性检查", async ({ page }) => {
+  await mockWorkspace(page);
+  let postedPlan: Record<string, unknown> | null = null;
+  await page.route(`**/file-projects/${ENCODED_PROJECT_ID}/characters/%E6%9E%97%E7%85%A7/timeline`, (route) => fulfill(route, {
+    character_name: "林照",
+    start_chapter: null,
+    end_chapter: null,
+    history_status: "available",
+    events_in_range: 2,
+    events: [
+      {
+        event_id: "character-event-location-4",
+        chapter_number: 4,
+        character_name: "林照",
+        category: "location",
+        title: "位置变化",
+        summary: "位置变化：祖祠 → 北境",
+        before: "祖祠",
+        after: "北境",
+        source: "character_state",
+        source_id: "character.current_state.history.0.location",
+        confidence: "confirmed",
+        metadata: {},
+      },
+      {
+        event_id: "character-event-skill-5",
+        chapter_number: 5,
+        character_name: "林照",
+        category: "skill",
+        title: "获得技能",
+        summary: "获得技能：御剑术",
+        before: null,
+        after: "御剑术",
+        source: "progression_ledger",
+        source_id: "progression_ledger.protagonist.history.0.skills",
+        confidence: "confirmed",
+        metadata: {},
+      },
+    ],
+  }));
+  await page.route(`**/file-projects/${ENCODED_PROJECT_ID}/characters/%E6%9E%97%E7%85%A7/consistency-check`, async (route) => {
+    postedPlan = route.request().postDataJSON() as Record<string, unknown>;
+    return fulfill(route, {
+      character_name: "林照",
+      target_chapter: 5,
+      historical_boundary: 4,
+      warnings: [{
+        code: "SKILL_NOT_YET_ACQUIRED",
+        severity: "warning",
+        character_name: "林照",
+        target_chapter: 5,
+        message: "第5章计划使用技能“御火诀”，但历史记录显示该技能尚未获得。",
+        expected: "御火诀",
+        observed: { acquired_chapter: 8 },
+        evidence: { source: "progression_ledger" },
+        source: "progression_ledger",
+        suggestion: "确认技能获得章节。",
+      }],
+    });
+  });
+
+  await page.goto(`/projects/${ENCODED_PROJECT_ID}/characters`);
+  const panel = page.locator(".ws-character-inspection");
+  await expect(panel.getByRole("heading", { name: "历史检查", exact: true })).toBeVisible();
+  await expect(panel.getByTestId("character-timeline-event")).toHaveCount(2);
+  await expect(panel.getByTestId("character-timeline-event").first()).toContainText("第 5 章");
+  await panel.getByRole("tab", { name: "一致性", exact: true }).click();
+  await panel.getByLabel("结构化计划 JSON").fill(JSON.stringify({ skills_used: ["御火诀"] }));
+  await panel.getByRole("button", { name: "运行一致性检查", exact: true }).click();
+  await expect(panel.getByTestId("character-consistency-warning")).toContainText("SKILL_NOT_YET_ACQUIRED");
+  await expect.poll(() => postedPlan).toMatchObject({
+    target_chapter: 5,
+    planned_context: { character_name: "林照", skills_used: ["御火诀"] },
+  });
+});
