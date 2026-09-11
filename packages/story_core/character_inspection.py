@@ -1416,6 +1416,7 @@ def check_character_consistency(
                 observed={"available_chapter": available_from},
                 evidence={
                     "fact_id": fact_id,
+                    "fact": record.get("fact"),
                     "learned_chapter": learned,
                     "reveal_chapter": reveal,
                     "visibility": record.get("visibility"),

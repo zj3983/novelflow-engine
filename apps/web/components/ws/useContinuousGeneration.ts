@@ -8,6 +8,7 @@ import {
   fetchCurrentContinuousGeneration,
   cancelContinuousGeneration,
   continueContinuousGeneration,
+  replanContinuousGeneration,
   startContinuousGeneration,
   stopContinuousGeneration,
   type ContinuousGenerationJobResponse,
@@ -15,7 +16,7 @@ import {
 } from "../../lib/api";
 
 export type ContinuousCount = 2 | 5 | 10 | 20;
-type ContinuousAction = "start" | "stop" | "continue" | "cancel" | null;
+type ContinuousAction = "start" | "stop" | "continue" | "cancel" | "replan" | null;
 
 type UseContinuousGenerationOptions = {
   enabled: boolean;
@@ -43,10 +44,12 @@ export function useContinuousGeneration({
   const [job, setJob] = useState<ContinuousGenerationJobResponse | null>(null);
   const [error, setError] = useState("");
   const [action, setAction] = useState<ContinuousAction>(null);
-  const awaitingConsistency = job?.status === "awaiting_consistency_override";
+  const awaitingConsistency = job?.status === "awaiting_consistency_override"
+    || job?.status === "awaiting_replanned_confirmation";
   const active = job?.status === "queued"
     || job?.status === "running"
     || job?.status === "stopping"
+    || job?.status === "replanning"
     || awaitingConsistency;
 
   useEffect(() => {
@@ -173,6 +176,19 @@ export function useContinuousGeneration({
     }
   }
 
+  async function replanGeneration() {
+    if (!job?.job_id || job.status !== "awaiting_consistency_override" || action) return;
+    setAction("replan");
+    setError("");
+    try {
+      setJob(await replanContinuousGeneration(projectId, job.job_id));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setAction(null);
+    }
+  }
+
   async function cancel() {
     if (!job?.job_id || !awaitingConsistency || action) return null;
     setAction("cancel");
@@ -206,6 +222,7 @@ export function useContinuousGeneration({
     error,
     job,
     continueGeneration,
+    replanGeneration,
     cancel,
     returnToEdit,
     setCount,

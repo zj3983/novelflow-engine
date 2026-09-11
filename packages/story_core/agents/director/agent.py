@@ -124,7 +124,7 @@ class DirectorAgent:
     def store(self) -> DirectorStore:
         return self._store
 
-    def plan(self, context: DirectorContext) -> DirectorArtifact:
+    def plan(self, context: DirectorContext, *, persist: bool = True) -> DirectorArtifact:
         trace = ContextTrace(agent="director", chapter_number=context.chapter_number)
         # Record what the director consumed from the project. The
         # workbench and the migration script use this trace to
@@ -205,16 +205,17 @@ class DirectorAgent:
             raise last_error or RuntimeError("director_unavailable")
         if planned_title:
             artifact = artifact.model_copy(update={"chapter_title": planned_title})
-        self._store.save(
-            chapter_number=context.chapter_number,
-            payload={
-                "status": "ok",
-                "provider": self._provider,
-                "model": self._model,
-                "input_trace": trace.model_dump(mode="json"),
-                "output": artifact.model_dump(mode="json"),
-            },
-        )
+        if persist:
+            self._store.save(
+                chapter_number=context.chapter_number,
+                payload={
+                    "status": "ok",
+                    "provider": self._provider,
+                    "model": self._model,
+                    "input_trace": trace.model_dump(mode="json"),
+                    "output": artifact.model_dump(mode="json"),
+                },
+            )
         return artifact
 
 

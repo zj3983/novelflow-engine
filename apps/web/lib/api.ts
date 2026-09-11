@@ -259,7 +259,9 @@ export type NovelTypeWritePayload = NovelTypeWriteRequest;
 export type GenerationJobStatus =
   | "queued"
   | "running"
+  | "replanning"
   | "awaiting_consistency_override"
+  | "awaiting_replanned_confirmation"
   | "completed"
   | "failed"
   | "cancelled";
@@ -334,6 +336,13 @@ export type GenerationJobResponse = {
   target_chapter?: number | null;
   consistency_gate?: GenerationConsistencyGate | null;
   consistency_override?: boolean;
+  original_plan?: Record<string, unknown> | null;
+  revised_plan?: Record<string, unknown> | null;
+  original_consistency_gate?: GenerationConsistencyGate | null;
+  revised_consistency_gate?: GenerationConsistencyGate | null;
+  replan_status?: "" | "replanned_clear" | "replanned_with_warnings" | "still_blocking" | "failed" | string;
+  replan_attempts?: number;
+  replan_result?: Record<string, unknown> | null;
 };
 
 export type GenerationJobSummary = Omit<GenerationJobResponse, "steps">;
@@ -1484,7 +1493,9 @@ export type ContinuousGenerationStatus =
   | "queued"
   | "running"
   | "stopping"
+  | "replanning"
   | "awaiting_consistency_override"
+  | "awaiting_replanned_confirmation"
   | "completed"
   | "stopped"
   | "failed";
@@ -1495,7 +1506,7 @@ export type ContinuousGenerationJobResponse = {
   project_id: string;
   story_id: string;
   status: ContinuousGenerationStatus;
-  phase: "queued" | "checking_outline" | "generating" | "confirming" | "between_chapters" | "awaiting_consistency_override" | string;
+  phase: "queued" | "checking_outline" | "generating" | "confirming" | "between_chapters" | "replanning" | "awaiting_consistency_override" | "awaiting_replanned_confirmation" | string;
   requested_count: number;
   completed_count: number;
   start_chapter: number;
@@ -1505,6 +1516,13 @@ export type ContinuousGenerationJobResponse = {
   consistency_gate?: GenerationConsistencyGate | null;
   consistency_override?: boolean;
   consistency_override_chapters?: number[];
+  original_plan?: Record<string, unknown> | null;
+  revised_plan?: Record<string, unknown> | null;
+  original_consistency_gate?: GenerationConsistencyGate | null;
+  revised_consistency_gate?: GenerationConsistencyGate | null;
+  replan_status?: "" | "replanned_clear" | "replanned_with_warnings" | "still_blocking" | "failed" | string;
+  replan_attempts?: number;
+  replan_result?: Record<string, unknown> | null;
   candidate_id: string;
   stop_requested: boolean;
   progress: string;
@@ -3849,6 +3867,17 @@ export async function continueGenerationJob(storyId: string, jobId: string): Pro
   return (await tryFetchJson(path, { method: "POST" })) as GenerationJobResponse;
 }
 
+export async function replanGenerationJob(storyId: string, jobId: string): Promise<GenerationJobResponse> {
+  const path = isFileProjectId(storyId)
+    ? `${fileProjectPath(storyId)}/generation-jobs/${encodeURIComponent(jobId)}/replan-consistency`
+    : `${apiBase()}/stories/${encodeURIComponent(storyId)}/generation-jobs/${encodeURIComponent(jobId)}/replan-consistency`;
+  return (await tryFetchJson(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ request_replan: true }),
+  }, 900000)) as GenerationJobResponse;
+}
+
 export async function cancelGenerationJob(storyId: string, jobId: string): Promise<GenerationJobResponse> {
   const path = isFileProjectId(storyId)
     ? `${fileProjectPath(storyId)}/generation-jobs/${encodeURIComponent(jobId)}/cancel`
@@ -4538,6 +4567,7 @@ export {
   fetchCurrentContinuousGeneration,
   startContinuousGeneration,
   continueContinuousGeneration,
+  replanContinuousGeneration,
   cancelContinuousGeneration,
   stopContinuousGeneration,
 } from "./continuous-generation-api";

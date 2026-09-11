@@ -23,14 +23,20 @@ def adapt_modular_bundle_to_legacy(
     )
     scene_beats = list(director_artifact.scene_beats or [])
     character_moves = [
-        {
-            "name": str(requirement.name or "主角"),
-            "importance": int(requirement.importance or 5),
-            "action": "在 scene beat 中执行导演计划",
-            "kind": str(requirement.kind or "character"),
-        }
-        for requirement in (director_artifact.entity_requirements or [])
+        dict(move)
+        for move in (getattr(director_artifact, "character_moves", []) or [])
+        if isinstance(move, dict) and str(move.get("name") or "").strip()
     ]
+    if not character_moves:
+        character_moves = [
+            {
+                "name": str(requirement.name or "主角"),
+                "importance": int(requirement.importance or 5),
+                "action": "在 scene beat 中执行导演计划",
+                "kind": str(requirement.kind or "character"),
+            }
+            for requirement in (director_artifact.entity_requirements or [])
+        ]
     if not character_moves and scene_beats:
         character_moves = [
             {

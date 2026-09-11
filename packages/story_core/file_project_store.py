@@ -7255,6 +7255,35 @@ class FileProjectStore(
         state["current_chapter"] = target_chapter - 1
         return state
 
+    def generation_story_for_target(self, target_chapter: int) -> StoryState:
+        """Return the read-only chapter-start StoryState used by generation."""
+
+        target = int(target_chapter)
+        if target < 1:
+            raise ValueError("replan_target_chapter_required")
+        state = self._generation_state_for_target(self.state(), target)
+        return StoryState.model_validate(
+            self._story_state_payload_for_direction(
+                state, self.project(), target
+            )
+        )
+
+    def replan_consistency_plan(self, request: Any) -> dict[str, Any]:
+        """Run the existing modular Director without invoking Writer."""
+
+        from packages.story_core.agents.pipeline import plan_director_artifact
+
+        target = int(getattr(request, "target_chapter", 0) or 0)
+        if target < 1:
+            raise ValueError("replan_target_chapter_required")
+        result = plan_director_artifact(
+            project_root=self.root,
+            chapter_number=target,
+            replan_request=request,
+            persist=False,
+        )
+        return result.artifact.model_dump(mode="json")
+
     def generate_next_chapter(
         self,
         engine: Any | None = None,
@@ -7264,6 +7293,7 @@ class FileProjectStore(
         persist: bool = True,
         accept_quality_warnings: bool = False,
         consistency_override: bool = False,
+        director_plan_override: Any | None = None,
     ) -> dict[str, Any]:
         from packages.story_core.engine import StoryEngine
 
@@ -7307,7 +7337,7 @@ class FileProjectStore(
         with prompt_template_scope(self.prompt_template_object, self.prompt_template_source), prompt_call_recording(
             self.prompt_call_log()
         ):
-            if consistency_override:
+            if consistency_override or director_plan_override is not None:
                 try:
                     signature = inspect.signature(generator.generate_next_chapter)
                 except (TypeError, ValueError):
@@ -7322,14 +7352,18 @@ class FileProjectStore(
                         )
                     )
                 )
-                bundle = (
-                    generator.generate_next_chapter(
-                        story,
-                        consistency_override=True,
+                generation_kwargs: dict[str, Any] = {}
+                if consistency_override and accepts_override:
+                    generation_kwargs["consistency_override"] = True
+                if director_plan_override is not None and signature is not None and (
+                    "director_plan_override" in signature.parameters
+                    or any(
+                        parameter.kind is inspect.Parameter.VAR_KEYWORD
+                        for parameter in signature.parameters.values()
                     )
-                    if accepts_override
-                    else generator.generate_next_chapter(story)
-                )
+                ):
+                    generation_kwargs["director_plan_override"] = director_plan_override
+                bundle = generator.generate_next_chapter(story, **generation_kwargs)
             else:
                 bundle = generator.generate_next_chapter(story)
         if not persist:
@@ -8044,6 +8078,7 @@ class FileProjectStore(
         commit_message: str | None = None,
         persist: bool = True,
         consistency_override: bool = False,
+        director_plan_override: Any | None = None,
     ) -> dict[str, Any]:
         # Model generation stays inside the per-project lock so a later rewrite
         # cannot be generated from state that another same-project rewrite replaces.
@@ -8093,7 +8128,7 @@ class FileProjectStore(
         with prompt_template_scope(self.prompt_template_object, self.prompt_template_source), prompt_call_recording(
             self.prompt_call_log()
         ):
-            if consistency_override:
+            if consistency_override or director_plan_override is not None:
                 try:
                     signature = inspect.signature(generator.generate_next_chapter)
                 except (TypeError, ValueError):
@@ -8108,14 +8143,18 @@ class FileProjectStore(
                         )
                     )
                 )
-                bundle = (
-                    generator.generate_next_chapter(
-                        story,
-                        consistency_override=True,
+                generation_kwargs: dict[str, Any] = {}
+                if consistency_override and accepts_override:
+                    generation_kwargs["consistency_override"] = True
+                if director_plan_override is not None and signature is not None and (
+                    "director_plan_override" in signature.parameters
+                    or any(
+                        parameter.kind is inspect.Parameter.VAR_KEYWORD
+                        for parameter in signature.parameters.values()
                     )
-                    if accepts_override
-                    else generator.generate_next_chapter(story)
-                )
+                ):
+                    generation_kwargs["director_plan_override"] = director_plan_override
+                bundle = generator.generate_next_chapter(story, **generation_kwargs)
             else:
                 bundle = generator.generate_next_chapter(story)
         if int(getattr(bundle, "chapter_number", 0) or 0) != chapter_number:

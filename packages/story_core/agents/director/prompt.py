@@ -210,6 +210,7 @@ def build_director_prompt(
             "3. 顺序的场景节拍（scene_beats），每条包含 order/location/action/result",
             "4. 因果关系（scene_beats 之间的 result 链）",
             "5. 关键角色在每个节拍中的决定（action 字段）",
+            "如角色使用技能、装备、知识或关系状态，额外输出 character_moves；每项必须填写 name，并把 location、skills_used、equipment_used、knowledge_fact_ids、knowledge_facts、relationship_expectations 放在对应角色项中。",
             "6. 信息边界（角色之间不能相互知道的事，写入 scene 描述或备注）",
             "7. 收尾状态（ending_state）",
             "8. 章末钩子（hook）",
@@ -277,6 +278,12 @@ def parse_director_response(payload: Any) -> DirectorArtifact:
                 notes=str(requirement.get("notes") or ""),
             )
         )
+    character_moves_in = payload.get("character_moves") or payload.get("action_briefs") or []
+    character_moves = (
+        [dict(item) for item in character_moves_in if isinstance(item, dict)]
+        if isinstance(character_moves_in, list)
+        else []
+    )
     return DirectorArtifact(
         chapter_number=chapter_number,
         chapter_title=str(payload.get("chapter_title") or ""),
@@ -285,6 +292,7 @@ def parse_director_response(payload: Any) -> DirectorArtifact:
         scene_beats=beats,
         ending_state=str(payload.get("ending_state") or ""),
         hook=str(payload.get("hook") or ""),
+        character_moves=character_moves,
         entity_requirements=requirements,
     )
 

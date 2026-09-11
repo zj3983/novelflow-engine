@@ -36,7 +36,7 @@ const consistencyGate = {
   override_applied: false,
 };
 
-function generationJob(status: "awaiting_consistency_override" | "completed") {
+function generationJob(status: "awaiting_consistency_override" | "awaiting_replanned_confirmation" | "completed") {
   return {
     job_id: "gj-consistency-ui",
     story_id: PROJECT_ID,
@@ -58,6 +58,7 @@ async function mockConsistencyWorkspace(page: Page) {
   let writerStartCalls = 0;
   let continueCalls = 0;
   let cancelCalls = 0;
+  let replanCalls = 0;
 
   await page.route(`**/file-projects/${ENCODED_PROJECT_ID}`, (route) => fulfill(route, {
     project_id: PROJECT_ID,
@@ -157,11 +158,43 @@ async function mockConsistencyWorkspace(page: Page) {
       consistency_override: false,
     });
   });
+  await page.route(`**/file-projects/${ENCODED_PROJECT_ID}/generation-jobs/gj-consistency-ui/replan-consistency`, async (route) => {
+    expect(route.request().method()).toBe("POST");
+    replanCalls += 1;
+    const revisedGate = {
+      ...consistencyGate,
+      status: "clear",
+      warnings: [],
+      override_applied: false,
+    };
+    return fulfill(route, {
+      ...generationJob("awaiting_replanned_confirmation"),
+      progress: "新计划已通过生成前一致性检查",
+      consistency_gate: revisedGate,
+      original_plan: {
+        chapter_number: 2,
+        chapter_goal: "追查旧线索",
+        character_moves: [{ name: "林照", skills_used: ["未来技能"] }],
+      },
+      revised_plan: {
+        chapter_number: 2,
+        chapter_title: "旧线索",
+        chapter_goal: "追查旧线索",
+        scene_beats: [{}, {}],
+      },
+      original_consistency_gate: consistencyGate,
+      revised_consistency_gate: revisedGate,
+      replan_status: "replanned_clear",
+      replan_attempts: 1,
+      replan_result: { status: "replanned_clear" },
+    });
+  });
 
   return {
     get writerStartCalls() { return writerStartCalls; },
     get continueCalls() { return continueCalls; },
     get cancelCalls() { return cancelCalls; },
+    get replanCalls() { return replanCalls; },
   };
 }
 
@@ -191,5 +224,26 @@ test("写作页的返回修改会取消暂停任务并回到章节细纲", async
 
   await expect(page).toHaveURL(new RegExp(`/projects/${ENCODED_PROJECT_ID}/outline\\?tab=chapters&chapter=2&reason=consistency_required$`));
   expect(calls.cancelCalls).toBe(1);
+  expect(calls.writerStartCalls).toBe(0);
+});
+
+test("写作页可先重新规划并查看新计划，再显式继续写手任务", async ({ page }) => {
+  const calls = await mockConsistencyWorkspace(page);
+
+  await page.goto(`/projects/${ENCODED_PROJECT_ID}/write?chapter=1`, { waitUntil: "networkidle" });
+
+  const panel = page.getByTestId("generation-consistency-panel");
+  await panel.getByTestId("generation-consistency-replan").click();
+  await expect(panel).toContainText("新计划通过一致性检查");
+  await expect(panel).toContainText("原计划问题");
+  await expect(panel).toContainText("新计划摘要");
+  await expect(panel.getByTestId("generation-consistency-replan")).toBeDisabled();
+  await expect(panel.getByTestId("generation-consistency-continue")).toContainText("使用新计划继续");
+  expect(calls.replanCalls).toBe(1);
+  expect(calls.writerStartCalls).toBe(0);
+
+  await panel.getByTestId("generation-consistency-continue").click();
+  await expect(page).toHaveURL(new RegExp(`/projects/${ENCODED_PROJECT_ID}/write\\?chapter=2$`));
+  expect(calls.continueCalls).toBe(1);
   expect(calls.writerStartCalls).toBe(0);
 });

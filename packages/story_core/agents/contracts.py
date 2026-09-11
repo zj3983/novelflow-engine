@@ -87,6 +87,10 @@ class DirectorArtifact(BaseModel):
     scene_beats: list[SceneBeat]
     ending_state: str
     hook: str = ""
+    # Explicit actor-scoped planning fields let the pre-Writer consistency
+    # gate distinguish which character is using a skill, item, fact, or
+    # relationship state.  Older Director responses may omit the field.
+    character_moves: list[dict[str, Any]] = Field(default_factory=list)
     entity_requirements: list[EntityRequirement] = Field(default_factory=list)
 
 

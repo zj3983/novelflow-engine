@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 
+from copy import deepcopy
+
 from datetime import datetime, timezone
 
 from functools import wraps
@@ -44,6 +46,11 @@ from packages.story_core.engine import ChapterBundle, StoryEngine
 
 from packages.story_core.generation_progress import generation_progress
 from packages.story_core.generation_consistency_gate import ConsistencyGateRequired
+from packages.story_core.consistency_replanning import (
+    MAX_CONSISTENCY_REPLAN_ATTEMPTS,
+    plan_to_dict,
+    run_consistency_replan,
+)
 
 from packages.story_core.models import (
 
@@ -130,7 +137,13 @@ GENERATION_JOB_STALE_SECONDS = 15 * 60
 
 GENERATION_JOB_STEP_LIMIT = 200
 GENERATION_JOB_ACTIVE_STATUSES = frozenset(
-    {"queued", "running", "awaiting_consistency_override"}
+    {
+        "queued",
+        "running",
+        "replanning",
+        "awaiting_consistency_override",
+        "awaiting_replanned_confirmation",
+    }
 )
 
 
@@ -726,6 +739,20 @@ class GenerationJobResponse(BaseModel):
 
     consistency_override: bool = False
 
+    original_plan: dict[str, object] | None = None
+
+    revised_plan: dict[str, object] | None = None
+
+    original_consistency_gate: dict[str, object] | None = None
+
+    revised_consistency_gate: dict[str, object] | None = None
+
+    replan_status: str = ""
+
+    replan_attempts: int = 0
+
+    replan_result: dict[str, object] | None = None
+
     created_at: str
 
     updated_at: str
@@ -739,6 +766,12 @@ class StoryGenerateRequest(BaseModel):
 class StoryGenerationJobRequest(BaseModel):
 
     consistency_override: bool = False
+
+
+class ConsistencyReplanTrigger(BaseModel):
+    """Only a trigger is accepted; plan and gate data stay server-owned."""
+
+    request_replan: bool = True
 
 
 
@@ -955,6 +988,40 @@ def _generation_job_response(job: dict[str, object]) -> GenerationJobResponse:
         ),
 
         consistency_override=bool(job.get("consistency_override")),
+
+        original_plan=(
+            dict(job.get("original_plan"))
+            if isinstance(job.get("original_plan"), dict)
+            else None
+        ),
+
+        revised_plan=(
+            dict(job.get("revised_plan"))
+            if isinstance(job.get("revised_plan"), dict)
+            else None
+        ),
+
+        original_consistency_gate=(
+            dict(job.get("original_consistency_gate"))
+            if isinstance(job.get("original_consistency_gate"), dict)
+            else None
+        ),
+
+        revised_consistency_gate=(
+            dict(job.get("revised_consistency_gate"))
+            if isinstance(job.get("revised_consistency_gate"), dict)
+            else None
+        ),
+
+        replan_status=str(job.get("replan_status") or ""),
+
+        replan_attempts=int(job.get("replan_attempts") or 0),
+
+        replan_result=(
+            dict(job.get("replan_result"))
+            if isinstance(job.get("replan_result"), dict)
+            else None
+        ),
 
         created_at=str(job.get("created_at", "")),
 
@@ -1192,6 +1259,7 @@ def _generate_story_chapter(
     *,
 
     consistency_override: bool = False,
+    director_plan_override: object | None = None,
 ):
 
     bundle = store.generate_next(
@@ -1201,6 +1269,11 @@ def _generate_story_chapter(
         engine,
 
         **({"consistency_override": True} if consistency_override else {}),
+        **(
+            {"director_plan_override": director_plan_override}
+            if director_plan_override is not None
+            else {}
+        ),
 
     )
 
@@ -1254,6 +1327,7 @@ def _run_generation_job(
     *,
     consistency_override: bool = False,
 ) -> None:
+    director_plan_override: object | None = None
     def report_progress(message: str | dict[str, object]) -> None:
         if isinstance(message, dict):
             progress_message = str(message.get("message", "")).strip()
@@ -1306,12 +1380,19 @@ def _run_generation_job(
                 consistency_override = bool(
                     stored_job.get("consistency_override")
                 ) or consistency_override
+                if isinstance(stored_job.get("revised_plan"), dict):
+                    director_plan_override = deepcopy(stored_job["revised_plan"])
         with generation_progress(report_progress):
             bundle = _generate_story_chapter(
                 story_id,
                 **(
                     {"consistency_override": True}
                     if consistency_override
+                    else {}
+                ),
+                **(
+                    {"director_plan_override": director_plan_override}
+                    if director_plan_override is not None
                     else {}
                 ),
             )
@@ -1324,6 +1405,12 @@ def _run_generation_job(
             error="",
             consistency_gate=gate_payload,
             consistency_override=False,
+            original_plan=plan_to_dict(exc.plan) or None,
+            original_consistency_gate=gate_payload,
+            revised_plan=None,
+            revised_consistency_gate=None,
+            replan_status="",
+            replan_result=None,
         )
         with _generation_jobs_lock:
             job = _generation_jobs.get(job_id)
@@ -1383,6 +1470,7 @@ def _run_generation_job(
             progress="生成完成",
             chapter_number=bundle.chapter_number,
             error="",
+            director_plan_override=None,
         )
         with _generation_jobs_lock:
             job = _generation_jobs.get(job_id)
@@ -3779,6 +3867,13 @@ def start_generation_job(
             "updated_at": now,
             "consistency_gate": None,
             "consistency_override": bool(payload.consistency_override) if payload else False,
+            "original_plan": None,
+            "revised_plan": None,
+            "original_consistency_gate": None,
+            "revised_consistency_gate": None,
+            "replan_status": "",
+            "replan_attempts": 0,
+            "replan_result": None,
         }
         _generation_jobs[job_id] = job
         _active_generation_jobs[story_id] = job_id
@@ -3863,16 +3958,28 @@ def continue_generation_job(story_id: str, job_id: str) -> GenerationJobResponse
 
             return _generation_job_response(job)
 
-        if current_status != "awaiting_consistency_override":
+        if current_status not in {
+            "awaiting_consistency_override",
+            "awaiting_replanned_confirmation",
+        }:
 
             raise HTTPException(status_code=409, detail="consistency_override_not_available")
+
+        revised_gate = job.get("revised_consistency_gate")
+        use_replanned = (
+            current_status == "awaiting_replanned_confirmation"
+            and isinstance(job.get("revised_plan"), dict)
+        )
+        generation_override = True
+        if use_replanned and isinstance(revised_gate, dict):
+            generation_override = str(revised_gate.get("status") or "") != "clear"
 
         job.update(
             {
                 "status": "queued",
                 "progress": "已确认一致性提示，继续生成",
                 "error": "",
-                "consistency_override": True,
+                "consistency_override": generation_override,
                 "updated_at": _now_iso(),
             }
         )
@@ -3883,7 +3990,14 @@ def continue_generation_job(story_id: str, job_id: str) -> GenerationJobResponse
                 "message": "已确认一致性提示，继续生成",
                 "stage": "consistency_check",
                 "source": "generation-consistency-gate",
-                "artifact": {"reason": "author_override_requested"},
+                "artifact": {
+                    "reason": (
+                        "replanned_plan_confirmed"
+                        if use_replanned
+                        else "author_override_requested"
+                    ),
+                    "replanned": use_replanned,
+                },
             },
             status="queued",
         )
@@ -3896,10 +4010,134 @@ def continue_generation_job(story_id: str, job_id: str) -> GenerationJobResponse
         _run_generation_job,
         job_id,
         story_id,
-        consistency_override=True,
+        consistency_override=generation_override,
     )
 
     return response
+
+
+@router.post(
+    "/stories/{story_id}/generation-jobs/{job_id}/replan-consistency"
+)
+def replan_generation_job_consistency(
+    story_id: str,
+    job_id: str,
+    _payload: ConsistencyReplanTrigger | None = None,
+) -> GenerationJobResponse:
+    """Replan the paused chapter once, without starting the Writer."""
+
+    with _generation_jobs_lock:
+        job = _generation_jobs.get(job_id)
+        if job is None or job.get("story_id") != story_id:
+            raise HTTPException(status_code=404, detail="generation_job_not_found")
+        current_status = str(job.get("status") or "")
+        if current_status == "replanning":
+            return _generation_job_response(job)
+        if current_status != "awaiting_consistency_override":
+            raise HTTPException(status_code=409, detail="consistency_replan_not_available")
+        if int(job.get("replan_attempts") or 0) >= MAX_CONSISTENCY_REPLAN_ATTEMPTS:
+            raise HTTPException(status_code=409, detail="consistency_replan_attempt_limit")
+        original_plan = plan_to_dict(job.get("original_plan"))
+        original_gate = job.get("original_consistency_gate") or job.get("consistency_gate")
+        if not original_plan or not isinstance(original_gate, dict):
+            raise HTTPException(status_code=409, detail="consistency_replan_plan_unavailable")
+        target_chapter = int(
+            original_gate.get("target_chapter")
+            or job.get("chapter_number")
+            or 0
+        )
+        if target_chapter < 1:
+            raise HTTPException(status_code=409, detail="consistency_replan_target_unavailable")
+        job.update(
+            {
+                "status": "replanning",
+                "progress": "正在根据一致性问题重新规划本章",
+                "error": "",
+                "updated_at": _now_iso(),
+            }
+        )
+        _append_generation_job_step(
+            job,
+            {
+                "message": "正在根据一致性问题重新规划本章",
+                "stage": "consistency_replan",
+                "source": "generation-consistency-replan",
+                "artifact": {"reason": "replan_started", "target_chapter": target_chapter},
+            },
+            status="running",
+        )
+
+    record = store.get(story_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="story_not_found")
+    source = _story_state_before_chapter(record, target_chapter)
+
+    def plan_replacement(request: object) -> object:
+        planner = getattr(engine, "replan_consistency_plan", None)
+        if callable(planner):
+            return planner(source, request)
+        orchestrator = getattr(engine, "orchestrator", None)
+        planner = getattr(orchestrator, "replan_consistency_plan", None)
+        if not callable(planner):
+            raise RuntimeError("consistency_replan_planner_unavailable")
+        return planner(source, request)
+
+    result = run_consistency_replan(
+        source=source,
+        target_chapter=target_chapter,
+        original_plan=original_plan,
+        original_gate=original_gate,
+        plan_replanner=plan_replacement,
+    )
+    result_payload = result.model_dump(mode="json")
+    with _generation_jobs_lock:
+        current = _generation_jobs.get(job_id)
+        if current is None:
+            raise HTTPException(status_code=404, detail="generation_job_not_found")
+        current.update(
+            {
+                "replan_attempts": result.attempt_number,
+                "replan_status": result.status,
+                "replan_result": result_payload,
+                "original_plan": deepcopy(original_plan),
+                "original_consistency_gate": result.original_gate.model_dump(mode="json"),
+                "consistency_gate": result.remaining_gate.model_dump(mode="json"),
+                "revised_consistency_gate": result.remaining_gate.model_dump(mode="json"),
+                "error": result.error if result.status == "failed" else "",
+                "consistency_override": False,
+            }
+        )
+        if result.status == "failed":
+            current.update(
+                {
+                    "status": "awaiting_consistency_override",
+                    "progress": "重新规划失败，原计划仍可继续处理",
+                    "revised_plan": None,
+                }
+            )
+        else:
+            current.update(
+                {
+                    "status": "awaiting_replanned_confirmation",
+                    "progress": (
+                        "新计划已通过生成前一致性检查"
+                        if result.status == "replanned_clear"
+                        else "新计划已生成，请确认剩余一致性提示"
+                    ),
+                    "revised_plan": deepcopy(result.revised_plan),
+                }
+            )
+        _append_generation_job_step(
+            current,
+            {
+                "message": current["progress"],
+                "stage": "consistency_replan",
+                "source": "generation-consistency-replan",
+                "artifact": result_payload,
+            },
+            status="error" if result.status == "failed" else "done",
+        )
+        return _generation_job_response(current)
 
 
 @router.post("/stories/{story_id}/generation-jobs/{job_id}/cancel")
@@ -3915,7 +4153,10 @@ def cancel_generation_job(story_id: str, job_id: str) -> GenerationJobResponse:
 
             raise HTTPException(status_code=404, detail="generation_job_not_found")
 
-        if str(job.get("status") or "") != "awaiting_consistency_override":
+        if str(job.get("status") or "") not in {
+            "awaiting_consistency_override",
+            "awaiting_replanned_confirmation",
+        }:
             if str(job.get("status") or "") in {"completed", "failed", "cancelled"}:
                 return _generation_job_response(job)
             raise HTTPException(status_code=409, detail="consistency_cancel_not_available")

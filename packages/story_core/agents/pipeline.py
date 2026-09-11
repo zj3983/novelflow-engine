@@ -116,6 +116,10 @@ from packages.story_core.generation_consistency_gate import (
     GenerationConsistencyGate,
     require_generation_consistency,
 )
+from packages.story_core.consistency_replanning import (
+    ConsistencyReplanRequest,
+    build_director_replan_guidance,
+)
 from packages.story_core.skill_packs import resolve_enabled_skill_module_ids
 
 
@@ -429,6 +433,8 @@ def plan_director_artifact(
     chapter_number: int,
     runtime: DirectorRuntime | None = None,
     rewrite_guidance: str = "",
+    replan_request: ConsistencyReplanRequest | None = None,
+    persist: bool = True,
 ) -> DirectorPipelineResult:
     """Run the new director pipeline for ``chapter_number``.
 
@@ -450,9 +456,13 @@ def plan_director_artifact(
     context = _ensure_director_context(
         project_root=project_root, chapter_number=chapter_number
     )
-    if rewrite_guidance.strip():
+    guidance_parts = [rewrite_guidance.strip()] if rewrite_guidance.strip() else []
+    if replan_request is not None:
+        guidance_parts.append(build_director_replan_guidance(replan_request))
+    combined_guidance = "\n\n".join(guidance_parts)
+    if combined_guidance:
         context = context.model_copy(
-            update={"rewrite_guidance": rewrite_guidance.strip()}
+            update={"rewrite_guidance": combined_guidance}
         )
     runtime = runtime or _default_director_runtime(project_root)
     provider, model = _resolved_stage_provider_model("director")
@@ -462,7 +472,7 @@ def plan_director_artifact(
         provider=provider,
         model=model,
     )
-    artifact = agent.plan(context)
+    artifact = agent.plan(context, persist=persist)
     return DirectorPipelineResult(
         artifact=artifact,
         context=context,
@@ -1139,6 +1149,7 @@ def run_modular_pipeline(
     rewrite_guidance: str = "",
     consistency_source: Any | None = None,
     consistency_override: bool = False,
+    director_plan_override: Any | None = None,
 ) -> ModularChapterBundle:
     """Run Director -> CanonService -> Writer -> FactExtractor end-to-end.
 
@@ -1192,12 +1203,29 @@ def run_modular_pipeline(
         }
     )
     director_started = _time.monotonic()
-    director_result = plan_director_artifact(
-        project_root=project_root,
-        chapter_number=chapter_number,
-        runtime=director_runtime,
-        rewrite_guidance=rewrite_guidance,
-    )
+    if director_plan_override is not None:
+        try:
+            reused_artifact = (
+                director_plan_override
+                if isinstance(director_plan_override, DirectorArtifact)
+                else DirectorArtifact.model_validate(director_plan_override)
+            )
+        except Exception as exc:
+            raise ValueError(f"director_plan_override_invalid:{exc}") from exc
+        director_result = DirectorPipelineResult(
+            artifact=reused_artifact,
+            context=_ensure_director_context(
+                project_root=project_root, chapter_number=chapter_number
+            ),
+            trace_id=f"director:{chapter_number}:replanned",
+        )
+    else:
+        director_result = plan_director_artifact(
+            project_root=project_root,
+            chapter_number=chapter_number,
+            runtime=director_runtime,
+            rewrite_guidance=rewrite_guidance,
+        )
     report_generation_progress(
         {
             "message": "导演已产出章节节拍和实体要求",

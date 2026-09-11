@@ -965,6 +965,7 @@ class SQLiteStoryStore:
         engine: StoryEngine,
         *,
         consistency_override: bool = False,
+        director_plan_override: object | None = None,
     ) -> ChapterBundle:
         conn = self._conn()
         record = self.get(story_id)
@@ -978,7 +979,7 @@ class SQLiteStoryStore:
                 _sync_project_generation_context(record.story, project, has_history=bool(record.history))
                 _sync_project_character_profiles(record.story, project)
 
-        if consistency_override:
+        if consistency_override or director_plan_override is not None:
             import inspect
 
             try:
@@ -995,14 +996,18 @@ class SQLiteStoryStore:
                     )
                 )
             )
-            bundle = (
-                engine.generate_next_chapter(
-                    record.story,
-                    consistency_override=True,
+            generation_kwargs: dict[str, object] = {}
+            if consistency_override and accepts_override:
+                generation_kwargs["consistency_override"] = True
+            if director_plan_override is not None and signature is not None and (
+                "director_plan_override" in signature.parameters
+                or any(
+                    parameter.kind is inspect.Parameter.VAR_KEYWORD
+                    for parameter in signature.parameters.values()
                 )
-                if accepts_override
-                else engine.generate_next_chapter(record.story)
-            )
+            ):
+                generation_kwargs["director_plan_override"] = director_plan_override
+            bundle = engine.generate_next_chapter(record.story, **generation_kwargs)
         else:
             bundle = engine.generate_next_chapter(record.story)
 

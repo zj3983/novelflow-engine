@@ -70,6 +70,22 @@ export async function continueContinuousGeneration(
   );
 }
 
+export async function replanContinuousGeneration(
+  projectId: string,
+  jobId: string,
+): Promise<ContinuousGenerationJobResponse> {
+  if (!isFileProjectId(projectId)) throw new Error("continuous_generation_only_supports_file_projects");
+  return await fetchJson(
+    `${fileProjectPath(projectId)}/continuous-generation-jobs/${encodeURIComponent(jobId)}/replan-consistency`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ request_replan: true }),
+    },
+    900000,
+  );
+}
+
 export async function cancelContinuousGeneration(
   projectId: string,
   jobId: string,

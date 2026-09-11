@@ -45,10 +45,17 @@ class GenerationConsistencyGate(BaseModel):
 
 
 class ConsistencyGateRequired(RuntimeError):
-    """Raised before Writer execution when an author decision is required."""
+    """Raised before Writer execution when an author decision is required.
 
-    def __init__(self, gate: GenerationConsistencyGate) -> None:
+    ``plan`` is the server-produced structured plan that was checked.  It is
+    carried only as an in-memory exception value so a paused job can preserve
+    the exact input for an optional Director replan; it is never used to
+    mutate historical state.
+    """
+
+    def __init__(self, gate: GenerationConsistencyGate, plan: Any | None = None) -> None:
         self.gate = gate
+        self.plan = deepcopy(plan) if plan is not None else None
         super().__init__(
             f"generation_consistency_override_required:{gate.target_chapter}"
         )
@@ -516,7 +523,7 @@ def require_generation_consistency(
         override=override,
     )
     if gate.status != "clear" and not override:
-        raise ConsistencyGateRequired(gate)
+        raise ConsistencyGateRequired(gate, plan=plan)
     return gate
 
 

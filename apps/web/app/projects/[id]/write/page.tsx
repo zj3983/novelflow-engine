@@ -21,6 +21,7 @@ import {
   fetchCurrentGenerationJob,
   fetchGenerationJob,
   continueGenerationJob,
+  replanGenerationJob,
   cancelGenerationJob,
   fetchProjectWritingPacket,
   fetchVolumeWorkflow,
@@ -163,7 +164,7 @@ export default function WritePage() {
   const [candidateAction, setCandidateAction] = useState<"confirm" | "force-confirm" | "discard" | null>(null);
   const [generationConsistencyGate, setGenerationConsistencyGate] = useState<GenerationConsistencyGate | null>(null);
   const [generationConsistencyJob, setGenerationConsistencyJob] = useState<GenerationJobResponse | null>(null);
-  const [generationConsistencyAction, setGenerationConsistencyAction] = useState<"continue" | "return" | null>(null);
+  const [generationConsistencyAction, setGenerationConsistencyAction] = useState<"continue" | "return" | "replan" | null>(null);
   const mountedRef = useRef(false);
   const operationTokenRef = useRef(0);
 
@@ -249,7 +250,11 @@ export default function WritePage() {
     fetchCurrentGenerationJob(generationTargetId)
       .then((current) => {
         if (cancelled || !current) return;
-        if (current.status === "awaiting_consistency_override" && current.consistency_gate) {
+        if (
+          (current.status === "awaiting_consistency_override"
+            || current.status === "awaiting_replanned_confirmation")
+          && current.consistency_gate
+        ) {
           setGenerationConsistencyJob(current);
           setGenerationConsistencyGate(current.consistency_gate);
         }
@@ -397,7 +402,11 @@ export default function WritePage() {
   const writingLessons = story?.writing_lessons ?? [];
 
   function captureGenerationConsistencyJob(currentJob: GenerationJobResponse): boolean {
-    if (currentJob.status !== "awaiting_consistency_override" || !currentJob.consistency_gate) {
+    if (
+      (currentJob.status !== "awaiting_consistency_override"
+        && currentJob.status !== "awaiting_replanned_confirmation")
+      || !currentJob.consistency_gate
+    ) {
       return false;
     }
     setGenerationConsistencyJob(currentJob);
@@ -626,6 +635,40 @@ export default function WritePage() {
     }
   }
 
+  async function handleReplanGenerationConsistency() {
+    const pausedJob = generationConsistencyJob;
+    const targetId = generationTargetId;
+    if (
+      !pausedJob?.job_id
+      || !targetId
+      || pausedJob.status !== "awaiting_consistency_override"
+      || generationConsistencyAction
+    ) return;
+    const operationToken = ++operationTokenRef.current;
+    const operationIsActive = () => mountedRef.current && operationTokenRef.current === operationToken;
+    setGenerationConsistencyAction("replan");
+    setRegenerateStatus("正在根据一致性问题重新规划本章…");
+    setRegenerateError(null);
+    try {
+      const currentJob = await replanGenerationJob(targetId, pausedJob.job_id);
+      if (!operationIsActive()) return;
+      setGenerationConsistencyJob(currentJob);
+      setGenerationSteps(Array.isArray(currentJob.steps) ? currentJob.steps : []);
+      setRegenerateStatus(currentJob.progress || currentJob.status);
+      if (captureGenerationConsistencyJob(currentJob)) return;
+      if (currentJob.status === "failed") {
+        throw new Error(currentJob.error || "consistency_replan_failed");
+      }
+    } catch (err) {
+      if (operationIsActive()) setRegenerateError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (operationIsActive()) {
+        setGenerationConsistencyAction(null);
+        setRegenerateStatus(null);
+      }
+    }
+  }
+
   async function handleReturnFromGenerationConsistency() {
     const pausedJob = generationConsistencyJob;
     const targetId = generationTargetId;
@@ -704,6 +747,13 @@ export default function WritePage() {
         <GenerationConsistencyPanel
           gate={generationConsistencyGate}
           busy={Boolean(generationConsistencyAction)}
+          replanBusy={generationConsistencyAction === "replan"}
+          originalPlan={generationConsistencyJob?.original_plan}
+          revisedPlan={generationConsistencyJob?.revised_plan}
+          replanStatus={generationConsistencyAction === "replan" ? "replanning" : generationConsistencyJob?.replan_status}
+          replanAttempts={generationConsistencyJob?.replan_attempts}
+          replanResult={generationConsistencyJob?.replan_result}
+          onReplan={() => void handleReplanGenerationConsistency()}
           onContinue={() => void handleContinueGenerationConsistency()}
           onReturn={() => void handleReturnFromGenerationConsistency()}
         />
@@ -906,6 +956,7 @@ export default function WritePage() {
                 onCountChange={continuousGeneration.setCount}
                 onStart={() => void continuousGeneration.start()}
                 onStop={() => void continuousGeneration.stop()}
+                onConsistencyReplan={() => void continuousGeneration.replanGeneration()}
                 onConsistencyContinue={() => void continuousGeneration.continueGeneration()}
                 onConsistencyReturn={() => void continuousGeneration.returnToEdit()}
               />

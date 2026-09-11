@@ -8,10 +8,18 @@ from threading import RLock
 from typing import Any
 from uuid import uuid4
 
+from packages.story_core.consistency_replanning import plan_to_dict
 
 ALLOWED_CONTINUOUS_COUNTS = frozenset({2, 5, 10, 20})
 ACTIVE_STATUSES = frozenset(
-    {"queued", "running", "stopping", "awaiting_consistency_override"}
+    {
+        "queued",
+        "running",
+        "stopping",
+        "replanning",
+        "awaiting_consistency_override",
+        "awaiting_replanned_confirmation",
+    }
 )
 TERMINAL_STATUSES = frozenset({"completed", "stopped", "failed"})
 SAFE_RECOVERY_PHASES = frozenset({"queued", "between_chapters"})
@@ -86,6 +94,13 @@ class ContinuousGenerationJobStore:
             "consistency_gate": None,
             "consistency_override": False,
             "consistency_override_chapters": [],
+            "original_plan": None,
+            "revised_plan": None,
+            "original_consistency_gate": None,
+            "revised_consistency_gate": None,
+            "replan_status": "",
+            "replan_attempts": 0,
+            "replan_result": None,
             "candidate_id": "",
             "stop_requested": False,
             "progress": "连续生成已排队",
@@ -157,7 +172,11 @@ class ContinuousGenerationJobStore:
         status = str(reconciled.get("status") or "")
         if status not in ACTIVE_STATUSES:
             return reconciled
-        if status == "awaiting_consistency_override":
+        if status in {
+            "awaiting_consistency_override",
+            "replanning",
+            "awaiting_replanned_confirmation",
+        }:
             return reconciled
 
         start_chapter = int(reconciled.get("start_chapter") or 1)
@@ -211,7 +230,11 @@ class ContinuousGenerationRunner:
             job,
             official_chapter=int(project_store.summary().get("current_chapter") or 0),
         )
-        if str(job.get("status")) in TERMINAL_STATUSES or str(job.get("status")) == "awaiting_consistency_override":
+        if str(job.get("status")) in TERMINAL_STATUSES or str(job.get("status")) in {
+            "awaiting_consistency_override",
+            "replanning",
+            "awaiting_replanned_confirmation",
+        }:
             return job
 
         job = job_store.update(
@@ -329,14 +352,15 @@ class ContinuousGenerationRunner:
             )
 
             consistency_override = bool(job.get("consistency_override"))
+            director_plan_override = plan_to_dict(job.get("revised_plan"))
             try:
+                generation_kwargs: dict[str, Any] = {"persist": False}
+                if consistency_override:
+                    generation_kwargs["consistency_override"] = True
+                if director_plan_override:
+                    generation_kwargs["director_plan_override"] = director_plan_override
                 generated = project_store.generate_next_chapter(
-                    persist=False,
-                    **(
-                        {"consistency_override": True}
-                        if consistency_override
-                        else {}
-                    ),
+                    **generation_kwargs,
                 )
             except Exception as exc:
                 from packages.story_core.generation_consistency_gate import (
@@ -352,6 +376,13 @@ class ContinuousGenerationRunner:
                         candidate_id="",
                         consistency_gate=exc.gate.model_dump(mode="json"),
                         consistency_override=False,
+                        original_plan=plan_to_dict(exc.plan) or None,
+                        revised_plan=None,
+                        original_consistency_gate=exc.gate.model_dump(mode="json"),
+                        revised_consistency_gate=None,
+                        replan_status="",
+                        replan_attempts=0,
+                        replan_result=None,
                         error="",
                         progress="生成前检查发现一致性问题，等待作者决定",
                     )
@@ -475,6 +506,10 @@ class ContinuousGenerationRunner:
                 candidate_id="",
                 phase="between_chapters",
                 consistency_override=False,
+                revised_plan=None,
+                original_plan=None,
+                replan_status="",
+                replan_attempts=0,
                 consistency_override_chapters=(
                     list(job.get("consistency_override_chapters") or [])
                     + ([next_chapter] if consistency_override else [])

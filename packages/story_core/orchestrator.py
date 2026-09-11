@@ -3355,6 +3355,50 @@ class StoryOrchestrator:
         """Install a custom ``FactExtractor`` (used by tests and CLI)."""
         self._fact_extractor = extractor
 
+    def replan_consistency_plan(
+        self,
+        story: StoryState,
+        request: Any,
+    ) -> dict[str, Any]:
+        """Ask the existing planner for one replacement structured plan.
+
+        This is intentionally a planner-only seam.  It prepares a deep copy
+        at the requested chapter boundary, sends the server-built structured
+        contradiction request, and returns before simulation or Writer work.
+        """
+        target_chapter = int(getattr(request, "target_chapter", 0) or 0)
+        if target_chapter < 1:
+            raise ValueError("replan_target_chapter_required")
+        working_story = story.model_copy(deep=True)
+        # The source snapshot is the state at the start of the target
+        # chapter. Keep its chapter cursor at N-1 so the planner cannot
+        # mistake the chapter being replanned for an already-accepted one.
+        working_story.current_chapter = target_chapter - 1
+        director_context = _director_context_payload(
+            working_story, target_chapter
+        )
+        guidance = str(getattr(request, "director_guidance", "") or "").strip()
+        prompt = self._plan_prompt(
+            working_story, target_chapter, director_context
+        )
+        if guidance:
+            prompt = f"{prompt}\n\n{guidance}"
+        text, error = self._timed_chat(
+            working_story,
+            prompt,
+            max_tokens=8000,
+            json_mode=True,
+            agent="planner",
+            stage="一致性重新规划",
+        )
+        if error:
+            raise RuntimeError(error)
+        parsed = _parse_json_text(text)
+        if not isinstance(parsed, dict):
+            raise ValueError("replanned_plan_not_object")
+        parsed.setdefault("chapter_number", target_chapter)
+        return _ensure_director_scene_chain(working_story, parsed)
+
     def generate_next_chapter_via_modular_pipeline(
         self,
         *,
@@ -3370,6 +3414,7 @@ class StoryOrchestrator:
         rewrite_guidance: str = "",
         consistency_source: Any | None = None,
         consistency_override: bool = False,
+        director_plan_override: Any | None = None,
     ) -> Any:
         """Run the new modular agent pipeline end-to-end.
 
@@ -3444,6 +3489,7 @@ class StoryOrchestrator:
             rewrite_guidance=rewrite_guidance,
             consistency_source=consistency_source,
             consistency_override=consistency_override,
+            director_plan_override=director_plan_override,
         )
 
     def _emit_workflow_step(
@@ -4234,6 +4280,7 @@ class StoryOrchestrator:
         writer_runtime: Any | None = None,
         fact_extractor: Any | None = None,
         consistency_override: bool = False,
+        director_plan_override: Any | None = None,
     ):
         # The workbench path: route through the new modular
         # pipeline. The new Director → CanonService preflight →
@@ -4257,11 +4304,13 @@ class StoryOrchestrator:
                     writer_runtime=writer_runtime,
                     fact_extractor=fact_extractor,
                     consistency_override=consistency_override,
+                    director_plan_override=director_plan_override,
                 )
-        if consistency_override:
+        if consistency_override or director_plan_override is not None:
             generate_bundle = lambda current_story: self._generate_next_chapter_bundle(
                 current_story,
-                consistency_override=True,
+                consistency_override=consistency_override,
+                director_plan_override=director_plan_override,
             )
         else:
             # Keep the original callable seam for legacy tests and external
@@ -4279,6 +4328,7 @@ class StoryOrchestrator:
         fact_extractor: Any | None = None,
         consistency_runtime: Any | None = None,
         consistency_override: bool = False,
+        director_plan_override: Any | None = None,
     ) -> Any:
         """Produce a legacy ``ChapterBundle`` from the modular pipeline.
 
@@ -4310,6 +4360,7 @@ class StoryOrchestrator:
             consistency_runtime=consistency_runtime,
             consistency_source=story,
             consistency_override=consistency_override,
+            director_plan_override=director_plan_override,
             rewrite_guidance=rewrite_guidance,
         )
         from packages.story_core.modular_bundle_adapter import (
@@ -4371,6 +4422,7 @@ class StoryOrchestrator:
         story: StoryState,
         *,
         consistency_override: bool = False,
+        director_plan_override: Any | None = None,
     ):
         from packages.story_core.engine import ChapterBundle
 
@@ -4449,22 +4501,36 @@ class StoryOrchestrator:
                     outputs=payload,
                 )
 
-        planning_result = resolve_chapter_plan(
-            outline_plan=outline_plan,
-            build_prompt=lambda: self._plan_prompt(working_story, chapter_number, director_context),
-            call_model=lambda prompt, stage: self._timed_chat(
-                working_story,
-                prompt,
-                max_tokens=8000,
-                json_mode=True,
-                agent="planner",
-                stage=stage,
-            ),
-            review_plan=lambda candidate: _director_plan_quality_issues(working_story, candidate),
-            build_revision_prompt=_director_revision_prompt,
-            prepare_plan=lambda candidate: _ensure_director_scene_chain(working_story, candidate),
-            on_event=report_planning_event,
-        )
+        if director_plan_override is not None:
+            if not isinstance(director_plan_override, dict):
+                raise ValueError("director_plan_override_invalid")
+            replanned = _ensure_director_scene_chain(
+                working_story, deepcopy(director_plan_override)
+            )
+            planning_result = SimpleNamespace(
+                ok=True,
+                plan=replanned,
+                planning_source="consistency_replan",
+                planning_modules=["director_agent", "consistency_replan"],
+                error="",
+            )
+        else:
+            planning_result = resolve_chapter_plan(
+                outline_plan=outline_plan,
+                build_prompt=lambda: self._plan_prompt(working_story, chapter_number, director_context),
+                call_model=lambda prompt, stage: self._timed_chat(
+                    working_story,
+                    prompt,
+                    max_tokens=8000,
+                    json_mode=True,
+                    agent="planner",
+                    stage=stage,
+                ),
+                review_plan=lambda candidate: _director_plan_quality_issues(working_story, candidate),
+                build_revision_prompt=_director_revision_prompt,
+                prepare_plan=lambda candidate: _ensure_director_scene_chain(working_story, candidate),
+                on_event=report_planning_event,
+            )
         planning_source = planning_result.planning_source
         planning_modules = planning_result.planning_modules
         if not planning_result.ok:

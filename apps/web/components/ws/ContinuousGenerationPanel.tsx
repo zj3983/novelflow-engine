@@ -6,7 +6,7 @@ import { GenerationConsistencyPanel } from "./GenerationConsistencyPanel";
 import { userFacingErrorMessage } from "../../lib/user-facing-error";
 
 type Props = {
-  action: "start" | "stop" | "continue" | "cancel" | null;
+  action: "start" | "stop" | "continue" | "cancel" | "replan" | null;
   active: boolean;
   busy: boolean;
   count: ContinuousCount;
@@ -18,6 +18,7 @@ type Props = {
   onCountChange: (count: ContinuousCount) => void;
   onStart: () => void;
   onStop: () => void;
+  onConsistencyReplan: () => void;
   onConsistencyContinue: () => void;
   onConsistencyReturn: () => void;
 };
@@ -30,6 +31,8 @@ const STATUS_LABELS: Record<ContinuousGenerationJobResponse["status"], string> =
   stopped: "已停止",
   failed: "失败",
   awaiting_consistency_override: "等待确认",
+  replanning: "重新规划中",
+  awaiting_replanned_confirmation: "等待确认新计划",
 };
 
 export function ContinuousGenerationPanel({
@@ -45,10 +48,12 @@ export function ContinuousGenerationPanel({
   onCountChange,
   onStart,
   onStop,
+  onConsistencyReplan,
   onConsistencyContinue,
   onConsistencyReturn,
 }: Props) {
-  const awaitingConsistency = job?.status === "awaiting_consistency_override";
+  const awaitingConsistency = job?.status === "awaiting_consistency_override"
+    || job?.status === "awaiting_replanned_confirmation";
   const startDisabled = busy || active || Boolean(action) || workflowLoading || Boolean(workflowError);
   const status = job ? STATUS_LABELS[job.status] : "未运行";
   const progress = job
@@ -111,6 +116,13 @@ export function ContinuousGenerationPanel({
         <GenerationConsistencyPanel
           gate={job.consistency_gate}
           busy={Boolean(action)}
+          replanBusy={action === "replan"}
+          originalPlan={job.original_plan}
+          revisedPlan={job.revised_plan}
+          replanStatus={job.replan_status}
+          replanAttempts={job.replan_attempts}
+          replanResult={job.replan_result}
+          onReplan={onConsistencyReplan}
           onContinue={onConsistencyContinue}
           onReturn={onConsistencyReturn}
         />
