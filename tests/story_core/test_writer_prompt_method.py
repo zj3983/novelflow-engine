@@ -853,7 +853,10 @@ def test_writer_prompt_projects_only_the_scene_line_and_renders_it():
                 name="苏叶",
                 role="主角",
                 real_state={"current": {"balance": "27.60"}},
-                game_state={"current": {"level": "Lv.2"}},
+                game_state={
+                    "baseline": {"level": "Lv.2"},
+                    "current": {"level": "Lv.2"},
+                },
             )
         ],
     )

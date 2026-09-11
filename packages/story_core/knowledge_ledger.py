@@ -50,7 +50,14 @@ def _raw_records(story_state: StoryState | Mapping[str, Any]) -> list[Any]:
 
 
 def _relationship_records(story_state: StoryState | Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Adapt explicit per-endpoint relationship knowledge into read records."""
+    """Adapt only explicitly dated relationship knowledge into read records.
+
+    RelationshipEdge.source_knowledge and target_knowledge are accumulated
+    current notes.  Their list position does not establish when a character
+    learned a fact, so plain strings are deliberately ignored here.  A
+    mapping may opt into the historical ledger only by carrying its own
+    ``learned_chapter``/``chapter`` evidence.
+    """
 
     graph = _payload(story_state).get("relationship_graph")
     if not isinstance(graph, Sequence) or isinstance(graph, (str, bytes, bytearray)):
@@ -63,10 +70,6 @@ def _relationship_records(story_state: StoryState | Mapping[str, Any]) -> list[d
         target = str(edge.get("target") or "").strip()
         if not source or not target:
             continue
-        try:
-            learned = max(0, int(edge.get("first_chapter") or 0))
-        except (TypeError, ValueError):
-            learned = 0
         edge_id = str(edge.get("id") or f"{source}:{target}").strip()
         for side, character, field in (
             ("source", source, "source_knowledge"),
@@ -76,8 +79,19 @@ def _relationship_records(story_state: StoryState | Mapping[str, Any]) -> list[d
             if not isinstance(facts, Sequence) or isinstance(facts, (str, bytes, bytearray)):
                 continue
             for index, fact in enumerate(facts):
-                text = str(fact or "").strip()
-                if not text:
+                if not isinstance(fact, Mapping):
+                    continue
+                text = str(fact.get("fact") or fact.get("text") or fact.get("value") or "").strip()
+                raw_learned = fact.get("learned_chapter")
+                if raw_learned in (None, ""):
+                    raw_learned = fact.get("chapter", fact.get("chapter_number"))
+                if isinstance(raw_learned, bool):
+                    continue
+                try:
+                    learned = int(raw_learned)
+                except (TypeError, ValueError):
+                    continue
+                if learned < 0 or not text:
                     continue
                 records.append(
                     {
@@ -86,9 +100,16 @@ def _relationship_records(story_state: StoryState | Mapping[str, Any]) -> list[d
                         "learned_chapter": learned,
                         "known_by": [character],
                         "source": f"relationship:{edge_id}",
-                        "certainty": "certain",
-                        "visibility": "private",
-                        "tags": ["relationship"],
+                        "certainty": fact.get("certainty", "certain"),
+                        "visibility": fact.get("visibility", "private"),
+                        "reveal_chapter": fact.get("reveal_chapter"),
+                        "invalidated_chapter": fact.get("invalidated_chapter"),
+                        "tags": ["relationship", *(
+                            [str(tag) for tag in fact.get("tags", [])]
+                            if isinstance(fact.get("tags"), Sequence)
+                            and not isinstance(fact.get("tags"), (str, bytes, bytearray))
+                            else []
+                        )],
                     }
                 )
     return records

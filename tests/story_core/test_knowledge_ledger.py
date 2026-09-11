@@ -80,7 +80,7 @@ def test_public_knowledge_still_obeys_its_explicit_chapter_boundary() -> None:
     ]
 
 
-def test_relationship_endpoint_knowledge_is_character_scoped_and_hides_private_notes() -> None:
+def test_undated_relationship_knowledge_is_not_backdated_to_relationship_creation() -> None:
     story = _story()
     story["relationship_graph"] = [
         {
@@ -88,19 +88,18 @@ def test_relationship_endpoint_knowledge_is_character_scoped_and_hides_private_n
             "source": "林照",
             "target": "顾闻舟",
             "first_chapter": 10,
-            "source_knowledge": ["顾闻舟曾经改过一份名册"],
-            "target_knowledge": ["林照正在查旧案"],
+            "source_knowledge": ["FUTURE_RELATION_KNOWLEDGE_080"],
+            "target_knowledge": ["FUTURE_RELATION_KNOWLEDGE_081"],
             "private_notes": ["顾闻舟受人指使"],
         }
     ]
 
-    assert not get_character_knowledge(story, "林照", 9)
-    lin_facts = get_character_knowledge(story, "林照", 10)
-    gu_facts = get_character_knowledge(story, "顾闻舟", 10)
-    assert any(item["fact"] == "顾闻舟曾经改过一份名册" for item in lin_facts)
-    assert not any(item["fact"] == "林照正在查旧案" for item in lin_facts)
-    assert any(item["fact"] == "林照正在查旧案" for item in gu_facts)
-    assert all("顾闻舟受人指使" not in str(item) for item in [*lin_facts, *gu_facts])
+    for character in ("林照", "顾闻舟"):
+        facts = get_character_knowledge(story, character, 20)
+        assert all(
+            "FUTURE_RELATION_KNOWLEDGE_08" not in str(item) for item in facts
+        )
+        assert all("顾闻舟受人指使" not in str(item) for item in facts)
 
 
 def test_invalidated_knowledge_is_not_returned_after_invalidation() -> None:

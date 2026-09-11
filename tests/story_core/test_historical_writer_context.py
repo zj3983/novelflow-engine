@@ -78,6 +78,7 @@ def _state() -> dict:
                 "source": "林照",
                 "target": "顾闻舟",
                 "first_chapter": 10,
+                "source_knowledge": ["FUTURE_RELATION_KNOWLEDGE_080"],
                 "current_state": "FUTURE_RELATION_999",
                 "trust": 99,
                 "tension": 1,
@@ -178,6 +179,7 @@ def test_canonical_writer_context_uses_target_minus_one_and_scrubs_future_sentin
         "FUTURE_SKILL_999",
         "FUTURE_EQUIPMENT_999",
         "FUTURE_RELATION_999",
+        "FUTURE_RELATION_KNOWLEDGE_080",
     ):
         assert sentinel not in serialized
         assert sentinel not in prompt
@@ -200,6 +202,93 @@ def test_chapter_one_writer_context_does_not_read_chapter_one_end_state(tmp_path
     assert context.previous_tail == ""
     assert context.character_cards[0]["historical_state"]["as_of_chapter"] == 0
     assert "FUTURE_LOCATION_999" not in json.dumps(context.model_dump(mode="json"), ensure_ascii=False)
+
+
+def test_chapter_one_writer_context_ignores_undated_latest_state_mirrors(
+    tmp_path: Path,
+) -> None:
+    system_root = tmp_path / ".story-system"
+    state = _state()
+    character = state["characters"][0]
+    character["current_state"] = {
+        "current": {"location": "FUTURE_LOCATION_300"},
+        "recent_changes": [],
+    }
+    character["real_state"] = {
+        "current": {"location": "FUTURE_REALITY_300"},
+        "recent_changes": [],
+    }
+    character["game_state"] = {
+        "current": {"level": 99},
+        "recent_changes": [],
+    }
+    _write_json(system_root / "state.json", state)
+    _write_json(system_root / "project.json", {"title": "无日期镜像", "genre": "网游"})
+    _write_json(system_root / "characters" / "lin.json", character)
+
+    context = build_writer_context(
+        project=tmp_path,
+        chapter_number=1,
+        director_artifact=_artifact(1),
+    )
+    request = _build_writer_request(context=context, director_artifact=_artifact(1))
+    serialized = json.dumps(request.model_dump(mode="json"), ensure_ascii=False)
+    prompt = build_writer_prompt(request)
+
+    card = context.character_cards[0]
+    assert card["historical_state"]["current_state"] == {}
+    assert card["historical_state"]["real_state"] == {}
+    assert card["historical_state"]["game_state"] == {}
+    for sentinel in (
+        "FUTURE_LOCATION_300",
+        "FUTURE_REALITY_300",
+        '"level":99',
+    ):
+        assert sentinel not in serialized
+        assert sentinel not in prompt
+
+
+def test_chapter_one_writer_context_accepts_explicit_chapter_zero_baseline() -> None:
+    state = _state()
+    character = state["characters"][0]
+    character["current_state"] = {
+        "baseline": {"location": "INITIAL_VILLAGE"},
+        "current": {"location": "FUTURE_LOCATION_300"},
+        "recent_changes": [],
+    }
+
+    card = historical_writer_character_cards(
+        state,
+        as_of_chapter=0,
+        is_game_story=True,
+    )[0]
+
+    assert card["historical_state"]["current_state"] == {
+        "location": "INITIAL_VILLAGE"
+    }
+    assert "FUTURE_LOCATION_300" not in json.dumps(card, ensure_ascii=False)
+
+
+def test_writer_context_omits_undated_relationship_knowledge_at_chapter_21(
+    tmp_path: Path,
+) -> None:
+    system_root = tmp_path / ".story-system"
+    state = _state()
+    _write_json(system_root / "state.json", state)
+    _write_json(system_root / "project.json", {"title": "关系知识边界", "genre": "网游"})
+    _write_json(system_root / "characters" / "lin.json", state["characters"][0])
+
+    context = build_writer_context(
+        project=tmp_path,
+        chapter_number=21,
+        director_artifact=_artifact(21),
+    )
+    request = _build_writer_request(context=context, director_artifact=_artifact(21))
+    serialized = json.dumps(request.model_dump(mode="json"), ensure_ascii=False)
+    prompt = build_writer_prompt(request)
+
+    assert "FUTURE_RELATION_KNOWLEDGE_080" not in serialized
+    assert "FUTURE_RELATION_KNOWLEDGE_080" not in prompt
 
 
 def test_legacy_orchestrator_writer_context_is_historical_for_rewrites() -> None:

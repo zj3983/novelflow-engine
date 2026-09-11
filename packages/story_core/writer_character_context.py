@@ -87,20 +87,10 @@ def _historical_writer_card(
     historical_current_state = deepcopy(historical.current_state)
     historical_real_state = deepcopy(historical.real_state)
     historical_game_state = deepcopy(historical.game_state)
-    if as_of_chapter == 0:
-        # A legacy card with no dated changes can explicitly serve as the
-        # chapter-zero baseline.  Never use this fallback when a change list
-        # exists: that is the shape used by latest-state mirrors.
-        for field, projected in (
-            ("current_state", historical_current_state),
-            ("real_state", historical_real_state),
-            ("game_state", historical_game_state),
-        ):
-            raw_layer = raw_character.get(field)
-            raw_current = raw_layer.get("current") if isinstance(raw_layer, Mapping) else None
-            raw_changes = raw_layer.get("recent_changes") if isinstance(raw_layer, Mapping) else None
-            if not projected and isinstance(raw_current, Mapping) and not raw_changes:
-                projected.update(deepcopy(dict(raw_current)))
+    # Chapter zero is evidence-only.  get_character_state_for_writer() can
+    # replay explicit baseline/initial/initial_state events at chapter 0, but
+    # an undated ``current`` value is ambiguous and may be a latest-state
+    # mirror from a much later chapter.
     safe: dict[str, Any] = {
         key: deepcopy(raw_character[key])
         for key in _HISTORICAL_STABLE_FIELDS
