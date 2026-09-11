@@ -9,6 +9,11 @@ from apps.api.services.continuous_generation import (
     ContinuousGenerationJobStore,
     ContinuousGenerationRunner,
 )
+from packages.story_core.character_inspection import ConsistencyWarning
+from packages.story_core.generation_consistency_gate import (
+    ConsistencyGateRequired,
+    GenerationConsistencyGate,
+)
 
 
 class FakeProjectStore:
@@ -24,6 +29,8 @@ class FakeProjectStore:
         self.after_generate = None
         self.discarded: list[str] = []
         self.recover_after_discard = False
+        self.consistency_gate: GenerationConsistencyGate | None = None
+        self.consistency_calls: list[bool] = []
 
     def summary(self) -> dict[str, int]:
         return {"current_chapter": self.current_chapter}
@@ -38,9 +45,15 @@ class FakeProjectStore:
             "volume_range": [1, 60],
         }
 
-    def generate_next_chapter(self, *, persist: bool) -> dict[str, object]:
+    def generate_next_chapter(self, *, persist: bool, **kwargs: object) -> dict[str, object]:
         target = self.current_chapter + 1
         self.generated.append({"chapter": target, "persist": persist})
+        consistency_override = bool(kwargs.get("consistency_override"))
+        self.consistency_calls.append(consistency_override)
+        if self.consistency_gate is not None and not consistency_override:
+            gate = self.consistency_gate
+            self.consistency_gate = None
+            raise ConsistencyGateRequired(gate)
         if self.fail_generation_at == target:
             raise RuntimeError("model_unavailable")
         if self.after_generate is not None:
@@ -169,6 +182,75 @@ def test_runner_generates_candidates_then_uses_ordinary_confirmation(tmp_path: P
         {"chapter": 11, "accept_quality_warnings": False},
         {"chapter": 12, "accept_quality_warnings": False},
     ]
+
+
+def test_runner_persists_consistency_pause_and_override_is_scoped_to_one_chapter(
+    tmp_path: Path,
+) -> None:
+    jobs, job = _create_job(tmp_path)
+    project = FakeProjectStore()
+    project.consistency_gate = GenerationConsistencyGate(
+        target_chapter=11,
+        status="blocking",
+        warnings=[
+            ConsistencyWarning(
+                code="SKILL_NOT_YET_ACQUIRED",
+                severity="error",
+                character_name="林照",
+                target_chapter=11,
+                message="技能尚未获得",
+                expected="FUTURE_SKILL_999",
+                observed={"acquired_chapter": 25},
+            )
+        ],
+        checked_characters=["林照"],
+        checked_at_boundary=10,
+    )
+
+    paused = ContinuousGenerationRunner().run(
+        str(job["job_id"]), project_store=project, job_store=jobs
+    )
+
+    assert paused["status"] == "awaiting_consistency_override"
+    assert paused["phase"] == "awaiting_consistency_override"
+    assert paused["consistency_gate"]["target_chapter"] == 11
+    assert paused["completed_chapters"] == []
+    assert project.generated == [{"chapter": 11, "persist": False}]
+    assert project.confirmed == []
+    assert project.consistency_calls == [False]
+    assert jobs.load(str(job["job_id"]))["status"] == "awaiting_consistency_override"
+
+    jobs.update(
+        str(job["job_id"]),
+        status="queued",
+        phase="between_chapters",
+        consistency_override=True,
+    )
+    resumed = ContinuousGenerationRunner().run(
+        str(job["job_id"]), project_store=project, job_store=jobs
+    )
+
+    assert resumed["status"] == "completed"
+    assert resumed["completed_chapters"] == [11, 12]
+    assert resumed["consistency_override_chapters"] == [11]
+    assert project.consistency_calls == [False, True, False]
+
+
+def test_runner_does_not_restart_a_persisted_consistency_pause(tmp_path: Path) -> None:
+    jobs, job = _create_job(tmp_path)
+    paused = jobs.update(
+        str(job["job_id"]),
+        status="awaiting_consistency_override",
+        phase="awaiting_consistency_override",
+    )
+    project = FakeProjectStore()
+
+    result = ContinuousGenerationRunner().run(
+        str(job["job_id"]), project_store=project, job_store=jobs
+    )
+
+    assert result == paused
+    assert project.generated == []
 
 
 def test_runner_stops_after_current_chapter_when_user_requests_stop(tmp_path: Path) -> None:

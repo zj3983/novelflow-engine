@@ -2,10 +2,11 @@
 
 import type { ContinuousCount } from "./useContinuousGeneration";
 import type { ContinuousGenerationJobResponse } from "../../lib/api";
+import { GenerationConsistencyPanel } from "./GenerationConsistencyPanel";
 import { userFacingErrorMessage } from "../../lib/user-facing-error";
 
 type Props = {
-  action: "start" | "stop" | null;
+  action: "start" | "stop" | "continue" | "cancel" | null;
   active: boolean;
   busy: boolean;
   count: ContinuousCount;
@@ -17,6 +18,8 @@ type Props = {
   onCountChange: (count: ContinuousCount) => void;
   onStart: () => void;
   onStop: () => void;
+  onConsistencyContinue: () => void;
+  onConsistencyReturn: () => void;
 };
 
 const STATUS_LABELS: Record<ContinuousGenerationJobResponse["status"], string> = {
@@ -26,6 +29,7 @@ const STATUS_LABELS: Record<ContinuousGenerationJobResponse["status"], string> =
   completed: "已完成",
   stopped: "已停止",
   failed: "失败",
+  awaiting_consistency_override: "等待确认",
 };
 
 export function ContinuousGenerationPanel({
@@ -41,7 +45,10 @@ export function ContinuousGenerationPanel({
   onCountChange,
   onStart,
   onStop,
+  onConsistencyContinue,
+  onConsistencyReturn,
 }: Props) {
+  const awaitingConsistency = job?.status === "awaiting_consistency_override";
   const startDisabled = busy || active || Boolean(action) || workflowLoading || Boolean(workflowError);
   const status = job ? STATUS_LABELS[job.status] : "未运行";
   const progress = job
@@ -73,7 +80,9 @@ export function ContinuousGenerationPanel({
             <option key={option} value={option}>{option} 章</option>
           ))}
         </select>
-        {active ? (
+        {awaitingConsistency ? (
+          <span className="ws-card__hint">本章已暂停，先处理生成前一致性提示。</span>
+        ) : active ? (
           <button className="ws-btn ws-btn--sm" type="button" disabled={Boolean(action)} onClick={onStop}>
             {action === "stop" ? "停止中..." : "停止连续生产"}
           </button>
@@ -98,6 +107,14 @@ export function ContinuousGenerationPanel({
       {error ? <p className="ws-error">连续生产请求失败：{userFacingErrorMessage(error)}</p> : null}
       {workflowError ? <p className="ws-error">细纲状态读取失败：{userFacingErrorMessage(workflowError)}</p> : null}
       {workflowLoading ? <p className="ws-card__hint">正在检查下一章所在卷和章节细纲。</p> : null}
+      {awaitingConsistency && job.consistency_gate ? (
+        <GenerationConsistencyPanel
+          gate={job.consistency_gate}
+          busy={Boolean(action)}
+          onContinue={onConsistencyContinue}
+          onReturn={onConsistencyReturn}
+        />
+      ) : null}
     </section>
   );
 }

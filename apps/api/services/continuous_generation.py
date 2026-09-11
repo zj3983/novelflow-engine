@@ -10,7 +10,9 @@ from uuid import uuid4
 
 
 ALLOWED_CONTINUOUS_COUNTS = frozenset({2, 5, 10, 20})
-ACTIVE_STATUSES = frozenset({"queued", "running", "stopping"})
+ACTIVE_STATUSES = frozenset(
+    {"queued", "running", "stopping", "awaiting_consistency_override"}
+)
 TERMINAL_STATUSES = frozenset({"completed", "stopped", "failed"})
 SAFE_RECOVERY_PHASES = frozenset({"queued", "between_chapters"})
 _JOB_FILE_LOCK = RLock()
@@ -81,6 +83,9 @@ class ContinuousGenerationJobStore:
             "current_chapter": start_chapter,
             "completed_chapters": [],
             "review_warnings": [],
+            "consistency_gate": None,
+            "consistency_override": False,
+            "consistency_override_chapters": [],
             "candidate_id": "",
             "stop_requested": False,
             "progress": "连续生成已排队",
@@ -152,6 +157,8 @@ class ContinuousGenerationJobStore:
         status = str(reconciled.get("status") or "")
         if status not in ACTIVE_STATUSES:
             return reconciled
+        if status == "awaiting_consistency_override":
+            return reconciled
 
         start_chapter = int(reconciled.get("start_chapter") or 1)
         completed = sorted(
@@ -204,7 +211,7 @@ class ContinuousGenerationRunner:
             job,
             official_chapter=int(project_store.summary().get("current_chapter") or 0),
         )
-        if str(job.get("status")) in TERMINAL_STATUSES:
+        if str(job.get("status")) in TERMINAL_STATUSES or str(job.get("status")) == "awaiting_consistency_override":
             return job
 
         job = job_store.update(
@@ -321,9 +328,33 @@ class ContinuousGenerationRunner:
                 error="",
             )
 
+            consistency_override = bool(job.get("consistency_override"))
             try:
-                generated = project_store.generate_next_chapter(persist=False)
+                generated = project_store.generate_next_chapter(
+                    persist=False,
+                    **(
+                        {"consistency_override": True}
+                        if consistency_override
+                        else {}
+                    ),
+                )
             except Exception as exc:
+                from packages.story_core.generation_consistency_gate import (
+                    ConsistencyGateRequired,
+                )
+
+                if isinstance(exc, ConsistencyGateRequired):
+                    return job_store.update(
+                        job_id,
+                        status="awaiting_consistency_override",
+                        phase="awaiting_consistency_override",
+                        current_chapter=next_chapter,
+                        candidate_id="",
+                        consistency_gate=exc.gate.model_dump(mode="json"),
+                        consistency_override=False,
+                        error="",
+                        progress="生成前检查发现一致性问题，等待作者决定",
+                    )
                 return job_store.update(
                     job_id,
                     status="failed",
@@ -443,5 +474,10 @@ class ContinuousGenerationRunner:
                 current_chapter=next_chapter,
                 candidate_id="",
                 phase="between_chapters",
+                consistency_override=False,
+                consistency_override_chapters=(
+                    list(job.get("consistency_override_chapters") or [])
+                    + ([next_chapter] if consistency_override else [])
+                ),
                 progress=f"第 {next_chapter} 章已确认",
             )

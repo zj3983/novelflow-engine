@@ -256,7 +256,13 @@ export type NovelTypeWriteRequest = Omit<NovelType, "builtin">;
 export type NovelTypeRecord = NovelType;
 export type NovelTypeWritePayload = NovelTypeWriteRequest;
 
-export type GenerationJobStatus = "queued" | "running" | "completed" | "failed";
+export type GenerationJobStatus =
+  | "queued"
+  | "running"
+  | "awaiting_consistency_override"
+  | "completed"
+  | "failed"
+  | "cancelled";
 
 export type WorldBuildJobStatus =
   | "queued"
@@ -304,6 +310,16 @@ export type GenerationJobStep = {
   artifact?: Record<string, unknown> | string | number | boolean | null | (string | number | boolean | Record<string, unknown>)[];
 };
 
+export type GenerationConsistencyGate = {
+  schema_version: "generation-consistency-gate/v1" | string;
+  target_chapter: number;
+  status: "clear" | "warnings" | "blocking" | string;
+  warnings: CharacterConsistencyWarning[];
+  checked_characters: string[];
+  checked_at_boundary: number;
+  override_applied: boolean;
+};
+
 export type GenerationJobResponse = {
   job_id: string;
   story_id: string;
@@ -314,6 +330,10 @@ export type GenerationJobResponse = {
   error: string;
   created_at: string;
   updated_at: string;
+  operation?: "generate" | "regenerate" | "polish" | string;
+  target_chapter?: number | null;
+  consistency_gate?: GenerationConsistencyGate | null;
+  consistency_override?: boolean;
 };
 
 export type GenerationJobSummary = Omit<GenerationJobResponse, "steps">;
@@ -1464,6 +1484,7 @@ export type ContinuousGenerationStatus =
   | "queued"
   | "running"
   | "stopping"
+  | "awaiting_consistency_override"
   | "completed"
   | "stopped"
   | "failed";
@@ -1474,13 +1495,16 @@ export type ContinuousGenerationJobResponse = {
   project_id: string;
   story_id: string;
   status: ContinuousGenerationStatus;
-  phase: "queued" | "checking_outline" | "generating" | "confirming" | "between_chapters" | string;
+  phase: "queued" | "checking_outline" | "generating" | "confirming" | "between_chapters" | "awaiting_consistency_override" | string;
   requested_count: number;
   completed_count: number;
   start_chapter: number;
   current_chapter: number;
   completed_chapters: number[];
   review_warnings: Array<{ chapter: number; warning: string }>;
+  consistency_gate?: GenerationConsistencyGate | null;
+  consistency_override?: boolean;
+  consistency_override_chapters?: number[];
   candidate_id: string;
   stop_requested: boolean;
   progress: string;
@@ -3691,20 +3715,32 @@ export async function createStory(payload: CreateStoryRequest): Promise<StoryRes
   }
 }
 
-export async function generateNextChapter(storyId: string): Promise<ChapterBundle> {
+export async function generateNextChapter(storyId: string, consistencyOverride = false): Promise<ChapterBundle> {
   return await tryFetchJson(`${apiBase()}/stories/${encodeURIComponent(storyId)}/generate`, {
     method: "POST",
+    ...(consistencyOverride ? {
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ consistency_override: true }),
+    } : {}),
   }, 900000);
 }
 
-export async function startGenerationJob(storyId: string, chapterDirectionId?: string): Promise<GenerationJobResponse> {
+export async function startGenerationJob(
+  storyId: string,
+  chapterDirectionId?: string,
+  consistencyOverride = false,
+): Promise<GenerationJobResponse> {
   const path = isFileProjectId(storyId)
     ? `${fileProjectPath(storyId)}/generation-jobs`
     : `${apiBase()}/stories/${encodeURIComponent(storyId)}/generation-jobs`;
+  const payload = {
+    ...(chapterDirectionId ? { chapter_direction_id: chapterDirectionId } : {}),
+    ...(consistencyOverride ? { consistency_override: true } : {}),
+  };
   const init: RequestInit = { method: "POST" };
-  if (isFileProjectId(storyId) && chapterDirectionId) {
+  if (Object.keys(payload).length > 0) {
     init.headers = { "content-type": "application/json" };
-    init.body = JSON.stringify({ chapter_direction_id: chapterDirectionId });
+    init.body = JSON.stringify(payload);
   }
   return (await tryFetchJson(path, init)) as GenerationJobResponse;
 }
@@ -3714,6 +3750,7 @@ export async function startFileProjectRegenerationJob(
   chapterNumber: number,
   variant?: string,
   guidance?: string,
+  consistencyOverride = false,
 ): Promise<GenerationJobResponse> {
   if (!isFileProjectId(projectId)) {
     throw new Error("regenerate_chapter_only_supports_file_projects");
@@ -3721,7 +3758,7 @@ export async function startFileProjectRegenerationJob(
   return (await tryFetchJson(`${fileProjectPath(projectId)}/generation-jobs`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ chapter_number: chapterNumber, variant, guidance }),
+    body: JSON.stringify({ chapter_number: chapterNumber, variant, guidance, ...(consistencyOverride ? { consistency_override: true } : {}) }),
   })) as GenerationJobResponse;
 }
 
@@ -3730,6 +3767,7 @@ export async function startFileProjectRegenerationJob(
 export async function startFileProjectExpansionJob(
   projectId: string,
   chapterNumber: number,
+  consistencyOverride = false,
 ): Promise<GenerationJobResponse> {
   if (!isFileProjectId(projectId)) {
     throw new Error("expand_chapter_only_supports_file_projects");
@@ -3737,13 +3775,14 @@ export async function startFileProjectExpansionJob(
   return (await tryFetchJson(`${fileProjectPath(projectId)}/generation-jobs`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ chapter_number: chapterNumber, operation: "expand" }),
+    body: JSON.stringify({ chapter_number: chapterNumber, operation: "expand", ...(consistencyOverride ? { consistency_override: true } : {}) }),
   })) as GenerationJobResponse;
 }
 
 export async function startFileProjectPolishJob(
   projectId: string,
   chapterNumber: number,
+  consistencyOverride = false,
 ): Promise<GenerationJobResponse> {
   if (!isFileProjectId(projectId)) {
     throw new Error("polish_chapter_only_supports_file_projects");
@@ -3751,7 +3790,7 @@ export async function startFileProjectPolishJob(
   return (await tryFetchJson(`${fileProjectPath(projectId)}/generation-jobs`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ chapter_number: chapterNumber, operation: "polish" }),
+    body: JSON.stringify({ chapter_number: chapterNumber, operation: "polish", ...(consistencyOverride ? { consistency_override: true } : {}) }),
   })) as GenerationJobResponse;
 }
 
@@ -3803,11 +3842,26 @@ export async function fetchGenerationJob(storyId: string, jobId: string): Promis
   )) as GenerationJobResponse;
 }
 
+export async function continueGenerationJob(storyId: string, jobId: string): Promise<GenerationJobResponse> {
+  const path = isFileProjectId(storyId)
+    ? `${fileProjectPath(storyId)}/generation-jobs/${encodeURIComponent(jobId)}/continue`
+    : `${apiBase()}/stories/${encodeURIComponent(storyId)}/generation-jobs/${encodeURIComponent(jobId)}/continue`;
+  return (await tryFetchJson(path, { method: "POST" })) as GenerationJobResponse;
+}
+
+export async function cancelGenerationJob(storyId: string, jobId: string): Promise<GenerationJobResponse> {
+  const path = isFileProjectId(storyId)
+    ? `${fileProjectPath(storyId)}/generation-jobs/${encodeURIComponent(jobId)}/cancel`
+    : `${apiBase()}/stories/${encodeURIComponent(storyId)}/generation-jobs/${encodeURIComponent(jobId)}/cancel`;
+  return (await tryFetchJson(path, { method: "POST" })) as GenerationJobResponse;
+}
+
 export async function regenerateFileProjectChapter(
   projectId: string,
   chapterNumber: number,
   variant?: string,
   guidance?: string,
+  consistencyOverride = false,
 ): Promise<{ project: ProjectResponse; story: StoryResponse; generated: Record<string, unknown> }> {
   if (!isFileProjectId(projectId)) {
     throw new Error("regenerate_chapter_only_supports_file_projects");
@@ -3815,7 +3869,7 @@ export async function regenerateFileProjectChapter(
   const response = (await tryFetchJson(`${fileProjectPath(projectId)}/regenerate-chapter`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ chapter_number: chapterNumber, variant, guidance }),
+    body: JSON.stringify({ chapter_number: chapterNumber, variant, guidance, ...(consistencyOverride ? { consistency_override: true } : {}) }),
   }, 900000)) as { project: ProjectResponse; story: StoryResponse; generated: Record<string, unknown> };
   return normalizeNestedProjectResponse(response);
 }
@@ -4483,6 +4537,8 @@ export {
   fetchContinuousGenerationJob,
   fetchCurrentContinuousGeneration,
   startContinuousGeneration,
+  continueContinuousGeneration,
+  cancelContinuousGeneration,
   stopContinuousGeneration,
 } from "./continuous-generation-api";
 

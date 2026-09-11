@@ -21,6 +21,7 @@ from packages.story_core.character_inspection import (
     check_character_consistency,
     get_character_timeline,
 )
+from packages.story_core.generation_consistency_gate import ConsistencyGateRequired
 from packages.story_core.file_project_creation import FileProjectCreateSpec, create_file_project
 from packages.story_core.generation_progress import generation_progress
 from packages.story_core.file_project_store import FileProjectStore
@@ -81,6 +82,9 @@ shuangwen_model_gateway = RuntimeModelGateway()
 FILE_ID_PREFIX = "file:"
 FILE_GENERATION_JOB_STALE_SECONDS = 15 * 60
 FILE_GENERATION_JOB_STEP_LIMIT = 200
+FILE_GENERATION_ACTIVE_STATUSES = frozenset(
+    {"queued", "running", "awaiting_consistency_override"}
+)
 _file_generation_executor = ThreadPoolExecutor(max_workers=1)
 _file_generation_jobs: dict[str, dict[str, object]] = {}
 _active_file_generation_jobs: dict[str, str] = {}
@@ -103,10 +107,12 @@ class FileProjectRegenerateRequest(BaseModel):
     chapter_number: int
     variant: str | None = None
     guidance: str | None = None
+    consistency_override: bool = False
 
 
 class FileProjectGenerateNextRequest(BaseModel):
     chapter_direction_id: str | None = None
+    consistency_override: bool = False
 
 
 class CharacterConsistencyCheckRequest(BaseModel):
@@ -131,6 +137,7 @@ class FileProjectGenerationJobRequest(BaseModel):
     variant: str | None = None
     guidance: str | None = None
     chapter_direction_id: str | None = None
+    consistency_override: bool = False
 
 
 class FileProjectContinuousGenerationRequest(BaseModel):
@@ -943,7 +950,7 @@ def _assert_file_project_lifecycle_mutation_allowed(store: FileProjectStore) -> 
         for key in (story_id, project_id, f"file:{project_id}"):
             job_id = _active_file_generation_jobs.get(key)
             job = _file_generation_jobs.get(job_id or "")
-            if job and job.get("status") in {"queued", "running"}:
+            if job and job.get("status") in FILE_GENERATION_ACTIVE_STATUSES:
                 raise HTTPException(status_code=409, detail="project_generation_in_progress")
 
 
@@ -978,6 +985,17 @@ def _raise_file_project_error(exc: ValueError) -> None:
     raise HTTPException(status_code=400, detail=detail) from exc
 
 
+def _raise_consistency_gate(exc: ConsistencyGateRequired) -> None:
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "consistency_required",
+            "message": "生成前检查发现一致性问题，请确认后继续。",
+            "gate": exc.gate.model_dump(mode="json"),
+        },
+    ) from exc
+
+
 def _raise_file_project_lifecycle_error(exc: FileProjectLifecycleError) -> None:
     detail = str(exc)
     status_code = 422 if detail == "project_title_confirmation_mismatch" else 409
@@ -999,8 +1017,16 @@ def _file_generation_job_response(job: dict[str, object]) -> dict[str, object]:
         "status": str(job.get("status", "")),
         "progress": str(job.get("progress", "")),
         "chapter_number": job.get("chapter_number") if isinstance(job.get("chapter_number"), int) else None,
+        "operation": str(job.get("operation", "")),
+        "target_chapter": job.get("target_chapter") if isinstance(job.get("target_chapter"), int) else None,
         "error": str(job.get("error", "")),
         "steps": _normalise_file_generation_job_steps(job),
+        "consistency_gate": (
+            deepcopy(job.get("consistency_gate"))
+            if isinstance(job.get("consistency_gate"), dict)
+            else None
+        ),
+        "consistency_override": bool(job.get("consistency_override")),
         "created_at": str(job.get("created_at", "")),
         "updated_at": str(job.get("updated_at", "")),
     }
@@ -1020,6 +1046,15 @@ def _continuous_generation_job_response(job: dict[str, object]) -> dict[str, obj
         "current_chapter": int(job.get("current_chapter") or 0),
         "completed_chapters": list(job.get("completed_chapters") or []),
         "review_warnings": list(job.get("review_warnings") or []),
+        "consistency_gate": (
+            deepcopy(job.get("consistency_gate"))
+            if isinstance(job.get("consistency_gate"), dict)
+            else None
+        ),
+        "consistency_override_chapters": list(
+            job.get("consistency_override_chapters") or []
+        ),
+        "consistency_override": bool(job.get("consistency_override")),
         "candidate_id": str(job.get("candidate_id", "")),
         "stop_requested": bool(job.get("stop_requested")),
         "progress": str(job.get("progress", "")),
@@ -1085,7 +1120,7 @@ def _normal_generation_active_locked(store: FileProjectStore) -> bool:
         return False
     if isinstance(active_job.get("starting_chapter"), int):
         _reconcile_file_generation_job_locked(active_job, store=store)
-    return str(active_job.get("status")) in {"queued", "running"}
+    return str(active_job.get("status")) in FILE_GENERATION_ACTIVE_STATUSES
 
 
 def _continuous_generation_active_locked(store: FileProjectStore) -> bool:
@@ -1192,6 +1227,7 @@ def _run_file_generation_job(
     variant: str | None = None,
     guidance: str | None = None,
     chapter_direction_id: str | None = None,
+    consistency_override: bool = False,
 ) -> None:
     def report_progress(message: str | dict[str, object]) -> None:
         if isinstance(message, dict):
@@ -1246,12 +1282,19 @@ def _run_file_generation_job(
                     "variant": variant or "",
                     "guidance": guidance or "",
                     "chapter_direction_id": chapter_direction_id or "",
+                    "consistency_override": bool(consistency_override),
                 },
             },
         }
     )
     try:
         store = _store_for(project_id)
+        with _file_generation_jobs_lock:
+            stored_job = _file_generation_jobs.get(job_id)
+            if stored_job is not None:
+                consistency_override = bool(
+                    stored_job.get("consistency_override")
+                ) or consistency_override
         with generation_progress(report_progress):
             if operation == "polish":
                 if not isinstance(chapter_number, int) or chapter_number < 1:
@@ -1263,13 +1306,49 @@ def _run_file_generation_job(
                 generated = store.expand_chapter(chapter_number)
             else:
                 generated = (
-                    store.regenerate_chapter(chapter_number, variant=variant, guidance=guidance, persist=False)
+                    store.regenerate_chapter(
+                        chapter_number,
+                        variant=variant,
+                        guidance=guidance,
+                        persist=False,
+                        **(
+                            {"consistency_override": True}
+                            if consistency_override
+                            else {}
+                        ),
+                    )
                     if isinstance(chapter_number, int) and chapter_number > 0
                     else store.generate_next_chapter(
-                    chapter_direction_id=chapter_direction_id,
-                    persist=True,
-                    accept_quality_warnings=True,
+                        chapter_direction_id=chapter_direction_id,
+                        persist=True,
+                        accept_quality_warnings=True,
+                        **(
+                            {"consistency_override": True}
+                            if consistency_override
+                            else {}
+                        ),
+                    )
                 )
+    except ConsistencyGateRequired as exc:
+        gate_payload = exc.gate.model_dump(mode="json")
+        _update_file_generation_job(
+            job_id,
+            status="awaiting_consistency_override",
+            progress="生成前检查发现一致性问题，等待作者决定",
+            error="",
+            consistency_gate=gate_payload,
+            consistency_override=False,
+        )
+        with _file_generation_jobs_lock:
+            job = _file_generation_jobs.get(job_id)
+            if job is not None:
+                _append_file_generation_job_step(
+                    job,
+                    "生成前检查发现一致性问题，等待作者决定",
+                    status="done",
+                    stage="consistency_check",
+                    source="generation-consistency-gate",
+                    artifact={"gate": gate_payload},
                 )
     except Exception as exc:  # pragma: no cover - background safety net
         friendly_error = _user_facing_generation_error(exc)
@@ -1322,7 +1401,14 @@ def _run_file_generation_job(
                 )
     finally:
         with _file_generation_jobs_lock:
-            if _active_file_generation_jobs.get(story_id) == job_id:
+            current_job = _file_generation_jobs.get(job_id)
+            if (
+                _active_file_generation_jobs.get(story_id) == job_id
+                and (
+                    current_job is None
+                    or current_job.get("status") not in FILE_GENERATION_ACTIVE_STATUSES
+                )
+            ):
                 _active_file_generation_jobs.pop(story_id, None)
 
 
@@ -1702,6 +1788,7 @@ def start_file_generation_job(
     variant = payload.variant if payload else None
     guidance = payload.guidance if payload else None
     chapter_direction_id = payload.chapter_direction_id if payload else None
+    consistency_override = bool(payload.consistency_override) if payload else False
     submit_loaded_job = False
     with _file_generation_jobs_lock:
         if reserved_job_id:
@@ -1714,6 +1801,8 @@ def start_file_generation_job(
                 if loaded.get("status") in {"queued", "running"}:
                     _active_file_generation_jobs[story_id] = reserved_job_id
                     submit_loaded_job = True
+                elif loaded.get("status") == "awaiting_consistency_override":
+                    _active_file_generation_jobs[story_id] = reserved_job_id
                 response = _file_generation_job_response(loaded)
                 job_id = reserved_job_id
                 job_kwargs = {
@@ -1724,6 +1813,7 @@ def start_file_generation_job(
                     ),
                     "variant": loaded.get("variant") or None,
                     "guidance": loaded.get("guidance") or None,
+                    "consistency_override": bool(loaded.get("consistency_override")),
                 }
                 if loaded.get("operation") in {"polish", "expand"}:
                     job_kwargs["operation"] = "polish"
@@ -1739,7 +1829,7 @@ def start_file_generation_job(
             active_job = _file_generation_jobs.get(active_job_id)
             if active_job:
                 _reconcile_file_generation_job_locked(active_job, store=store)
-            if active_job and active_job.get("status") in {"queued", "running"}:
+            if active_job and active_job.get("status") in FILE_GENERATION_ACTIVE_STATUSES:
                 return _file_generation_job_response(active_job)
 
         if submit_loaded_job:
@@ -1776,6 +1866,7 @@ def start_file_generation_job(
                                 "variant": variant or "",
                                 "guidance": guidance or "",
                                 "chapter_direction_id": chapter_direction_id or "",
+                                "consistency_override": consistency_override,
                                 "starting_chapter": int(
                                     store.summary().get("current_chapter") or 0
                                 ),
@@ -1795,6 +1886,7 @@ def start_file_generation_job(
                 "variant": variant or "",
                 "guidance": guidance or "",
                 "chapter_direction_id": chapter_direction_id or "",
+                "consistency_override": consistency_override,
                 "starting_chapter": int(store.summary().get("current_chapter") or 0),
                 "error": "",
                 "created_at": now,
@@ -1811,6 +1903,7 @@ def start_file_generation_job(
             "chapter_number": execution_chapter_number,
             "variant": variant,
             "guidance": guidance,
+            "consistency_override": consistency_override,
         }
         if operation in {"polish", "expand"}:
             job_kwargs["operation"] = "polish"
@@ -2779,8 +2872,15 @@ def init_file_project_routes() -> APIRouter:
         store = _store_for(project_id)
         try:
             generated = store.generate_next_chapter(
-                chapter_direction_id=payload.chapter_direction_id if payload else None
+                chapter_direction_id=payload.chapter_direction_id if payload else None,
+                **(
+                    {"consistency_override": True}
+                    if payload and payload.consistency_override
+                    else {}
+                ),
             )
+        except ConsistencyGateRequired as exc:
+            _raise_consistency_gate(exc)
         except ValueError as exc:
             _raise_file_project_error(exc)
         return {
@@ -2794,7 +2894,18 @@ def init_file_project_routes() -> APIRouter:
     def regenerate_file_project_chapter(project_id: str, payload: FileProjectRegenerateRequest) -> dict[str, Any]:
         store = _store_for(project_id)
         try:
-            generated = store.regenerate_chapter(payload.chapter_number, variant=payload.variant, guidance=payload.guidance)
+            generated = store.regenerate_chapter(
+                payload.chapter_number,
+                variant=payload.variant,
+                guidance=payload.guidance,
+                **(
+                    {"consistency_override": True}
+                    if payload.consistency_override
+                    else {}
+                ),
+            )
+        except ConsistencyGateRequired as exc:
+            _raise_consistency_gate(exc)
         except ValueError as exc:
             _raise_file_project_error(exc)
         return {
@@ -2867,6 +2978,89 @@ def init_file_project_routes() -> APIRouter:
             ) from exc
         return _continuous_generation_job_response(stopped)
 
+    @router.post(
+        "/file-projects/{project_id}/continuous-generation-jobs/{job_id}/continue"
+    )
+    def continue_continuous_generation_job(
+        project_id: str,
+        job_id: str,
+    ) -> dict[str, object]:
+        """Resume a continuous job after an explicit consistency override."""
+
+        store = _store_for(project_id)
+        existing = _load_continuous_generation_job_for_route(
+            project_id,
+            job_id=job_id,
+        )
+        current_status = str(existing.get("status") or "")
+        if current_status in {"queued", "running"}:
+            return _continuous_generation_job_response(existing)
+        if current_status != "awaiting_consistency_override":
+            raise HTTPException(
+                status_code=409,
+                detail="consistency_override_not_available",
+            )
+        resumed = _continuous_job_store(store).update(
+            job_id,
+            status="queued",
+            phase="between_chapters",
+            progress="已确认一致性提示，继续连续生成",
+            error="",
+            consistency_override=True,
+        )
+        story_id = _story_id_for(store)
+        with _file_generation_jobs_lock:
+            _register_continuous_job(story_id, job_id)
+        _continuous_generation_executor.submit(
+            _run_continuous_generation_job,
+            job_id,
+            project_id,
+        )
+        return _continuous_generation_job_response(resumed)
+
+    @router.post(
+        "/file-projects/{project_id}/continuous-generation-jobs/{job_id}/cancel"
+    )
+    def cancel_continuous_generation_job(
+        project_id: str,
+        job_id: str,
+    ) -> dict[str, object]:
+        """Release a paused continuous job when the author edits its plan."""
+
+        store = _store_for(project_id)
+        existing = _load_continuous_generation_job_for_route(
+            project_id,
+            job_id=job_id,
+        )
+        current_status = str(existing.get("status") or "")
+        if current_status != "awaiting_consistency_override":
+            if current_status in {"completed", "stopped", "failed"}:
+                return _continuous_generation_job_response(existing)
+            raise HTTPException(
+                status_code=409,
+                detail="consistency_cancel_not_available",
+            )
+        cancelled = _continuous_job_store(store).update(
+            job_id,
+            status="stopped",
+            phase="checking_outline",
+            progress="已返回修改，未启动写手",
+            stop_reason="author_returned_to_edit",
+            stop_requested=False,
+            error="",
+            candidate_id="",
+        )
+        story_id = _story_id_for(store)
+        with _file_generation_jobs_lock:
+            for key in {
+                story_id,
+                _strip_file_prefix(story_id),
+                _file_id(_strip_file_prefix(story_id)),
+            }:
+                if _active_continuous_generation_jobs.get(key) == job_id:
+                    _active_continuous_generation_jobs.pop(key, None)
+        return _continuous_generation_job_response(cancelled)
+
     @router.get("/file-projects/{project_id}/generation-jobs")
     def list_file_generation_jobs(project_id: str, limit: int = 30) -> dict[str, object]:
         store = _store_for(project_id)
@@ -2910,7 +3104,7 @@ def init_file_project_routes() -> APIRouter:
                 if job is not None:
                     loaded_job_id = str(job.get("job_id", ""))
                     _file_generation_jobs[loaded_job_id] = job
-                    if job.get("status") in {"queued", "running"}:
+                    if job.get("status") in FILE_GENERATION_ACTIVE_STATUSES:
                         _active_file_generation_jobs[str(job.get("story_id", ""))] = loaded_job_id
             if job is None:
                 raise HTTPException(status_code=404, detail="file_generation_job_not_found")
@@ -2932,6 +3126,106 @@ def init_file_project_routes() -> APIRouter:
             if _strip_file_prefix(str(job.get("story_id", ""))) != requested_story_id:
                 raise HTTPException(status_code=404, detail="file_generation_job_not_found")
             _reconcile_file_generation_job_locked(job)
+            return _file_generation_job_response(job)
+
+    @router.post("/file-projects/{project_id}/generation-jobs/{job_id}/continue")
+    def continue_file_generation_job(project_id: str, job_id: str) -> dict[str, object]:
+        """Explicitly resume one paused pre-generation consistency check."""
+
+        requested_story_id = _strip_file_prefix(project_id)
+        with _file_generation_jobs_lock:
+            job = _file_generation_jobs.get(job_id)
+            if job is None:
+                job = _load_file_generation_job(_store_for(project_id), job_id)
+                if job is not None:
+                    _file_generation_jobs[job_id] = job
+            if job is None or _strip_file_prefix(str(job.get("story_id", ""))) != requested_story_id:
+                raise HTTPException(status_code=404, detail="file_generation_job_not_found")
+            current_status = str(job.get("status") or "")
+            if current_status in {"queued", "running"}:
+                return _file_generation_job_response(job)
+            if current_status != "awaiting_consistency_override":
+                raise HTTPException(status_code=409, detail="consistency_override_not_available")
+            now = _now_iso()
+            job.update(
+                {
+                    "status": "queued",
+                    "progress": "已确认一致性提示，继续生成",
+                    "error": "",
+                    "consistency_override": True,
+                    "updated_at": now,
+                }
+            )
+            _append_file_generation_job_step(
+                job,
+                "已确认一致性提示，继续生成",
+                status="queued",
+                stage="consistency_check",
+                source="generation-consistency-gate",
+                artifact={"reason": "author_override_requested"},
+            )
+            _persist_file_generation_job(job)
+            _active_file_generation_jobs[str(job.get("story_id") or "")] = job_id
+            response = _file_generation_job_response(job)
+            job_kwargs = {
+                "chapter_number": (
+                    job.get("target_chapter")
+                    if job.get("operation") in {"polish", "expand", "regenerate"}
+                    else None
+                ),
+                "variant": job.get("variant") or None,
+                "guidance": job.get("guidance") or None,
+                "consistency_override": True,
+            }
+            if job.get("operation") in {"polish", "expand"}:
+                job_kwargs["operation"] = "polish"
+            direction = job.get("chapter_direction_id")
+            if direction:
+                job_kwargs["chapter_direction_id"] = direction
+        _file_generation_executor.submit(
+            _run_file_generation_job,
+            job_id,
+            project_id,
+            **job_kwargs,
+        )
+        return response
+
+    @router.post("/file-projects/{project_id}/generation-jobs/{job_id}/cancel")
+    def cancel_file_generation_job(project_id: str, job_id: str) -> dict[str, object]:
+        """Release a paused job when the author returns to edit the plan."""
+
+        requested_story_id = _strip_file_prefix(project_id)
+        with _file_generation_jobs_lock:
+            job = _file_generation_jobs.get(job_id)
+            if job is None:
+                job = _load_file_generation_job(_store_for(project_id), job_id)
+                if job is not None:
+                    _file_generation_jobs[job_id] = job
+            if job is None or _strip_file_prefix(str(job.get("story_id", ""))) != requested_story_id:
+                raise HTTPException(status_code=404, detail="file_generation_job_not_found")
+            if str(job.get("status") or "") != "awaiting_consistency_override":
+                if str(job.get("status") or "") in {"completed", "failed", "cancelled"}:
+                    return _file_generation_job_response(job)
+                raise HTTPException(status_code=409, detail="consistency_cancel_not_available")
+            job.update(
+                {
+                    "status": "cancelled",
+                    "progress": "已返回修改，未启动写手",
+                    "error": "",
+                    "updated_at": _now_iso(),
+                }
+            )
+            _append_file_generation_job_step(
+                job,
+                "已返回修改，未启动写手",
+                status="done",
+                stage="consistency_check",
+                source="generation-consistency-gate",
+                artifact={"reason": "author_returned_to_edit"},
+            )
+            _persist_file_generation_job(job)
+            if _active_file_generation_jobs.get(str(job.get("story_id") or "")) == job_id:
+                _active_file_generation_jobs.pop(str(job.get("story_id") or ""), None)
             return _file_generation_job_response(job)
 
     @router.get("/file-projects/{project_id}/workflow-artifacts")

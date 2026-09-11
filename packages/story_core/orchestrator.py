@@ -1605,20 +1605,50 @@ def _normalize_moves(
             continue
         if require_action and not raw_action:
             continue
-        moves.append(
-            {
-                "name": name,
-                "goal": compact_text(str(item_data.get("goal") or "").strip() or "推进当前主线", 80),
-                "emotion": str(item_data.get("emotion") or "").strip() or "alert",
-                "action": compact_text(raw_action or "继续推进当前主线", 120),
-                "priority": _normalize_priority(item_data.get("priority")),
-                "new_character_candidates": compact_list(
-                    item_data.get("new_character_candidates", []),
-                    max_items=4,
-                    item_chars=60,
-                ),
-            }
-        )
+        normalized_move = {
+            "name": name,
+            "goal": compact_text(str(item_data.get("goal") or "").strip() or "推进当前主线", 80),
+            "emotion": str(item_data.get("emotion") or "").strip() or "alert",
+            "action": compact_text(raw_action or "继续推进当前主线", 120),
+            "priority": _normalize_priority(item_data.get("priority")),
+            "new_character_candidates": compact_list(
+                item_data.get("new_character_candidates", []),
+                max_items=4,
+                item_chars=60,
+            ),
+        }
+        # Preserve only the structured fields understood by the generation
+        # consistency gate.  The legacy normalizer used to discard these
+        # fields, which meant a valid Director plan could not carry a planned
+        # skill/equipment/knowledge/relationship into the pre-Writer check.
+        for field in (
+            "location",
+            "current_location",
+            "planned_location",
+            "plan_location",
+            "skills_used",
+            "planned_skills",
+            "skills",
+            "equipment_used",
+            "planned_equipment",
+            "equipment",
+            "items_used",
+            "knowledge_fact_ids",
+            "fact_ids",
+            "knowledge_facts",
+            "facts",
+            "relationship_expectations",
+            "relationship_requirements",
+            "relationships",
+        ):
+            value = item_data.get(field)
+            if value not in (None, "", [], {}):
+                normalized_move[field] = deepcopy(value)
+        for field in ("context", "plan_context"):
+            value = item_data.get(field)
+            if isinstance(value, dict) and value:
+                normalized_move[field] = deepcopy(value)
+        moves.append(normalized_move)
         if len(moves) == 6:
             break
     return moves
@@ -3338,6 +3368,8 @@ class StoryOrchestrator:
         workflow_store: Any | None = None,
         job_id: str | None = None,
         rewrite_guidance: str = "",
+        consistency_source: Any | None = None,
+        consistency_override: bool = False,
     ) -> Any:
         """Run the new modular agent pipeline end-to-end.
 
@@ -3410,6 +3442,8 @@ class StoryOrchestrator:
             workflow_store=workflow_store,
             job_id=job_id,
             rewrite_guidance=rewrite_guidance,
+            consistency_source=consistency_source,
+            consistency_override=consistency_override,
         )
 
     def _emit_workflow_step(
@@ -4199,6 +4233,7 @@ class StoryOrchestrator:
         director_runtime: Any | None = None,
         writer_runtime: Any | None = None,
         fact_extractor: Any | None = None,
+        consistency_override: bool = False,
     ):
         # The workbench path: route through the new modular
         # pipeline. The new Director → CanonService preflight →
@@ -4221,11 +4256,18 @@ class StoryOrchestrator:
                     director_runtime=director_runtime,
                     writer_runtime=writer_runtime,
                     fact_extractor=fact_extractor,
+                    consistency_override=consistency_override,
                 )
-        return ChapterPipeline().run(
-            story,
-            generate_bundle=self._generate_next_chapter_bundle,
-        )
+        if consistency_override:
+            generate_bundle = lambda current_story: self._generate_next_chapter_bundle(
+                current_story,
+                consistency_override=True,
+            )
+        else:
+            # Keep the original callable seam for legacy tests and external
+            # integrations that replace this method with a one-argument stub.
+            generate_bundle = self._generate_next_chapter_bundle
+        return ChapterPipeline().run(story, generate_bundle=generate_bundle)
 
     def _generate_next_chapter_bundle_via_modular_agents(
         self,
@@ -4236,6 +4278,7 @@ class StoryOrchestrator:
         writer_runtime: Any | None = None,
         fact_extractor: Any | None = None,
         consistency_runtime: Any | None = None,
+        consistency_override: bool = False,
     ) -> Any:
         """Produce a legacy ``ChapterBundle`` from the modular pipeline.
 
@@ -4265,6 +4308,8 @@ class StoryOrchestrator:
             writer_runtime=writer_runtime,
             fact_extractor=fact_extractor,
             consistency_runtime=consistency_runtime,
+            consistency_source=story,
+            consistency_override=consistency_override,
             rewrite_guidance=rewrite_guidance,
         )
         from packages.story_core.modular_bundle_adapter import (
@@ -4321,7 +4366,12 @@ class StoryOrchestrator:
         )
         return legacy_bundle
 
-    def _generate_next_chapter_bundle(self, story: StoryState):
+    def _generate_next_chapter_bundle(
+        self,
+        story: StoryState,
+        *,
+        consistency_override: bool = False,
+    ):
         from packages.story_core.engine import ChapterBundle
 
         chapter_number = story.current_chapter + 1
@@ -4578,6 +4628,57 @@ class StoryOrchestrator:
             style=working_story.style,
         )
         writer_plan_snapshot = _compact_writer_plan_for_prompt(writer_plan)
+
+        # The plan is now fully structured and the next operation would be
+        # the Writer prompt.  Check only explicit character-plan fields at
+        # the chapter-start boundary; no prose or model-based inference is
+        # involved.  Raising here is intentional: API job runners convert
+        # this into an author-actionable paused job before any Writer or
+        # post-draft state side effect can occur.
+        from packages.story_core.generation_consistency_gate import (
+            ConsistencyGateRequired,
+            require_generation_consistency,
+        )
+
+        try:
+            generation_consistency_gate = require_generation_consistency(
+                working_story,
+                writer_plan,
+                target_chapter=chapter_number,
+                override=consistency_override,
+            )
+        except ConsistencyGateRequired as exc:
+            self._emit_progress_with_artifact(
+                "生成前一致性检查发现问题，等待作者决定",
+                "consistency_check",
+                source="generation-consistency-gate",
+                used_modules=["character_timeline", "consistency_checker"],
+                reason="写手尚未启动，结构化计划需要作者确认",
+                inputs={
+                    "chapter_number": chapter_number,
+                    "historical_boundary": chapter_number - 1,
+                },
+                outputs={"gate": exc.gate.model_dump(mode="json")},
+                keep_legacy_text=False,
+            )
+            raise
+        self._emit_progress_with_artifact(
+            (
+                "生成前一致性检查通过"
+                if generation_consistency_gate.status == "clear"
+                else "已记录一致性提示，按作者决定继续生成"
+            ),
+            "consistency_check",
+            source="generation-consistency-gate",
+            used_modules=["character_timeline", "consistency_checker"],
+            reason="写手开始前完成结构化人物一致性检查",
+            inputs={
+                "chapter_number": chapter_number,
+                "historical_boundary": chapter_number - 1,
+            },
+            outputs={"gate": generation_consistency_gate.model_dump(mode="json")},
+            keep_legacy_text=False,
+        )
 
         self._emit_workflow_step(
             "write_body",
@@ -5231,6 +5332,9 @@ class StoryOrchestrator:
         )
         report_generation_progress("质量检查中...")
         bundle.quality_report = _merge_writing_review_quality(validate_bundle(bundle.model_dump()), writing_review)
+        bundle.quality_report["generation_consistency_gate"] = (
+            generation_consistency_gate.model_dump(mode="json")
+        )
         bundle.quality_report["memory_sync"] = memory_sync
         if revision_safety_report:
             bundle.quality_report["revision_safety"] = revision_safety_report

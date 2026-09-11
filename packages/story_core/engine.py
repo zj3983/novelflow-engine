@@ -75,6 +75,7 @@ class StoryEngine:
         director_runtime: Any | None = None,
         writer_runtime: Any | None = None,
         fact_extractor: Any | None = None,
+        consistency_override: bool = False,
     ) -> ChapterBundle:
         # The engine stores the ``project_root`` itself when
         # ``use_modular_agents=True``; the call site does not
@@ -93,6 +94,7 @@ class StoryEngine:
             ("director_runtime", director_runtime),
             ("writer_runtime", writer_runtime),
             ("fact_extractor", fact_extractor),
+            ("consistency_override", consistency_override),
         ):
             if key in sig.parameters:
                 kwargs[key] = value

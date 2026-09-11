@@ -207,6 +207,32 @@ body {
   margin-top: 18px;
 }
 
+.ws-generation-consistency {
+  border-color: var(--ws-warn);
+}
+
+.ws-generation-consistency__warnings {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0 16px;
+}
+
+.ws-generation-consistency__warning {
+  padding: 10px 12px;
+  border-left: 3px solid var(--ws-warn);
+  background: var(--ws-warn-soft);
+}
+
+.ws-generation-consistency__warning strong,
+.ws-generation-consistency__warning p {
+  display: block;
+  margin: 0;
+}
+
+.ws-generation-consistency__warning p + p {
+  margin-top: 4px;
+}
+
 .ws-card__title {
   margin: 0 0 10px;
   color: var(--ws-ink-muted);

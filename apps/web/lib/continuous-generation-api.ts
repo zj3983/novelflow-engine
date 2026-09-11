@@ -57,3 +57,27 @@ export async function stopContinuousGeneration(
     CONTINUOUS_GENERATION_TIMEOUT_MS,
   );
 }
+
+export async function continueContinuousGeneration(
+  projectId: string,
+  jobId: string,
+): Promise<ContinuousGenerationJobResponse> {
+  if (!isFileProjectId(projectId)) throw new Error("continuous_generation_only_supports_file_projects");
+  return await fetchJson(
+    `${fileProjectPath(projectId)}/continuous-generation-jobs/${encodeURIComponent(jobId)}/continue`,
+    { method: "POST" },
+    CONTINUOUS_GENERATION_TIMEOUT_MS,
+  );
+}
+
+export async function cancelContinuousGeneration(
+  projectId: string,
+  jobId: string,
+): Promise<ContinuousGenerationJobResponse> {
+  if (!isFileProjectId(projectId)) throw new Error("continuous_generation_only_supports_file_projects");
+  return await fetchJson(
+    `${fileProjectPath(projectId)}/continuous-generation-jobs/${encodeURIComponent(jobId)}/cancel`,
+    { method: "POST" },
+    CONTINUOUS_GENERATION_TIMEOUT_MS,
+  );
+}

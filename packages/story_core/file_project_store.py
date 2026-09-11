@@ -7263,6 +7263,7 @@ class FileProjectStore(
         commit_message: str | None = None,
         persist: bool = True,
         accept_quality_warnings: bool = False,
+        consistency_override: bool = False,
     ) -> dict[str, Any]:
         from packages.story_core.engine import StoryEngine
 
@@ -7306,7 +7307,31 @@ class FileProjectStore(
         with prompt_template_scope(self.prompt_template_object, self.prompt_template_source), prompt_call_recording(
             self.prompt_call_log()
         ):
-            bundle = generator.generate_next_chapter(story)
+            if consistency_override:
+                try:
+                    signature = inspect.signature(generator.generate_next_chapter)
+                except (TypeError, ValueError):
+                    signature = None
+                accepts_override = bool(
+                    signature
+                    and (
+                        "consistency_override" in signature.parameters
+                        or any(
+                            parameter.kind is inspect.Parameter.VAR_KEYWORD
+                            for parameter in signature.parameters.values()
+                        )
+                    )
+                )
+                bundle = (
+                    generator.generate_next_chapter(
+                        story,
+                        consistency_override=True,
+                    )
+                    if accepts_override
+                    else generator.generate_next_chapter(story)
+                )
+            else:
+                bundle = generator.generate_next_chapter(story)
         if not persist:
             project_id = str(
                 project.get("project_id")
@@ -8018,6 +8043,7 @@ class FileProjectStore(
         guidance: str | None = None,
         commit_message: str | None = None,
         persist: bool = True,
+        consistency_override: bool = False,
     ) -> dict[str, Any]:
         # Model generation stays inside the per-project lock so a later rewrite
         # cannot be generated from state that another same-project rewrite replaces.
@@ -8067,7 +8093,31 @@ class FileProjectStore(
         with prompt_template_scope(self.prompt_template_object, self.prompt_template_source), prompt_call_recording(
             self.prompt_call_log()
         ):
-            bundle = generator.generate_next_chapter(story)
+            if consistency_override:
+                try:
+                    signature = inspect.signature(generator.generate_next_chapter)
+                except (TypeError, ValueError):
+                    signature = None
+                accepts_override = bool(
+                    signature
+                    and (
+                        "consistency_override" in signature.parameters
+                        or any(
+                            parameter.kind is inspect.Parameter.VAR_KEYWORD
+                            for parameter in signature.parameters.values()
+                        )
+                    )
+                )
+                bundle = (
+                    generator.generate_next_chapter(
+                        story,
+                        consistency_override=True,
+                    )
+                    if accepts_override
+                    else generator.generate_next_chapter(story)
+                )
+            else:
+                bundle = generator.generate_next_chapter(story)
         if int(getattr(bundle, "chapter_number", 0) or 0) != chapter_number:
             raise ValueError(f"regenerated_wrong_chapter:{getattr(bundle, 'chapter_number', None)}")
         quality_report = getattr(bundle, "quality_report", None)

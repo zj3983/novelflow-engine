@@ -43,6 +43,7 @@ from apps.api.storage import (
 from packages.story_core.engine import ChapterBundle, StoryEngine
 
 from packages.story_core.generation_progress import generation_progress
+from packages.story_core.generation_consistency_gate import ConsistencyGateRequired
 
 from packages.story_core.models import (
 
@@ -128,6 +129,9 @@ _project_update_locks_guard = Lock()
 GENERATION_JOB_STALE_SECONDS = 15 * 60
 
 GENERATION_JOB_STEP_LIMIT = 200
+GENERATION_JOB_ACTIVE_STATUSES = frozenset(
+    {"queued", "running", "awaiting_consistency_override"}
+)
 
 
 
@@ -718,9 +722,23 @@ class GenerationJobResponse(BaseModel):
 
     steps: list[dict[str, object]] = Field(default_factory=list)
 
+    consistency_gate: dict[str, object] | None = None
+
+    consistency_override: bool = False
+
     created_at: str
 
     updated_at: str
+
+
+class StoryGenerateRequest(BaseModel):
+
+    consistency_override: bool = False
+
+
+class StoryGenerationJobRequest(BaseModel):
+
+    consistency_override: bool = False
 
 
 
@@ -929,6 +947,14 @@ def _generation_job_response(job: dict[str, object]) -> GenerationJobResponse:
         error=str(job.get("error", "")),
 
         steps=steps,
+
+        consistency_gate=(
+            dict(job.get("consistency_gate"))
+            if isinstance(job.get("consistency_gate"), dict)
+            else None
+        ),
+
+        consistency_override=bool(job.get("consistency_override")),
 
         created_at=str(job.get("created_at", "")),
 
@@ -1159,9 +1185,24 @@ def _mark_project_simulating(story_id: str) -> None:
 
 
 
-def _generate_story_chapter(story_id: str):
+def _generate_story_chapter(
 
-    bundle = store.generate_next(story_id, engine)
+    story_id: str,
+
+    *,
+
+    consistency_override: bool = False,
+):
+
+    bundle = store.generate_next(
+
+        story_id,
+
+        engine,
+
+        **({"consistency_override": True} if consistency_override else {}),
+
+    )
 
     _mark_project_simulating(story_id)
 
@@ -1207,7 +1248,12 @@ def _story_state_before_chapter(record, chapter_number: int) -> StoryState:
 
 
 
-def _run_generation_job(job_id: str, story_id: str) -> None:
+def _run_generation_job(
+    job_id: str,
+    story_id: str,
+    *,
+    consistency_override: bool = False,
+) -> None:
     def report_progress(message: str | dict[str, object]) -> None:
         if isinstance(message, dict):
             progress_message = str(message.get("message", "")).strip()
@@ -1254,8 +1300,44 @@ def _run_generation_job(job_id: str, story_id: str) -> None:
         }
     )
     try:
+        with _generation_jobs_lock:
+            stored_job = _generation_jobs.get(job_id)
+            if stored_job is not None:
+                consistency_override = bool(
+                    stored_job.get("consistency_override")
+                ) or consistency_override
         with generation_progress(report_progress):
-            bundle = _generate_story_chapter(story_id)
+            bundle = _generate_story_chapter(
+                story_id,
+                **(
+                    {"consistency_override": True}
+                    if consistency_override
+                    else {}
+                ),
+            )
+    except ConsistencyGateRequired as exc:
+        gate_payload = exc.gate.model_dump(mode="json")
+        _update_generation_job(
+            job_id,
+            status="awaiting_consistency_override",
+            progress="生成前检查发现一致性问题，等待作者决定",
+            error="",
+            consistency_gate=gate_payload,
+            consistency_override=False,
+        )
+        with _generation_jobs_lock:
+            job = _generation_jobs.get(job_id)
+            if job is not None:
+                _append_generation_job_step(
+                    job,
+                    {
+                        "message": "生成前检查发现一致性问题，等待作者决定",
+                        "stage": "consistency_check",
+                        "source": "generation-consistency-gate",
+                        "artifact": {"gate": gate_payload},
+                    },
+                    status="done",
+                )
     except SimulationFailedError as exc:
         _update_generation_job(job_id, status="failed", progress="生成失败", error=_simulation_failed_detail(exc))
         with _generation_jobs_lock:
@@ -1321,7 +1403,14 @@ def _run_generation_job(job_id: str, story_id: str) -> None:
                 )
     finally:
         with _generation_jobs_lock:
-            if _active_generation_jobs.get(story_id) == job_id:
+            current_job = _generation_jobs.get(job_id)
+            if (
+                _active_generation_jobs.get(story_id) == job_id
+                and (
+                    current_job is None
+                    or current_job.get("status") not in GENERATION_JOB_ACTIVE_STATUSES
+                )
+            ):
                 _active_generation_jobs.pop(story_id, None)
 
 
@@ -2515,7 +2604,7 @@ def _assert_project_lifecycle_mutation_allowed(project: NovelProject) -> None:
 
             job = _generation_jobs.get(job_id or "")
 
-            if job and job.get("status") in {"queued", "running"}:
+            if job and job.get("status") in GENERATION_JOB_ACTIVE_STATUSES:
 
                 raise HTTPException(status_code=409, detail="project_generation_in_progress")
 
@@ -3597,7 +3686,10 @@ def get_story(story_id: str) -> StoryResponse:
 
 @router.post("/stories/{story_id}/generate")
 
-def generate_next_chapter(story_id: str) -> dict:
+def generate_next_chapter(
+    story_id: str,
+    payload: StoryGenerateRequest | None = None,
+) -> dict:
 
     if store.get(story_id) is None:
 
@@ -3605,7 +3697,14 @@ def generate_next_chapter(story_id: str) -> dict:
 
     try:
 
-        bundle = _generate_story_chapter(story_id)
+        bundle = _generate_story_chapter(
+            story_id,
+            **(
+                {"consistency_override": True}
+                if payload and payload.consistency_override
+                else {}
+            ),
+        )
 
         return bundle.model_dump()
 
@@ -3613,13 +3712,27 @@ def generate_next_chapter(story_id: str) -> dict:
 
         raise HTTPException(status_code=503, detail=_simulation_failed_detail(exc)) from exc
 
+    except ConsistencyGateRequired as exc:
+
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "consistency_required",
+                "message": "生成前检查发现一致性问题，请确认后继续。",
+                "gate": exc.gate.model_dump(mode="json"),
+            },
+        ) from exc
+
 
 
 
 
 @router.post("/stories/{story_id}/generation-jobs")
 
-def start_generation_job(story_id: str) -> GenerationJobResponse:
+def start_generation_job(
+    story_id: str,
+    payload: StoryGenerationJobRequest | None = None,
+) -> GenerationJobResponse:
     if store.get(story_id) is None:
         raise HTTPException(status_code=404, detail="story_not_found")
     with _generation_jobs_lock:
@@ -3628,7 +3741,7 @@ def start_generation_job(story_id: str) -> GenerationJobResponse:
             active_job = _generation_jobs.get(active_job_id)
             if active_job:
                 _reconcile_generation_job_locked(active_job)
-            if active_job and active_job.get("status") in {"queued", "running"}:
+            if active_job and active_job.get("status") in GENERATION_JOB_ACTIVE_STATUSES:
                 return _generation_job_response(active_job)
 
         now = _now_iso()
@@ -3664,12 +3777,19 @@ def start_generation_job(story_id: str) -> GenerationJobResponse:
             "starting_chapter": record.story.current_chapter if record else 0,
             "created_at": now,
             "updated_at": now,
+            "consistency_gate": None,
+            "consistency_override": bool(payload.consistency_override) if payload else False,
         }
         _generation_jobs[job_id] = job
         _active_generation_jobs[story_id] = job_id
         response = _generation_job_response(job)
 
-    _generation_executor.submit(_run_generation_job, job_id, story_id)
+    _generation_executor.submit(
+        _run_generation_job,
+        job_id,
+        story_id,
+        consistency_override=bool(payload.consistency_override) if payload else False,
+    )
     return response
 
 
@@ -3720,6 +3840,109 @@ def get_generation_job(story_id: str, job_id: str) -> GenerationJobResponse:
             raise HTTPException(status_code=404, detail="generation_job_not_found")
 
         _reconcile_generation_job_locked(job)
+
+        return _generation_job_response(job)
+
+
+@router.post("/stories/{story_id}/generation-jobs/{job_id}/continue")
+
+def continue_generation_job(story_id: str, job_id: str) -> GenerationJobResponse:
+    """Explicitly resume a paused pre-generation consistency check."""
+
+    with _generation_jobs_lock:
+
+        job = _generation_jobs.get(job_id)
+
+        if job is None or job.get("story_id") != story_id:
+
+            raise HTTPException(status_code=404, detail="generation_job_not_found")
+
+        current_status = str(job.get("status") or "")
+
+        if current_status in {"queued", "running"}:
+
+            return _generation_job_response(job)
+
+        if current_status != "awaiting_consistency_override":
+
+            raise HTTPException(status_code=409, detail="consistency_override_not_available")
+
+        job.update(
+            {
+                "status": "queued",
+                "progress": "已确认一致性提示，继续生成",
+                "error": "",
+                "consistency_override": True,
+                "updated_at": _now_iso(),
+            }
+        )
+
+        _append_generation_job_step(
+            job,
+            {
+                "message": "已确认一致性提示，继续生成",
+                "stage": "consistency_check",
+                "source": "generation-consistency-gate",
+                "artifact": {"reason": "author_override_requested"},
+            },
+            status="queued",
+        )
+
+        _active_generation_jobs[story_id] = job_id
+
+        response = _generation_job_response(job)
+
+    _generation_executor.submit(
+        _run_generation_job,
+        job_id,
+        story_id,
+        consistency_override=True,
+    )
+
+    return response
+
+
+@router.post("/stories/{story_id}/generation-jobs/{job_id}/cancel")
+
+def cancel_generation_job(story_id: str, job_id: str) -> GenerationJobResponse:
+    """Release a paused job when the author returns to edit the plan."""
+
+    with _generation_jobs_lock:
+
+        job = _generation_jobs.get(job_id)
+
+        if job is None or job.get("story_id") != story_id:
+
+            raise HTTPException(status_code=404, detail="generation_job_not_found")
+
+        if str(job.get("status") or "") != "awaiting_consistency_override":
+            if str(job.get("status") or "") in {"completed", "failed", "cancelled"}:
+                return _generation_job_response(job)
+            raise HTTPException(status_code=409, detail="consistency_cancel_not_available")
+
+        job.update(
+            {
+                "status": "cancelled",
+                "progress": "已返回修改，未启动写手",
+                "error": "",
+                "updated_at": _now_iso(),
+            }
+        )
+
+        _append_generation_job_step(
+            job,
+            {
+                "message": "已返回修改，未启动写手",
+                "stage": "consistency_check",
+                "source": "generation-consistency-gate",
+                "artifact": {"reason": "author_returned_to_edit"},
+            },
+            status="done",
+        )
+
+        if _active_generation_jobs.get(story_id) == job_id:
+
+            _active_generation_jobs.pop(story_id, None)
 
         return _generation_job_response(job)
 

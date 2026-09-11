@@ -111,6 +111,11 @@ from packages.story_core.writer_character_context import (
     writer_historical_chapter,
 )
 from packages.story_core.continuity.delta import ContinuityDelta
+from packages.story_core.generation_consistency_gate import (
+    ConsistencyGateRequired,
+    GenerationConsistencyGate,
+    require_generation_consistency,
+)
 from packages.story_core.skill_packs import resolve_enabled_skill_module_ids
 
 
@@ -158,6 +163,7 @@ class ModularChapterBundle:
     canon_preflight: dict[str, Any] = field(default_factory=dict)
     writer_trace_id: str = ""
     consistency_findings: list[dict[str, Any]] = field(default_factory=list)
+    consistency_gate: GenerationConsistencyGate | None = None
     continuity_delta: ContinuityDelta | None = None
     fact_extractor_trace_id: str = ""
 
@@ -1131,6 +1137,8 @@ def run_modular_pipeline(
     workflow_store: Any | None = None,
     job_id: str | None = None,
     rewrite_guidance: str = "",
+    consistency_source: Any | None = None,
+    consistency_override: bool = False,
 ) -> ModularChapterBundle:
     """Run Director -> CanonService -> Writer -> FactExtractor end-to-end.
 
@@ -1204,6 +1212,58 @@ def run_modular_pipeline(
                         director_result.artifact.entity_requirements
                     ),
                 },
+            },
+        }
+    )
+    report_generation_progress(
+        {
+            "message": "正在检查生成前人物一致性",
+            "stage": "consistency_check",
+            "source": "generation-consistency-gate",
+            "artifact": {
+                "reason": "pre_writer_check_started",
+                "inputs": {
+                    "chapter_number": chapter_number,
+                    "historical_boundary": chapter_number - 1,
+                },
+            },
+        }
+    )
+    try:
+        consistency_gate = require_generation_consistency(
+            consistency_source or project_root,
+            director_result.artifact,
+            target_chapter=chapter_number,
+            fallback_root=project_root if consistency_source is not None else None,
+            override=consistency_override,
+        )
+    except ConsistencyGateRequired as exc:
+        report_generation_progress(
+            {
+                "message": "生成前一致性检查发现问题，等待作者决定",
+                "status": "error",
+                "stage": "consistency_check",
+                "source": "generation-consistency-gate",
+                "artifact": {
+                    "reason": "author_decision_required",
+                    "gate": exc.gate.model_dump(mode="json"),
+                },
+            }
+        )
+        raise
+    report_generation_progress(
+        {
+            "message": (
+                "生成前一致性检查通过"
+                if consistency_gate.status == "clear"
+                else "已记录一致性提示，按作者决定继续生成"
+            ),
+            "status": "done",
+            "stage": "consistency_check",
+            "source": "generation-consistency-gate",
+            "artifact": {
+                "reason": "pre_writer_check_completed",
+                "gate": consistency_gate.model_dump(mode="json"),
             },
         }
     )
@@ -1378,6 +1438,7 @@ def run_modular_pipeline(
         canon_preflight=dict(writer_result.canon_preflight or {}),
         writer_trace_id=writer_result.trace_id,
         consistency_findings=list(writer_result.consistency_findings or []),
+        consistency_gate=consistency_gate,
         continuity_delta=delta,
         fact_extractor_trace_id=f"fact-extractor:{chapter_number}",
     )

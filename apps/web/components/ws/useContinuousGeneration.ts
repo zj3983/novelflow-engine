@@ -6,6 +6,8 @@ import { useRouter } from "next/navigation";
 import {
   fetchContinuousGenerationJob,
   fetchCurrentContinuousGeneration,
+  cancelContinuousGeneration,
+  continueContinuousGeneration,
   startContinuousGeneration,
   stopContinuousGeneration,
   type ContinuousGenerationJobResponse,
@@ -13,7 +15,7 @@ import {
 } from "../../lib/api";
 
 export type ContinuousCount = 2 | 5 | 10 | 20;
-type ContinuousAction = "start" | "stop" | null;
+type ContinuousAction = "start" | "stop" | "continue" | "cancel" | null;
 
 type UseContinuousGenerationOptions = {
   enabled: boolean;
@@ -41,7 +43,11 @@ export function useContinuousGeneration({
   const [job, setJob] = useState<ContinuousGenerationJobResponse | null>(null);
   const [error, setError] = useState("");
   const [action, setAction] = useState<ContinuousAction>(null);
-  const active = job?.status === "queued" || job?.status === "running" || job?.status === "stopping";
+  const awaitingConsistency = job?.status === "awaiting_consistency_override";
+  const active = job?.status === "queued"
+    || job?.status === "running"
+    || job?.status === "stopping"
+    || awaitingConsistency;
 
   useEffect(() => {
     let cancelled = false;
@@ -70,7 +76,7 @@ export function useContinuousGeneration({
   }, [enabled, projectId]);
 
   useEffect(() => {
-    if (!enabled || !projectId || !job?.job_id || !active) return;
+    if (!enabled || !projectId || !job?.job_id || !active || awaitingConsistency) return;
     let cancelled = false;
     const timer = window.setInterval(() => {
       fetchContinuousGenerationJob(projectId, job.job_id)
@@ -97,7 +103,7 @@ export function useContinuousGeneration({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [active, encodedProjectId, enabled, job?.job_id, projectId, refresh, router]);
+  }, [active, awaitingConsistency, encodedProjectId, enabled, job?.job_id, projectId, refresh, router]);
 
   function openRequiredOutline() {
     const needsVolume = volumeWorkflowStatus === "volume_missing";
@@ -142,7 +148,7 @@ export function useContinuousGeneration({
   }
 
   async function stop() {
-    if (!job?.job_id || !active || action) return;
+    if (!job?.job_id || !active || awaitingConsistency || action) return;
     setAction("stop");
     setError("");
     try {
@@ -154,12 +160,54 @@ export function useContinuousGeneration({
     }
   }
 
+  async function continueGeneration() {
+    if (!job?.job_id || !awaitingConsistency || action) return;
+    setAction("continue");
+    setError("");
+    try {
+      setJob(await continueContinuousGeneration(projectId, job.job_id));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setAction(null);
+    }
+  }
+
+  async function cancel() {
+    if (!job?.job_id || !awaitingConsistency || action) return null;
+    setAction("cancel");
+    setError("");
+    try {
+      const cancelled = await cancelContinuousGeneration(projectId, job.job_id);
+      setJob(cancelled);
+      return cancelled;
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      return null;
+    } finally {
+      setAction(null);
+    }
+  }
+
+  async function returnToEdit() {
+    const targetChapter = job?.consistency_gate?.target_chapter || nextChapterNumber;
+    const cancelled = await cancel();
+    if (!cancelled) return;
+    router.push(
+      `/projects/${encodedProjectId}/outline?tab=chapters&chapter=${targetChapter}&reason=consistency_required`,
+    );
+  }
+
   return {
     action,
     active,
+    awaitingConsistency,
     count,
     error,
     job,
+    continueGeneration,
+    cancel,
+    returnToEdit,
     setCount,
     start,
     stop,

@@ -2,6 +2,7 @@ import json
 import threading
 import time
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,8 +11,14 @@ from fastapi.testclient import TestClient
 from apps.api.main import app
 from apps.api.routes import file_projects
 from apps.api.routes import stories as story_routes
+from apps.api.storage import SQLiteStoryStore
 from apps.api.routes.stories import _quality_context
 from packages.story_core.engine import ChapterBundle
+from packages.story_core.character_inspection import ConsistencyWarning
+from packages.story_core.generation_consistency_gate import (
+    ConsistencyGateRequired,
+    GenerationConsistencyGate,
+)
 from packages.story_core.models import NovelProject, StoryState
 from packages.story_core.project_outline import normalize_project_outline
 
@@ -1420,6 +1427,179 @@ def test_project_lifecycle_change_is_blocked_while_generation_is_active():
     assert response.json()["detail"] == "project_generation_in_progress"
 
 
+def test_story_generation_job_pauses_and_resumes_after_consistency_override(monkeypatch):
+    story_id = "s-generation-consistency-job"
+    created = client.post(
+        "/stories",
+        json={
+            "story_id": story_id,
+            "outline": "主角处理一桩现实麻烦。",
+            "genre": "urban",
+            "style": "现代中文",
+        },
+    )
+    assert created.status_code == 200, created.text
+
+    gate = GenerationConsistencyGate(
+        target_chapter=1,
+        status="blocking",
+        warnings=[
+            ConsistencyWarning(
+                code="SKILL_NOT_YET_ACQUIRED",
+                severity="error",
+                character_name="主角",
+                target_chapter=1,
+                message="技能尚未获得",
+                expected="未来技能",
+                observed={"acquired_chapter": 3},
+            )
+        ],
+        checked_characters=["主角"],
+        checked_at_boundary=0,
+    )
+    submitted: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(
+        story_routes._generation_executor,
+        "submit",
+        lambda fn, *args, **kwargs: submitted.append((fn, args, kwargs)),
+    )
+    calls: list[bool] = []
+
+    def fake_generate(requested_story_id: str, **kwargs):
+        assert requested_story_id == story_id
+        override = bool(kwargs.get("consistency_override"))
+        calls.append(override)
+        if not override:
+            raise ConsistencyGateRequired(gate)
+        return SimpleNamespace(chapter_number=1)
+
+    monkeypatch.setattr(story_routes, "_generate_story_chapter", fake_generate)
+
+    try:
+        started = client.post(f"/stories/{story_id}/generation-jobs", json={})
+        assert started.status_code == 200, started.text
+        job_id = started.json()["job_id"]
+        assert len(submitted) == 1
+
+        worker, args, kwargs = submitted.pop(0)
+        worker(*args, **kwargs)
+
+        paused = client.get(f"/stories/{story_id}/generation-jobs/{job_id}")
+        assert paused.status_code == 200, paused.text
+        assert paused.json()["status"] == "awaiting_consistency_override"
+        assert paused.json()["consistency_gate"]["target_chapter"] == 1
+        assert paused.json()["consistency_override"] is False
+        assert calls == [False]
+
+        resumed = client.post(
+            f"/stories/{story_id}/generation-jobs/{job_id}/continue"
+        )
+        assert resumed.status_code == 200, resumed.text
+        assert resumed.json()["status"] == "queued"
+        assert resumed.json()["consistency_override"] is True
+        assert len(submitted) == 1
+
+        worker, args, kwargs = submitted.pop(0)
+        worker(*args, **kwargs)
+
+        completed = client.get(f"/stories/{story_id}/generation-jobs/{job_id}")
+        assert completed.status_code == 200, completed.text
+        assert completed.json()["status"] == "completed"
+        assert completed.json()["chapter_number"] == 1
+        assert calls == [False, True]
+    finally:
+        with story_routes._generation_jobs_lock:
+            story_routes._active_generation_jobs.pop(story_id, None)
+            for job_id, job in list(story_routes._generation_jobs.items()):
+                if job.get("story_id") == story_id:
+                    story_routes._generation_jobs.pop(job_id, None)
+
+
+def test_sqlite_generation_override_forwards_to_engine(tmp_path):
+    story = StoryState(
+        story_id="s-sqlite-consistency-override",
+        outline="主角处理一桩现实麻烦。",
+        genre="urban",
+        style="现代中文",
+    )
+    store = SQLiteStoryStore(str(tmp_path / "stories.db"))
+    store.create(story)
+    calls: list[bool] = []
+
+    class Engine:
+        def generate_next_chapter(self, current_story, *, consistency_override=False):
+            calls.append(bool(consistency_override))
+            return ChapterBundle(
+                chapter_number=1,
+                body="正文。",
+                next_outline="继续。",
+                updated_story=current_story,
+                simulation_status={"ok": True},
+            )
+
+    generated = store.generate_next(
+        story.story_id,
+        Engine(),
+        consistency_override=True,
+    )
+
+    assert generated.chapter_number == 1
+    assert calls == [True]
+
+
+def test_story_generation_recomputes_gate_instead_of_trusting_client_payload(monkeypatch):
+    story_id = "s-generation-consistency-client-payload"
+    created = client.post(
+        "/stories",
+        json={
+            "story_id": story_id,
+            "outline": "主角处理一桩现实麻烦。",
+            "genre": "urban",
+            "style": "现代中文",
+        },
+    )
+    assert created.status_code == 200, created.text
+
+    gate = GenerationConsistencyGate(
+        target_chapter=1,
+        status="blocking",
+        warnings=[
+            ConsistencyWarning(
+                code="SKILL_NOT_YET_ACQUIRED",
+                severity="error",
+                character_name="主角",
+                target_chapter=1,
+                message="技能尚未获得",
+                expected="未来技能",
+                observed={"acquired_chapter": 3},
+            )
+        ],
+        checked_characters=["主角"],
+        checked_at_boundary=0,
+    )
+    writer_calls: list[bool] = []
+
+    def fake_generate(requested_story_id: str, **kwargs):
+        assert requested_story_id == story_id
+        writer_calls.append(bool(kwargs.get("consistency_override")))
+        raise ConsistencyGateRequired(gate)
+
+    monkeypatch.setattr(story_routes, "_generate_story_chapter", fake_generate)
+
+    response = client.post(
+        f"/stories/{story_id}/generate",
+        json={
+            "consistency_gate": {"status": "clear", "warnings": []},
+            "consistency_override": False,
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "consistency_required"
+    assert response.json()["detail"]["gate"]["status"] == "blocking"
+    assert writer_calls == [False]
+
+
 def test_database_project_prompt_preview_exposes_modular_prompts():
     project_id = "p-prompt-preview"
     story_id = "s-prompt-preview"
@@ -1701,6 +1881,7 @@ def test_file_project_generation_job_accepts_temporary_guidance(tmp_path, monkey
         "chapter_number": 1,
         "variant": None,
         "guidance": "use dissection guidance",
+        "consistency_override": False,
     }
 
 

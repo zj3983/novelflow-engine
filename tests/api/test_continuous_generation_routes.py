@@ -10,7 +10,12 @@ from apps.api.main import app
 from apps.api.routes import file_projects as file_project_routes
 from apps.api.services.continuous_generation import ContinuousGenerationJobStore
 from packages.story_core.candidate_draft import CandidateDraft
+from packages.story_core.character_inspection import ConsistencyWarning
 from packages.story_core.file_project_store import FileProjectStore
+from packages.story_core.generation_consistency_gate import (
+    ConsistencyGateRequired,
+    GenerationConsistencyGate,
+)
 
 
 @pytest.fixture
@@ -276,3 +281,122 @@ def test_job_lookup_rejects_job_from_another_project(continuous_api) -> None:
     )
 
     assert response.status_code == 404
+
+
+def _generation_gate() -> GenerationConsistencyGate:
+    return GenerationConsistencyGate(
+        target_chapter=11,
+        status="blocking",
+        warnings=[
+            ConsistencyWarning(
+                code="SKILL_NOT_YET_ACQUIRED",
+                severity="error",
+                character_name="林照",
+                target_chapter=11,
+                message="技能尚未获得",
+                expected="FUTURE_SKILL_999",
+                observed={"acquired_chapter": 25},
+            )
+        ],
+        checked_characters=["林照"],
+        checked_at_boundary=10,
+    )
+
+
+def test_file_generation_job_pauses_before_writer_and_resumes_only_after_override(
+    continuous_api,
+    monkeypatch,
+) -> None:
+    client, export_root, submitted = continuous_api
+    project_id = _seed_project(export_root)
+    generation_submitted: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(
+        file_project_routes._file_generation_executor,
+        "submit",
+        lambda fn, *args, **kwargs: generation_submitted.append((fn, args, kwargs)),
+    )
+    monkeypatch.setattr(
+        FileProjectStore,
+        "rolling_fill_status",
+        lambda self, target_chapter: {"status": "present", "target_chapter": target_chapter},
+    )
+    monkeypatch.setattr(FileProjectStore, "require_volume_detail_for_prose", lambda self, target: None)
+    calls: list[bool] = []
+    gate = _generation_gate()
+
+    def fake_generate(self, *args, **kwargs):
+        override = bool(kwargs.get("consistency_override"))
+        calls.append(override)
+        if not override:
+            raise ConsistencyGateRequired(gate)
+        return {"chapter_number": 11, "candidate": {"candidate_id": "candidate-11"}}
+
+    monkeypatch.setattr(FileProjectStore, "generate_next_chapter", fake_generate)
+
+    started = client.post(f"/file-projects/{project_id}/generation-jobs", json={})
+    assert started.status_code == 200, started.text
+    assert len(generation_submitted) == 1
+    worker, args, kwargs = generation_submitted.pop(0)
+    worker(*args, **kwargs)
+
+    paused = client.get(
+        f"/file-projects/{project_id}/generation-jobs/{started.json()['job_id']}"
+    )
+    assert paused.status_code == 200, paused.text
+    assert paused.json()["status"] == "awaiting_consistency_override"
+    assert paused.json()["consistency_gate"]["target_chapter"] == 11
+    assert calls == [False]
+
+    resumed = client.post(
+        f"/file-projects/{project_id}/generation-jobs/{started.json()['job_id']}/continue"
+    )
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["consistency_override"] is True
+    assert len(generation_submitted) == 1
+    worker, args, kwargs = generation_submitted.pop(0)
+    worker(*args, **kwargs)
+
+    completed = client.get(
+        f"/file-projects/{project_id}/generation-jobs/{started.json()['job_id']}"
+    )
+    assert completed.json()["status"] == "completed"
+    assert calls == [False, True]
+
+
+def test_file_generation_consistency_cancel_releases_job_without_writer(
+    continuous_api,
+    monkeypatch,
+) -> None:
+    client, export_root, _submitted = continuous_api
+    project_id = _seed_project(export_root)
+    generation_submitted: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(
+        file_project_routes._file_generation_executor,
+        "submit",
+        lambda fn, *args, **kwargs: generation_submitted.append((fn, args, kwargs)),
+    )
+    monkeypatch.setattr(
+        FileProjectStore,
+        "rolling_fill_status",
+        lambda self, target_chapter: {"status": "present", "target_chapter": target_chapter},
+    )
+    monkeypatch.setattr(FileProjectStore, "require_volume_detail_for_prose", lambda self, target: None)
+    writer_calls: list[object] = []
+
+    def fail_generate(self, *args, **kwargs):
+        writer_calls.append((args, kwargs))
+        raise ConsistencyGateRequired(_generation_gate())
+
+    monkeypatch.setattr(FileProjectStore, "generate_next_chapter", fail_generate)
+    started = client.post(f"/file-projects/{project_id}/generation-jobs", json={})
+    worker, args, kwargs = generation_submitted.pop(0)
+    worker(*args, **kwargs)
+
+    cancelled = client.post(
+        f"/file-projects/{project_id}/generation-jobs/{started.json()['job_id']}/cancel"
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["status"] == "cancelled"
+    assert cancelled.json()["progress"] == "已返回修改，未启动写手"
+    assert len(writer_calls) == 1
+    assert generation_submitted == []

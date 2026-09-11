@@ -11,13 +11,17 @@ import { useChapterDetail } from "../../../../components/ws/useChapterDetail";
 import { SimplifiedReview } from "../../../../components/ws/SimplifiedReview";
 import { RollingOutlineCard } from "../../../../components/ws/RollingOutlineCard";
 import { ContinuousGenerationPanel } from "../../../../components/ws/ContinuousGenerationPanel";
+import { GenerationConsistencyPanel } from "../../../../components/ws/GenerationConsistencyPanel";
 import { useContinuousGeneration } from "../../../../components/ws/useContinuousGeneration";
 import {
   downstreamRewriteNotice,
   confirmFileProjectCandidate,
   discardFileProjectCandidate,
   fetchFileProjectCandidates,
+  fetchCurrentGenerationJob,
   fetchGenerationJob,
+  continueGenerationJob,
+  cancelGenerationJob,
   fetchProjectWritingPacket,
   fetchVolumeWorkflow,
   startFileProjectRegenerationJob,
@@ -27,6 +31,8 @@ import {
   type CandidateDraft,
   type CodexWritingPacket,
   type GenerationJobStep,
+  type GenerationJobResponse,
+  type GenerationConsistencyGate,
   type VolumeWorkflowResponse,
 } from "../../../../lib/api";
 import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
@@ -155,6 +161,9 @@ export default function WritePage() {
   const [pendingCandidate, setPendingCandidate] = useState<CandidateDraft | null>(null);
   const [nextPendingCandidate, setNextPendingCandidate] = useState<CandidateDraft | null>(null);
   const [candidateAction, setCandidateAction] = useState<"confirm" | "force-confirm" | "discard" | null>(null);
+  const [generationConsistencyGate, setGenerationConsistencyGate] = useState<GenerationConsistencyGate | null>(null);
+  const [generationConsistencyJob, setGenerationConsistencyJob] = useState<GenerationJobResponse | null>(null);
+  const [generationConsistencyAction, setGenerationConsistencyAction] = useState<"continue" | "return" | null>(null);
   const mountedRef = useRef(false);
   const operationTokenRef = useRef(0);
 
@@ -229,6 +238,27 @@ export default function WritePage() {
   const generationTargetId = isFileProject ? projectId : story?.story_id;
   const canGenerateNext = Boolean(generationTargetId);
   const nextChapterNumber = (story?.current_chapter ?? 0) + 1;
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!generationTargetId) {
+      setGenerationConsistencyGate(null);
+      setGenerationConsistencyJob(null);
+      return;
+    }
+    fetchCurrentGenerationJob(generationTargetId)
+      .then((current) => {
+        if (cancelled || !current) return;
+        if (current.status === "awaiting_consistency_override" && current.consistency_gate) {
+          setGenerationConsistencyJob(current);
+          setGenerationConsistencyGate(current.consistency_gate);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [generationTargetId, refreshVersion]);
 
   useEffect(() => {
     let cancelled = false;
@@ -366,6 +396,21 @@ export default function WritePage() {
   const lengthIssues = lengthReview?.issues ?? [];
   const writingLessons = story?.writing_lessons ?? [];
 
+  function captureGenerationConsistencyJob(currentJob: GenerationJobResponse): boolean {
+    if (currentJob.status !== "awaiting_consistency_override" || !currentJob.consistency_gate) {
+      return false;
+    }
+    setGenerationConsistencyJob(currentJob);
+    setGenerationConsistencyGate(currentJob.consistency_gate);
+    setRegenerateStatus("等待作者确认生成前一致性提示");
+    return true;
+  }
+
+  function clearGenerationConsistencyJob() {
+    setGenerationConsistencyGate(null);
+    setGenerationConsistencyJob(null);
+  }
+
   async function loadPendingCandidate(chapterNumber: number): Promise<CandidateDraft | null> {
     if (!isFileProject) return null;
     const response = await fetchFileProjectCandidates(projectId, chapterNumber);
@@ -394,6 +439,7 @@ export default function WritePage() {
       let currentJob = job;
       setGenerationSteps(Array.isArray(job.steps) ? job.steps : []);
       setRegenerateStatus(currentJob.progress || currentJob.status);
+      if (captureGenerationConsistencyJob(currentJob)) return;
       while (currentJob.status === "queued" || currentJob.status === "running") {
         await new Promise((resolve) => window.setTimeout(resolve, 2000));
         if (!operationIsActive()) return;
@@ -401,6 +447,7 @@ export default function WritePage() {
         if (!operationIsActive()) return;
         setGenerationSteps(Array.isArray(currentJob.steps) ? currentJob.steps : []);
         setRegenerateStatus(currentJob.progress || currentJob.status);
+        if (captureGenerationConsistencyJob(currentJob)) return;
       }
       if (currentJob.status === "failed") {
         throw new Error(currentJob.error || "regenerate_failed");
@@ -432,6 +479,7 @@ export default function WritePage() {
       let currentJob = job;
       setGenerationSteps(Array.isArray(job.steps) ? job.steps : []);
       setRegenerateStatus(currentJob.progress || currentJob.status);
+      if (captureGenerationConsistencyJob(currentJob)) return;
       while (currentJob.status === "queued" || currentJob.status === "running") {
         await new Promise((resolve) => window.setTimeout(resolve, 2000));
         if (!operationIsActive()) return;
@@ -439,6 +487,7 @@ export default function WritePage() {
         if (!operationIsActive()) return;
         setGenerationSteps(Array.isArray(currentJob.steps) ? currentJob.steps : []);
         setRegenerateStatus(currentJob.progress || currentJob.status);
+        if (captureGenerationConsistencyJob(currentJob)) return;
       }
       if (currentJob.status === "failed") {
         throw new Error(currentJob.error || "chapter_expansion_failed");
@@ -476,6 +525,7 @@ export default function WritePage() {
       let currentJob = job;
       setGenerationSteps(Array.isArray(job.steps) ? job.steps : []);
       setRegenerateStatus(currentJob.progress || currentJob.status);
+      if (captureGenerationConsistencyJob(currentJob)) return;
       while (currentJob.status === "queued" || currentJob.status === "running") {
         await new Promise((resolve) => window.setTimeout(resolve, 2000));
         if (!operationIsActive()) return;
@@ -483,6 +533,7 @@ export default function WritePage() {
         if (!operationIsActive()) return;
         setGenerationSteps(Array.isArray(currentJob.steps) ? currentJob.steps : []);
         setRegenerateStatus(currentJob.progress || currentJob.status);
+        if (captureGenerationConsistencyJob(currentJob)) return;
       }
       if (currentJob.status === "failed") {
         throw new Error(currentJob.error || "generate_next_failed");
@@ -518,6 +569,79 @@ export default function WritePage() {
         setGeneratingNext(false);
         setRegenerateStatus(null);
       }
+    }
+  }
+
+  async function handleContinueGenerationConsistency() {
+    const pausedJob = generationConsistencyJob;
+    const targetId = generationTargetId;
+    if (!pausedJob?.job_id || !targetId || !generationConsistencyGate || generationConsistencyAction) return;
+    const operationToken = ++operationTokenRef.current;
+    const operationIsActive = () => mountedRef.current && operationTokenRef.current === operationToken;
+    setGenerationConsistencyAction("continue");
+    setRegenerateError(null);
+    try {
+      let currentJob = await continueGenerationJob(targetId, pausedJob.job_id);
+      if (!operationIsActive()) return;
+      setGenerationConsistencyJob(currentJob);
+      setGenerationSteps(Array.isArray(currentJob.steps) ? currentJob.steps : []);
+      setRegenerateStatus(currentJob.progress || currentJob.status);
+      if (captureGenerationConsistencyJob(currentJob)) return;
+      while (currentJob.status === "queued" || currentJob.status === "running") {
+        await new Promise((resolve) => window.setTimeout(resolve, 2000));
+        if (!operationIsActive()) return;
+        currentJob = await fetchGenerationJob(targetId, currentJob.job_id);
+        if (!operationIsActive()) return;
+        setGenerationConsistencyJob(currentJob);
+        setGenerationSteps(Array.isArray(currentJob.steps) ? currentJob.steps : []);
+        setRegenerateStatus(currentJob.progress || currentJob.status);
+        if (captureGenerationConsistencyJob(currentJob)) return;
+      }
+      if (currentJob.status === "failed") {
+        throw new Error(currentJob.error || "generation_failed");
+      }
+      if (currentJob.status !== "completed") {
+        throw new Error(currentJob.error || "generation_cancelled");
+      }
+      if (!operationIsActive()) return;
+      const completedChapterNumber = Number(currentJob.chapter_number);
+      const targetChapter = Number.isInteger(completedChapterNumber) && completedChapterNumber > 0
+        ? completedChapterNumber
+        : generationConsistencyGate.target_chapter;
+      const operation = currentJob.operation || "";
+      clearGenerationConsistencyJob();
+      if (operation === "regenerate" || operation === "polish" || targetChapter <= (story?.current_chapter ?? 0)) {
+        await loadPendingCandidate(targetChapter);
+      } else {
+        await refresh({ invalidateChapter: false });
+        router.push(`/projects/${encodedProjectId}/write?chapter=${targetChapter}`);
+      }
+    } catch (err) {
+      if (operationIsActive()) setRegenerateError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (operationIsActive()) {
+        setGenerationConsistencyAction(null);
+        setRegenerateStatus(null);
+      }
+    }
+  }
+
+  async function handleReturnFromGenerationConsistency() {
+    const pausedJob = generationConsistencyJob;
+    const targetId = generationTargetId;
+    const targetChapter = generationConsistencyGate?.target_chapter || nextChapterNumber;
+    if (!pausedJob?.job_id || !targetId || !generationConsistencyGate || generationConsistencyAction) return;
+    setGenerationConsistencyAction("return");
+    setRegenerateError(null);
+    try {
+      await cancelGenerationJob(targetId, pausedJob.job_id);
+      clearGenerationConsistencyJob();
+      setRegenerateStatus(null);
+      router.push(`/projects/${encodedProjectId}/outline?tab=chapters&chapter=${targetChapter}&reason=consistency_required`);
+    } catch (err) {
+      setRegenerateError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGenerationConsistencyAction(null);
     }
   }
 
@@ -575,6 +699,15 @@ export default function WritePage() {
             : "章节"}
         subtitle={chapter?.chapter_title || pendingCandidate?.chapter_title || project?.current_focus || "目录和正文放在同一页。"}
       />
+
+      {generationConsistencyGate ? (
+        <GenerationConsistencyPanel
+          gate={generationConsistencyGate}
+          busy={Boolean(generationConsistencyAction)}
+          onContinue={() => void handleContinueGenerationConsistency()}
+          onReturn={() => void handleReturnFromGenerationConsistency()}
+        />
+      ) : null}
 
       {error ? (
         <div className="ws-card" style={{ borderColor: "var(--ws-danger)" }}>
@@ -773,6 +906,8 @@ export default function WritePage() {
                 onCountChange={continuousGeneration.setCount}
                 onStart={() => void continuousGeneration.start()}
                 onStop={() => void continuousGeneration.stop()}
+                onConsistencyContinue={() => void continuousGeneration.continueGeneration()}
+                onConsistencyReturn={() => void continuousGeneration.returnToEdit()}
               />
             ) : null}
             {isFileProject && (volumeWorkflowLoading || volumeWorkflowError || (volumeWorkflow && volumeWorkflow.status !== "detail_complete")) ? (

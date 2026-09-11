@@ -959,7 +959,13 @@ class SQLiteStoryStore:
         conn.commit()
         return record
 
-    def generate_next(self, story_id: str, engine: StoryEngine) -> ChapterBundle:
+    def generate_next(
+        self,
+        story_id: str,
+        engine: StoryEngine,
+        *,
+        consistency_override: bool = False,
+    ) -> ChapterBundle:
         conn = self._conn()
         record = self.get(story_id)
         if record is None:
@@ -972,7 +978,33 @@ class SQLiteStoryStore:
                 _sync_project_generation_context(record.story, project, has_history=bool(record.history))
                 _sync_project_character_profiles(record.story, project)
 
-        bundle = engine.generate_next_chapter(record.story)
+        if consistency_override:
+            import inspect
+
+            try:
+                signature = inspect.signature(engine.generate_next_chapter)
+            except (TypeError, ValueError):
+                signature = None
+            accepts_override = bool(
+                signature
+                and (
+                    "consistency_override" in signature.parameters
+                    or any(
+                        parameter.kind is inspect.Parameter.VAR_KEYWORD
+                        for parameter in signature.parameters.values()
+                    )
+                )
+            )
+            bundle = (
+                engine.generate_next_chapter(
+                    record.story,
+                    consistency_override=True,
+                )
+                if accepts_override
+                else engine.generate_next_chapter(record.story)
+            )
+        else:
+            bundle = engine.generate_next_chapter(record.story)
 
         if not bundle.simulation_status.get("ok", False):
             raise SimulationFailedError(bundle)

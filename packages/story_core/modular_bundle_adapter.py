@@ -80,6 +80,7 @@ def adapt_modular_bundle_to_legacy(
     raw_findings = list(
         getattr(modular_bundle, "consistency_findings", []) or []
     )
+    consistency_gate = getattr(modular_bundle, "consistency_gate", None)
     blocking_findings = [
         finding for finding in raw_findings if bool(finding.get("blocking"))
     ]
@@ -148,6 +149,11 @@ def adapt_modular_bundle_to_legacy(
                 else None
             ),
             "canon_preflight": dict(modular_bundle.canon_preflight or {}),
+            "consistency_gate": (
+                consistency_gate.model_dump(mode="json")
+                if consistency_gate is not None
+                else None
+            ),
         },
     }
     scene_results = [
