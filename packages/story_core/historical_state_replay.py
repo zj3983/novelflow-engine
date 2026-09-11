@@ -297,6 +297,8 @@ def _replay_events(
 
 
 def _stable_profile(character: Mapping[str, Any]) -> dict[str, Any]:
+    # current_life_profile and story_drive contain immediate_problem and
+    # immediate_goal respectively; they are latest-facing, not stable.
     profile: dict[str, Any] = {}
     for key in (
         "role",
@@ -310,8 +312,6 @@ def _stable_profile(character: Mapping[str, Any]) -> dict[str, Any]:
         "interaction_mode",
         "identity_profile",
         "background_profile",
-        "current_life_profile",
-        "story_drive",
         "performance_profile",
         "npc_profile",
         "personality_portrait",
@@ -530,12 +530,21 @@ def _progression_events(ledger: Mapping[str, Any]) -> list[tuple[int, int, dict[
     return events
 
 
+def _is_protagonist_character(character: Mapping[str, Any]) -> bool:
+    role = str(character.get("role") or "").strip().casefold()
+    tier = str(character.get("character_tier") or "").strip().casefold()
+    return role in {"protagonist", "主角"} or tier in {"protagonist", "主角"}
+
+
 def _replay_progression(
     story: Mapping[str, Any],
+    character: Mapping[str, Any],
     *,
     as_of_chapter: int,
     evidence: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
+    if not _is_protagonist_character(character):
+        return {}
     raw_ledger = story.get("progression_ledger")
     ledger = raw_ledger if isinstance(raw_ledger, Mapping) else {}
     result = _replay_events(
@@ -614,6 +623,7 @@ def _equipment_events(card: Mapping[str, Any]) -> list[tuple[int, int, dict[str,
 
 def _replay_equipment(
     story: Mapping[str, Any],
+    character_name: str,
     *,
     as_of_chapter: int,
     evidence: dict[str, dict[str, Any]],
@@ -640,6 +650,32 @@ def _replay_equipment(
             first = min([*dated_evidence, *event_chapters], default=None)
         if first is None or first > as_of_chapter:
             continue
+        last_update = _chapter_number(card.get("last_update_chapter"), allow_zero=False)
+        bounded_values: dict[str, tuple[Any, int, str]] = {}
+        for chapter, sequence, values, source in sorted(events, key=lambda item: (item[0], item[1])):
+            del sequence
+            if chapter > as_of_chapter:
+                continue
+            for field in _EQUIPMENT_MUTABLE_FIELDS:
+                if field in values and values[field] is not None:
+                    bounded_values[field] = (deepcopy(values[field]), chapter, source)
+
+        # Existence and first appearance do not identify a holder.  Attach a
+        # card only after an explicit owner event (or an explicitly dated
+        # current card) matches the queried character.
+        owner = bounded_values.get("current_owner")
+        if owner is None and (
+            last_update is not None
+            and last_update <= as_of_chapter
+            and card.get("current_owner") not in (None, "")
+        ):
+            owner = (
+                deepcopy(card["current_owner"]),
+                last_update,
+                "equipment_card.current",
+            )
+        if owner is None or str(owner[0]).strip() != character_name:
+            continue
         output: dict[str, Any] = {}
         for field in (
             "id",
@@ -658,15 +694,6 @@ def _replay_equipment(
             if value not in (None, "", [], {}):
                 output[field] = deepcopy(value)
         output.setdefault("first_appearance_chapter", first)
-        bounded_values: dict[str, tuple[Any, int, str]] = {}
-        for chapter, sequence, values, source in sorted(events, key=lambda item: (item[0], item[1])):
-            del sequence
-            if chapter > as_of_chapter:
-                continue
-            for field in _EQUIPMENT_MUTABLE_FIELDS:
-                if field in values and values[field] is not None:
-                    bounded_values[field] = (deepcopy(values[field]), chapter, source)
-        last_update = _chapter_number(card.get("last_update_chapter"), allow_zero=False)
         for field in _EQUIPMENT_MUTABLE_FIELDS:
             if field in bounded_values:
                 value, chapter, source = bounded_values[field]
@@ -739,7 +766,12 @@ def get_character_state(
         if character.get(field) not in (None, "", [], {}):
             unknown_fields.add(field)
 
-    progression = _replay_progression(story, as_of_chapter=target, evidence=evidence)
+    progression = _replay_progression(
+        story,
+        character,
+        as_of_chapter=target,
+        evidence=evidence,
+    )
     ledger = story.get("progression_ledger")
     if isinstance(ledger, Mapping):
         protagonist = ledger.get("protagonist") if isinstance(ledger.get("protagonist"), Mapping) else ledger
@@ -757,6 +789,7 @@ def get_character_state(
     )
     equipment = _replay_equipment(
         story,
+        wanted,
         as_of_chapter=target,
         evidence=evidence,
         unknown_fields=unknown_fields,

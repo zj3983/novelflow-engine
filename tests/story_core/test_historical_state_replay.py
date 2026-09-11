@@ -20,6 +20,14 @@ def _story() -> dict:
                 "role": "protagonist",
                 "character_tier": "core",
                 "story_function": "揭开黑戒指真相",
+                "current_life_profile": {
+                    "residence": "河港客舍",
+                    "immediate_problem": "第30章未来危机",
+                },
+                "story_drive": {
+                    "long_term_goal": "揭开旧案",
+                    "immediate_goal": "第30章未来目标",
+                },
                 "current_emotion": "未来情绪",
                 "location": "未来地点",
                 "goals": ["未来目标"],
@@ -121,7 +129,30 @@ def _story() -> dict:
                         },
                     },
                 ],
-            }
+            },
+            {
+                "id": "bronze-sword",
+                "name": "青铜剑",
+                "equipment_type": "weapon",
+                "first_appearance_chapter": 10,
+                "last_update_chapter": 10,
+                "current_owner": "顾闻舟",
+                "history": [
+                    {"chapter": 10, "current_owner": "顾闻舟"},
+                ],
+            },
+            {
+                "id": "shared-relic",
+                "name": "流转 relic",
+                "equipment_type": "accessory",
+                "first_appearance_chapter": 10,
+                "last_update_chapter": 30,
+                "current_owner": "林照",
+                "history": [
+                    {"chapter": 30, "current_owner": "林照"},
+                    {"chapter": 10, "current_owner": "顾闻舟"},
+                ],
+            },
         ],
     }
 
@@ -186,6 +217,46 @@ def test_relationship_progression_and_equipment_are_historical() -> None:
     ]
 
 
+def test_progression_equipment_and_profile_are_isolated_per_character() -> None:
+    story = _story()
+    story["characters"].append(
+        {
+            "name": "顾闻舟",
+            "role": "supporting",
+            "story_function": "守住北岸",
+            "current_state": {
+                "recent_changes": [
+                    {"chapter": 10, "current": {"location": "北岸", "emotion": "冷静"}},
+                ],
+            },
+        }
+    )
+    story["relationship_graph"].append(
+        {
+            "id": "rel-gu-xu",
+            "source": "顾闻舟",
+            "target": "徐宁",
+            "first_chapter": 10,
+            "changes": [{"chapter_number": 10, "trust": 8, "tension": 12}],
+        }
+    )
+
+    protagonist = get_character_state(story, "林照", as_of_chapter=10)
+    supporting = get_character_state(story, "顾闻舟", as_of_chapter=10)
+
+    assert protagonist.progression == {"level": 12, "skills": ["火球术"]}
+    assert supporting.progression == {}
+    assert protagonist.current_state == {"location": "甲地", "emotion": "警惕"}
+    assert supporting.current_state == {"location": "北岸", "emotion": "冷静"}
+    assert [item["name"] for item in protagonist.equipment] == ["黑戒指"]
+    assert [item["name"] for item in supporting.equipment] == ["青铜剑", "流转 relic"]
+    assert {item["id"] for item in protagonist.relationships} == {"rel-lin-mo"}
+    assert {item["id"] for item in supporting.relationships} == {"rel-gu-xu"}
+    serialized = protagonist.to_dict()
+    assert "第30章未来目标" not in str(serialized)
+    assert "第30章未来危机" not in str(serialized)
+
+
 def test_latest_only_values_stay_unknown_when_no_historical_event_exists() -> None:
     story = _story()
     character = story["characters"][0]
@@ -201,17 +272,20 @@ def test_latest_only_values_stay_unknown_when_no_historical_event_exists() -> No
     assert result.real_state == {}
     assert result.game_state == {}
     assert result.progression == {}
-    assert result.equipment == [
-        {
-            "id": "black-ring",
-            "name": "黑戒指",
-            "equipment_type": "accessory",
-            "first_appearance_chapter": 10,
-        }
-    ]
+    assert result.equipment == []
     assert "current_state.location" in result.unknown_fields
     assert "real_state.location" in result.unknown_fields
     assert "game_state.level" in result.unknown_fields
+
+
+def test_equipment_without_historical_owner_is_not_attached_to_character() -> None:
+    story = _story()
+    card = story["equipment_cards"][0]
+    card.pop("history")
+
+    result = get_character_state(story, "林照", as_of_chapter=15)
+
+    assert result.equipment == []
 
 
 def test_stable_profile_is_current_and_not_rolled_back() -> None:
