@@ -222,6 +222,10 @@ def _render_craft_modules(request: WriterRequest) -> str:
     return "\n".join(blocks)
 
 
+def _render_fact_resource_context(request: WriterRequest) -> str:
+    return request.fact_resource_context.strip()
+
+
 def build_writer_prompt(request: WriterRequest) -> str:
     """Render a self-contained writer prompt from a ``WriterRequest``.
 
@@ -276,6 +280,9 @@ def build_writer_prompt(request: WriterRequest) -> str:
     modules = _render_craft_modules(request)
     if modules:
         sections.append(modules)
+    fact_resources = _render_fact_resource_context(request)
+    if fact_resources:
+        sections.append(fact_resources)
     beat_count = max(1, len(request.director_artifact.scene_beats))
     beat_budget = max(1, target_max // beat_count)
     sections.append(

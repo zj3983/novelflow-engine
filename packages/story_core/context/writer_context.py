@@ -38,6 +38,10 @@ from ..writer_character_context import (
     historical_writer_character_cards,
     writer_historical_chapter,
 )
+from ..fact_resource_ledger import (
+    get_fact_resource_snapshot,
+    render_fact_resource_context,
+)
 
 
 def _entity_referenced_names(artifact: DirectorArtifact) -> set[str]:
@@ -132,6 +136,7 @@ class WriterContext(BaseModel):
     # Preserve legacy pack-level selection separately from explicit no-modules.
     enabled_skill_module_ids: list[str] | None = None
     book_outline: dict[str, Any] | None = None
+    fact_resource_context: str = ""
 
 
 def build_writer_context(
@@ -311,6 +316,20 @@ def build_writer_context(
                 continue
             craft_modules.append(module)
 
+    fact_resource_snapshot = get_fact_resource_snapshot(
+        project_root,
+        as_of_chapter=chapter_number - 1,
+    )
+    fact_resource_context = render_fact_resource_context(
+        fact_resource_snapshot,
+        relevant_names=referenced,
+        relevant_keys={
+            str(requirement.name)
+            for requirement in director_artifact.entity_requirements
+            if requirement.kind in {"item", "equipment", "quest", "character"}
+        },
+    )
+
     return WriterContext(
         chapter_number=chapter_number,
         director_artifact=director_artifact,
@@ -328,6 +347,7 @@ def build_writer_context(
             state_payload,
         ),
         book_outline=None,
+        fact_resource_context=fact_resource_context,
     )
 
 

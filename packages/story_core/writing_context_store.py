@@ -411,6 +411,12 @@ class WritingContextStoreMixin:
             query_terms=re.findall(r"[\u4e00-\u9fffA-Za-z0-9_]{2,16}", relevance_text),
             limit=12,
         )
+        fact_resource_ledger = getattr(self, "fact_resource_ledger", lambda: None)()
+        fact_resource_payload = (
+            fact_resource_ledger.to_dict()
+            if hasattr(fact_resource_ledger, "to_dict")
+            else {}
+        )
         merged_world_facts = list(
             dict.fromkeys(
                 str(item).strip()
@@ -434,6 +440,7 @@ class WritingContextStoreMixin:
             "world_snapshot": world_snapshot,
             "continuity_facts": continuity_facts,
             "progression_ledger": dict(state.get("progression_ledger") or {}),
+            "fact_resource_ledger": fact_resource_payload,
             "world_context": scoped_world,
             "characters": characters,
             "timeline": [

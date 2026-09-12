@@ -64,6 +64,10 @@ function CandidatePanel({
   onDiscard: () => void;
 }) {
   const hasQualityWarnings = candidate.quality_report?.ok === false;
+  const extraction = candidate.fact_resource_extraction;
+  const resourceReview = candidate.fact_resource_review;
+  const resourceRows = extraction?.deltas || [];
+  const resourceFindings = resourceReview?.findings || extraction?.findings || [];
   return (
     <section className="ws-card" aria-label="候选稿">
       <div className="ws-section-head">
@@ -87,6 +91,31 @@ function CandidatePanel({
           </button>
         </div>
       </div>
+      {extraction || resourceReview ? (
+        <section className="ws-card" aria-label="可计算事实变化" style={{ marginTop: 12 }}>
+          <p className="ws-card__title">可计算事实变化</p>
+          {resourceRows.length ? (
+            <div style={{ display: "grid", gap: 6 }}>
+              {resourceRows.map((delta) => (
+                <div key={delta.delta_id} className="ws-card__hint">
+                  {delta.resource_key}：{String(delta.before ?? "未知")} → {factResourceChangeLabel(delta)} → {String(delta.after ?? "未知")}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="ws-card__hint">本章没有识别到可计算的显式数值或状态变化。</p>
+          )}
+          {resourceFindings.length ? (
+            <div style={{ marginTop: 8 }}>
+              {resourceFindings.map((finding, index) => (
+                <p key={`${finding.code}-${index}`} className="ws-card__hint">
+                  {finding.severity === "error" ? "需修正" : "提示"}：{finding.message}
+                </p>
+              ))}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
       <article className="ws-reader__body" style={{ maxHeight: 360, overflow: "auto" }}>
         {candidate.body.split(/\n{2,}/).slice(0, 12).map((paragraph, index) => (
           <p key={index}>{paragraph}</p>
@@ -94,6 +123,14 @@ function CandidatePanel({
       </article>
     </section>
   );
+}
+
+function factResourceChangeLabel(delta: NonNullable<CandidateDraft["fact_resource_extraction"]>["deltas"][number]): string {
+  const numeric = typeof delta.change === "number" ? delta.change : Number(delta.change);
+  if (!Number.isFinite(numeric)) return String(delta.change ?? "未知");
+  if (delta.operation === "SUBTRACT") return String(-Math.abs(numeric));
+  if (delta.operation === "ADD" || delta.operation === "PROGRESS_ADD") return String(Math.abs(numeric));
+  return String(delta.change);
 }
 
 type CopyStatus = "idle" | "copied" | "failed";

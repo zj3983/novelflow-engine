@@ -63,6 +63,8 @@ def _raise_candidate_error(exc: ValueError) -> None:
             "next_volume_required:",
             "volume_detail_required:",
             "volume_detail_incomplete:",
+            "fact_resource_historical_rewrite_requires_reconciliation",
+            "fact_resource_validation_failed:",
         )
     ):
         raise HTTPException(status_code=409, detail=detail) from exc
@@ -77,6 +79,11 @@ def register_file_project_candidate_routes(
     project_payload: Callable[[FileProjectStore], dict[str, Any]],
     story_payload: Callable[[FileProjectStore], dict[str, Any]],
 ) -> None:
+    @router.get("/file-projects/{project_id}/fact-resource-ledger")
+    def get_file_project_fact_resource_ledger(project_id: str) -> dict[str, Any]:
+        store = store_for(project_id)
+        return store.fact_resource_ledger_payload()
+
     @router.get("/file-projects/{project_id}/candidates")
     def list_file_project_candidates(
         project_id: str,

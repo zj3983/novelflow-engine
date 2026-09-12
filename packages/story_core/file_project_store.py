@@ -107,6 +107,15 @@ from packages.story_core.foreshadowing import (
     select_unresolved_foreshadowing,
 )
 from packages.story_core.models import CharacterState, ForeshadowingState, StoryState
+from packages.story_core.fact_resource_ledger import (
+    FactResourceExtraction,
+    FactResourceLedger,
+    FactResourceSnapshot,
+    FactResourceValidation,
+    extract_fact_resource_changes,
+    get_fact_resource_snapshot,
+    validate_fact_resource_extraction,
+)
 from packages.story_core.inventory_normalization import (
     normalize_inventory_item_name,
     normalize_inventory_tree,
@@ -1546,6 +1555,134 @@ class FileProjectStore(
 
         self.continuity_store = ContinuityStore(self.root)
 
+    @property
+    def fact_resource_ledger_path(self) -> Path:
+        return self.story_system_dir / "fact-resource-ledger.json"
+
+    def fact_resource_ledger(self) -> FactResourceLedger | None:
+        """Load the explicit ledger; never synthesize it from progression state."""
+
+        ledger = FactResourceLedger.load(self.fact_resource_ledger_path)
+        if ledger is not None:
+            return ledger
+        # A project may carry an explicit seed in MASTER_SETTING/state while
+        # the canonical ledger file has not been materialized yet.  These are
+        # opt-in sources only; the mutable latest progression mirror is not.
+        for path in (
+            self.story_system_dir / "MASTER_SETTING.json",
+            self.webnovel_dir / "state.json",
+        ):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            raw = payload.get("fact_resource_ledger") or payload.get(
+                "initial_fact_resource_ledger"
+            )
+            if raw:
+                try:
+                    return FactResourceLedger.model_validate(raw)
+                except Exception:
+                    return None
+        return None
+
+    def get_fact_resource_snapshot(
+        self,
+        *,
+        as_of_chapter: int | None = None,
+    ) -> FactResourceSnapshot:
+        ledger = self.fact_resource_ledger()
+        if ledger is not None:
+            return ledger.replay(as_of_chapter=as_of_chapter)
+        return get_fact_resource_snapshot(
+            self.root,
+            as_of_chapter=as_of_chapter,
+        )
+
+    def fact_resource_ledger_payload(self) -> dict[str, Any]:
+        ledger = self.fact_resource_ledger()
+        if ledger is None:
+            snapshot = self.get_fact_resource_snapshot(as_of_chapter=0)
+            return {
+                "schema_version": "fact-resource-ledger-inspection/v1",
+                "known": snapshot.known,
+                "source": snapshot.source,
+                "latest_confirmed_chapter": 0,
+                "entries": [item.model_dump(mode="json") for item in snapshot.entries],
+                "history": [],
+            }
+        return {
+            "schema_version": "fact-resource-ledger-inspection/v1",
+            "known": True,
+            "source": "fact_resource_ledger",
+            "latest_confirmed_chapter": ledger.latest_confirmed_chapter,
+            "revision": ledger.revision,
+            "entries": [item.model_dump(mode="json") for item in ledger.replay().entries],
+            "history": [item.model_dump(mode="json") for item in ledger.history],
+            "confirmed_candidates": list(ledger.confirmed_candidates),
+        }
+
+    def fact_resource_candidate_review(self, candidate: Any) -> dict[str, Any]:
+        review = getattr(candidate, "fact_resource_review", None)
+        return dict(review) if isinstance(review, dict) else {}
+
+    def _commit_candidate_fact_resource_ledger(self, candidate: Any) -> dict[str, Any]:
+        """Validate and append only after the chapter transaction is open."""
+
+        raw_extraction = getattr(candidate, "fact_resource_extraction", None)
+        existing_ledger = self.fact_resource_ledger()
+        candidate_id = str(getattr(candidate, "candidate_id", "") or "")
+        if existing_ledger is not None and candidate_id and candidate_id in existing_ledger.confirmed_candidates:
+            return {"committed": False, "reason": "already_committed"}
+        if raw_extraction is None:
+            if (
+                existing_ledger is not None
+                and int(getattr(candidate, "chapter_number", 0) or 0)
+                <= existing_ledger.latest_confirmed_chapter
+            ):
+                raise ValueError("fact_resource_historical_rewrite_requires_reconciliation")
+            return {"committed": False, "reason": "no_fact_resource_extraction"}
+        extraction = (
+            raw_extraction
+            if isinstance(raw_extraction, FactResourceExtraction)
+            else FactResourceExtraction.model_validate(raw_extraction)
+        )
+        chapter_number = int(getattr(candidate, "chapter_number", 0) or 0)
+        ledger = existing_ledger or FactResourceLedger.empty()
+        persisted_chapters = max(self.chapter_numbers(), default=0)
+        latest = max(ledger.latest_confirmed_chapter, persisted_chapters)
+        if chapter_number <= latest:
+            raise ValueError("fact_resource_historical_rewrite_requires_reconciliation")
+        start = ledger.replay(as_of_chapter=chapter_number - 1)
+        validation = validate_fact_resource_extraction(start, extraction)
+        errors = validation.blocking_findings
+        if errors:
+            raise ValueError(
+                "fact_resource_validation_failed:" + ",".join(item.code for item in errors)
+            )
+        # An extraction containing no explicit change or assertion carries no
+        # authoritative resource event and need not create a new file.
+        if not extraction.deltas and not extraction.assertions:
+            return {
+                "committed": False,
+                "reason": "no_explicit_fact_resource_change",
+                "warnings": [item.model_dump(mode="json") for item in validation.findings],
+            }
+        result = ledger.append(
+            extraction,
+            candidate_id=candidate_id,
+        )
+        self._write_json_atomic(self.fact_resource_ledger_path, ledger.to_dict())
+        return {
+            "committed": True,
+            "chapter_number": chapter_number,
+            "delta_ids": [item.delta_id for item in extraction.deltas],
+            "entry_count": len(result.entries),
+            "warnings": [item.model_dump(mode="json") for item in validation.findings if item.severity != "error"],
+        }
+
     def _read_json(self, path: Path, default: Any = None) -> Any:
         target = Path(path)
         chapters_dir = self.story_system_dir / "chapters"
@@ -2486,6 +2623,27 @@ class FileProjectStore(
             if not key.startswith("_")
         }
 
+    def _fact_resource_candidate_data(
+        self,
+        *,
+        body: str,
+        chapter_number: int,
+        candidate_claims: Any = None,
+    ) -> tuple[FactResourceExtraction, FactResourceValidation]:
+        start = self.get_fact_resource_snapshot(as_of_chapter=chapter_number - 1)
+        extraction = extract_fact_resource_changes(
+            body,
+            chapter_number,
+            start,
+            candidate_claims=(
+                candidate_claims
+                if isinstance(candidate_claims, list)
+                else None
+            ),
+        )
+        validation = validate_fact_resource_extraction(start, extraction)
+        return extraction, validation
+
     def _save_candidate_from_bundle(
         self,
         bundle: Any,
@@ -2507,6 +2665,20 @@ class FileProjectStore(
         # callers that never set a continuity delta.
         chapter_number = int(getattr(bundle, "chapter_number", 0) or 0)
         body = str(getattr(bundle, "body", "") or "")
+        fact_resource_extraction, fact_resource_validation = self._fact_resource_candidate_data(
+            body=body,
+            chapter_number=chapter_number,
+            candidate_claims=getattr(bundle, "fact_resource_claims", None),
+        )
+        has_explicit_fact_resource = bool(
+            fact_resource_extraction.deltas
+            or fact_resource_extraction.assertions
+            or fact_resource_extraction.findings
+        )
+        if has_explicit_fact_resource:
+            submission_payload["fact_resource_extraction"] = fact_resource_extraction.model_dump(
+                mode="json"
+            )
         # The modular pipeline already ran the FactExtractor against
         # the project's on-disk canon and shipped the resulting
         # ``ContinuityDelta`` on the bundle. Re-extracting here
@@ -2555,6 +2727,14 @@ class FileProjectStore(
             operation=operation,
             continuity_delta=continuity_delta,
             context_trace_ids=context_trace_ids,
+            fact_resource_extraction=(
+                fact_resource_extraction if has_explicit_fact_resource else None
+            ),
+            fact_resource_review=(
+                fact_resource_validation.to_review_dict()
+                if has_explicit_fact_resource
+                else {}
+            ),
         )
         self.candidate_store.save_latest(candidate)
         report_generation_progress(
@@ -7381,13 +7561,33 @@ class FileProjectStore(
                 "chapter_title": candidate.chapter_title,
                 "candidate": candidate.to_dict(),
             }
-        persisted = self.persist_bundle(
-            bundle,
-            operation="generate",
-            commit_message=commit_message,
-            accept_quality_warnings=accept_quality_warnings,
+        fact_resource_extraction, _fact_resource_validation = self._fact_resource_candidate_data(
+            body=str(getattr(bundle, "body", "") or ""),
+            chapter_number=int(getattr(bundle, "chapter_number", 0) or 0),
+            candidate_claims=getattr(bundle, "fact_resource_claims", None),
         )
-        persisted["canon_updates"] = self._commit_generated_bundle_canon(bundle)
+        direct_candidate = SimpleNamespace(
+            candidate_id="",
+            chapter_number=int(getattr(bundle, "chapter_number", 0) or 0),
+            fact_resource_extraction=fact_resource_extraction,
+        )
+        from packages.story_core.persistence.project_transaction import ProjectTransaction
+
+        with ProjectTransaction.create(
+            self.root,
+            snapshot_store=self.snapshot_store,
+            managed_paths=self._managed_paths_for_transaction(),
+            managed_directories=self._managed_directories_for_transaction(),
+        ):
+            fact_resource_commit = self._commit_candidate_fact_resource_ledger(direct_candidate)
+            persisted = self.persist_bundle(
+                bundle,
+                operation="generate",
+                commit_message=commit_message,
+                accept_quality_warnings=accept_quality_warnings,
+            )
+            persisted["fact_resource"] = fact_resource_commit
+            persisted["canon_updates"] = self._commit_generated_bundle_canon(bundle)
         return {
             "schema_version": "file-project-generate-next/v1",
             "root": str(self.root),
@@ -7442,6 +7642,11 @@ class FileProjectStore(
             managed_paths=self._managed_paths_for_transaction(),
             managed_directories=self._managed_directories_for_transaction(),
         ):
+            # Validate and append explicit resource events inside the same
+            # rollback boundary as the chapter and canon writes.  This also
+            # rejects stale or historical candidates before official state is
+            # allowed to change.
+            fact_resource_commit = self._commit_candidate_fact_resource_ledger(candidate)
             self.persist_bundle(
                 payload,
                 operation=candidate.operation,
@@ -7456,6 +7661,10 @@ class FileProjectStore(
             # alongside the chapter / state / project writes.
             self._apply_candidate_canon_delta(candidate)
             self._wrap_confirmation_in_transaction(candidate)
+        if fact_resource_commit.get("committed"):
+            review = dict(candidate.fact_resource_review or {})
+            review["commit"] = fact_resource_commit
+            candidate.fact_resource_review = review
         candidate.confirm()
         self.candidate_store.save(candidate)
         return {"schema_version": "file-project-candidate-confirm/v1", "candidate": candidate.to_dict()}
@@ -7475,6 +7684,7 @@ class FileProjectStore(
             self.webnovel_dir / "state.json",
             self.webnovel_dir / "project.json",
             self.story_system_dir / "MASTER_SETTING.json",
+            self.fact_resource_ledger_path,
         ]
 
     def _managed_directories_for_transaction(self) -> list[Path]:

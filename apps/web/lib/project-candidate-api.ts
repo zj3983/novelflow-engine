@@ -2,9 +2,17 @@ import { fetchJson, fileProjectPath, isFileProjectId } from "./api-client";
 import type {
   CandidateDraft,
   CandidateListResponse,
+  FactResourceLedgerResponse,
   ProjectResponse,
   StoryResponse,
 } from "./api";
+
+export async function fetchFileProjectFactResourceLedger(
+  projectId: string,
+): Promise<FactResourceLedgerResponse> {
+  if (!isFileProjectId(projectId)) throw new Error("fact_resource_only_supports_file_projects");
+  return await fetchJson(`${fileProjectPath(projectId)}/fact-resource-ledger`, { method: "GET" });
+}
 
 export async function fetchFileProjectCandidates(
   projectId: string,

@@ -24,6 +24,10 @@ from packages.story_core.novel_type_ids import canonical_novel_type_id
 from packages.story_core.skill_packs import skill_pack_prompt_context
 from packages.story_core.writing_taskbook import ensure_writing_taskbook, writer_facing_text
 from packages.story_core.world_blueprint_context import flatten_selected_rules
+from packages.story_core.fact_resource_ledger import (
+    get_fact_resource_snapshot,
+    render_fact_resource_context,
+)
 
 
 @dataclass(frozen=True)
@@ -41,6 +45,7 @@ class WriterContext:
     world_facts_for_prompt: list[str]
     trope_guidance: list[str]
     trope_contract_for_prompt: dict[str, Any]
+    fact_resource_context: str = ""
 
 
 _WRITER_SKILL_CONTEXT_BUDGET = 2200
@@ -533,6 +538,8 @@ def _writer_fact_section_from_context(context: WriterContext) -> list[str]:
         lines.append(f"持续兑现：{reader_promise}")
     continuity_lines = _writer_continuity_lines(story)
     lines.extend(continuity_lines)
+    if context.fact_resource_context:
+        lines.extend(context.fact_resource_context.splitlines())
     # The planner has already translated the book outline and author rules into
     # this chapter's event plan. Repeating long-range material here encourages
     # the prose model to explain the whole book inside the current scene.

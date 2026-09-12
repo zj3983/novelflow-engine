@@ -121,6 +121,10 @@ from packages.story_core.consistency_replanning import (
     build_director_replan_guidance,
 )
 from packages.story_core.skill_packs import resolve_enabled_skill_module_ids
+from packages.story_core.fact_resource_ledger import (
+    get_fact_resource_snapshot,
+    render_fact_resource_context,
+)
 
 
 # --- Result envelopes ---------------------------------------------------------
@@ -271,6 +275,9 @@ def _ensure_writer_context(
                 else legacy.enabled_skill_module_ids
             ),
             "book_outline": canonical.book_outline or legacy.book_outline,
+            "fact_resource_context": (
+                canonical.fact_resource_context or legacy.fact_resource_context
+            ),
         }
     )
 
@@ -408,6 +415,10 @@ def _legacy_writer_context(
         genre_id = project_payload.get("genre_plugin_id") or project_payload.get("genre")
         if isinstance(genre_id, str) and genre_id.strip():
             genre = genre_id.strip()
+    fact_resource_context = render_fact_resource_context(
+        get_fact_resource_snapshot(project_root, as_of_chapter=chapter_number - 1),
+        relevant_names={str(item.get("name") or "") for item in character_cards if isinstance(item, dict)},
+    )
     return WriterContext(
         chapter_number=chapter_number,
         director_artifact=director_artifact,
@@ -421,6 +432,7 @@ def _legacy_writer_context(
         craft_modules=[{"id": skill_id, "enabled": True} for skill_id in enabled_skill_ids],
         enabled_skill_ids=enabled_skill_ids,
         enabled_skill_module_ids=enabled_skill_module_ids,
+        fact_resource_context=fact_resource_context,
     )
 
 
@@ -1129,6 +1141,7 @@ def _build_writer_request(
             if context.enabled_skill_module_ids is not None
             else None
         ),
+        fact_resource_context=context.fact_resource_context,
     )
 
 

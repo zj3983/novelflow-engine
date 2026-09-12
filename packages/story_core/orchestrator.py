@@ -60,6 +60,10 @@ from packages.story_core.genre_stages.common_writer import (
     _skill_context_for_prompt,
     writer_skill_trace,
 )
+from packages.story_core.fact_resource_ledger import (
+    get_fact_resource_snapshot,
+    render_fact_resource_context,
+)
 from packages.story_core.genre_stages.common_revision import RevisionContext, revision_char_ceiling
 from packages.story_core.genre_stages.length_prompts import (
     LengthPromptContext,
@@ -3869,6 +3873,14 @@ class StoryOrchestrator:
             world_facts_for_prompt=_priority_world_facts(story.world_facts, max_items=6, item_chars=100),
             trope_guidance=_trope_contract_guidance(trope_contract),
             trope_contract_for_prompt=_compact_trope_contract_for_prompt(trope_contract),
+            fact_resource_context=render_fact_resource_context(
+                get_fact_resource_snapshot(story, as_of_chapter=chapter_number - 1),
+                relevant_names={
+                    str(card.get("name") or "")
+                    for card in (character_context.get("cards") or [])
+                    if isinstance(card, dict)
+                },
+            ),
         )
         return writer_context
 

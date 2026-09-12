@@ -16,6 +16,9 @@ Schema evolution:
   ``context_trace_ids``. New writes use v2 once any of the new
   fields are populated; v1 writes still load transparently so
   existing candidate files keep working.
+* ``candidate-draft/v3`` — adds the provisional fact/resource
+  extraction and validation review. It is still candidate-only until
+  confirmation commits the ledger.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ CandidateStatus = str
 
 CANDIDATE_SCHEMA_V1 = "candidate-draft/v1"
 CANDIDATE_SCHEMA_V2 = "candidate-draft/v2"
+CANDIDATE_SCHEMA_V3 = "candidate-draft/v3"
 
 
 def _now() -> str:
@@ -54,6 +58,9 @@ class CandidateDraft:
     # --- v2 additions ---
     continuity_delta: Any | None = None  # ContinuityDelta | None; lazy import
     context_trace_ids: list[str] = field(default_factory=list)
+    # --- v3 additions ---
+    fact_resource_extraction: Any | None = None
+    fact_resource_review: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def create(
@@ -70,6 +77,8 @@ class CandidateDraft:
         operation: str = "generate",
         continuity_delta: Any | None = None,
         context_trace_ids: list[str] | None = None,
+        fact_resource_extraction: Any | None = None,
+        fact_resource_review: Mapping[str, Any] | None = None,
     ) -> "CandidateDraft":
         if chapter_number < 1:
             raise ValueError("chapter_number_must_be_positive")
@@ -91,6 +100,8 @@ class CandidateDraft:
             created_at=_now(),
             continuity_delta=continuity_delta,
             context_trace_ids=list(context_trace_ids or []),
+            fact_resource_extraction=fact_resource_extraction,
+            fact_resource_review=dict(fact_resource_review or {}),
         )
 
     @property
@@ -123,8 +134,15 @@ class CandidateDraft:
         # v2 carries at least one of the new fields. This keeps the
         # on-disk format honest: a candidate that claims v2 actually
         # uses the new fields.
+        has_v3 = self.fact_resource_extraction is not None or bool(self.fact_resource_review)
         has_v2 = self.continuity_delta is not None or bool(self.context_trace_ids)
-        schema_version = CANDIDATE_SCHEMA_V2 if has_v2 else CANDIDATE_SCHEMA_V1
+        schema_version = (
+            CANDIDATE_SCHEMA_V3
+            if has_v3
+            else CANDIDATE_SCHEMA_V2
+            if has_v2
+            else CANDIDATE_SCHEMA_V1
+        )
 
         payload: dict[str, Any] = {
             "schema_version": schema_version,
@@ -142,15 +160,20 @@ class CandidateDraft:
             "created_at": self.created_at,
             "confirmed_at": self.confirmed_at,
         }
-        if schema_version == CANDIDATE_SCHEMA_V2:
+        if schema_version in {CANDIDATE_SCHEMA_V2, CANDIDATE_SCHEMA_V3}:
             payload["continuity_delta"] = _delta_to_dict(self.continuity_delta)
             payload["context_trace_ids"] = list(self.context_trace_ids)
+        if schema_version == CANDIDATE_SCHEMA_V3:
+            payload["fact_resource_extraction"] = _fact_resource_to_dict(
+                self.fact_resource_extraction
+            )
+            payload["fact_resource_review"] = dict(self.fact_resource_review)
         return payload
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "CandidateDraft":
         schema_version = str(payload.get("schema_version") or CANDIDATE_SCHEMA_V1)
-        if schema_version not in {CANDIDATE_SCHEMA_V1, CANDIDATE_SCHEMA_V2}:
+        if schema_version not in {CANDIDATE_SCHEMA_V1, CANDIDATE_SCHEMA_V2, CANDIDATE_SCHEMA_V3}:
             # Forward compatibility: unknown schemas still load, but
             # the new fields are simply absent. This is the same
             # posture the v1 → v2 migration takes.
@@ -173,6 +196,10 @@ class CandidateDraft:
             confirmed_at=str(payload.get("confirmed_at") or ""),
             continuity_delta=continuity_delta,
             context_trace_ids=[str(item) for item in (payload.get("context_trace_ids") or [])],
+            fact_resource_extraction=_fact_resource_from_dict(
+                payload.get("fact_resource_extraction")
+            ),
+            fact_resource_review=dict(payload.get("fact_resource_review") or {}),
         )
 
 
@@ -204,4 +231,29 @@ def _delta_from_dict(payload: Any) -> Any:
         return payload
     if isinstance(payload, Mapping):
         return ContinuityDelta.model_validate(payload)
+    return None
+
+
+def _fact_resource_to_dict(value: Any) -> Any:
+    if value is None:
+        return None
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if isinstance(value, Mapping):
+        return dict(value)
+    return None
+
+
+def _fact_resource_from_dict(payload: Any) -> Any:
+    if payload is None:
+        return None
+    try:
+        from packages.story_core.fact_resource_ledger import FactResourceExtraction
+
+        if isinstance(payload, FactResourceExtraction):
+            return payload
+        if isinstance(payload, Mapping):
+            return FactResourceExtraction.model_validate(payload)
+    except Exception:
+        return None
     return None

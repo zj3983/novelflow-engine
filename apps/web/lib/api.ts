@@ -366,6 +366,85 @@ export type CandidateDraft = {
   status: "pending" | "confirmed" | "discarded" | string;
   created_at: string;
   confirmed_at: string;
+  fact_resource_extraction?: FactResourceExtraction | null;
+  fact_resource_review?: FactResourceValidation | null;
+};
+
+export type FactResourceDelta = {
+  delta_id: string;
+  chapter: number;
+  sequence: number;
+  fact_id: string;
+  category: string;
+  subject: string;
+  resource_key: string;
+  operation: string;
+  before: unknown;
+  change: unknown;
+  after: unknown;
+  unit?: string;
+  owner?: string;
+  evidence?: string;
+};
+
+export type FactResourceAssertion = {
+  category: string;
+  subject: string;
+  resource_key: string;
+  expected_value: unknown;
+  expected_owner?: string;
+  expected_equipped?: boolean | null;
+  evidence?: string;
+};
+
+export type FactResourceFinding = {
+  code: string;
+  severity: "error" | "warning" | "info" | string;
+  message: string;
+  resource_key?: string;
+  evidence?: string;
+};
+
+export type FactResourceSnapshot = {
+  as_of_chapter: number;
+  known: boolean;
+  source: string;
+  entries: Array<{
+    fact_id: string;
+    category: string;
+    subject: string;
+    resource_key: string;
+    value: unknown;
+    unit?: string;
+    owner?: string;
+    metadata?: Record<string, unknown>;
+  }>;
+};
+
+export type FactResourceExtraction = {
+  schema_version?: string;
+  chapter_number: number;
+  deltas: FactResourceDelta[];
+  assertions: FactResourceAssertion[];
+  findings?: FactResourceFinding[];
+};
+
+export type FactResourceValidation = {
+  schema_version?: string;
+  ok: boolean;
+  start_snapshot: FactResourceSnapshot;
+  proposed_snapshot: FactResourceSnapshot;
+  findings: FactResourceFinding[];
+};
+
+export type FactResourceLedgerResponse = {
+  schema_version: string;
+  known: boolean;
+  source: string;
+  latest_confirmed_chapter: number;
+  entries: FactResourceSnapshot["entries"];
+  history: FactResourceDelta[];
+  confirmed_candidates?: string[];
 };
 
 export type CandidateListResponse = {
@@ -4483,6 +4562,7 @@ export async function listProjects(lifecycle: ProjectLifecycle = "active"): Prom
 export {
   confirmFileProjectCandidate,
   discardFileProjectCandidate,
+  fetchFileProjectFactResourceLedger,
   fetchFileProjectCandidates,
 } from "./project-candidate-api";
 

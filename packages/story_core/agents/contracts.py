@@ -137,6 +137,10 @@ class WriterRequest(BaseModel):
     enabled_skill_ids: list[str] = Field(default_factory=list)
     # None is a legacy pack-level selection; [] is an explicit module disable.
     enabled_skill_module_ids: list[str] | None = None
+    # A compact, chapter-start projection.  It is deliberately text rather
+    # than a live StoryState so the writer cannot reach around the context
+    # boundary and read mutable latest state.
+    fact_resource_context: str = ""
 
 
 class WriterResult(BaseModel):
