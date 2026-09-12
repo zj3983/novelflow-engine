@@ -372,7 +372,7 @@ def test_conflicting_generic_entries_are_shadowed_by_one_deterministic_projectio
     assert not any(item.observed in {99, 999} for item in validation.findings)
 
 
-def test_existing_authority_confirmation_refuses_second_history(tmp_path) -> None:
+def test_existing_authority_confirmation_routes_to_one_progression_history(tmp_path) -> None:
     store = FileProjectStore(tmp_path)
     store.webnovel_dir.mkdir(parents=True, exist_ok=True)
     store._write_json(
@@ -393,9 +393,13 @@ def test_existing_authority_confirmation_refuses_second_history(tmp_path) -> Non
         project_id=tmp_path.name,
     )
 
-    assert candidate.fact_resource_review["ok"] is False
-    with pytest.raises(ValueError, match="existing_authority_confirmation_required"):
-        store.confirm_candidate(candidate.candidate_id)
-    assert store.candidate_store.get(candidate.candidate_id).status == "pending"
-    assert FactResourceLedger.load(store.fact_resource_ledger_path) is None
-    assert store.state()["progression_ledger"] == _authoritative_story()["progression_ledger"]
+    assert candidate.fact_resource_review["ok"] is True
+    store.confirm_candidate(candidate.candidate_id)
+    assert store.candidate_store.get(candidate.candidate_id).status == "confirmed"
+    state = store.persisted_state()
+    history = state["progression_ledger"]["protagonist"]["history"]
+    assert len([item for item in history if item.get("chapter") == 16]) == 1
+    assert next(item for item in history if item.get("chapter") == 16)["current"]["level"] == 13
+    assert state["progression_ledger"]["protagonist"]["level"] == 13
+    ledger = FactResourceLedger.load(store.fact_resource_ledger_path)
+    assert ledger is None or not any(item.category == "level" for item in ledger.history)

@@ -111,10 +111,12 @@ from packages.story_core.fact_resource_ledger import (
     FactResourceExtraction,
     FactResourceLedger,
     FactResourceSnapshot,
+    FactResourceAuthorityWritePlan,
     FactResourceValidation,
+    apply_fact_resource_authority_writes,
     extract_fact_resource_changes,
-    fact_resource_authority_findings,
     get_fact_resource_snapshot,
+    plan_fact_resource_authority_writes,
     validate_fact_resource_extraction,
 )
 from packages.story_core.inventory_normalization import (
@@ -1630,89 +1632,157 @@ class FileProjectStore(
         review = getattr(candidate, "fact_resource_review", None)
         return dict(review) if isinstance(review, dict) else {}
 
-    def _commit_candidate_fact_resource_ledger(self, candidate: Any) -> dict[str, Any]:
-        """Commit only categories without an existing project authority.
+    def _plan_candidate_fact_resource_writes(
+        self,
+        candidate: Any,
+    ) -> FactResourceAuthorityWritePlan | None:
+        """Build a read-only authority/generic write plan for a candidate.
 
-        A candidate that changes progression, equipment, or numeric
-        relationships is deliberately refused here until a typed writer for
-        that existing source is available.  Persisting the same change in a
-        second file would create two official histories.
+        The plan is made against the persisted raw state and project payloads,
+        before the chapter bundle is written.  Confirmation applies that plan
+        to the freshly persisted payloads inside the outer transaction.  This
+        keeps candidate generation provisional and avoids treating a generic
+        ledger as a second authority history.
         """
 
         raw_extraction = getattr(candidate, "fact_resource_extraction", None)
         existing_ledger = self.fact_resource_ledger()
         candidate_id = str(getattr(candidate, "candidate_id", "") or "")
-        if existing_ledger is not None and candidate_id and candidate_id in existing_ledger.confirmed_candidates:
-            return {"committed": False, "reason": "already_committed"}
+        if existing_ledger is not None and candidate_id in existing_ledger.confirmed_candidates:
+            return None
+
+        chapter_number = int(getattr(candidate, "chapter_number", 0) or 0)
         if raw_extraction is None:
-            if (
-                existing_ledger is not None
-                and int(getattr(candidate, "chapter_number", 0) or 0)
-                <= existing_ledger.latest_confirmed_chapter
-            ):
+            if existing_ledger is not None and chapter_number <= existing_ledger.latest_confirmed_chapter:
                 raise ValueError("fact_resource_historical_rewrite_requires_reconciliation")
-            return {"committed": False, "reason": "no_fact_resource_extraction"}
+            return None
+
         extraction = (
             raw_extraction
             if isinstance(raw_extraction, FactResourceExtraction)
             else FactResourceExtraction.model_validate(raw_extraction)
         )
-        chapter_number = int(getattr(candidate, "chapter_number", 0) or 0)
-        ledger = existing_ledger or FactResourceLedger.empty()
+        if not (extraction.deltas or extraction.assertions):
+            return None
+
         persisted_chapters = max(self.chapter_numbers(), default=0)
-        latest = max(ledger.latest_confirmed_chapter, persisted_chapters)
+        latest = max(
+            existing_ledger.latest_confirmed_chapter if existing_ledger is not None else 0,
+            persisted_chapters,
+        )
         if chapter_number <= latest:
             raise ValueError("fact_resource_historical_rewrite_requires_reconciliation")
+
+        state = self.persisted_state()
+        project = self._read_json(self.webnovel_dir / "project.json", {}) or {}
+        if not isinstance(project, dict):
+            project = {}
         start = self.get_fact_resource_snapshot(as_of_chapter=chapter_number - 1)
-        authority_findings = fact_resource_authority_findings(start, extraction)
-        if authority_findings:
-            raise ValueError(
-                "existing_authority_confirmation_required:"
-                + ",".join(item.category for item in authority_findings)
-            )
-        validation = validate_fact_resource_extraction(start, extraction)
-        errors = validation.blocking_findings
+        plan = plan_fact_resource_authority_writes(
+            state,
+            project,
+            extraction,
+            start_snapshot=start,
+            candidate_id=candidate_id,
+        )
+        errors = plan.blocking_findings
         if errors:
+            unsupported = [
+                item
+                for item in errors
+                if item.code == "EXISTING_AUTHORITY_CONFIRMATION_REQUIRED"
+            ]
+            if unsupported:
+                raise ValueError(
+                    "existing_authority_confirmation_required:"
+                    + ",".join(item.category or item.resource_key for item in unsupported)
+                )
             raise ValueError(
                 "fact_resource_validation_failed:" + ",".join(item.code for item in errors)
             )
-        generic_deltas = [
-            delta
-            for delta in extraction.deltas
-            if start.authority_for(delta.category) is None
-        ]
-        generic_assertions = [
-            assertion
-            for assertion in extraction.assertions
-            if start.authority_for(assertion.category) is None
-        ]
-        # An extraction containing no explicit change or assertion carries no
-        # generic event and need not create or mutate the generic file.  An
-        # assertion against an existing source was validation-only and is not
-        # copied into a second history.
-        if not generic_deltas and not generic_assertions:
-            return {
-                "committed": False,
-                "reason": "no_explicit_fact_resource_change",
-                "warnings": [item.model_dump(mode="json") for item in validation.findings],
-            }
-        generic_payload = extraction.model_dump(mode="python")
-        generic_payload["deltas"] = [item.model_dump(mode="python") for item in generic_deltas]
-        generic_payload["assertions"] = [item.model_dump(mode="python") for item in generic_assertions]
-        generic_payload["observed_assertions"] = list(generic_payload["assertions"])
-        generic_extraction = FactResourceExtraction.model_validate(generic_payload)
-        result = ledger.append(
-            generic_extraction,
-            candidate_id=candidate_id,
-        )
-        self._write_json_atomic(self.fact_resource_ledger_path, ledger.to_dict())
-        return {
-            "committed": True,
-            "chapter_number": chapter_number,
-            "delta_ids": [item.delta_id for item in generic_deltas],
-            "entry_count": len(result.entries),
-            "warnings": [item.model_dump(mode="json") for item in validation.findings if item.severity != "error"],
+        return plan
+
+    def _apply_candidate_fact_resource_writes(
+        self,
+        plan: FactResourceAuthorityWritePlan | None,
+    ) -> dict[str, Any]:
+        """Apply one planned write after bundle persistence.
+
+        The caller must provide the surrounding ``ProjectTransaction`` when
+        this is part of confirmation.  The adapter itself stages both raw
+        payloads in memory and writes only changed files; generic deltas are
+        filtered from authority deltas before the generic ledger is appended.
+        """
+
+        if plan is None:
+            return {"committed": False, "reason": "no_fact_resource_extraction"}
+
+        state_path = self.webnovel_dir / "state.json"
+        project_path = self.webnovel_dir / "project.json"
+        state = self.persisted_state()
+        project = self._read_json(project_path, {}) or {}
+        if not isinstance(project, dict):
+            project = {}
+        state_before = deepcopy(state)
+        project_before = deepcopy(project)
+        authority_result = apply_fact_resource_authority_writes(state, project, plan)
+        if state != state_before:
+            self._write_json_atomic(state_path, state)
+        if project != project_before:
+            self._write_json_atomic(project_path, project)
+
+        generic_commit: dict[str, Any] = {
+            "committed": False,
+            "reason": "no_generic_fact_resource_change",
         }
+        if plan.generic_deltas or plan.generic_assertions:
+            ledger = self.fact_resource_ledger() or FactResourceLedger.empty()
+            generic_payload = plan.extraction.model_dump(mode="python")
+            generic_payload["deltas"] = [
+                item.model_dump(mode="python") for item in plan.generic_deltas
+            ]
+            generic_payload["assertions"] = [
+                item.model_dump(mode="python") for item in plan.generic_assertions
+            ]
+            generic_payload["observed_assertions"] = list(generic_payload["assertions"])
+            generic_extraction = FactResourceExtraction.model_validate(generic_payload)
+            result = ledger.append(
+                generic_extraction,
+                candidate_id=plan.candidate_id,
+            )
+            self._write_json_atomic(self.fact_resource_ledger_path, ledger.to_dict())
+            generic_commit = {
+                "committed": True,
+                "chapter_number": plan.chapter_number,
+                "delta_ids": [item.delta_id for item in plan.generic_deltas],
+                "entry_count": len(result.entries),
+            }
+
+        new_delta_ids = list(authority_result.get("new_delta_ids") or [])
+        new_delta_ids.extend(generic_commit.get("delta_ids") or [])
+        committed = bool(authority_result.get("committed") or generic_commit.get("committed"))
+        return {
+            "committed": committed,
+            "chapter_number": plan.chapter_number,
+            "delta_ids": new_delta_ids,
+            "authority_write_count": authority_result.get("authority_write_count", 0),
+            "entry_count": generic_commit.get("entry_count", 0),
+            "authority": authority_result,
+            "generic": generic_commit,
+            "warnings": [
+                item.model_dump(mode="json")
+                for item in plan.validation.findings
+                if item.severity != "error"
+            ],
+            "reason": None if committed else "no_explicit_fact_resource_change",
+        }
+
+    def _commit_candidate_fact_resource_ledger(self, candidate: Any) -> dict[str, Any]:
+        """Compatibility wrapper for callers that still invoke the old hook."""
+
+        return self._apply_candidate_fact_resource_writes(
+            self._plan_candidate_fact_resource_writes(candidate)
+        )
 
     def _read_json(self, path: Path, default: Any = None) -> Any:
         target = Path(path)
@@ -7602,6 +7672,7 @@ class FileProjectStore(
             chapter_number=int(getattr(bundle, "chapter_number", 0) or 0),
             fact_resource_extraction=fact_resource_extraction,
         )
+        fact_resource_plan = self._plan_candidate_fact_resource_writes(direct_candidate)
         from packages.story_core.persistence.project_transaction import ProjectTransaction
 
         with ProjectTransaction.create(
@@ -7610,13 +7681,13 @@ class FileProjectStore(
             managed_paths=self._managed_paths_for_transaction(),
             managed_directories=self._managed_directories_for_transaction(),
         ):
-            fact_resource_commit = self._commit_candidate_fact_resource_ledger(direct_candidate)
             persisted = self.persist_bundle(
                 bundle,
                 operation="generate",
                 commit_message=commit_message,
                 accept_quality_warnings=accept_quality_warnings,
             )
+            fact_resource_commit = self._apply_candidate_fact_resource_writes(fact_resource_plan)
             persisted["fact_resource"] = fact_resource_commit
             persisted["canon_updates"] = self._commit_generated_bundle_canon(bundle)
         return {
@@ -7652,6 +7723,7 @@ class FileProjectStore(
             raise ValueError("candidate_submission_payload_missing")
         payload["body"] = candidate.body
         payload["chapter_title"] = candidate.chapter_title or payload.get("chapter_title")
+        fact_resource_plan = self._plan_candidate_fact_resource_writes(candidate)
 
         # The confirmation is the single atomic boundary the user
         # can trust. The body runs the legacy ``persist_bundle``
@@ -7673,16 +7745,16 @@ class FileProjectStore(
             managed_paths=self._managed_paths_for_transaction(),
             managed_directories=self._managed_directories_for_transaction(),
         ):
-            # Validate and append explicit resource events inside the same
-            # rollback boundary as the chapter and canon writes.  This also
-            # rejects stale or historical candidates before official state is
-            # allowed to change.
-            fact_resource_commit = self._commit_candidate_fact_resource_ledger(candidate)
             self.persist_bundle(
                 payload,
                 operation=candidate.operation,
                 accept_quality_warnings=accept_quality_warnings,
             )
+            # Apply the explicitly planned authority events to the freshly
+            # persisted raw payloads.  This is inside the same rollback
+            # boundary as the chapter and canon writes, so an adapter failure
+            # cannot leave a confirmed-looking authority behind.
+            fact_resource_commit = self._apply_candidate_fact_resource_writes(fact_resource_plan)
             # Apply the candidate's continuity delta to the
             # project canon so the next chapter's director
             # context sees the characters, items, relationships,

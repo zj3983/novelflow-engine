@@ -12,13 +12,14 @@ replay, extraction, projection, and validation rules.
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 from hashlib import sha256
 import json
 import math
 import re
 import unicodedata
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, MutableMapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -889,6 +890,7 @@ def validate_fact_resource_extraction(
     extraction: FactResourceExtraction | Mapping[str, Any],
     *,
     end_snapshot: FactResourceSnapshot | None = None,
+    include_authority_findings: bool = False,
 ) -> FactResourceValidation:
     """Replay candidate changes and return findings without mutating canon."""
 
@@ -925,7 +927,12 @@ def validate_fact_resource_extraction(
     for finding in parsed.findings:
         if finding.severity in {"error", "warning"}:
             findings.append(finding)
-    findings.extend(fact_resource_authority_findings(start, parsed))
+    # Authority ownership is a dispatch decision, not a validation error.
+    # Callers that are auditing a generic-ledger-only write can still request
+    # the old diagnostic explicitly, but a normal candidate confirmation must
+    # be allowed to route a valid delta to its typed authority adapter.
+    if include_authority_findings:
+        findings.extend(fact_resource_authority_findings(start, parsed))
     if end_snapshot is not None:
         for entry in end_snapshot.entries:
             actual = entries.get(entry.fact_id)
@@ -2469,6 +2476,1073 @@ def fact_resource_authority_findings(
     return findings
 
 
+# ---------------------------------------------------------------------------
+# Explicit authoritative write adapters
+
+
+_AUTHORITY_EVENT_KEYS = (
+    "history",
+    "state_history",
+    "state_changes",
+    "progression_history",
+    "level_history",
+    "changes",
+    "snapshots",
+    "events",
+)
+_EQUIPMENT_EVENT_KEYS = (
+    "history",
+    "state_history",
+    "state_changes",
+    "changes",
+    "snapshots",
+    "events",
+)
+
+
+@dataclass(frozen=True)
+class FactResourceAuthorityWrite:
+    """One planned write to an existing structured authority.
+
+    ``storage`` and ``path`` identify the raw JSON payload that owns the
+    event.  The path is resolved again against staged payloads during apply,
+    so planning never mutates the project and a failed apply can be discarded
+    without repairing partially changed caller objects.
+    """
+
+    group: str
+    storage: str
+    path: tuple[str | int, ...]
+    delta: FactResourceDelta
+    authority_source: str
+
+
+@dataclass(frozen=True)
+class FactResourceAuthorityWritePlan:
+    """Validated dispatch plan for generic and authoritative fact writes."""
+
+    chapter_number: int
+    candidate_id: str
+    start_snapshot: FactResourceSnapshot
+    extraction: FactResourceExtraction
+    validation: FactResourceValidation
+    authority_writes: tuple[FactResourceAuthorityWrite, ...] = ()
+    generic_deltas: tuple[FactResourceDelta, ...] = ()
+    generic_assertions: tuple[FactResourceAssertion, ...] = ()
+    findings: tuple[FactResourceFinding, ...] = ()
+
+    @property
+    def blocking_findings(self) -> list[FactResourceFinding]:
+        return [item for item in self.findings if item.severity == "error"]
+
+
+def _authority_mapping_at(
+    payload: Mapping[str, Any],
+    path: Sequence[str | int],
+) -> Any:
+    current: Any = payload
+    for part in path:
+        if isinstance(part, int):
+            if not isinstance(current, Sequence) or isinstance(current, (str, bytes, bytearray)):
+                return None
+            if part < 0 or part >= len(current):
+                return None
+            current = current[part]
+        else:
+            if not isinstance(current, Mapping) or part not in current:
+                return None
+            current = current[part]
+    return current
+
+
+def _authority_projection_story(
+    state: Mapping[str, Any] | None,
+    project: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Combine raw state/project mirrors for the read-side projection.
+
+    The file project keeps runtime values in ``state.json`` and several world
+    authorities in ``project.json``.  The merge is only for planning; writes
+    still use the explicitly selected raw storage path and never write both
+    histories as independent events.
+    """
+
+    raw_state = dict(state) if isinstance(state, Mapping) else {}
+    raw_project = dict(project) if isinstance(project, Mapping) else {}
+    story = deepcopy(raw_project)
+    for key, value in raw_state.items():
+        if key not in story or story.get(key) in (None, "", [], {}):
+            story[key] = deepcopy(value)
+    for key in (
+        "characters",
+        "progression_ledger",
+        "equipment_cards",
+        "relationship_graph",
+        "current_chapter",
+        "latest_chapter",
+        "last_written_chapter",
+    ):
+        if raw_state.get(key) not in (None, "", [], {}):
+            story[key] = deepcopy(raw_state[key])
+    blueprint = raw_project.get("world_blueprint")
+    if isinstance(blueprint, Mapping):
+        for key in (
+            "progression_ledger",
+            "equipment_cards",
+            "relationship_graph",
+        ):
+            if story.get(key) in (None, "", [], {}) and blueprint.get(key) not in (None, "", [], {}):
+                story[key] = deepcopy(blueprint[key])
+    if not story.get("characters") and isinstance(story.get("character_profiles"), list):
+        story["characters"] = deepcopy(story["character_profiles"])
+    return story
+
+
+def _is_protagonist_payload(character: Mapping[str, Any]) -> bool:
+    return _canonical_text(character.get("role")) in {"protagonist", "主角"} or _canonical_text(
+        character.get("character_tier")
+    ) in {"protagonist", "主角"}
+
+
+def _progression_category(category: str) -> str:
+    canonical = _canonical_text(category)
+    if canonical in {"item", "resource", "stackable"}:
+        return "inventory"
+    return _PROGRESSION_FIELD_ALIASES.get(canonical, canonical)
+
+
+def _contains_progression_category(value: Any, category: str) -> bool:
+    wanted = _progression_category(category)
+    if isinstance(value, Mapping):
+        return any(
+            _PROGRESSION_FIELD_ALIASES.get(_canonical_text(key)) == wanted
+            for key in _walk_keys(value)
+        )
+    return False
+
+
+def _progression_location(
+    state: Mapping[str, Any],
+    project: Mapping[str, Any],
+    delta: FactResourceDelta,
+) -> tuple[str, tuple[str | int, ...]] | None:
+    category = _progression_category(delta.category)
+    candidates: list[tuple[str, Mapping[str, Any], tuple[str | int, ...]]] = []
+    for storage, payload in (("state", state), ("project", project)):
+        if not isinstance(payload, Mapping):
+            continue
+        candidates.append((storage, payload, ("progression_ledger",)))
+        blueprint = payload.get("world_blueprint")
+        if isinstance(blueprint, Mapping):
+            candidates.append((storage, payload, ("world_blueprint", "progression_ledger")))
+    for storage, payload, path in candidates:
+        value = _authority_mapping_at(payload, path)
+        if isinstance(value, Mapping) and _contains_progression_category(value, category):
+            return storage, path
+
+    for storage, payload in (("state", state), ("project", project)):
+        characters = payload.get("characters")
+        character_key = "characters"
+        if not isinstance(characters, list):
+            characters = payload.get("character_profiles")
+            character_key = "character_profiles"
+        if not isinstance(characters, list):
+            continue
+        for index, character in enumerate(characters):
+            if not isinstance(character, Mapping) or not _is_protagonist_payload(character):
+                continue
+            for namespace in ("game_state", "progression"):
+                value = character.get(namespace)
+                if isinstance(value, Mapping) and _contains_progression_category(value, category):
+                    return storage, (character_key, index, namespace)
+    return None
+
+
+def _equipment_aliases(card: Mapping[str, Any]) -> set[str]:
+    raw_aliases = card.get("aliases")
+    if isinstance(raw_aliases, str):
+        aliases: Sequence[Any] = [raw_aliases]
+    elif isinstance(raw_aliases, Sequence) and not isinstance(raw_aliases, (bytes, bytearray)):
+        aliases = raw_aliases
+    else:
+        aliases = []
+    return {
+        _canonical_text(item)
+        for item in [card.get("id"), card.get("name"), *aliases]
+        if _canonical_text(item)
+    }
+
+
+def _equipment_match_indices(cards: Any, delta: FactResourceDelta) -> list[int]:
+    if not isinstance(cards, list):
+        return []
+    wanted = {_canonical_text(delta.resource_key)}
+    lookup_keys = delta.metadata.get("lookup_keys") if isinstance(delta.metadata, Mapping) else None
+    if isinstance(lookup_keys, list):
+        wanted.update(_canonical_text(item) for item in lookup_keys if _canonical_text(item))
+    return [
+        index
+        for index, card in enumerate(cards)
+        if isinstance(card, Mapping) and _equipment_aliases(card) & wanted
+    ]
+
+
+def _equipment_location(
+    state: Mapping[str, Any],
+    project: Mapping[str, Any],
+    delta: FactResourceDelta,
+) -> tuple[str, tuple[str | int, ...]] | None:
+    candidates: list[tuple[str, Mapping[str, Any], tuple[str | int, ...]]] = []
+    for storage, payload in (("state", state), ("project", project)):
+        if not isinstance(payload, Mapping):
+            continue
+        candidates.append((storage, payload, ("equipment_cards",)))
+        blueprint = payload.get("world_blueprint")
+        if isinstance(blueprint, Mapping):
+            candidates.append((storage, payload, ("world_blueprint", "equipment_cards")))
+    for storage, payload, path in candidates:
+        cards = _authority_mapping_at(payload, path)
+        matches = _equipment_match_indices(cards, delta)
+        if len(matches) == 1:
+            return storage, path
+        if len(matches) > 1:
+            return None
+    return None
+
+
+def _protagonist_names(*payloads: Mapping[str, Any]) -> set[str]:
+    names: set[str] = set()
+    for payload in payloads:
+        characters = payload.get("characters")
+        if not isinstance(characters, list):
+            characters = payload.get("character_profiles")
+        if not isinstance(characters, list):
+            continue
+        for character in characters:
+            if isinstance(character, Mapping) and _is_protagonist_payload(character):
+                name = _text(character.get("name"))
+                if name:
+                    names.add(name)
+    return names
+
+
+def _relationship_metric(delta: FactResourceDelta) -> str:
+    value = _canonical_text(delta.resource_key)
+    if value in {"tension", "紧张度"} or _canonical_text(delta.category) == "tension":
+        return "tension"
+    return "trust"
+
+
+def _relationship_match_indices(
+    edges: Any,
+    delta: FactResourceDelta,
+    protagonist_names: set[str],
+) -> list[int]:
+    if not isinstance(edges, list):
+        return []
+    relation_id = ""
+    if isinstance(delta.metadata, Mapping):
+        relation_id = _text(delta.metadata.get("relationship_id"))
+    if relation_id:
+        return [
+            index
+            for index, edge in enumerate(edges)
+            if isinstance(edge, Mapping) and _text(edge.get("id")) == relation_id
+        ]
+    subject = _text(delta.subject)
+    matches: list[int] = []
+    for index, edge in enumerate(edges):
+        if not isinstance(edge, Mapping):
+            continue
+        source, target = _text(edge.get("source")), _text(edge.get("target"))
+        if subject and subject not in {source, target}:
+            continue
+        if not subject and protagonist_names and not ({source, target} & protagonist_names):
+            continue
+        matches.append(index)
+    return matches
+
+
+def _relationship_location(
+    state: Mapping[str, Any],
+    project: Mapping[str, Any],
+    delta: FactResourceDelta,
+) -> tuple[str, tuple[str | int, ...]] | None:
+    protagonist_names = _protagonist_names(state, project)
+    candidates: list[tuple[str, Mapping[str, Any], tuple[str | int, ...]]] = []
+    # The project graph is the normal world-level authority.  A state graph is
+    # supported for imported/legacy projects that have not split the mirrors.
+    for storage, payload in (("project", project), ("state", state)):
+        if not isinstance(payload, Mapping):
+            continue
+        candidates.append((storage, payload, ("relationship_graph",)))
+        blueprint = payload.get("world_blueprint")
+        if isinstance(blueprint, Mapping):
+            candidates.append((storage, payload, ("world_blueprint", "relationship_graph")))
+    for storage, payload, path in candidates:
+        edges = _authority_mapping_at(payload, path)
+        matches = _relationship_match_indices(edges, delta, protagonist_names)
+        if len(matches) == 1:
+            return storage, path
+        if len(matches) > 1:
+            return None
+    return None
+
+
+def _authority_location(
+    state: Mapping[str, Any],
+    project: Mapping[str, Any],
+    delta: FactResourceDelta,
+    group: str,
+) -> tuple[str, tuple[str | int, ...]] | None:
+    if group == "progression":
+        return _progression_location(state, project, delta)
+    if group == "equipment_cards":
+        return _equipment_location(state, project, delta)
+    if group == "relationship_graph":
+        return _relationship_location(state, project, delta)
+    return None
+
+
+def _authority_next_value(delta: FactResourceDelta) -> Any:
+    if delta.operation in {"TRANSFER", "EQUIP", "UNEQUIP"}:
+        return None
+    if delta.after is not None:
+        return deepcopy(delta.after)
+    if delta.operation in {"SET", "PROGRESS_SET"}:
+        return deepcopy(delta.change)
+    before = _number(delta.before)
+    change = _number(delta.change)
+    if before is None or change is None:
+        return None
+    return before + (abs(change) if delta.operation in {"ADD", "PROGRESS_ADD"} else -abs(change))
+
+
+def _authority_numeric_error(delta: FactResourceDelta, message: str) -> FactResourceFinding:
+    return FactResourceFinding(
+        code="INVALID_RESOURCE_DELTA",
+        severity="error",
+        message=message,
+        delta_id=delta.delta_id,
+        fact_id=delta.fact_id,
+        category=delta.category,
+        resource_key=delta.resource_key,
+        evidence=delta.evidence,
+        chapter=delta.chapter,
+    )
+
+
+def _authority_event_shape_finding(
+    state: Mapping[str, Any],
+    project: Mapping[str, Any],
+    write: FactResourceAuthorityWrite,
+) -> FactResourceFinding | None:
+    """Reject an authority path whose existing history is not append-safe.
+
+    A missing history key is intentionally allowed: the adapter can create the
+    first event in an otherwise structured authority.  An existing key with a
+    scalar/list-of-scalars shape is different; silently replacing it would
+    destroy legacy history, so it remains an explicit reconciliation case.
+    """
+
+    payload = state if write.storage == "state" else project
+    raw = _authority_mapping_at(payload, write.path)
+    if write.group == "progression" and not isinstance(raw, Mapping):
+        return FactResourceFinding(
+            code="EXISTING_AUTHORITY_CONFIRMATION_REQUIRED",
+            severity="error",
+            message=f"{write.authority_source} 的结构化目标不存在或不是对象。",
+            delta_id=write.delta.delta_id,
+            fact_id=write.delta.fact_id,
+            category=write.delta.category,
+            resource_key=write.delta.resource_key,
+            evidence=write.delta.evidence,
+            chapter=write.delta.chapter,
+        )
+
+    target: Mapping[str, Any]
+    if write.group == "progression":
+        target = raw
+    else:
+        target = {}
+    if write.group == "progression" and not (write.path and write.path[-1] == "game_state"):
+        candidate = raw.get("protagonist")
+        if isinstance(candidate, Mapping) and (
+            any(key in candidate for key in _AUTHORITY_EVENT_KEYS)
+            or not any(key in raw for key in _AUTHORITY_EVENT_KEYS)
+        ):
+            target = candidate
+    elif write.group == "equipment_cards":
+        cards = raw if isinstance(raw, list) else None
+        if cards is None:
+            return FactResourceFinding(
+                code="EXISTING_AUTHORITY_CONFIRMATION_REQUIRED",
+                severity="error",
+                message="equipment_cards 不是可追加的列表。",
+                delta_id=write.delta.delta_id,
+                fact_id=write.delta.fact_id,
+                category=write.delta.category,
+                resource_key=write.delta.resource_key,
+                evidence=write.delta.evidence,
+                chapter=write.delta.chapter,
+            )
+        matches = _equipment_match_indices(cards, write.delta)
+        if len(matches) != 1 or not isinstance(cards[matches[0]], Mapping):
+            return FactResourceFinding(
+                code="EXISTING_AUTHORITY_CONFIRMATION_REQUIRED",
+                severity="error",
+                message=f"{write.delta.resource_key} 的装备卡没有唯一的结构化目标。",
+                delta_id=write.delta.delta_id,
+                fact_id=write.delta.fact_id,
+                category=write.delta.category,
+                resource_key=write.delta.resource_key,
+                evidence=write.delta.evidence,
+                chapter=write.delta.chapter,
+            )
+        target = cards[matches[0]]
+    elif write.group == "relationship_graph":
+        edges = raw if isinstance(raw, list) else None
+        if edges is None:
+            return FactResourceFinding(
+                code="EXISTING_AUTHORITY_CONFIRMATION_REQUIRED",
+                severity="error",
+                message="relationship_graph 不是可追加的列表。",
+                delta_id=write.delta.delta_id,
+                fact_id=write.delta.fact_id,
+                category=write.delta.category,
+                resource_key=write.delta.resource_key,
+                evidence=write.delta.evidence,
+                chapter=write.delta.chapter,
+            )
+        names = _protagonist_names(state, project)
+        matches = _relationship_match_indices(edges, write.delta, names)
+        if len(matches) != 1 or not isinstance(edges[matches[0]], Mapping):
+            return FactResourceFinding(
+                code="EXISTING_AUTHORITY_CONFIRMATION_REQUIRED",
+                severity="error",
+                message=f"{write.delta.resource_key} 的关系边没有唯一的结构化目标。",
+                delta_id=write.delta.delta_id,
+                fact_id=write.delta.fact_id,
+                category=write.delta.category,
+                resource_key=write.delta.resource_key,
+                evidence=write.delta.evidence,
+                chapter=write.delta.chapter,
+            )
+        target = edges[matches[0]]
+
+    event_keys = _EQUIPMENT_EVENT_KEYS if write.group == "equipment_cards" else _AUTHORITY_EVENT_KEYS
+    selected = next((key for key in event_keys if key in target), None)
+    if selected is None:
+        return None
+    raw_events = target.get(selected)
+    if not isinstance(raw_events, list):
+        return FactResourceFinding(
+            code="EXISTING_AUTHORITY_CONFIRMATION_REQUIRED",
+            severity="error",
+            message=f"{write.authority_source}.{selected} 不是可安全追加的列表。",
+            delta_id=write.delta.delta_id,
+            fact_id=write.delta.fact_id,
+            category=write.delta.category,
+            resource_key=write.delta.resource_key,
+            evidence=write.delta.evidence,
+            chapter=write.delta.chapter,
+        )
+    if any(not isinstance(item, Mapping) for item in raw_events):
+        return FactResourceFinding(
+            code="EXISTING_AUTHORITY_CONFIRMATION_REQUIRED",
+            severity="error",
+            message=f"{write.authority_source}.{selected} 含有非对象历史事件。",
+            delta_id=write.delta.delta_id,
+            fact_id=write.delta.fact_id,
+            category=write.delta.category,
+            resource_key=write.delta.resource_key,
+            evidence=write.delta.evidence,
+            chapter=write.delta.chapter,
+        )
+    return None
+
+
+def plan_fact_resource_authority_writes(
+    state: Mapping[str, Any] | None,
+    project: Mapping[str, Any] | None,
+    extraction: FactResourceExtraction | Mapping[str, Any],
+    *,
+    start_snapshot: FactResourceSnapshot | None = None,
+    candidate_id: str = "",
+) -> FactResourceAuthorityWritePlan:
+    """Validate and dispatch deltas without mutating either payload.
+
+    Existing authorities are writable only through the explicit dispatch
+    result.  A missing or malformed historical container is surfaced as a
+    targeted ``EXISTING_AUTHORITY_CONFIRMATION_REQUIRED`` finding; a valid
+    delta is never rejected merely because its category has an authority.
+    """
+
+    parsed = (
+        extraction
+        if isinstance(extraction, FactResourceExtraction)
+        else FactResourceExtraction.model_validate(extraction)
+    )
+    raw_state = state if isinstance(state, Mapping) else {}
+    raw_project = project if isinstance(project, Mapping) else {}
+    story = _authority_projection_story(raw_state, raw_project)
+    start = start_snapshot or project_fact_resource_snapshot(
+        story,
+        as_of_chapter=parsed.chapter_number - 1,
+    )
+    validation = validate_fact_resource_extraction(start, parsed)
+    authority_writes: list[FactResourceAuthorityWrite] = []
+    generic_deltas: list[FactResourceDelta] = []
+    generic_assertions: list[FactResourceAssertion] = []
+    findings: list[FactResourceFinding] = list(validation.findings)
+    for delta in sorted(parsed.deltas, key=lambda item: (item.sequence, item.delta_id)):
+        authority = start.authority_for(delta.category)
+        if authority is None:
+            generic_deltas.append(delta)
+            continue
+        location = _authority_location(raw_state, raw_project, delta, authority.group)
+        if location is None:
+            findings.append(
+                FactResourceFinding(
+                    code="EXISTING_AUTHORITY_CONFIRMATION_REQUIRED",
+                    severity="error",
+                    message=(
+                        f"{delta.resource_key} 的 {authority.source} 没有可安全追加的结构化历史容器或唯一目标。"
+                    ),
+                    delta_id=delta.delta_id,
+                    fact_id=delta.fact_id,
+                    category=delta.category,
+                    resource_key=delta.resource_key,
+                    evidence=delta.evidence,
+                    chapter=delta.chapter,
+                )
+            )
+            continue
+        if delta.operation in {"ADD", "SUBTRACT", "PROGRESS_ADD"} and _authority_next_value(delta) is None:
+            findings.append(
+                _authority_numeric_error(
+                    delta,
+                    f"{delta.resource_key} 属于 {authority.source}，算术变化缺少可验证的 before/after。",
+                )
+            )
+            continue
+        if authority.group == "relationship_graph":
+            next_value = _number(_authority_next_value(delta))
+            if next_value is None or next_value < 0 or next_value > 100:
+                findings.append(
+                    FactResourceFinding(
+                        code="RELATIONSHIP_VALUE_MISMATCH",
+                        severity="error",
+                        message=f"{delta.resource_key} 的关系数值必须在 0 到 100 之间。",
+                        delta_id=delta.delta_id,
+                        fact_id=delta.fact_id,
+                        category=delta.category,
+                        resource_key=delta.resource_key,
+                        evidence=delta.evidence,
+                        chapter=delta.chapter,
+                    )
+                )
+                continue
+        write = FactResourceAuthorityWrite(
+            group=authority.group,
+            storage=location[0],
+            path=location[1],
+            delta=delta,
+            authority_source=authority.source,
+        )
+        shape_finding = _authority_event_shape_finding(raw_state, raw_project, write)
+        if shape_finding is not None:
+            findings.append(shape_finding)
+            continue
+        authority_writes.append(write)
+    for assertion in parsed.assertions:
+        if start.authority_for(assertion.category) is None:
+            generic_assertions.append(assertion)
+    return FactResourceAuthorityWritePlan(
+        chapter_number=parsed.chapter_number,
+        candidate_id=str(candidate_id or ""),
+        start_snapshot=start,
+        extraction=parsed,
+        validation=validation,
+        authority_writes=tuple(authority_writes),
+        generic_deltas=tuple(generic_deltas),
+        generic_assertions=tuple(generic_assertions),
+        findings=tuple(findings),
+    )
+
+
+def _display_number(value: Any) -> str:
+    number = _number(value)
+    if number is None:
+        return str(value)
+    return str(int(number)) if float(number).is_integer() else str(number)
+
+
+def _format_authoritative_scalar(
+    value: Any,
+    existing: Any,
+    delta: FactResourceDelta,
+    category: str,
+) -> Any:
+    if not isinstance(existing, str):
+        return value
+    text = existing.strip()
+    number = _display_number(value)
+    lowered = _canonical_text(category)
+    if lowered == "level":
+        if re.match(r"lv\.?", text, flags=re.IGNORECASE):
+            return f"Lv.{number}"
+        if "级" in text:
+            return f"{number}级"
+        return number
+    if lowered == "experience" and "/" in text:
+        denominator = text.split("/", 1)[1].strip()
+        denominator = re.sub(r"[^0-9.].*$", "", denominator)
+        if denominator:
+            return f"{number}/{denominator}"
+    match = re.match(r"\s*[-+]?\d+(?:\.\d+)?\s*(.*)$", text)
+    suffix = match.group(1).strip() if match else ""
+    unit = suffix or _text(delta.unit)
+    return f"{number}{unit}" if unit else number
+
+
+def _mapping_candidates_for_progression(
+    container: MutableMapping[str, Any],
+    category: str,
+    *,
+    game_state: bool = False,
+) -> list[MutableMapping[str, Any]]:
+    result: list[MutableMapping[str, Any]] = []
+
+    def add(value: Any) -> None:
+        if isinstance(value, MutableMapping) and not any(value is item for item in result):
+            result.append(value)
+
+    if not game_state and isinstance(container.get("protagonist"), MutableMapping):
+        add(container.get("protagonist"))
+    if category in {"inventory", "currency"} and isinstance(container.get("economy"), MutableMapping):
+        add(container.get("economy"))
+    if category == "quest" and isinstance(container.get("quests"), MutableMapping):
+        add(container.get("quests"))
+    if game_state and isinstance(container.get("current"), MutableMapping):
+        add(container.get("current"))
+    add(container)
+    if isinstance(container.get("current"), MutableMapping):
+        add(container.get("current"))
+    if isinstance(container.get("panel"), MutableMapping):
+        add(container.get("panel"))
+    return result
+
+
+def _choose_field(mapping: Mapping[str, Any], names: Sequence[str], default: str) -> str:
+    for name in names:
+        if name in mapping and mapping.get(name) not in (None, "", [], {}):
+            return name
+    return next((name for name in names if name in mapping), default)
+
+
+def _find_exact_key(mapping: Mapping[str, Any], wanted: str) -> str | None:
+    needle = _canonical_text(wanted)
+    for key in mapping:
+        if _canonical_text(key) == needle:
+            return str(key)
+    return None
+
+
+def _format_quest_value(value: Any, existing: Any, delta: FactResourceDelta) -> Any:
+    if isinstance(existing, Mapping):
+        result = deepcopy(dict(existing))
+        field = "progress" if "progress" in result else "value" if "value" in result else "progress"
+        result[field] = value
+        target = _number(result.get("target")) or _number(delta.metadata.get("target"))
+        if target is not None:
+            result.setdefault("target", target)
+            if isinstance(result.get("status"), str) and "/" in result["status"]:
+                result["status"] = f"{_display_number(value)}/{_display_number(target)}"
+        return result
+    if isinstance(existing, str):
+        match = re.search(r"/\s*(\d+)", existing)
+        target = match.group(1) if match else _display_number(delta.metadata.get("target")) if delta.metadata.get("target") is not None else ""
+        return f"{_display_number(value)}/{target}" if target else _display_number(value)
+    return value
+
+
+def _update_progression_value(
+    container: MutableMapping[str, Any],
+    delta: FactResourceDelta,
+    *,
+    game_state: bool = False,
+) -> dict[str, Any]:
+    category = _progression_category(delta.category)
+    candidates = _mapping_candidates_for_progression(container, category, game_state=game_state)
+    next_value = _authority_next_value(delta)
+    if category in {"level", "experience", "currency"} and next_value is None:
+        raise ValueError("existing_authority_confirmation_required:authoritative_scalar_unavailable")
+    if category in {"level", "experience"}:
+        names = ("level", "character_level") if category == "level" else ("experience", "exp", "character_exp")
+        target = candidates[0] if candidates else container
+        field = _choose_field(target, names, names[0])
+        formatted = _format_authoritative_scalar(next_value, target.get(field), delta, category)
+        target[field] = deepcopy(formatted)
+        # Existing panels/current mirrors are presentation surfaces, not a
+        # second history.  Update them only when they already exist.
+        for mirror in candidates[1:]:
+            if any(name in mirror for name in names):
+                mirror[_choose_field(mirror, names, names[0])] = deepcopy(
+                    _format_authoritative_scalar(next_value, mirror.get(_choose_field(mirror, names, names[0])), delta, category)
+                )
+        return {category: deepcopy(formatted)}
+    if category == "currency":
+        target = next(
+            (item for item in candidates if any(name in item for name in ("game_currency", "currency", "money"))),
+            candidates[0] if candidates else container,
+        )
+        field = _choose_field(target, ("game_currency", "currency", "money"), "game_currency")
+        formatted = _format_authoritative_scalar(next_value, target.get(field), delta, category)
+        target[field] = deepcopy(formatted)
+        return {"currency": deepcopy(formatted)}
+    if category == "inventory":
+        target = next(
+            (item for item in candidates if any(isinstance(item.get(name), MutableMapping) for name in ("inventory", "items", "backpack"))),
+            candidates[0] if candidates else container,
+        )
+        field = _choose_field(target, ("inventory", "items", "backpack"), "inventory")
+        inventory = target.get(field)
+        if not isinstance(inventory, MutableMapping):
+            inventory = {}
+            target[field] = inventory
+        key = _find_exact_key(inventory, delta.resource_key) or _text(delta.resource_key)
+        if not key:
+            raise ValueError("existing_authority_confirmation_required:inventory_key_unavailable")
+        existing = inventory.get(key)
+        inventory[key] = deepcopy(_format_authoritative_scalar(next_value, existing, delta, category))
+        return {"inventory": deepcopy(dict(inventory))}
+    if category == "quest":
+        target = next(
+            (item for item in candidates if isinstance(item.get("quests"), MutableMapping)),
+            candidates[0] if candidates else container,
+        )
+        field = "quests" if isinstance(target.get("quests"), MutableMapping) else "quests"
+        quests = target.get(field)
+        if not isinstance(quests, MutableMapping):
+            quests = {}
+            target[field] = quests
+        key = _find_exact_key(quests, delta.resource_key) or _text(delta.resource_key)
+        if not key:
+            raise ValueError("existing_authority_confirmation_required:quest_key_unavailable")
+        quests[key] = _format_quest_value(next_value, quests.get(key), delta)
+        return {"quests": deepcopy(dict(quests))}
+    raise ValueError(f"existing_authority_confirmation_required:unsupported_progression_category:{delta.category}")
+
+
+def _progression_event_container(
+    container: MutableMapping[str, Any],
+) -> MutableMapping[str, Any]:
+    protagonist = container.get("protagonist")
+    if isinstance(protagonist, MutableMapping):
+        if any(key in protagonist for key in _AUTHORITY_EVENT_KEYS) or not any(
+            key in container for key in _AUTHORITY_EVENT_KEYS
+        ):
+            return protagonist
+    return container
+
+
+def _event_list_for_write(
+    container: MutableMapping[str, Any],
+    keys: Sequence[str],
+) -> list[MutableMapping[str, Any]]:
+    selected = next((key for key in keys if key in container), None)
+    if selected is None:
+        selected = keys[0]
+        container[selected] = []
+    raw = container.get(selected)
+    if not isinstance(raw, list):
+        raise ValueError("existing_authority_confirmation_required:historical_container_not_list")
+    if any(not isinstance(item, MutableMapping) for item in raw):
+        raise ValueError("existing_authority_confirmation_required:historical_event_not_mapping")
+    return raw
+
+
+def _event_has_delta(events: Sequence[Mapping[str, Any]], delta: FactResourceDelta) -> bool:
+    for event in events:
+        if _text(event.get("fact_resource_delta_id")) == delta.delta_id:
+            return True
+        metadata = event.get("metadata")
+        if isinstance(metadata, Mapping) and _text(metadata.get("fact_resource_delta_id")) == delta.delta_id:
+            return True
+    return False
+
+
+def _sort_authority_events(events: list[MutableMapping[str, Any]]) -> None:
+    """Keep appended authority history deterministic by chapter and id."""
+
+    events.sort(
+        key=lambda item: (
+            _adapter_chapter(
+                item.get("chapter", item.get("chapter_number", item.get("as_of_chapter"))),
+                default=0,
+            )
+            or 0,
+            _text(item.get("fact_resource_delta_id") or item.get("summary")),
+        )
+    )
+
+
+def _apply_progression_write(
+    payload: MutableMapping[str, Any],
+    write: FactResourceAuthorityWrite,
+    *,
+    candidate_id: str,
+) -> bool:
+    raw_container = _authority_mapping_at(payload, write.path)
+    if not isinstance(raw_container, MutableMapping):
+        raise ValueError("existing_authority_confirmation_required:progression_container_unavailable")
+    is_game_state = bool(write.path and write.path[-1] == "game_state")
+    values = _update_progression_value(raw_container, write.delta, game_state=is_game_state)
+    event_container = raw_container if is_game_state else _progression_event_container(raw_container)
+    events = _event_list_for_write(event_container, _AUTHORITY_EVENT_KEYS)
+    already = _event_has_delta(events, write.delta)
+    if not already:
+        events.append(
+            {
+                "chapter": write.delta.chapter,
+                "current": values,
+                "fact_resource_delta_id": write.delta.delta_id,
+                "candidate_id": candidate_id,
+                "operation": write.delta.operation,
+                "evidence": write.delta.evidence,
+            }
+        )
+        _sort_authority_events(events)
+    return not already
+
+
+def _update_progression_mirror(
+    mapping: MutableMapping[str, Any],
+    delta: FactResourceDelta,
+) -> None:
+    try:
+        _update_progression_value(mapping, delta, game_state=True)
+    except ValueError:
+        # A presentation mirror may omit the field that is authoritative in
+        # the ledger.  It must not make an otherwise valid authority commit
+        # fail; the historical source was already updated above.
+        return
+
+
+def _sync_progression_mirrors(
+    state: MutableMapping[str, Any],
+    project: MutableMapping[str, Any],
+    delta: FactResourceDelta,
+) -> None:
+    for payload in (state, project):
+        for key in ("characters", "character_profiles"):
+            characters = payload.get(key)
+            if not isinstance(characters, list):
+                continue
+            for character in characters:
+                if not isinstance(character, MutableMapping) or not _is_protagonist_payload(character):
+                    continue
+                game_state = character.get("game_state")
+                if isinstance(game_state, MutableMapping):
+                    _update_progression_mirror(game_state, delta)
+                panel = character.get("game_panel")
+                if isinstance(panel, MutableMapping) and _progression_category(delta.category) in {"level", "experience"}:
+                    _update_progression_mirror(panel, delta)
+
+
+def _equipment_event_payload(
+    card: MutableMapping[str, Any],
+    delta: FactResourceDelta,
+    *,
+    candidate_id: str,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "chapter": delta.chapter,
+        "fact_resource_delta_id": delta.delta_id,
+        "candidate_id": candidate_id,
+        "operation": delta.operation,
+        "evidence": delta.evidence,
+    }
+    if delta.operation == "TRANSFER":
+        owner = delta.to_owner or delta.owner
+        if not owner:
+            raise ValueError("existing_authority_confirmation_required:equipment_owner_unavailable")
+        payload["current_owner"] = owner
+    elif delta.operation in {"EQUIP", "UNEQUIP"}:
+        equipped = delta.equipped if delta.equipped is not None else delta.operation == "EQUIP"
+        payload["equipped"] = bool(equipped)
+        payload["status"] = "已装备" if equipped else "未装备"
+        owner = delta.owner or _text(card.get("current_owner"))
+        if owner:
+            payload["current_owner"] = owner
+    else:
+        raise ValueError(f"existing_authority_confirmation_required:unsupported_equipment_operation:{delta.operation}")
+    return payload
+
+
+def _apply_equipment_write(
+    payload: MutableMapping[str, Any],
+    write: FactResourceAuthorityWrite,
+    *,
+    candidate_id: str,
+) -> bool:
+    cards = _authority_mapping_at(payload, write.path)
+    if not isinstance(cards, list):
+        raise ValueError("existing_authority_confirmation_required:equipment_cards_not_list")
+    matches = _equipment_match_indices(cards, write.delta)
+    if len(matches) != 1:
+        raise ValueError("existing_authority_confirmation_required:equipment_target_not_unique")
+    card = cards[matches[0]]
+    if not isinstance(card, MutableMapping):
+        raise ValueError("existing_authority_confirmation_required:equipment_card_not_mapping")
+    event = _equipment_event_payload(card, write.delta, candidate_id=candidate_id)
+    events = _event_list_for_write(card, _EQUIPMENT_EVENT_KEYS)
+    already = _event_has_delta(events, write.delta)
+    if not already:
+        events.append(event)
+        _sort_authority_events(events)
+    if write.delta.operation == "TRANSFER":
+        card["current_owner"] = event["current_owner"]
+    else:
+        card["equipped"] = event["equipped"]
+        card["status"] = event["status"]
+        if event.get("current_owner"):
+            card["current_owner"] = event["current_owner"]
+    current_last = _adapter_chapter(card.get("last_update_chapter"), default=0) or 0
+    card["last_update_chapter"] = max(current_last, write.delta.chapter)
+    return not already
+
+
+def _relationship_event_summary(delta: FactResourceDelta) -> str:
+    evidence = _text(delta.evidence).replace("\n", " ")
+    suffix = f" {evidence}" if evidence else ""
+    return f"事实资源[{delta.delta_id}]{suffix}"[:500]
+
+
+def _apply_relationship_write(
+    payload: MutableMapping[str, Any],
+    write: FactResourceAuthorityWrite,
+) -> bool:
+    edges = _authority_mapping_at(payload, write.path)
+    if not isinstance(edges, list):
+        raise ValueError("existing_authority_confirmation_required:relationship_graph_not_list")
+    protagonist_names = _protagonist_names(payload)
+    matches = _relationship_match_indices(edges, write.delta, protagonist_names)
+    if len(matches) != 1:
+        raise ValueError("existing_authority_confirmation_required:relationship_target_not_unique")
+    edge = edges[matches[0]]
+    if not isinstance(edge, MutableMapping):
+        raise ValueError("existing_authority_confirmation_required:relationship_edge_not_mapping")
+    changes = edge.get("changes")
+    if changes is None:
+        changes = []
+        edge["changes"] = changes
+    if not isinstance(changes, list) or any(not isinstance(item, MutableMapping) for item in changes):
+        raise ValueError("existing_authority_confirmation_required:relationship_changes_not_list")
+    summary = _relationship_event_summary(write.delta)
+    already = any(
+        summary == _text(item.get("summary")) or write.delta.delta_id in _text(item.get("summary"))
+        for item in changes
+    )
+    metric = _relationship_metric(write.delta)
+    next_value = _number(_authority_next_value(write.delta))
+    if next_value is None or next_value < 0 or next_value > 100:
+        raise ValueError("fact_resource_validation_failed:RELATIONSHIP_VALUE_MISMATCH")
+    event = {
+        "chapter_number": write.delta.chapter,
+        "summary": summary,
+        metric: next_value,
+    }
+    if not already:
+        changes.append(event)
+        _sort_authority_events(changes)
+    edge[metric] = next_value
+    current_last = _adapter_chapter(edge.get("last_changed_chapter"), default=0) or 0
+    edge["last_changed_chapter"] = max(current_last, write.delta.chapter)
+    return not already
+
+
+def apply_fact_resource_authority_writes(
+    state: MutableMapping[str, Any],
+    project: MutableMapping[str, Any],
+    plan: FactResourceAuthorityWritePlan,
+) -> dict[str, Any]:
+    """Apply one validated plan to staged raw payloads.
+
+    The caller owns persistence and transaction rollback.  This function also
+    stages both mappings locally and commits them to the caller only after all
+    adapter operations succeed, so an unsupported legacy shape cannot leave a
+    partially changed in-memory payload behind.
+    """
+
+    blocking = plan.blocking_findings
+    if blocking:
+        unsupported = [
+            item
+            for item in blocking
+            if item.code == "EXISTING_AUTHORITY_CONFIRMATION_REQUIRED"
+        ]
+        if unsupported:
+            raise ValueError(
+                "existing_authority_confirmation_required:"
+                + ",".join(item.category or item.resource_key for item in unsupported)
+            )
+        raise ValueError(
+            "fact_resource_validation_failed:" + ",".join(item.code for item in blocking)
+        )
+    if not isinstance(state, MutableMapping) or not isinstance(project, MutableMapping):
+        raise ValueError("existing_authority_confirmation_required:mutable_authority_payload_required")
+    staged_state = deepcopy(dict(state))
+    staged_project = deepcopy(dict(project))
+    new_delta_ids: list[str] = []
+    skipped_delta_ids: list[str] = []
+    for write in plan.authority_writes:
+        payload = staged_state if write.storage == "state" else staged_project
+        if write.group == "progression":
+            was_new = _apply_progression_write(
+                payload,
+                write,
+                candidate_id=plan.candidate_id,
+            )
+            _sync_progression_mirrors(staged_state, staged_project, write.delta)
+        elif write.group == "equipment_cards":
+            was_new = _apply_equipment_write(
+                payload,
+                write,
+                candidate_id=plan.candidate_id,
+            )
+        elif write.group == "relationship_graph":
+            was_new = _apply_relationship_write(payload, write)
+        else:  # pragma: no cover - dispatch is constrained by the authority map
+            raise ValueError(f"existing_authority_confirmation_required:unsupported_authority:{write.group}")
+        if was_new:
+            new_delta_ids.append(write.delta.delta_id)
+        else:
+            skipped_delta_ids.append(write.delta.delta_id)
+    state.clear()
+    state.update(staged_state)
+    project.clear()
+    project.update(staged_project)
+    return {
+        "committed": bool(new_delta_ids),
+        "authority_write_count": len(plan.authority_writes),
+        "new_delta_ids": new_delta_ids,
+        "skipped_delta_ids": skipped_delta_ids,
+        "sources": sorted({write.authority_source for write in plan.authority_writes}),
+        "writes": [
+            {
+                "group": write.group,
+                "storage": write.storage,
+                "path": [str(part) for part in write.path],
+                "authority_source": write.authority_source,
+                "delta_id": write.delta.delta_id,
+            }
+            for write in plan.authority_writes
+        ],
+    }
+
+
 def get_fact_resource_snapshot(
     source: Any,
     *,
@@ -2654,14 +3728,18 @@ __all__ = [
     "FactResourceExtraction",
     "FactResourceFinding",
     "FactResourceAuthority",
+    "FactResourceAuthorityWrite",
+    "FactResourceAuthorityWritePlan",
     "FactResourceLedger",
     "FactResourceSnapshot",
     "FactResourceValidation",
     "extract_fact_resource_changes",
+    "apply_fact_resource_authority_writes",
     "fact_resource_authority_findings",
     "fact_resource_authority_group",
     "get_fact_resource_snapshot",
     "project_fact_resource_snapshot",
+    "plan_fact_resource_authority_writes",
     "render_fact_resource_context",
     "stable_fact_id",
     "validate_fact_resource_extraction",
