@@ -113,6 +113,7 @@ from packages.story_core.fact_resource_ledger import (
     FactResourceSnapshot,
     FactResourceValidation,
     extract_fact_resource_changes,
+    fact_resource_authority_findings,
     get_fact_resource_snapshot,
     validate_fact_resource_extraction,
 )
@@ -1593,9 +1594,6 @@ class FileProjectStore(
         *,
         as_of_chapter: int | None = None,
     ) -> FactResourceSnapshot:
-        ledger = self.fact_resource_ledger()
-        if ledger is not None:
-            return ledger.replay(as_of_chapter=as_of_chapter)
         return get_fact_resource_snapshot(
             self.root,
             as_of_chapter=as_of_chapter,
@@ -1603,8 +1601,8 @@ class FileProjectStore(
 
     def fact_resource_ledger_payload(self) -> dict[str, Any]:
         ledger = self.fact_resource_ledger()
+        snapshot = self.get_fact_resource_snapshot(as_of_chapter=None)
         if ledger is None:
-            snapshot = self.get_fact_resource_snapshot(as_of_chapter=0)
             return {
                 "schema_version": "fact-resource-ledger-inspection/v1",
                 "known": snapshot.known,
@@ -1612,16 +1610,20 @@ class FileProjectStore(
                 "latest_confirmed_chapter": 0,
                 "entries": [item.model_dump(mode="json") for item in snapshot.entries],
                 "history": [],
+                "authorities": [item.model_dump(mode="json") for item in snapshot.authorities],
+                "findings": [item.model_dump(mode="json") for item in snapshot.findings],
             }
         return {
             "schema_version": "fact-resource-ledger-inspection/v1",
-            "known": True,
-            "source": "fact_resource_ledger",
+            "known": snapshot.known,
+            "source": snapshot.source,
             "latest_confirmed_chapter": ledger.latest_confirmed_chapter,
             "revision": ledger.revision,
-            "entries": [item.model_dump(mode="json") for item in ledger.replay().entries],
+            "entries": [item.model_dump(mode="json") for item in snapshot.entries],
             "history": [item.model_dump(mode="json") for item in ledger.history],
             "confirmed_candidates": list(ledger.confirmed_candidates),
+            "authorities": [item.model_dump(mode="json") for item in snapshot.authorities],
+            "findings": [item.model_dump(mode="json") for item in snapshot.findings],
         }
 
     def fact_resource_candidate_review(self, candidate: Any) -> dict[str, Any]:
@@ -1629,7 +1631,13 @@ class FileProjectStore(
         return dict(review) if isinstance(review, dict) else {}
 
     def _commit_candidate_fact_resource_ledger(self, candidate: Any) -> dict[str, Any]:
-        """Validate and append only after the chapter transaction is open."""
+        """Commit only categories without an existing project authority.
+
+        A candidate that changes progression, equipment, or numeric
+        relationships is deliberately refused here until a typed writer for
+        that existing source is available.  Persisting the same change in a
+        second file would create two official histories.
+        """
 
         raw_extraction = getattr(candidate, "fact_resource_extraction", None)
         existing_ledger = self.fact_resource_ledger()
@@ -1655,30 +1663,53 @@ class FileProjectStore(
         latest = max(ledger.latest_confirmed_chapter, persisted_chapters)
         if chapter_number <= latest:
             raise ValueError("fact_resource_historical_rewrite_requires_reconciliation")
-        start = ledger.replay(as_of_chapter=chapter_number - 1)
+        start = self.get_fact_resource_snapshot(as_of_chapter=chapter_number - 1)
+        authority_findings = fact_resource_authority_findings(start, extraction)
+        if authority_findings:
+            raise ValueError(
+                "existing_authority_confirmation_required:"
+                + ",".join(item.category for item in authority_findings)
+            )
         validation = validate_fact_resource_extraction(start, extraction)
         errors = validation.blocking_findings
         if errors:
             raise ValueError(
                 "fact_resource_validation_failed:" + ",".join(item.code for item in errors)
             )
+        generic_deltas = [
+            delta
+            for delta in extraction.deltas
+            if start.authority_for(delta.category) is None
+        ]
+        generic_assertions = [
+            assertion
+            for assertion in extraction.assertions
+            if start.authority_for(assertion.category) is None
+        ]
         # An extraction containing no explicit change or assertion carries no
-        # authoritative resource event and need not create a new file.
-        if not extraction.deltas and not extraction.assertions:
+        # generic event and need not create or mutate the generic file.  An
+        # assertion against an existing source was validation-only and is not
+        # copied into a second history.
+        if not generic_deltas and not generic_assertions:
             return {
                 "committed": False,
                 "reason": "no_explicit_fact_resource_change",
                 "warnings": [item.model_dump(mode="json") for item in validation.findings],
             }
+        generic_payload = extraction.model_dump(mode="python")
+        generic_payload["deltas"] = [item.model_dump(mode="python") for item in generic_deltas]
+        generic_payload["assertions"] = [item.model_dump(mode="python") for item in generic_assertions]
+        generic_payload["observed_assertions"] = list(generic_payload["assertions"])
+        generic_extraction = FactResourceExtraction.model_validate(generic_payload)
         result = ledger.append(
-            extraction,
+            generic_extraction,
             candidate_id=candidate_id,
         )
         self._write_json_atomic(self.fact_resource_ledger_path, ledger.to_dict())
         return {
             "committed": True,
             "chapter_number": chapter_number,
-            "delta_ids": [item.delta_id for item in extraction.deltas],
+            "delta_ids": [item.delta_id for item in generic_deltas],
             "entry_count": len(result.entries),
             "warnings": [item.model_dump(mode="json") for item in validation.findings if item.severity != "error"],
         }

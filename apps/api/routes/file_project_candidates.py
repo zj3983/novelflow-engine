@@ -65,6 +65,7 @@ def _raise_candidate_error(exc: ValueError) -> None:
             "volume_detail_incomplete:",
             "fact_resource_historical_rewrite_requires_reconciliation",
             "fact_resource_validation_failed:",
+            "existing_authority_confirmation_required:",
         )
     ):
         raise HTTPException(status_code=409, detail=detail) from exc

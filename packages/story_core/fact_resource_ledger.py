@@ -1,10 +1,12 @@
 """Deterministic, candidate-safe fact and resource ledger.
 
 This module is deliberately smaller than the legacy progression ledger.  It
-only records explicit, chapter-scoped numeric or ownership assertions that
-can be replayed without looking at the latest prose or at a mutable mirror.
-The file-project store is responsible for the confirmation transaction; this
-module owns the schema, replay, extraction, and validation rules.
+only records explicit, chapter-scoped numeric or ownership assertions for
+generic resources that have no existing structured historical owner.  Existing
+progression, equipment, and relationship histories are read through adapters
+and are never copied into a second writable history.  The file-project store
+is responsible for the confirmation transaction; this module owns the schema,
+replay, extraction, projection, and validation rules.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 FACT_RESOURCE_SCHEMA = "fact-resource-ledger/v1"
 FACT_RESOURCE_EXTRACTION_SCHEMA = "fact-resource-extraction/v1"
 FACT_RESOURCE_REVIEW_SCHEMA = "fact-resource-review/v1"
+FACT_RESOURCE_AUTHORITY_SCHEMA = "fact-resource-authority/v1"
 
 OPERATIONS = {
     "SET",
@@ -37,6 +40,42 @@ OPERATIONS = {
 }
 
 SEVERITIES = {"error", "warning", "info"}
+
+# These are *projection categories*, not an instruction to create another
+# history.  A project can expose one of these authorities only when the
+# corresponding structured source is present.  The generic ledger may own a
+# category that is not represented by a project authority.
+_AUTHORITY_CATEGORY_ALIASES = {
+    "level": "progression",
+    "character_level": "progression",
+    "experience": "progression",
+    "exp": "progression",
+    "character_exp": "progression",
+    "inventory": "progression",
+    "item": "progression",
+    "currency": "progression",
+    "money": "progression",
+    "quest": "progression",
+    "quest_progress": "progression",
+    "task": "progression",
+    "progression": "progression",
+    "equipment": "equipment_cards",
+    "equipment_owner": "equipment_cards",
+    "equipment_state": "equipment_cards",
+    "equipment_equipped": "equipment_cards",
+    "equipped": "equipment_cards",
+    "relationship": "relationship_graph",
+    "relationship_numeric": "relationship_graph",
+    "relationship_value": "relationship_graph",
+    "trust": "relationship_graph",
+    "tension": "relationship_graph",
+}
+
+
+def fact_resource_authority_group(category: str) -> str | None:
+    """Return the existing source group for a category, if one is known."""
+
+    return _AUTHORITY_CATEGORY_ALIASES.get(_canonical_text(category))
 
 
 def _text(value: Any) -> str:
@@ -266,6 +305,25 @@ class FactResourceFinding(BaseModel):
         return self
 
 
+class FactResourceAuthority(BaseModel):
+    """A read/write boundary for one already-structured fact source.
+
+    ``FactResourceLedger`` never writes an authority described here.  The
+    record is deliberately part of the read snapshot so the writer, review,
+    and confirmation code can make the same ownership decision.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    schema_version: str = FACT_RESOURCE_AUTHORITY_SCHEMA
+    group: str
+    categories: list[str] = Field(default_factory=list)
+    source: str
+    writable: bool = False
+    active: bool = True
+    reason: str = ""
+
+
 class FactResourceExtraction(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -317,6 +375,7 @@ class FactResourceSnapshot(BaseModel):
     source: str = "missing"
     entries: list[FactResourceEntry] = Field(default_factory=list)
     findings: list[FactResourceFinding] = Field(default_factory=list)
+    authorities: list[FactResourceAuthority] = Field(default_factory=list)
 
     @property
     def by_fact_id(self) -> dict[str, FactResourceEntry]:
@@ -343,11 +402,42 @@ class FactResourceSnapshot(BaseModel):
                 and _canonical_text(candidate.resource_key) == _canonical_text(resource_key)
             ):
                 return candidate
+        # An adapter may expose one canonical entry while accepting a finite
+        # set of explicit schema field names (for example ``currency`` and
+        # ``game_currency``).  This is exact metadata lookup, not fuzzy or
+        # substring matching.
+        wanted_key = _canonical_text(resource_key)
+        for candidate in self.entries:
+            aliases = candidate.metadata.get("lookup_keys")
+            if not isinstance(aliases, list):
+                continue
+            if (
+                _canonical_text(candidate.category) == _canonical_text(category)
+                and _canonical_text(candidate.subject) == _canonical_text(subject)
+                and wanted_key in {_canonical_text(item) for item in aliases}
+            ):
+                return candidate
         return None
 
     def value_for(self, category: str, resource_key: str, *, subject: str = "") -> Any:
         entry = self.find(category, resource_key, subject=subject)
         return entry.value if entry else None
+
+    def authority_for(self, category: str) -> FactResourceAuthority | None:
+        group = fact_resource_authority_group(category)
+        if not group:
+            return None
+        return next(
+            (
+                item
+                for item in self.authorities
+                if item.active and item.group == group
+            ),
+            None,
+        )
+
+    def has_existing_authority(self, category: str) -> bool:
+        return self.authority_for(category) is not None
 
 
 class FactResourceLedger(BaseModel):
@@ -835,6 +925,7 @@ def validate_fact_resource_extraction(
     for finding in parsed.findings:
         if finding.severity in {"error", "warning"}:
             findings.append(finding)
+    findings.extend(fact_resource_authority_findings(start, parsed))
     if end_snapshot is not None:
         for entry in end_snapshot.entries:
             actual = entries.get(entry.fact_id)
@@ -858,6 +949,7 @@ def validate_fact_resource_extraction(
             key=lambda item: (item.category, item.subject, item.resource_key, item.fact_id),
         ),
         findings=findings,
+        authorities=list(start.authorities),
     )
     return FactResourceValidation(
         ok=not any(item.severity == "error" for item in findings),
@@ -877,6 +969,16 @@ def _coerce_snapshot(value: Any, *, as_of_chapter: int | None) -> FactResourceSn
     if isinstance(value, Mapping):
         if "entries" in value and "known" in value:
             return FactResourceSnapshot.model_validate(value)
+        if any(
+            key in value
+            for key in (
+                "characters",
+                "progression_ledger",
+                "equipment_cards",
+                "relationship_graph",
+            )
+        ):
+            return project_fact_resource_snapshot(value, as_of_chapter=as_of_chapter)
         ledger_payload = value.get("fact_resource_ledger") or value.get("ledger")
         if ledger_payload:
             try:
@@ -1540,12 +1642,839 @@ def extract_fact_resource_changes(
     )
 
 
+# ---------------------------------------------------------------------------
+# Existing-source projections
+
+
+_PROGRESSION_FIELD_ALIASES = {
+    "level": "level",
+    "character_level": "level",
+    "exp": "experience",
+    "experience": "experience",
+    "character_exp": "experience",
+    "inventory": "inventory",
+    "items": "inventory",
+    "backpack": "inventory",
+    "currency": "currency",
+    "game_currency": "currency",
+    "money": "currency",
+    "quests": "quest",
+    "quest": "quest",
+    "tasks": "quest",
+    "task": "quest",
+}
+
+
+def _plain_payload(value: Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        try:
+            dumped = model_dump(mode="python")
+        except TypeError:
+            dumped = model_dump()
+        return dict(dumped) if isinstance(dumped, Mapping) else {}
+    return {}
+
+
+def _story_payload(value: Any) -> dict[str, Any]:
+    """Make one non-mutating mapping for a StoryState or project payload."""
+
+    payload = _plain_payload(value)
+    # ``fact_resource_ledger`` is runtime-only on StoryState and is excluded
+    # from model_dump.  Preserve it as an explicit opt-in source when a
+    # caller passed a live model with that field populated.
+    ledger = getattr(value, "fact_resource_ledger", None)
+    if isinstance(ledger, Mapping) and ledger:
+        payload["fact_resource_ledger"] = deepcopy(dict(ledger))
+    return payload
+
+
+def _target_chapter(story: Mapping[str, Any], as_of_chapter: int | None) -> int:
+    if as_of_chapter is not None:
+        return max(0, int(as_of_chapter))
+    for key in ("current_chapter", "latest_chapter", "last_written_chapter"):
+        value = _number(story.get(key))
+        if value is not None:
+            return max(0, int(value))
+    # No unanchored latest field is allowed below.  A large read boundary is
+    # safe because every projected mutable value still requires its own
+    # chapter/last-update anchor.
+    return 1_000_000
+
+
+def _walk_keys(value: Any) -> Iterable[str]:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            yield str(key)
+            yield from _walk_keys(item)
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        for item in value:
+            yield from _walk_keys(item)
+
+
+def _progression_authority_categories(
+    story: Mapping[str, Any],
+) -> set[str]:
+    raw = story.get("progression_ledger")
+    categories: set[str] = set()
+    if isinstance(raw, Mapping):
+        for key in _walk_keys(raw):
+            category = _PROGRESSION_FIELD_ALIASES.get(_canonical_text(key))
+            if category:
+                categories.add(category)
+    characters = story.get("characters")
+    if isinstance(characters, Sequence) and not isinstance(characters, (str, bytes, bytearray)):
+        for character in characters:
+            if not isinstance(character, Mapping):
+                continue
+            if not (
+                _canonical_text(character.get("role")) in {"protagonist", "主角"}
+                or _canonical_text(character.get("character_tier")) in {"protagonist", "主角"}
+            ):
+                continue
+            for namespace in ("progression", "game_state"):
+                container = character.get(namespace)
+                if isinstance(container, Mapping):
+                    for key in _walk_keys(container):
+                        category = _PROGRESSION_FIELD_ALIASES.get(_canonical_text(key))
+                        if category:
+                            categories.add(category)
+    return categories
+
+
+def _adapter_chapter(value: Any, *, default: int | None = None) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        chapter = int(value)
+    except (TypeError, ValueError):
+        return default
+    return chapter if chapter >= 0 else None
+
+
+def _adapter_event_list(value: Any) -> list[Mapping[str, Any]]:
+    if isinstance(value, Mapping):
+        if not any(key in value for key in ("chapter", "chapter_number", "as_of_chapter")):
+            keyed: list[Mapping[str, Any]] = []
+            for key, item in value.items():
+                chapter = _adapter_chapter(key)
+                if chapter is None or not isinstance(item, Mapping):
+                    keyed = []
+                    break
+                keyed.append({"chapter": chapter, **dict(item)})
+            if keyed:
+                return keyed
+        return [value]
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [item for item in value if isinstance(item, Mapping)]
+    return []
+
+
+def _adapter_event_value(event: Mapping[str, Any]) -> dict[str, Any]:
+    for key in ("current", "state", "delta", "state_delta", "value"):
+        value = event.get(key)
+        if isinstance(value, Mapping):
+            return {
+                str(item_key): deepcopy(item_value)
+                for item_key, item_value in value.items()
+                if item_value not in (None, "")
+            }
+    ignored = {
+        "chapter",
+        "chapter_number",
+        "as_of_chapter",
+        "summary",
+        "evidence",
+        "source",
+        "confidence",
+        "fact",
+        "line",
+        "scene_line",
+        "namespace",
+    }
+    return {
+        str(key): deepcopy(value)
+        for key, value in event.items()
+        if str(key) not in ignored
+        and str(key) not in {"current", "state", "delta", "state_delta", "value"}
+        and value not in (None, "")
+    }
+
+
+def _adapter_events(
+    container: Any,
+    *,
+    default_chapter: int = 0,
+    keys: Sequence[str] = (
+        "baseline",
+        "initial",
+        "initial_state",
+        "history",
+        "state_history",
+        "state_changes",
+        "progression_history",
+        "level_history",
+        "changes",
+        "snapshots",
+        "events",
+    ),
+) -> list[tuple[int, int, dict[str, Any], str]]:
+    payload = _plain_payload(container)
+    events: list[tuple[int, int, dict[str, Any], str]] = []
+    sequence = 0
+    for key in keys:
+        if key not in payload:
+            continue
+        raw_items = _adapter_event_list(payload.get(key))
+        if key in {"baseline", "initial", "initial_state"} and isinstance(payload.get(key), Mapping):
+            raw_items = [{"chapter": default_chapter, **dict(payload[key])}]
+        for item in raw_items:
+            chapter = _adapter_chapter(
+                item.get("chapter", item.get("chapter_number", item.get("as_of_chapter"))),
+                default=default_chapter if key in {"baseline", "initial", "initial_state"} else None,
+            )
+            values = _adapter_event_value(item)
+            if chapter is None or not values:
+                continue
+            events.append((chapter, sequence, values, key))
+            sequence += 1
+    if not payload and isinstance(container, Sequence) and not isinstance(container, (str, bytes, bytearray)):
+        for item in container:
+            if not isinstance(item, Mapping):
+                continue
+            chapter = _adapter_chapter(
+                item.get("chapter", item.get("chapter_number", item.get("as_of_chapter")))
+            )
+            values = _adapter_event_value(item)
+            if chapter is not None and values:
+                events.append((chapter, sequence, values, "sequence"))
+                sequence += 1
+    return events
+
+
+def _field_chapter(evidence: Mapping[str, Any], prefix: str) -> int:
+    chapters = []
+    for path, raw in evidence.items():
+        if path == prefix or path.startswith(prefix + "."):
+            chapter = _adapter_chapter(raw.get("chapter") if isinstance(raw, Mapping) else None)
+            if chapter is not None:
+                chapters.append(chapter)
+    return max(chapters, default=0)
+
+
+def _historical_scalar(value: Any, category: str) -> tuple[Any, dict[str, Any]]:
+    metadata: dict[str, Any] = {}
+    if isinstance(value, bool):
+        return value, metadata
+    if isinstance(value, (int, float)):
+        return value, metadata
+    text = _text(value)
+    if not text:
+        return value, metadata
+    if _canonical_text(category) == "level":
+        match = re.search(r"(?:lv\.?\s*)?(\d+)", text, flags=re.IGNORECASE)
+        if match:
+            metadata["display_value"] = text
+            return int(match.group(1)), metadata
+    if _canonical_text(category) == "experience":
+        match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(?:/\s*\d+(?:\.\d+)?)?\s*", text)
+        if match:
+            parsed = _number(match.group(1))
+            if parsed is not None:
+                metadata["display_value"] = text
+                return parsed, metadata
+    if _canonical_text(category) in {"inventory", "currency"}:
+        match = re.fullmatch(
+            r"\s*(\d+(?:\.\d+)?)\s*(枚|颗|块|件|瓶|张|份|个|点|金币|灵石|元|铜钱|银两)?\s*",
+            text,
+        )
+        if match:
+            parsed = _number(match.group(1))
+            if parsed is not None:
+                metadata["display_value"] = text
+                if match.group(2):
+                    metadata["display_unit"] = match.group(2)
+                return parsed, metadata
+    numeric = _number(text)
+    if numeric is not None:
+        return numeric, metadata
+    return value, metadata
+
+
+def _quest_scalar(value: Any) -> tuple[Any, dict[str, Any]]:
+    if isinstance(value, Mapping):
+        value = value.get("progress", value.get("value", value))
+    metadata: dict[str, Any] = {}
+    text = _text(value)
+    match = re.search(r"(\d+)\s*/\s*(\d+)", text)
+    if match:
+        metadata["target"] = int(match.group(2))
+        metadata["status"] = text
+        return int(match.group(1)), metadata
+    return value, metadata
+
+
+def _add_projected_entry(
+    entries: dict[str, FactResourceEntry],
+    *,
+    category: str,
+    resource_key: str,
+    value: Any,
+    owner: str = "",
+    unit: str = "",
+    subject: str = "",
+    chapter: int = 0,
+    metadata: Mapping[str, Any] | None = None,
+) -> None:
+    if value in (None, "", [], {}):
+        return
+    payload_metadata = dict(metadata or {})
+    fact_id = stable_fact_id(category, subject, resource_key)
+    existing = entries.get(fact_id)
+    if existing is not None and existing.updated_chapter > chapter:
+        return
+    entries[fact_id] = FactResourceEntry(
+        fact_id=fact_id,
+        category=category,
+        subject=subject,
+        resource_key=resource_key,
+        value=value,
+        unit=unit,
+        owner=owner,
+        metadata=payload_metadata,
+        updated_chapter=chapter,
+    )
+
+
+def _project_progression_entries(
+    story: Mapping[str, Any],
+    *,
+    as_of_chapter: int,
+    entries: dict[str, FactResourceEntry],
+) -> None:
+    """Project only chapter-anchored progression/game values.
+
+    ``get_character_state_for_writer`` is the existing replay boundary.  The
+    adapter intentionally does not read an unanchored latest ``current``
+    value, even when the legacy field is present.
+    """
+
+    try:
+        from packages.story_core.historical_state_replay import (
+            get_character_state_for_writer,
+        )
+    except Exception:  # pragma: no cover - import is stable in production
+        get_character_state_for_writer = None
+
+    characters = story.get("characters")
+    candidates = [
+        _plain_payload(item)
+        for item in characters
+        if isinstance(item, Mapping)
+        and str(item.get("name") or "").strip()
+        and (
+            _canonical_text(item.get("role")) in {"protagonist", "主角"}
+            or _canonical_text(item.get("character_tier")) in {"protagonist", "主角"}
+        )
+    ] if isinstance(characters, Sequence) and not isinstance(characters, (str, bytes, bytearray)) else []
+
+    projected: dict[str, Any] = {}
+    evidence: dict[str, Any] = {}
+    for character in candidates[:1]:
+        if get_character_state_for_writer is None:
+            break
+        try:
+            historical = get_character_state_for_writer(
+                story,
+                str(character.get("name") or ""),
+                as_of_chapter,
+            )
+        except (KeyError, ValueError, TypeError):
+            continue
+        for source_name, values in (
+            ("progression", historical.progression),
+            ("game_state", historical.game_state),
+        ):
+            if not isinstance(values, Mapping):
+                continue
+            for key, value in values.items():
+                canonical = _PROGRESSION_FIELD_ALIASES.get(_canonical_text(key))
+                if canonical and canonical not in projected:
+                    projected[canonical] = deepcopy(value)
+                    evidence[canonical] = (
+                        _field_chapter(historical.evidence, f"{source_name}.{key}"),
+                        f"{source_name}.{key}",
+                    )
+        # Nested values can be emitted by a progression event under a
+        # single ``current`` object.  Merge only fields not already selected
+        # from the explicit progression source.
+        for source_name, values in (
+            ("progression", historical.progression),
+            ("game_state", historical.game_state),
+        ):
+            if not isinstance(values, Mapping):
+                continue
+            for key, value in values.items():
+                canonical = _PROGRESSION_FIELD_ALIASES.get(_canonical_text(key))
+                if canonical == "inventory" and isinstance(value, Mapping):
+                    inventory = projected.setdefault("inventory", {})
+                    if not isinstance(inventory, dict):
+                        inventory = {}
+                        projected["inventory"] = inventory
+                    for item_key, item_value in value.items():
+                        inventory.setdefault(str(item_key), deepcopy(item_value))
+                    evidence.setdefault(
+                        "inventory",
+                        (
+                            _field_chapter(historical.evidence, f"{source_name}.{key}"),
+                            f"{source_name}.{key}",
+                        ),
+                    )
+                elif canonical == "quest" and isinstance(value, Mapping):
+                    quests = projected.setdefault("quest", {})
+                    if not isinstance(quests, dict):
+                        quests = {}
+                        projected["quest"] = quests
+                    for quest_key, quest_value in value.items():
+                        if str(quest_key) != "active":
+                            quests.setdefault(str(quest_key), deepcopy(quest_value))
+                    evidence.setdefault(
+                        "quest",
+                        (
+                            _field_chapter(historical.evidence, f"{source_name}.{key}"),
+                            f"{source_name}.{key}",
+                        ),
+                    )
+
+    # Fallback for projects whose historical progression is stored directly
+    # under progression_ledger rather than under a protagonist character.
+    raw_ledger = story.get("progression_ledger")
+    if isinstance(raw_ledger, Mapping):
+        containers: list[tuple[str, Any]] = [("progression_ledger", raw_ledger)]
+        for key in ("protagonist", "economy", "quests", "panel"):
+            if isinstance(raw_ledger.get(key), Mapping):
+                containers.append((f"progression_ledger.{key}", raw_ledger[key]))
+        fallback_values: dict[str, tuple[Any, int, str]] = {}
+        for path, container in containers:
+            for chapter, sequence, values, event_source in _adapter_events(container):
+                del sequence
+                if chapter > as_of_chapter:
+                    continue
+                for key, value in values.items():
+                    canonical = _PROGRESSION_FIELD_ALIASES.get(_canonical_text(key))
+                    if canonical:
+                        fallback_values[canonical] = (value, chapter, f"{path}.{event_source}.{key}")
+        for canonical, (value, chapter, path) in fallback_values.items():
+            if canonical == "inventory" and isinstance(value, Mapping):
+                projected.setdefault("inventory", {})
+                for item_key, item_value in value.items():
+                    projected["inventory"].setdefault(str(item_key), deepcopy(item_value))
+                evidence.setdefault("inventory", (chapter, path))
+            elif canonical == "quest" and isinstance(value, Mapping):
+                projected.setdefault("quest", {})
+                for quest_key, quest_value in value.items():
+                    if str(quest_key) != "active":
+                        projected["quest"].setdefault(str(quest_key), deepcopy(quest_value))
+                evidence.setdefault("quest", (chapter, path))
+            else:
+                projected.setdefault(canonical, deepcopy(value))
+                evidence.setdefault(canonical, (chapter, path))
+
+    for canonical, raw_value in projected.items():
+        chapter, path = evidence.get(canonical, (0, "progression_ledger"))
+        if canonical == "inventory" and isinstance(raw_value, Mapping):
+            for resource_key, raw_item in raw_value.items():
+                value, metadata = _historical_scalar(raw_item, "inventory")
+                metadata.update(
+                    {
+                        "authority_source": "progression_ledger",
+                        "authority_path": path,
+                    }
+                )
+                _add_projected_entry(
+                    entries,
+                    category="inventory",
+                    resource_key=str(resource_key),
+                    value=value,
+                    chapter=int(chapter or 0),
+                    metadata=metadata,
+                )
+        elif canonical == "quest" and isinstance(raw_value, Mapping):
+            for resource_key, raw_quest in raw_value.items():
+                value, metadata = _quest_scalar(raw_quest)
+                metadata.update(
+                    {
+                        "authority_source": "progression_ledger",
+                        "authority_path": path,
+                    }
+                )
+                _add_projected_entry(
+                    entries,
+                    category="quest",
+                    resource_key=str(resource_key),
+                    value=value,
+                    chapter=int(chapter or 0),
+                    metadata=metadata,
+                )
+        else:
+            category = canonical
+            value, metadata = _historical_scalar(raw_value, category)
+            lookup_keys = [canonical]
+            if canonical == "currency":
+                lookup_keys.extend(["game_currency", "money", "金币", "灵石", "铜币", "银两"])
+            elif canonical == "experience":
+                lookup_keys.extend(["exp", "经验", "经验值"])
+            elif canonical == "level":
+                lookup_keys.extend(["等级", "character_level"])
+            metadata.update(
+                {
+                    "authority_source": "progression_ledger",
+                    "authority_path": path,
+                    "lookup_keys": lookup_keys,
+                }
+            )
+            _add_projected_entry(
+                entries,
+                category=category,
+                resource_key=canonical,
+                value=value,
+                chapter=int(chapter or 0),
+                metadata=metadata,
+            )
+
+
+def _project_equipment_entries(
+    story: Mapping[str, Any],
+    *,
+    as_of_chapter: int,
+    entries: dict[str, FactResourceEntry],
+) -> None:
+    cards = story.get("equipment_cards")
+    if not isinstance(cards, Sequence) or isinstance(cards, (str, bytes, bytearray)):
+        return
+    mutable_fields = {"current_owner", "owner", "current_location", "durability", "status", "equipped"}
+    for raw_card in cards:
+        card = _plain_payload(raw_card)
+        name = _text(card.get("name"))
+        identifier = _text(card.get("id")) or name
+        if not name and not identifier:
+            continue
+        events = _adapter_events(
+            card,
+            keys=(
+                "baseline",
+                "initial",
+                "initial_state",
+                "history",
+                "state_history",
+                "state_changes",
+                "changes",
+                "snapshots",
+                "events",
+            ),
+        )
+        first = _adapter_chapter(card.get("first_appearance_chapter"))
+        if first is None:
+            first = min((chapter for chapter, _, _, _ in events if chapter > 0), default=None)
+        if first is None or first > as_of_chapter:
+            continue
+        bounded: dict[str, tuple[Any, int, str]] = {}
+        for chapter, sequence, values, source in sorted(events, key=lambda item: (item[0], item[1])):
+            del sequence
+            if chapter > as_of_chapter:
+                continue
+            for field, value in values.items():
+                if field in mutable_fields and value not in (None, ""):
+                    canonical = "current_owner" if field == "owner" else field
+                    bounded[canonical] = (deepcopy(value), chapter, source)
+        last_update = _adapter_chapter(card.get("last_update_chapter"))
+        if last_update is not None and last_update <= as_of_chapter:
+            for field in mutable_fields - {"owner"}:
+                if field not in bounded and card.get(field) not in (None, ""):
+                    bounded[field] = (deepcopy(card[field]), last_update, "equipment_cards.current")
+        owner = bounded.get("current_owner")
+        if owner is not None:
+            owner_value, chapter, source = owner
+            metadata = {
+                "authority_source": "equipment_cards",
+                "authority_path": f"equipment_cards.{identifier}.{source}.current_owner",
+                "lookup_keys": [name, identifier],
+            }
+            _add_projected_entry(
+                entries,
+                category="equipment_owner",
+                resource_key=name or identifier,
+                value=owner_value,
+                owner=str(owner_value),
+                chapter=chapter,
+                metadata=metadata,
+            )
+        equipped = bounded.get("equipped")
+        if equipped is None:
+            status = bounded.get("status")
+            if status is not None and _canonical_text(status[0]) in {
+                "已装备",
+                "装备中",
+                "装备着",
+                "equipped",
+            }:
+                equipped = (True, status[1], status[2])
+            elif status is not None and _canonical_text(status[0]) in {
+                "未装备",
+                "没有装备",
+                "unequipped",
+            }:
+                equipped = (False, status[1], status[2])
+        if equipped is not None:
+            value, chapter, source = equipped
+            if isinstance(value, str):
+                value = _canonical_text(value) in {"true", "yes", "已装备", "装备中", "装备着", "equipped"}
+            _add_projected_entry(
+                entries,
+                category="equipment_state",
+                resource_key=name or identifier,
+                value=bool(value),
+                owner=str(owner[0]) if owner is not None else "",
+                chapter=chapter,
+                metadata={
+                    "equipped": bool(value),
+                    "authority_source": "equipment_cards",
+                    "authority_path": f"equipment_cards.{identifier}.{source}.equipped",
+                    "lookup_keys": [name, identifier],
+                },
+            )
+
+
+def _project_relationship_entries(
+    story: Mapping[str, Any],
+    *,
+    as_of_chapter: int,
+    entries: dict[str, FactResourceEntry],
+) -> None:
+    graph = story.get("relationship_graph")
+    if not isinstance(graph, Sequence) or isinstance(graph, (str, bytes, bytearray)):
+        return
+    for raw_edge in graph:
+        edge = _plain_payload(raw_edge)
+        source = _text(edge.get("source"))
+        target = _text(edge.get("target"))
+        if not source or not target:
+            continue
+        first = _adapter_chapter(edge.get("first_chapter"), default=0) or 0
+        if first > as_of_chapter:
+            continue
+        values: dict[str, tuple[Any, int, str]] = {}
+        for index, raw_change in enumerate(_adapter_event_list(edge.get("changes"))):
+            chapter = _adapter_chapter(
+                raw_change.get("chapter", raw_change.get("chapter_number", raw_change.get("as_of_chapter")))
+            )
+            if chapter is None or chapter > as_of_chapter:
+                continue
+            for field in ("trust", "tension"):
+                if raw_change.get(field) not in (None, ""):
+                    values[field] = (
+                        raw_change[field],
+                        chapter,
+                        f"relationship_graph.{edge.get('id') or source + ':' + target}.changes.{index}.{field}",
+                    )
+        if not values:
+            last_changed = _adapter_chapter(edge.get("last_changed_chapter"), default=0) or 0
+            if last_changed and last_changed <= as_of_chapter:
+                for field in ("trust", "tension"):
+                    if edge.get(field) not in (None, ""):
+                        values[field] = (
+                            edge[field],
+                            last_changed,
+                            f"relationship_graph.{edge.get('id') or source + ':' + target}.{field}",
+                        )
+        subject = target if source else source
+        for field, (value, chapter, path) in values.items():
+            category = "relationship_numeric"
+            lookup_keys = [field]
+            if field == "trust":
+                lookup_keys.extend(["信任值", "好感度", "favorability"])
+            else:
+                lookup_keys.extend(["紧张度", "tension"])
+            _add_projected_entry(
+                entries,
+                category=category,
+                subject=subject,
+                resource_key=field,
+                value=value,
+                chapter=chapter,
+                metadata={
+                    "authority_source": "relationship_graph.changes",
+                    "authority_path": path,
+                    "lookup_keys": lookup_keys,
+                    "relationship_id": edge.get("id") or f"{source}:{target}",
+                },
+            )
+
+
+def _project_fact_resource_snapshot(
+    story: Mapping[str, Any],
+    *,
+    generic_ledger: FactResourceLedger | None,
+    as_of_chapter: int | None,
+) -> FactResourceSnapshot:
+    target = _target_chapter(story, as_of_chapter)
+    entries: dict[str, FactResourceEntry] = {}
+    findings: list[FactResourceFinding] = []
+    authorities: list[FactResourceAuthority] = []
+    progression_categories = _progression_authority_categories(story)
+    if progression_categories:
+        authorities.append(
+            FactResourceAuthority(
+                group="progression",
+                categories=sorted(progression_categories),
+                source="progression_ledger",
+                writable=False,
+                reason="existing progression/game history is the sole authority",
+            )
+        )
+        _project_progression_entries(story, as_of_chapter=target, entries=entries)
+    cards = story.get("equipment_cards")
+    if isinstance(cards, Sequence) and not isinstance(cards, (str, bytes, bytearray)) and any(
+        isinstance(item, Mapping) for item in cards
+    ):
+        authorities.append(
+            FactResourceAuthority(
+                group="equipment_cards",
+                categories=["equipment_owner", "equipment_state"],
+                source="equipment_cards.history",
+                writable=False,
+                reason="equipment card history is the sole owner/state authority",
+            )
+        )
+        _project_equipment_entries(story, as_of_chapter=target, entries=entries)
+    graph = story.get("relationship_graph")
+    if isinstance(graph, Sequence) and not isinstance(graph, (str, bytes, bytearray)) and any(
+        isinstance(item, Mapping) for item in graph
+    ):
+        authorities.append(
+            FactResourceAuthority(
+                group="relationship_graph",
+                categories=["relationship_numeric"],
+                source="relationship_graph.changes",
+                writable=False,
+                reason="relationship graph changes are the sole numeric relationship authority",
+            )
+        )
+        _project_relationship_entries(story, as_of_chapter=target, entries=entries)
+
+    if generic_ledger is not None:
+        generic = generic_ledger.replay(as_of_chapter=target)
+        active_groups = {item.group for item in authorities if item.active}
+        for entry in generic.entries:
+            group = fact_resource_authority_group(entry.category)
+            if group in active_groups:
+                findings.append(
+                    FactResourceFinding(
+                        code="DUPLICATE_AUTHORITY_SHADOW",
+                        severity="warning",
+                        message=(
+                            f"{entry.resource_key} 的通用账本历史被 {group} 投影遮蔽；"
+                            "它不是项目的官方答案。"
+                        ),
+                        fact_id=entry.fact_id,
+                        category=entry.category,
+                        resource_key=entry.resource_key,
+                        chapter=entry.updated_chapter,
+                    )
+                )
+                continue
+            entry.metadata = {
+                **entry.metadata,
+                "authority_source": "fact_resource_ledger",
+                "authority_path": "story-system/fact-resource-ledger.json",
+            }
+            entries.setdefault(entry.fact_id, entry)
+        findings.extend(generic.findings)
+
+    materialized = sorted(
+        entries.values(),
+        key=lambda item: (item.category, item.subject, item.resource_key, item.fact_id),
+    )
+    return FactResourceSnapshot(
+        as_of_chapter=target,
+        known=bool(materialized or authorities or generic_ledger is not None),
+        source="project_fact_resource_projection" if authorities else "fact_resource_ledger",
+        entries=materialized,
+        findings=findings,
+        authorities=authorities,
+    )
+
+
+def project_fact_resource_snapshot(
+    source: Any,
+    *,
+    as_of_chapter: int | None = None,
+    generic_ledger: FactResourceLedger | None = None,
+) -> FactResourceSnapshot:
+    """Project existing structured authorities and the generic ledger.
+
+    This is the single read boundary used by the writer and by candidate
+    validation.  Existing authorities win deterministically; shadow entries
+    in a legacy generic file are surfaced as warnings and never returned as
+    official entries.
+    """
+
+    story = _story_payload(source)
+    raw_ledger = story.get("fact_resource_ledger") or story.get("initial_fact_resource_ledger")
+    if generic_ledger is None and raw_ledger:
+        try:
+            generic_ledger = _coerce_ledger(raw_ledger)
+        except Exception:
+            generic_ledger = None
+    if generic_ledger is None and isinstance(source, (str, Path)):
+        root = Path(source)
+        ledger_path = root / ".story-system" / "fact-resource-ledger.json" if root.is_dir() else root
+        generic_ledger = FactResourceLedger.load(ledger_path)
+    return _project_fact_resource_snapshot(
+        story,
+        generic_ledger=generic_ledger,
+        as_of_chapter=as_of_chapter,
+    )
+
+
+def fact_resource_authority_findings(
+    snapshot: FactResourceSnapshot,
+    extraction: FactResourceExtraction,
+) -> list[FactResourceFinding]:
+    """Return blocking writes that would create a second history."""
+
+    findings: list[FactResourceFinding] = []
+    for delta in extraction.deltas:
+        authority = snapshot.authority_for(delta.category)
+        if authority is None:
+            continue
+        findings.append(
+            FactResourceFinding(
+                code="EXISTING_AUTHORITY_CONFIRMATION_REQUIRED",
+                severity="error",
+                message=(
+                    f"{delta.resource_key} 属于 {authority.source}；"
+                    "当前确认路径没有类型化写入器，不能追加到通用事实账本。"
+                ),
+                delta_id=delta.delta_id,
+                fact_id=delta.fact_id,
+                category=delta.category,
+                resource_key=delta.resource_key,
+                evidence=delta.evidence,
+                chapter=delta.chapter,
+            )
+        )
+    return findings
+
+
 def get_fact_resource_snapshot(
     source: Any,
     *,
     as_of_chapter: int | None = None,
 ) -> FactResourceSnapshot:
-    """Read an explicit ledger/baseline without deriving from latest prose."""
+    """Read one official snapshot from authorities plus generic resources."""
 
     target = max(0, int(as_of_chapter or 0)) if as_of_chapter is not None else None
     if isinstance(source, FactResourceSnapshot):
@@ -1558,6 +2487,35 @@ def get_fact_resource_snapshot(
             return getter(as_of_chapter=target)
         except Exception:
             pass
+    model_story = _story_payload(source)
+    if any(
+        key in model_story
+        for key in (
+            "characters",
+            "progression_ledger",
+            "equipment_cards",
+            "relationship_graph",
+            "current_chapter",
+        )
+    ):
+        return project_fact_resource_snapshot(model_story, as_of_chapter=target)
+    if isinstance(source, Mapping):
+        if "entries" in source and "known" in source:
+            try:
+                return FactResourceSnapshot.model_validate(source)
+            except Exception:
+                return FactResourceSnapshot(as_of_chapter=target or 0, known=False, source="invalid")
+        if any(
+            key in source
+            for key in (
+                "characters",
+                "progression_ledger",
+                "equipment_cards",
+                "relationship_graph",
+                "current_chapter",
+            )
+        ):
+            return project_fact_resource_snapshot(source, as_of_chapter=target)
     getter = getattr(source, "fact_resource_ledger", None)
     if callable(getter):
         try:
@@ -1576,26 +2534,55 @@ def get_fact_resource_snapshot(
         raw = source.get("fact_resource_ledger") or source.get("initial_fact_resource_ledger")
         if raw:
             try:
-                return _coerce_ledger(raw).replay(as_of_chapter=target)
+                return project_fact_resource_snapshot(
+                    source,
+                    as_of_chapter=target,
+                    generic_ledger=_coerce_ledger(raw),
+                )
             except Exception:
                 return FactResourceSnapshot(as_of_chapter=target or 0, known=False, source="invalid")
     if isinstance(source, (str, Path)):
         path = Path(source)
         if path.is_dir():
             ledger_path = path / ".story-system" / "fact-resource-ledger.json"
-            if not ledger_path.is_file():
-                master = path / ".story-system" / "MASTER_SETTING.json"
+            story: dict[str, Any] = {}
+            for candidate in (
+                path / ".webnovel" / "project.json",
+                path / ".webnovel" / "state.json",
+                path / ".story-system" / "MASTER_SETTING.json",
+            ):
                 try:
-                    payload = json.loads(master.read_text(encoding="utf-8-sig"))
+                    payload = json.loads(candidate.read_text(encoding="utf-8-sig"))
                 except (OSError, ValueError, json.JSONDecodeError):
-                    payload = {}
-                raw = payload.get("fact_resource_ledger") or payload.get("initial_fact_resource_ledger") if isinstance(payload, Mapping) else None
-                if raw:
-                    try:
-                        return _coerce_ledger(raw).replay(as_of_chapter=target)
-                    except Exception:
-                        return FactResourceSnapshot(as_of_chapter=target or 0, known=False, source="invalid")
-                return FactResourceSnapshot(as_of_chapter=target or 0, known=False, source="missing")
+                    continue
+                if not isinstance(payload, Mapping):
+                    continue
+                nested_project = payload.get("project")
+                if isinstance(nested_project, Mapping):
+                    payload = {**dict(payload), **dict(nested_project)}
+                # state.json is loaded after project.json and therefore wins
+                # for runtime fields.  Project-only sources fill gaps.
+                for key, value in payload.items():
+                    if key not in story or story[key] in (None, "", [], {}):
+                        story[key] = deepcopy(value)
+                    elif key in {"characters", "equipment_cards", "relationship_graph"} and isinstance(value, list) and value:
+                        story[key] = deepcopy(value)
+            if not story.get("characters") and isinstance(story.get("character_profiles"), list):
+                story["characters"] = deepcopy(story["character_profiles"])
+            ledger = FactResourceLedger.load(ledger_path)
+            raw = story.get("fact_resource_ledger") or story.get("initial_fact_resource_ledger")
+            if ledger is None and raw:
+                try:
+                    ledger = _coerce_ledger(raw)
+                except Exception:
+                    return FactResourceSnapshot(as_of_chapter=target or 0, known=False, source="invalid")
+            if story or ledger is not None:
+                return project_fact_resource_snapshot(
+                    story,
+                    as_of_chapter=target,
+                    generic_ledger=ledger,
+                )
+            return FactResourceSnapshot(as_of_chapter=target or 0, known=False, source="missing")
         else:
             ledger_path = path
         ledger = FactResourceLedger.load(ledger_path)
@@ -1627,8 +2614,18 @@ def render_fact_resource_context(
     if not entries:
         entries = list(snapshot.entries)
     lines = [f"## 可计算事实资源（截至第{snapshot.as_of_chapter}章）"]
+    if snapshot.authorities:
+        lines.append(
+            "- 已有权威源："
+            + "；".join(
+                f"{item.source}（{','.join(item.categories)}）"
+                for item in snapshot.authorities
+                if item.active
+            )
+            + "。已有类别不从通用账本另行推断。"
+        )
     if not entries:
-        lines.append("- 账本已建立，但当前没有已知条目；未知值不能自行补齐。")
+        lines.append("- 账本/权威源已建立，但当前没有已知条目；未知值不能自行补齐。")
         return "\n".join(lines)
     for entry in entries[:32]:
         details = [f"值={entry.value!r}"]
@@ -1649,17 +2646,22 @@ def render_fact_resource_context(
 
 __all__ = [
     "FACT_RESOURCE_SCHEMA",
+    "FACT_RESOURCE_AUTHORITY_SCHEMA",
     "FactResourceAssertion",
     "FactResourceBaseline",
     "FactResourceDelta",
     "FactResourceEntry",
     "FactResourceExtraction",
     "FactResourceFinding",
+    "FactResourceAuthority",
     "FactResourceLedger",
     "FactResourceSnapshot",
     "FactResourceValidation",
     "extract_fact_resource_changes",
+    "fact_resource_authority_findings",
+    "fact_resource_authority_group",
     "get_fact_resource_snapshot",
+    "project_fact_resource_snapshot",
     "render_fact_resource_context",
     "stable_fact_id",
     "validate_fact_resource_extraction",

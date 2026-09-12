@@ -11,6 +11,8 @@ from packages.story_core.fact_resource_ledger import (
     FactResourceLedger,
     FactResourceSnapshot,
     extract_fact_resource_changes,
+    get_fact_resource_snapshot,
+    project_fact_resource_snapshot,
     render_fact_resource_context,
     stable_fact_id,
     validate_fact_resource_extraction,
@@ -251,3 +253,149 @@ def test_fact_resource_historical_rewrite_is_rejected_before_chapter_mutation(tm
     ledger = FactResourceLedger.load(store.fact_resource_ledger_path)
     assert ledger is not None
     assert len(ledger.history) == 1
+
+
+def _authoritative_story() -> dict:
+    return {
+        "current_chapter": 30,
+        "characters": [
+            {
+                "name": "林照",
+                "role": "protagonist",
+                "current_state": {},
+            }
+        ],
+        "progression_ledger": {
+            "protagonist": {
+                "history": [
+                    {
+                        "chapter": 10,
+                        "current": {
+                            "level": "Lv.12",
+                            "inventory": {"记录水晶": 20},
+                            "currency": "20金币",
+                        },
+                    },
+                    {"chapter": 20, "current": {"level": "Lv.31"}},
+                ]
+            }
+        },
+        "equipment_cards": [
+            {
+                "id": "frost-sword",
+                "name": "寒霜剑",
+                "equipment_type": "weapon",
+                "first_appearance_chapter": 10,
+                "last_update_chapter": 20,
+                "current_owner": "林照",
+                "history": [
+                    {"chapter": 10, "current_owner": "顾闻舟"},
+                    {"chapter": 20, "current_owner": "林照"},
+                ],
+            }
+        ],
+        "relationship_graph": [
+            {
+                "id": "rel-lin-wang",
+                "source": "林照",
+                "target": "王铁匠",
+                "first_chapter": 10,
+                "changes": [
+                    {"chapter_number": 10, "trust": 20, "tension": 70},
+                    {"chapter_number": 15, "trust": 42, "tension": 50},
+                ],
+            }
+        ],
+    }
+
+
+def test_existing_progression_is_projected_at_the_end_of_n_minus_one() -> None:
+    story = _authoritative_story()
+
+    before_level_up = get_fact_resource_snapshot(story, as_of_chapter=15)
+    after_level_up = get_fact_resource_snapshot(story, as_of_chapter=25)
+
+    assert before_level_up.value_for("level", "level") == 12
+    assert after_level_up.value_for("level", "level") == 31
+    assert before_level_up.value_for("inventory", "记录水晶") == 20
+    assert before_level_up.authority_for("level").source == "progression_ledger"
+    assert before_level_up.authority_for("inventory").source == "progression_ledger"
+
+
+def test_equipment_owner_uses_card_history_instead_of_generic_ledger() -> None:
+    story = _authoritative_story()
+
+    before_transfer = get_fact_resource_snapshot(story, as_of_chapter=15)
+    after_transfer = get_fact_resource_snapshot(story, as_of_chapter=25)
+
+    assert before_transfer.find("equipment_owner", "寒霜剑").owner == "顾闻舟"
+    assert after_transfer.find("equipment_owner", "寒霜剑").owner == "林照"
+    assert before_transfer.authority_for("equipment_owner").source == "equipment_cards.history"
+
+
+def test_relationship_numeric_value_uses_relationship_graph_changes() -> None:
+    snapshot = get_fact_resource_snapshot(_authoritative_story(), as_of_chapter=15)
+
+    assert snapshot.value_for(
+        "relationship_numeric", "trust", subject="王铁匠"
+    ) == 42
+    assert snapshot.value_for(
+        "relationship_numeric", "tension", subject="王铁匠"
+    ) == 50
+    assert snapshot.authority_for("trust").source == "relationship_graph.changes"
+
+
+def test_conflicting_generic_entries_are_shadowed_by_one_deterministic_projection() -> None:
+    shadow = FactResourceLedger(
+        baseline={
+            "entries": [
+                {"category": "level", "resource_key": "level", "value": 99},
+                {"category": "inventory", "resource_key": "记录水晶", "value": 999},
+            ]
+        }
+    )
+    snapshot = project_fact_resource_snapshot(
+        _authoritative_story(),
+        as_of_chapter=15,
+        generic_ledger=shadow,
+    )
+
+    assert snapshot.value_for("level", "level") == 12
+    assert snapshot.value_for("inventory", "记录水晶") == 20
+    assert all(item.value not in {99, 999} for item in snapshot.entries)
+    assert {item.code for item in snapshot.findings} == {"DUPLICATE_AUTHORITY_SHADOW"}
+    assert snapshot.authority_for("level").source == "progression_ledger"
+
+    extraction = extract_fact_resource_changes("当前等级12级，库存有20个记录水晶。", 16, snapshot)
+    validation = validate_fact_resource_extraction(snapshot, extraction)
+    assert validation.ok is True
+    assert not any(item.observed in {99, 999} for item in validation.findings)
+
+
+def test_existing_authority_confirmation_refuses_second_history(tmp_path) -> None:
+    store = FileProjectStore(tmp_path)
+    store.webnovel_dir.mkdir(parents=True, exist_ok=True)
+    store._write_json(
+        store.webnovel_dir / "project.json",
+        {"project_id": tmp_path.name, "title": "权威源测试"},
+    )
+    store._write_json(
+        store.webnovel_dir / "state.json",
+        _authoritative_story() | {"story_id": "authority-test", "outline": "", "genre": "网游"},
+    )
+    candidate = store._save_candidate_from_bundle(
+        SimpleNamespace(
+            chapter_number=16,
+            chapter_title="等级变化",
+            body="升到13级。" + ("他把现场经过逐一记下。" * 400),
+            quality_report={"ok": True},
+        ),
+        project_id=tmp_path.name,
+    )
+
+    assert candidate.fact_resource_review["ok"] is False
+    with pytest.raises(ValueError, match="existing_authority_confirmation_required"):
+        store.confirm_candidate(candidate.candidate_id)
+    assert store.candidate_store.get(candidate.candidate_id).status == "pending"
+    assert FactResourceLedger.load(store.fact_resource_ledger_path) is None
+    assert store.state()["progression_ledger"] == _authoritative_story()["progression_ledger"]

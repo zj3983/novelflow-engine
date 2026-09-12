@@ -644,9 +644,10 @@ class StoryState(BaseModel):
     # validates records at its boundary.
     knowledge_ledger: list[dict] = Field(default_factory=list)
     progression_ledger: dict = Field(default_factory=dict)
-    # Explicit, chapter-replayable fact/resource source.  The legacy
-    # progression ledger remains a compatibility projection; this field is
-    # only populated when a project deliberately supplies the new ledger.
+    # Runtime-only generic fact/resource source.  Existing progression,
+    # equipment, and relationship histories remain authoritative and are
+    # projected through the fact-resource read boundary rather than copied
+    # into this field.
     fact_resource_ledger: dict = Field(default_factory=dict, exclude=True)
     story_core: dict = Field(default_factory=dict, exclude=True)
     world_context: dict = Field(default_factory=dict, exclude=True)
