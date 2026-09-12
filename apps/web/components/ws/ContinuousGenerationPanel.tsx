@@ -35,6 +35,22 @@ const STATUS_LABELS: Record<ContinuousGenerationJobResponse["status"], string> =
   awaiting_replanned_confirmation: "等待确认新计划",
 };
 
+function automaticRecoveryMessage(job: ContinuousGenerationJobResponse | null): string {
+  if (!job) return "";
+  const status = job.auto_consistency_replan_status || "";
+  const chapter = job.auto_consistency_replan_chapter || job.current_chapter;
+  if (job.status === "replanning" || status === "running") {
+    return `第 ${chapter} 章发现一致性问题，正在自动重新规划…`;
+  }
+  if (status === "replanned_clear") return "重新规划通过，继续生成";
+  if (status === "replanned_with_warnings") {
+    return "重新规划后仍有一致性提示，已暂停，请处理";
+  }
+  if (status === "still_blocking") return "重新规划后仍有一致性问题，已暂停";
+  if (status === "failed") return "自动重新规划失败，已暂停，原计划仍保留";
+  return "";
+}
+
 export function ContinuousGenerationPanel({
   action,
   active,
@@ -100,6 +116,11 @@ export function ContinuousGenerationPanel({
       <p className="ws-card__hint">{progress}</p>
       {job ? <p className="ws-card__hint">计划生成 {job.requested_count} 章，从第 {job.start_chapter} 章开始。</p> : null}
       {job?.progress ? <p className="ws-card__hint">{job.progress}</p> : null}
+      {automaticRecoveryMessage(job) ? (
+        <p className="ws-card__hint" data-testid="continuous-generation-auto-recovery">
+          {automaticRecoveryMessage(job)}
+        </p>
+      ) : null}
       {job?.completed_chapters.length ? (
         <p className="ws-card__hint">已完成章节：{job.completed_chapters.join("、")}</p>
       ) : null}

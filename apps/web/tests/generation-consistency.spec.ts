@@ -54,7 +54,60 @@ function generationJob(status: "awaiting_consistency_override" | "awaiting_repla
   };
 }
 
-async function mockConsistencyWorkspace(page: Page) {
+type ContinuousUiStatus = "replanning" | "running" | "awaiting_replanned_confirmation";
+
+function continuousGenerationJob(status: ContinuousUiStatus) {
+  const revisedGate = {
+    ...consistencyGate,
+    status: "blocking",
+    warnings: consistencyGate.warnings,
+  };
+  return {
+    schema_version: "continuous-generation-job/v1",
+    job_id: "cgj-consistency-ui",
+    project_id: PROJECT_ID,
+    story_id: STORY_ID,
+    status,
+    phase: status === "awaiting_replanned_confirmation" ? status : "generating",
+    requested_count: 2,
+    completed_count: 0,
+    start_chapter: 2,
+    current_chapter: 2,
+    completed_chapters: [],
+    review_warnings: [],
+    consistency_gate: status === "awaiting_replanned_confirmation" ? revisedGate : consistencyGate,
+    consistency_override: false,
+    consistency_override_chapters: [],
+    original_plan: { chapter_number: 2, character_moves: [{ name: "林照", skills_used: ["未来技能"] }] },
+    revised_plan: status === "awaiting_replanned_confirmation" ? { chapter_number: 2, scene_beats: [{}, {}] } : null,
+    original_consistency_gate: consistencyGate,
+    revised_consistency_gate: status === "awaiting_replanned_confirmation" ? revisedGate : null,
+    replan_status: status === "replanning" ? "running" : status === "running" ? "replanned_clear" : "still_blocking",
+    replan_attempts: status === "replanning" ? 1 : 1,
+    replan_result: status === "replanning" ? null : { status: status === "running" ? "replanned_clear" : "still_blocking" },
+    auto_consistency_replan_chapter: 2,
+    auto_consistency_replan_attempted: true,
+    auto_consistency_replan_attempts: 1,
+    auto_consistency_replan_status: status === "replanning" ? "running" : status === "running" ? "replanned_clear" : "still_blocking",
+    consistency_recovery_history: [],
+    candidate_id: "",
+    stop_requested: false,
+    progress: status === "replanning"
+      ? "第 2 章发现一致性问题，正在自动重新规划"
+      : status === "running"
+        ? "第 2 章重新规划通过，继续生成"
+        : "自动重新规划后仍有一致性问题，已暂停，等待处理",
+    stop_reason: "",
+    error: "",
+    created_at: "2026-09-11T00:00:00Z",
+    updated_at: "2026-09-11T00:00:00Z",
+  };
+}
+
+async function mockConsistencyWorkspace(
+  page: Page,
+  options: { continuousStatus?: ContinuousUiStatus } = {},
+) {
   let writerStartCalls = 0;
   let continueCalls = 0;
   let cancelCalls = 0;
@@ -136,8 +189,15 @@ async function mockConsistencyWorkspace(page: Page) {
     items: [],
   }));
 
-  await page.route(`**/file-projects/${ENCODED_PROJECT_ID}/continuous-generation-jobs/current`, (route) => fulfill(route, null, 404));
-  await page.route(`**/file-projects/${ENCODED_PROJECT_ID}/generation-jobs/current`, (route) => fulfill(route, generationJob("awaiting_consistency_override")));
+  if (options.continuousStatus) {
+    const continuousJob = continuousGenerationJob(options.continuousStatus);
+    await page.route(`**/file-projects/${ENCODED_PROJECT_ID}/continuous-generation-jobs/current`, (route) => fulfill(route, continuousJob));
+    await page.route(`**/file-projects/${ENCODED_PROJECT_ID}/continuous-generation-jobs/cgj-consistency-ui`, (route) => fulfill(route, continuousJob));
+    await page.route(`**/file-projects/${ENCODED_PROJECT_ID}/generation-jobs/current`, (route) => fulfill(route, null, 404));
+  } else {
+    await page.route(`**/file-projects/${ENCODED_PROJECT_ID}/continuous-generation-jobs/current`, (route) => fulfill(route, null, 404));
+    await page.route(`**/file-projects/${ENCODED_PROJECT_ID}/generation-jobs/current`, (route) => fulfill(route, generationJob("awaiting_consistency_override")));
+  }
   await page.route(`**/file-projects/${ENCODED_PROJECT_ID}/generation-jobs`, (route) => {
     writerStartCalls += 1;
     return fulfill(route, { detail: "unexpected_generation_start" }, 500);
@@ -246,4 +306,37 @@ test("写作页可先重新规划并查看新计划，再显式继续写手任�
   await expect(page).toHaveURL(new RegExp(`/projects/${ENCODED_PROJECT_ID}/write\\?chapter=2$`));
   expect(calls.continueCalls).toBe(1);
   expect(calls.writerStartCalls).toBe(0);
+});
+
+test("连续生产显示自动重新规划进度", async ({ page }) => {
+  await mockConsistencyWorkspace(page, { continuousStatus: "replanning" });
+
+  await page.goto(`/projects/${ENCODED_PROJECT_ID}/write?chapter=1`, { waitUntil: "networkidle" });
+
+  await expect(page.getByTestId("continuous-generation-auto-recovery")).toContainText(
+    "第 2 章发现一致性问题，正在自动重新规划",
+  );
+});
+
+test("连续生产显示重新规划通过后继续生成", async ({ page }) => {
+  await mockConsistencyWorkspace(page, { continuousStatus: "running" });
+
+  await page.goto(`/projects/${ENCODED_PROJECT_ID}/write?chapter=1`, { waitUntil: "networkidle" });
+
+  await expect(page.getByTestId("continuous-generation-auto-recovery")).toContainText(
+    "重新规划通过，继续生成",
+  );
+});
+
+test("连续生产自动重新规划仍阻断时暂停并保留人工控制", async ({ page }) => {
+  await mockConsistencyWorkspace(page, { continuousStatus: "awaiting_replanned_confirmation" });
+
+  await page.goto(`/projects/${ENCODED_PROJECT_ID}/write?chapter=1`, { waitUntil: "networkidle" });
+
+  await expect(page.getByTestId("continuous-generation-auto-recovery")).toContainText(
+    "重新规划后仍有一致性问题，已暂停",
+  );
+  const panel = page.getByTestId("generation-consistency-panel");
+  await expect(panel).toBeVisible();
+  await expect(panel.getByTestId("generation-consistency-replan")).toBeDisabled();
 });

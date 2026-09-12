@@ -1126,6 +1126,26 @@ def _continuous_generation_job_response(job: dict[str, object]) -> dict[str, obj
             if isinstance(job.get("replan_result"), dict)
             else None
         ),
+        "auto_consistency_replan_chapter": (
+            int(job.get("auto_consistency_replan_chapter"))
+            if isinstance(job.get("auto_consistency_replan_chapter"), int)
+            and not isinstance(job.get("auto_consistency_replan_chapter"), bool)
+            else None
+        ),
+        "auto_consistency_replan_attempted": bool(
+            job.get("auto_consistency_replan_attempted")
+        ),
+        "auto_consistency_replan_attempts": int(
+            job.get("auto_consistency_replan_attempts") or 0
+        ),
+        "auto_consistency_replan_status": str(
+            job.get("auto_consistency_replan_status") or ""
+        ),
+        "consistency_recovery_history": [
+            deepcopy(item)
+            for item in list(job.get("consistency_recovery_history") or [])
+            if isinstance(item, dict)
+        ],
         "candidate_id": str(job.get("candidate_id", "")),
         "stop_requested": bool(job.get("stop_requested")),
         "progress": str(job.get("progress", "")),

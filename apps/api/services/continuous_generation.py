@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -8,7 +9,12 @@ from threading import RLock
 from typing import Any
 from uuid import uuid4
 
-from packages.story_core.consistency_replanning import plan_to_dict
+from packages.story_core.consistency_replanning import (
+    MAX_CONSISTENCY_REPLAN_ATTEMPTS,
+    ConsistencyReplanResult,
+    plan_to_dict,
+    run_consistency_replan,
+)
 
 ALLOWED_CONTINUOUS_COUNTS = frozenset({2, 5, 10, 20})
 ACTIVE_STATUSES = frozenset(
@@ -59,6 +65,259 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _replan_target(job: dict[str, object]) -> int | None:
+    """Return the chapter owning the currently retained replan metadata."""
+
+    auto_chapter = job.get("auto_consistency_replan_chapter")
+    if isinstance(auto_chapter, int) and not isinstance(auto_chapter, bool) and auto_chapter > 0:
+        return auto_chapter
+    for key in (
+        "revised_consistency_gate",
+        "original_consistency_gate",
+        "consistency_gate",
+    ):
+        gate = job.get(key)
+        if isinstance(gate, dict):
+            target = gate.get("target_chapter")
+            if isinstance(target, int) and not isinstance(target, bool) and target > 0:
+                return target
+    return None
+
+
+def _revised_plan_for_chapter(
+    job: dict[str, object], target_chapter: int
+) -> dict[str, Any]:
+    if _replan_target(job) != target_chapter:
+        return {}
+    return plan_to_dict(job.get("revised_plan"))
+
+
+def _clear_current_replan_metadata() -> dict[str, object]:
+    return {
+        "consistency_gate": None,
+        "original_plan": None,
+        "revised_plan": None,
+        "original_consistency_gate": None,
+        "revised_consistency_gate": None,
+        "replan_status": "",
+        "replan_attempts": 0,
+        "replan_result": None,
+        "auto_consistency_replan_chapter": None,
+        "auto_consistency_replan_attempted": False,
+        "auto_consistency_replan_attempts": 0,
+        "auto_consistency_replan_status": "",
+    }
+
+
+def _upsert_auto_recovery_history(
+    job: dict[str, object], *, target_chapter: int
+) -> list[dict[str, object]]:
+    """Keep chapter-scoped evidence without introducing a second audit store."""
+
+    history = [
+        deepcopy(item)
+        for item in list(job.get("consistency_recovery_history") or [])
+        if isinstance(item, dict)
+    ]
+    entry: dict[str, object] = {
+        "chapter_number": target_chapter,
+        "automatic": True,
+        "auto_consistency_replan_attempted": bool(
+            job.get("auto_consistency_replan_attempted")
+        ),
+        "auto_consistency_replan_attempts": int(
+            job.get("auto_consistency_replan_attempts") or 0
+        ),
+        "auto_consistency_replan_status": str(
+            job.get("auto_consistency_replan_status") or ""
+        ),
+        "replan_attempts": int(job.get("replan_attempts") or 0),
+        "replan_status": str(job.get("replan_status") or ""),
+        "original_plan": deepcopy(job.get("original_plan"))
+        if isinstance(job.get("original_plan"), dict)
+        else None,
+        "revised_plan": deepcopy(job.get("revised_plan"))
+        if isinstance(job.get("revised_plan"), dict)
+        else None,
+        "original_consistency_gate": deepcopy(job.get("original_consistency_gate"))
+        if isinstance(job.get("original_consistency_gate"), dict)
+        else None,
+        "revised_consistency_gate": deepcopy(job.get("revised_consistency_gate"))
+        if isinstance(job.get("revised_consistency_gate"), dict)
+        else None,
+        "replan_result": deepcopy(job.get("replan_result"))
+        if isinstance(job.get("replan_result"), dict)
+        else None,
+        "error": str(job.get("error") or ""),
+    }
+    for index in range(len(history) - 1, -1, -1):
+        if (
+            int(history[index].get("chapter_number") or 0) == target_chapter
+            and bool(history[index].get("automatic"))
+        ):
+            history[index] = entry
+            break
+    else:
+        history.append(entry)
+    return history
+
+
+def _auto_replan_infrastructure_available(project_store: Any) -> bool:
+    return callable(getattr(project_store, "generation_story_for_target", None)) and callable(
+        getattr(project_store, "replan_consistency_plan", None)
+    )
+
+
+def _automatic_replan_error(exc: Exception) -> str:
+    return f"consistency_replan_failed:{type(exc).__name__}:{exc}"
+
+
+def _attempt_automatic_consistency_replan(
+    *,
+    job_id: str,
+    job_store: ContinuousGenerationJobStore,
+    project_store: Any,
+    target_chapter: int,
+    original_plan: dict[str, Any],
+    original_gate: Any,
+) -> dict[str, object]:
+    """Run exactly one server-owned Phase2E replan for a paused chapter."""
+
+    original_gate_payload = original_gate.model_dump(mode="json")
+    job_store.update(
+        job_id,
+        status="replanning",
+        phase="replanning",
+        current_chapter=target_chapter,
+        progress=f"第 {target_chapter} 章发现一致性问题，正在自动重新规划",
+        error="",
+        consistency_gate=deepcopy(original_gate_payload),
+        consistency_override=False,
+        original_plan=deepcopy(original_plan),
+        revised_plan=None,
+        original_consistency_gate=deepcopy(original_gate_payload),
+        revised_consistency_gate=None,
+        replan_status="running",
+        replan_attempts=MAX_CONSISTENCY_REPLAN_ATTEMPTS,
+        replan_result=None,
+        auto_consistency_replan_chapter=target_chapter,
+        auto_consistency_replan_attempted=True,
+        auto_consistency_replan_attempts=MAX_CONSISTENCY_REPLAN_ATTEMPTS,
+        auto_consistency_replan_status="running",
+    )
+
+    try:
+        source = project_store.generation_story_for_target(target_chapter)
+        result = run_consistency_replan(
+            source=source,
+            target_chapter=target_chapter,
+            original_plan=original_plan,
+            original_gate=original_gate,
+            fallback_root=getattr(project_store, "root", None),
+            plan_replanner=project_store.replan_consistency_plan,
+        )
+        if not isinstance(result, ConsistencyReplanResult):
+            raise TypeError("consistency_replan_result_invalid")
+        if result.target_chapter != target_chapter:
+            raise ValueError("consistency_replan_target_mismatch")
+        if result.status != "failed" and not plan_to_dict(result.revised_plan):
+            raise ValueError("replanned_plan_empty")
+        if result.status != "failed":
+            authoritative_status = {
+                "clear": "replanned_clear",
+                "warnings": "replanned_with_warnings",
+                "blocking": "still_blocking",
+            }[result.remaining_gate.status]
+            result = result.model_copy(update={"status": authoritative_status})
+    except Exception as exc:
+        error = _automatic_replan_error(exc)
+        failed = job_store.update(
+            job_id,
+            status="awaiting_consistency_override",
+            phase="awaiting_consistency_override",
+            progress=f"第 {target_chapter} 章自动重新规划失败，已暂停",
+            error=error,
+            consistency_gate=deepcopy(original_gate_payload),
+            consistency_override=False,
+            original_plan=deepcopy(original_plan),
+            revised_plan=None,
+            original_consistency_gate=deepcopy(original_gate_payload),
+            revised_consistency_gate=None,
+            replan_status="failed",
+            replan_attempts=MAX_CONSISTENCY_REPLAN_ATTEMPTS,
+            replan_result={
+                "status": "failed",
+                "target_chapter": target_chapter,
+                "attempt_number": MAX_CONSISTENCY_REPLAN_ATTEMPTS,
+                "error": error,
+            },
+            auto_consistency_replan_chapter=target_chapter,
+            auto_consistency_replan_attempted=True,
+            auto_consistency_replan_attempts=MAX_CONSISTENCY_REPLAN_ATTEMPTS,
+            auto_consistency_replan_status="failed",
+        )
+        return job_store.update(
+            job_id,
+            consistency_recovery_history=_upsert_auto_recovery_history(
+                failed, target_chapter=target_chapter
+            ),
+        )
+
+    revised_plan = plan_to_dict(result.revised_plan)
+    original_payload = result.original_gate.model_dump(mode="json")
+    revised_gate_payload = result.remaining_gate.model_dump(mode="json")
+    result_payload = result.model_dump(mode="json")
+    if result.status == "replanned_clear":
+        status = "running"
+        phase = "generating"
+        progress = f"第 {target_chapter} 章重新规划通过，继续生成"
+        error = ""
+    elif result.status == "replanned_with_warnings":
+        status = "awaiting_replanned_confirmation"
+        phase = "awaiting_replanned_confirmation"
+        progress = "自动重新规划后仍有一致性提示，已暂停，请确认"
+        error = ""
+    elif result.status == "still_blocking":
+        status = "awaiting_replanned_confirmation"
+        phase = "awaiting_replanned_confirmation"
+        progress = "自动重新规划后仍有一致性问题，已暂停，等待处理"
+        error = ""
+    else:
+        status = "awaiting_consistency_override"
+        phase = "awaiting_consistency_override"
+        progress = f"第 {target_chapter} 章自动重新规划失败，已暂停"
+        error = _automatic_replan_error(ValueError(result.error or "replan_failed"))
+
+    updated = job_store.update(
+        job_id,
+        status=status,
+        phase=phase,
+        progress=progress,
+        error=error,
+        consistency_gate=deepcopy(revised_gate_payload),
+        consistency_override=False,
+        original_plan=deepcopy(original_plan),
+        revised_plan=deepcopy(revised_plan) if result.status != "failed" else None,
+        original_consistency_gate=deepcopy(original_payload),
+        revised_consistency_gate=(
+            deepcopy(revised_gate_payload) if result.status != "failed" else None
+        ),
+        replan_status=result.status,
+        replan_attempts=result.attempt_number,
+        replan_result=result_payload,
+        auto_consistency_replan_chapter=target_chapter,
+        auto_consistency_replan_attempted=True,
+        auto_consistency_replan_attempts=result.attempt_number,
+        auto_consistency_replan_status=result.status,
+    )
+    return job_store.update(
+        job_id,
+        consistency_recovery_history=_upsert_auto_recovery_history(
+            updated, target_chapter=target_chapter
+        ),
+    )
+
+
 class ContinuousGenerationJobStore:
     def __init__(self, project_root: Path) -> None:
         self.project_root = Path(project_root)
@@ -101,6 +360,11 @@ class ContinuousGenerationJobStore:
             "replan_status": "",
             "replan_attempts": 0,
             "replan_result": None,
+            "auto_consistency_replan_chapter": None,
+            "auto_consistency_replan_attempted": False,
+            "auto_consistency_replan_attempts": 0,
+            "auto_consistency_replan_status": "",
+            "consistency_recovery_history": [],
             "candidate_id": "",
             "stop_requested": False,
             "progress": "连续生成已排队",
@@ -269,6 +533,11 @@ class ContinuousGenerationRunner:
                 )
 
             next_chapter = int(project_store.summary().get("current_chapter") or 0) + 1
+            if (
+                _replan_target(job) is not None
+                and _replan_target(job) != next_chapter
+            ):
+                job = job_store.update(job_id, **_clear_current_replan_metadata())
             try:
                 workflow = project_store.volume_workflow_status(next_chapter)
             except Exception as exc:
@@ -352,7 +621,7 @@ class ContinuousGenerationRunner:
             )
 
             consistency_override = bool(job.get("consistency_override"))
-            director_plan_override = plan_to_dict(job.get("revised_plan"))
+            director_plan_override = _revised_plan_for_chapter(job, next_chapter)
             try:
                 generation_kwargs: dict[str, Any] = {"persist": False}
                 if consistency_override:
@@ -368,17 +637,105 @@ class ContinuousGenerationRunner:
                 )
 
                 if isinstance(exc, ConsistencyGateRequired):
+                    current_job = job_store.load(job_id) or job
+                    gate_payload = exc.gate.model_dump(mode="json")
+                    original_plan = plan_to_dict(exc.plan)
+                    current_replan_target = _replan_target(current_job)
+                    auto_attempted_for_chapter = (
+                        current_replan_target == next_chapter
+                        and bool(current_job.get("auto_consistency_replan_attempted"))
+                    )
+                    auto_attempt_available = (
+                        bool(original_plan)
+                        and _auto_replan_infrastructure_available(project_store)
+                        and not auto_attempted_for_chapter
+                        and int(current_job.get("replan_attempts") or 0)
+                        < MAX_CONSISTENCY_REPLAN_ATTEMPTS
+                    )
+                    if auto_attempt_available:
+                        recovered = _attempt_automatic_consistency_replan(
+                            job_id=job_id,
+                            job_store=job_store,
+                            project_store=project_store,
+                            target_chapter=next_chapter,
+                            original_plan=original_plan,
+                            original_gate=exc.gate,
+                        )
+                        if recovered.get("auto_consistency_replan_status") == "replanned_clear":
+                            continue
+                        return recovered
+
+                    retained_plan = (
+                        plan_to_dict(current_job.get("revised_plan"))
+                        if current_replan_target == next_chapter
+                        else {}
+                    )
+                    retained_original_plan = (
+                        plan_to_dict(current_job.get("original_plan"))
+                        if current_replan_target == next_chapter
+                        else {}
+                    )
+                    retained_original_gate = (
+                        current_job.get("original_consistency_gate")
+                        if current_replan_target == next_chapter
+                        and isinstance(current_job.get("original_consistency_gate"), dict)
+                        else gate_payload
+                    )
+                    if auto_attempted_for_chapter and retained_plan:
+                        replan_result = (
+                            deepcopy(current_job.get("replan_result"))
+                            if isinstance(current_job.get("replan_result"), dict)
+                            else {}
+                        )
+                        replan_result.update(
+                            {
+                                "status": "still_blocking",
+                                "remaining_gate": deepcopy(gate_payload),
+                            }
+                        )
+                        paused = job_store.update(
+                            job_id,
+                            status="awaiting_replanned_confirmation",
+                            phase="awaiting_replanned_confirmation",
+                            current_chapter=next_chapter,
+                            candidate_id="",
+                            consistency_gate=deepcopy(gate_payload),
+                            consistency_override=False,
+                            original_plan=retained_original_plan or original_plan or None,
+                            revised_plan=retained_plan,
+                            original_consistency_gate=deepcopy(retained_original_gate),
+                            revised_consistency_gate=deepcopy(gate_payload),
+                            replan_status="still_blocking",
+                            replan_attempts=max(
+                                int(current_job.get("replan_attempts") or 0),
+                                MAX_CONSISTENCY_REPLAN_ATTEMPTS,
+                            ),
+                            replan_result=replan_result,
+                            auto_consistency_replan_chapter=next_chapter,
+                            auto_consistency_replan_attempted=True,
+                            auto_consistency_replan_attempts=MAX_CONSISTENCY_REPLAN_ATTEMPTS,
+                            auto_consistency_replan_status="still_blocking",
+                            error="",
+                            progress="自动重新规划后仍有一致性问题，已暂停，等待处理",
+                        )
+                        return job_store.update(
+                            job_id,
+                            consistency_recovery_history=_upsert_auto_recovery_history(
+                                paused, target_chapter=next_chapter
+                            ),
+                        )
+
                     return job_store.update(
                         job_id,
                         status="awaiting_consistency_override",
                         phase="awaiting_consistency_override",
                         current_chapter=next_chapter,
                         candidate_id="",
-                        consistency_gate=exc.gate.model_dump(mode="json"),
+                        consistency_gate=gate_payload,
                         consistency_override=False,
-                        original_plan=plan_to_dict(exc.plan) or None,
+                        original_plan=original_plan or None,
                         revised_plan=None,
-                        original_consistency_gate=exc.gate.model_dump(mode="json"),
+                        original_consistency_gate=gate_payload,
                         revised_consistency_gate=None,
                         replan_status="",
                         replan_attempts=0,
@@ -498,21 +855,19 @@ class ContinuousGenerationRunner:
             completed = list(job.get("completed_chapters") or [])
             if next_chapter not in completed:
                 completed.append(next_chapter)
-            job = job_store.update(
-                job_id,
-                completed_chapters=completed,
-                completed_count=len(completed),
-                current_chapter=next_chapter,
-                candidate_id="",
-                phase="between_chapters",
-                consistency_override=False,
-                revised_plan=None,
-                original_plan=None,
-                replan_status="",
-                replan_attempts=0,
-                consistency_override_chapters=(
+            completion_updates: dict[str, object] = {
+                "completed_chapters": completed,
+                "completed_count": len(completed),
+                "current_chapter": next_chapter,
+                "candidate_id": "",
+                "phase": "between_chapters",
+                "consistency_override": False,
+                "consistency_override_chapters": (
                     list(job.get("consistency_override_chapters") or [])
                     + ([next_chapter] if consistency_override else [])
                 ),
-                progress=f"第 {next_chapter} 章已确认",
-            )
+                "progress": f"第 {next_chapter} 章已确认",
+            }
+            if len(completed) < int(job.get("requested_count") or 0):
+                completion_updates.update(_clear_current_replan_metadata())
+            job = job_store.update(job_id, **completion_updates)

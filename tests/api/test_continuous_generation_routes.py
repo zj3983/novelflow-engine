@@ -90,6 +90,10 @@ def test_start_continuous_generation_job_persists_and_submits(continuous_api) ->
     assert payload["requested_count"] == 5
     assert payload["start_chapter"] == 11
     assert payload["status"] == "queued"
+    assert payload["auto_consistency_replan_attempted"] is False
+    assert payload["auto_consistency_replan_attempts"] == 0
+    assert payload["auto_consistency_replan_status"] == ""
+    assert payload["consistency_recovery_history"] == []
     assert len(submitted) == 1
     assert (
         export_root

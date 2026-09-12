@@ -1523,6 +1523,11 @@ export type ContinuousGenerationJobResponse = {
   replan_status?: "" | "replanned_clear" | "replanned_with_warnings" | "still_blocking" | "failed" | string;
   replan_attempts?: number;
   replan_result?: Record<string, unknown> | null;
+  auto_consistency_replan_chapter?: number | null;
+  auto_consistency_replan_attempted?: boolean;
+  auto_consistency_replan_attempts?: number;
+  auto_consistency_replan_status?: "" | "replanned_clear" | "replanned_with_warnings" | "still_blocking" | "failed" | string;
+  consistency_recovery_history?: Array<Record<string, unknown>>;
   candidate_id: string;
   stop_requested: boolean;
   progress: string;
