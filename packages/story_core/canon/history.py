@@ -434,6 +434,19 @@ def strict_validate_delta(registry: CanonRegistry, event: CanonHistoryEvent) -> 
         result = require(movement.entity_id, "CANON_RECONCILIATION_LOCATION_ENTITY_MISSING", "location entity")
         if result:
             return result
+        if movement.from_location is not None:
+            entity = registry.get(movement.entity_id)
+            current_location = (
+                entity.extensions.get("location")
+                if entity is not None and isinstance(entity.extensions, dict)
+                else None
+            )
+            if current_location is not None and str(current_location) != str(movement.from_location):
+                return _finding(
+                    event,
+                    "CANON_RECONCILIATION_LOCATION_STATE_MISMATCH",
+                    f"location movement expects {movement.from_location}, current state is {current_location}",
+                )
 
     foreshadowing_ids = {str(item.get("foreshadowing_id")) for item in registry.foreshadowing()}
     for change in delta.foreshadowing_changes:

@@ -268,3 +268,24 @@ def test_downstream_relationship_and_foreshadow_dependencies_are_strict() -> Non
     foreshadow_result = replay_canon_history(baseline, [_event(foreshadow, "candidate-2", 1)])
     assert foreshadow_result.status == "CONFLICT"
     assert foreshadow_result.first_finding.code == "CANON_RECONCILIATION_FORESHADOWING_INVALID"
+
+
+def test_location_replay_detects_from_location_mismatch() -> None:
+    registry = _baseline()
+    registry.update_attributes("char-main", changes={"location": "山脚"})
+    baseline = registry_to_payload(registry)
+    movement = ContinuityDelta(
+        chapter_number=2,
+        location_movements=[
+            LocationMovement(
+                chapter_number=2,
+                source_sentence="林昭从山腰离开",
+                entity_id="char-main",
+                from_location="山腰",
+                to_location="山顶",
+            )
+        ],
+    )
+    result = replay_canon_history(baseline, [_event(movement, "candidate-2", 1)])
+    assert result.status == "CONFLICT"
+    assert result.first_finding.code == "CANON_RECONCILIATION_LOCATION_STATE_MISMATCH"
