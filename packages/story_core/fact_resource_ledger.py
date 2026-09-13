@@ -47,6 +47,7 @@ SEVERITIES = {"error", "warning", "info"}
 # grounded here.  ``UNRESOLVED`` findings stay review-visible but do not block
 # the chapter candidate or create a canonical mutation.
 GROUNDING_STATUSES = {"GROUNDED", "UNRESOLVED", "INVALID"}
+RECONCILIATION_STATUSES = {"CLEAR", "CONFLICT", "UNSUPPORTED", "NOOP"}
 
 _GROUNDING_RESOURCE_STOPWORDS = {
     "来",
@@ -3216,6 +3217,84 @@ class FactResourceAuthorityWritePlan:
         return [item for item in self.findings if item.severity == "error"]
 
 
+class FactResourceReconciliationPlan(BaseModel):
+    """Read-only staged result for replacing one confirmed chapter's facts.
+
+    The raw staged payloads deliberately stay inside the plan until the file
+    project store applies the plan inside its existing transaction.  They are
+    never written by the planner itself.  ``replayed_extractions`` are the
+    persisted, confirmed proposals for downstream chapters; they are not
+    re-extracted from downstream prose.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    schema_version: str = "fact-resource-reconciliation/v1"
+    status: str
+    rewrite_chapter: int = Field(ge=1)
+    latest_confirmed_chapter: int = Field(default=0, ge=0)
+    base_snapshot: FactResourceSnapshot
+    replacement_extraction: FactResourceExtraction
+    replayed_extractions: list[FactResourceExtraction] = Field(default_factory=list)
+    staged_state: dict[str, Any] = Field(default_factory=dict)
+    staged_project: dict[str, Any] = Field(default_factory=dict)
+    staged_ledger: FactResourceLedger | None = None
+    findings: list[FactResourceFinding] = Field(default_factory=list)
+    first_conflict_chapter: int = 0
+    first_conflict: dict[str, Any] = Field(default_factory=dict)
+    downstream_chapters: list[int] = Field(default_factory=list)
+    authority_operations: list[dict[str, Any]] = Field(default_factory=list)
+    replacement_delta_ids: list[str] = Field(default_factory=list)
+    replayed_delta_ids: list[str] = Field(default_factory=list)
+    removed_delta_ids: list[str] = Field(default_factory=list)
+    candidate_id: str = ""
+    persist_generic_ledger: bool = False
+
+    @model_validator(mode="after")
+    def validate_status(self) -> "FactResourceReconciliationPlan":
+        if self.status not in RECONCILIATION_STATUSES:
+            raise ValueError("invalid_fact_resource_reconciliation_status")
+        return self
+
+    @property
+    def clear(self) -> bool:
+        return self.status in {"CLEAR", "NOOP"}
+
+    def to_result_dict(self) -> dict[str, Any]:
+        """Return the review/API surface without exposing staged payloads."""
+
+        return {
+            "schema_version": self.schema_version,
+            "status": self.status,
+            "rewrite_chapter": self.rewrite_chapter,
+            "latest_confirmed_chapter": self.latest_confirmed_chapter,
+            "base_snapshot_as_of": self.base_snapshot.as_of_chapter,
+            "replayed_through_chapter": (
+                max(self.downstream_chapters, default=self.rewrite_chapter)
+                if self.status in {"CLEAR", "NOOP"}
+                else max(0, self.first_conflict_chapter - 1)
+                if self.status == "CONFLICT"
+                else 0
+            ),
+            "first_conflict_chapter": self.first_conflict_chapter,
+            "first_conflict": deepcopy(self.first_conflict),
+            "downstream_chapters": list(self.downstream_chapters),
+            "affected_authorities": sorted(
+                {
+                    str(item.get("authority_source") or "")
+                    for item in self.authority_operations
+                    if str(item.get("authority_source") or "")
+                }
+            ),
+            "findings": [item.model_dump(mode="json") for item in self.findings],
+            "authority_operations": deepcopy(self.authority_operations),
+            "replacement_delta_ids": list(self.replacement_delta_ids),
+            "replayed_delta_ids": list(self.replayed_delta_ids),
+            "removed_delta_ids": list(self.removed_delta_ids),
+            "candidate_id": self.candidate_id,
+        }
+
+
 def _authority_mapping_at(
     payload: Mapping[str, Any],
     path: Sequence[str | int],
@@ -4410,6 +4489,7 @@ __all__ = [
     "FactResourceAuthority",
     "FactResourceAuthorityWrite",
     "FactResourceAuthorityWritePlan",
+    "FactResourceReconciliationPlan",
     "FactResourceLedger",
     "FactResourceSnapshot",
     "FactResourceValidation",

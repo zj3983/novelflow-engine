@@ -224,7 +224,7 @@ def test_candidate_resource_events_are_pending_until_confirmation(tmp_path) -> N
     assert retried.replay(as_of_chapter=1).value_for("inventory", "记录水晶") == 15
 
 
-def test_fact_resource_historical_rewrite_is_rejected_before_chapter_mutation(tmp_path) -> None:
+def test_fact_resource_historical_rewrite_reconciles_before_chapter_mutation(tmp_path) -> None:
     store = FileProjectStore(tmp_path)
     _seed_explicit_ledger(store)
     first = store._save_candidate_from_bundle(
@@ -247,9 +247,8 @@ def test_fact_resource_historical_rewrite_is_rejected_before_chapter_mutation(tm
         project_id=tmp_path.name,
         operation="regenerate",
     )
-    with pytest.raises(ValueError, match="historical_rewrite_requires_reconciliation"):
-        store.confirm_candidate(rewrite.candidate_id)
-    assert store.candidate_store.get(rewrite.candidate_id).status == "pending"
+    result = store.confirm_candidate(rewrite.candidate_id)
+    assert result["candidate"]["status"] == "confirmed"
     ledger = FactResourceLedger.load(store.fact_resource_ledger_path)
     assert ledger is not None
     assert len(ledger.history) == 1

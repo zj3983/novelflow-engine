@@ -112,11 +112,14 @@ from packages.story_core.fact_resource_ledger import (
     FactResourceLedger,
     FactResourceSnapshot,
     FactResourceAuthorityWritePlan,
+    FactResourceFinding,
+    FactResourceReconciliationPlan,
     FactResourceValidation,
     apply_fact_resource_authority_writes,
     extract_fact_resource_changes,
     get_fact_resource_snapshot,
     plan_fact_resource_authority_writes,
+    project_fact_resource_snapshot,
     validate_fact_resource_extraction,
 )
 from packages.story_core.inventory_normalization import (
@@ -1632,10 +1635,579 @@ class FileProjectStore(
         review = getattr(candidate, "fact_resource_review", None)
         return dict(review) if isinstance(review, dict) else {}
 
+    @staticmethod
+    def _reconciliation_event_chapter(event: Any) -> int | None:
+        if not isinstance(event, dict):
+            return None
+        for key in ("chapter", "chapter_number", "as_of_chapter"):
+            value = event.get(key)
+            if isinstance(value, bool):
+                continue
+            try:
+                chapter = int(value)
+            except (TypeError, ValueError):
+                continue
+            if chapter >= 0:
+                return chapter
+        return None
+
+    @staticmethod
+    def _reconciliation_event_id(event: Any) -> str:
+        if not isinstance(event, dict):
+            return ""
+        direct = str(event.get("fact_resource_delta_id") or "").strip()
+        if direct:
+            return direct
+        metadata = event.get("metadata")
+        if isinstance(metadata, dict):
+            nested = str(metadata.get("fact_resource_delta_id") or "").strip()
+            if nested:
+                return nested
+        summary = str(event.get("summary") or "")
+        match = re.search(r"事实资源\[([^\]]+)\]", summary)
+        return match.group(1).strip() if match else ""
+
+    @classmethod
+    def _resource_history_records(
+        cls,
+        payload: Any,
+        *,
+        source: str,
+    ) -> list[dict[str, Any]]:
+        """Collect explicit fact-resource event metadata without guessing."""
+
+        records: list[dict[str, Any]] = []
+
+        def visit(value: Any, path: tuple[str | int, ...]) -> None:
+            if isinstance(value, dict):
+                chapter = cls._reconciliation_event_chapter(value)
+                delta_id = cls._reconciliation_event_id(value)
+                if chapter is not None and delta_id:
+                    records.append(
+                        {
+                            "chapter": chapter,
+                            "delta_id": delta_id,
+                            "source": source,
+                            "path": [str(item) for item in path],
+                        }
+                    )
+                for key, item in value.items():
+                    visit(item, (*path, str(key)))
+            elif isinstance(value, list):
+                for index, item in enumerate(value):
+                    visit(item, (*path, index))
+
+        visit(payload, ())
+        return records
+
+    @classmethod
+    def _legacy_resource_history_findings(
+        cls,
+        payload: Any,
+        *,
+        source: str,
+        rewrite_chapter: int,
+        latest_chapter: int,
+    ) -> list[FactResourceFinding]:
+        """Reject ambiguous legacy resource events instead of rewriting them."""
+
+        findings: list[FactResourceFinding] = []
+        event_keys = {
+            "history",
+            "state_history",
+            "state_changes",
+            "progression_history",
+            "level_history",
+            "changes",
+            "snapshots",
+            "events",
+        }
+        resource_keys = {
+            "level",
+            "character_level",
+            "experience",
+            "exp",
+            "character_exp",
+            "inventory",
+            "items",
+            "backpack",
+            "currency",
+            "game_currency",
+            "money",
+            "quest",
+            "quests",
+            "tasks",
+            "current_owner",
+            "owner",
+            "equipped",
+            "status",
+            "trust",
+            "tension",
+        }
+
+        def event_has_resource_value(event: dict[str, Any]) -> bool:
+            value = event.get("current")
+            if not isinstance(value, dict):
+                value = event.get("state")
+            candidate = value if isinstance(value, dict) else event
+            return any(str(key).casefold() in resource_keys for key in candidate)
+
+        def visit(value: Any, path: tuple[str | int, ...]) -> None:
+            if isinstance(value, dict):
+                chapter = cls._reconciliation_event_chapter(value)
+                if (
+                    chapter is not None
+                    and rewrite_chapter <= chapter <= latest_chapter
+                    and not cls._reconciliation_event_id(value)
+                    and event_has_resource_value(value)
+                    and any(str(item) in event_keys for item in path)
+                ):
+                    findings.append(
+                        FactResourceFinding(
+                            code="FACT_RESOURCE_RECONCILIATION_UNSUPPORTED_HISTORY",
+                            severity="error",
+                            message=(
+                                f"{source} 的第 {chapter} 章资源历史事件缺少稳定 fact_resource_delta_id，"
+                                "无法安全区分 Phase 3A 事件与其他历史。"
+                            ),
+                            chapter=chapter,
+                        )
+                    )
+                for key, item in value.items():
+                    visit(item, (*path, str(key)))
+            elif isinstance(value, list):
+                for index, item in enumerate(value):
+                    visit(item, (*path, index))
+
+        visit(payload, ())
+        return findings
+
+    @classmethod
+    def _strip_reconciled_resource_events(
+        cls,
+        payload: Any,
+        *,
+        rewrite_chapter: int,
+        delta_ids: set[str],
+    ) -> Any:
+        """Copy a payload while removing only identified fact-resource events."""
+
+        def transform(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {key: transform(item) for key, item in value.items()}
+            if isinstance(value, list):
+                result: list[Any] = []
+                for item in value:
+                    chapter = cls._reconciliation_event_chapter(item)
+                    delta_id = cls._reconciliation_event_id(item)
+                    if (
+                        chapter is not None
+                        and chapter >= rewrite_chapter
+                        and delta_id in delta_ids
+                    ):
+                        continue
+                    result.append(transform(item))
+                return result
+            return deepcopy(value)
+
+        return transform(payload)
+
+    @staticmethod
+    def _merged_reconciliation_story(
+        state: dict[str, Any],
+        project: dict[str, Any],
+    ) -> dict[str, Any]:
+        story = deepcopy(project)
+        for key, value in state.items():
+            if key not in story or story.get(key) in (None, "", [], {}):
+                story[key] = deepcopy(value)
+        for key in (
+            "characters",
+            "progression_ledger",
+            "equipment_cards",
+            "relationship_graph",
+            "current_chapter",
+            "latest_chapter",
+            "last_written_chapter",
+        ):
+            if state.get(key) not in (None, "", [], {}):
+                story[key] = deepcopy(state[key])
+        blueprint = project.get("world_blueprint")
+        if isinstance(blueprint, dict):
+            for key in ("progression_ledger", "equipment_cards", "relationship_graph"):
+                if story.get(key) in (None, "", [], {}) and blueprint.get(key) not in (None, "", [], {}):
+                    story[key] = deepcopy(blueprint[key])
+        return story
+
+    @staticmethod
+    def _snapshot_entry(snapshot: FactResourceSnapshot, categories: set[str], resource_key: str = "") -> Any:
+        wanted_key = str(resource_key or "").casefold()
+        for entry in snapshot.entries:
+            if str(entry.category or "").casefold() not in categories:
+                continue
+            if wanted_key and str(entry.resource_key or "").casefold() != wanted_key:
+                continue
+            return entry
+        return None
+
+    @staticmethod
+    def _format_reconciliation_value(existing: Any, value: Any, category: str) -> Any:
+        if not isinstance(existing, str):
+            return deepcopy(value)
+        text = existing.strip()
+        if category == "level":
+            number = str(int(value)) if isinstance(value, float) and value.is_integer() else str(value)
+            if re.match(r"lv\.?", text, flags=re.IGNORECASE):
+                return f"Lv.{number}"
+            if "级" in text:
+                return f"{number}级"
+            return number
+        match = re.match(r"\s*[-+]?\d+(?:\.\d+)?\s*(.*)$", text)
+        suffix = match.group(1).strip() if match else ""
+        number = str(int(value)) if isinstance(value, float) and value.is_integer() else str(value)
+        return f"{number}{suffix}" if suffix else number
+
+    @classmethod
+    def _reset_progression_mirrors(
+        cls,
+        value: Any,
+        snapshot: FactResourceSnapshot,
+        *,
+        under_event_list: bool = False,
+    ) -> None:
+        if isinstance(value, list):
+            if under_event_list:
+                return
+            for item in value:
+                cls._reset_progression_mirrors(item, snapshot, under_event_list=False)
+            return
+        if not isinstance(value, dict):
+            return
+        event_keys = {
+            "history",
+            "state_history",
+            "state_changes",
+            "progression_history",
+            "level_history",
+            "changes",
+            "snapshots",
+            "events",
+        }
+        for key, item in list(value.items()):
+            key_text = str(key).casefold()
+            if key_text in event_keys:
+                continue
+            category = {
+                "level": "level",
+                "character_level": "level",
+                "experience": "experience",
+                "exp": "experience",
+                "character_exp": "experience",
+                "currency": "currency",
+                "game_currency": "currency",
+                "money": "currency",
+            }.get(key_text)
+            if category:
+                entry = cls._snapshot_entry(snapshot, {category}, category)
+                if entry is not None:
+                    value[key] = cls._format_reconciliation_value(item, entry.value, category)
+                continue
+            if key_text in {"inventory", "items", "backpack"} and isinstance(item, dict):
+                for resource_key, current in list(item.items()):
+                    entry = cls._snapshot_entry(snapshot, {"inventory"}, str(resource_key))
+                    if entry is not None:
+                        item[resource_key] = cls._format_reconciliation_value(
+                            current, entry.value, "inventory"
+                        )
+                continue
+            if key_text in {"quest", "quests", "tasks"} and isinstance(item, dict):
+                for quest_key, current in list(item.items()):
+                    entry = cls._snapshot_entry(snapshot, {"quest", "quest_progress", "task"}, str(quest_key))
+                    if entry is not None:
+                        item[quest_key] = cls._format_reconciliation_value(
+                            current, entry.value, "quest"
+                        )
+                continue
+            if isinstance(item, dict):
+                cls._reset_progression_mirrors(item, snapshot)
+            elif key_text in {"characters", "character_profiles"}:
+                cls._reset_progression_mirrors(item, snapshot)
+
+    @classmethod
+    def _reset_resource_mirrors(
+        cls,
+        state: dict[str, Any],
+        project: dict[str, Any],
+        snapshot: FactResourceSnapshot,
+    ) -> None:
+        for payload in (state, project):
+            cls._reset_progression_mirrors(payload, snapshot)
+            for cards in (
+                payload.get("equipment_cards"),
+                (payload.get("world_blueprint") or {}).get("equipment_cards")
+                if isinstance(payload.get("world_blueprint"), dict)
+                else None,
+            ):
+                if not isinstance(cards, list):
+                    continue
+                for card in cards:
+                    if not isinstance(card, dict):
+                        continue
+                    aliases = {
+                        str(card.get(key) or "").casefold()
+                        for key in ("id", "name")
+                        if str(card.get(key) or "").strip()
+                    }
+                    raw_aliases = card.get("aliases")
+                    if isinstance(raw_aliases, list):
+                        aliases.update(str(item).casefold() for item in raw_aliases if str(item).strip())
+                    owner = next(
+                        (item for item in snapshot.entries
+                         if str(item.category).casefold() == "equipment_owner"
+                         and str(item.resource_key).casefold() in aliases),
+                        None,
+                    )
+                    equipped = next(
+                        (item for item in snapshot.entries
+                         if str(item.category).casefold() == "equipment_state"
+                         and str(item.resource_key).casefold() in aliases),
+                        None,
+                    )
+                    if owner is not None:
+                        card["current_owner"] = deepcopy(owner.value)
+                    if equipped is not None:
+                        card["equipped"] = bool(equipped.value)
+                        card["status"] = "已装备" if bool(equipped.value) else "未装备"
+            graph = payload.get("relationship_graph")
+            if isinstance(graph, list):
+                for edge in graph:
+                    if not isinstance(edge, dict):
+                        continue
+                    relation_id = str(edge.get("id") or "")
+                    source = str(edge.get("source") or "")
+                    target = str(edge.get("target") or "")
+                    for entry in snapshot.entries:
+                        if str(entry.category).casefold() != "relationship_numeric":
+                            continue
+                        entry_relation_id = str(entry.metadata.get("relationship_id") or "")
+                        if entry_relation_id and entry_relation_id != relation_id:
+                            continue
+                        if not entry_relation_id and entry.subject not in {source, target}:
+                            continue
+                        edge[str(entry.resource_key)] = deepcopy(entry.value)
+
+    @classmethod
+    def _trim_generic_ledger(
+        cls,
+        ledger: FactResourceLedger,
+        *,
+        rewrite_chapter: int,
+    ) -> tuple[FactResourceLedger, set[str]]:
+        staged = ledger.model_copy(deep=True)
+        def audit_chapter(item: Any) -> int:
+            if not isinstance(item, dict):
+                return 0
+            value = item.get("chapter")
+            if isinstance(value, bool):
+                return 0
+            try:
+                return max(0, int(value))
+            except (TypeError, ValueError):
+                return 0
+
+        removed_ids = {item.delta_id for item in staged.history if item.chapter >= rewrite_chapter}
+        staged.history = [item for item in staged.history if item.chapter < rewrite_chapter]
+        staged.audit = [
+            item for item in staged.audit
+            if audit_chapter(item) < rewrite_chapter
+        ]
+        removed_candidates = {
+            str(item.get("candidate_id") or "")
+            for item in ledger.audit
+            if isinstance(item, dict) and audit_chapter(item) >= rewrite_chapter
+        }
+        staged.confirmed_candidates = [
+            item for item in staged.confirmed_candidates if item not in removed_candidates
+        ]
+        staged.latest_confirmed_chapter = max(
+            [staged.baseline.chapter, *(item.chapter for item in staged.history)],
+            default=0,
+        )
+        staged.entries = staged.replay(as_of_chapter=staged.latest_confirmed_chapter).entries
+        return staged, removed_ids
+
+    @staticmethod
+    def _replay_intent_extraction(
+        extraction: FactResourceExtraction,
+        start_snapshot: FactResourceSnapshot,
+    ) -> FactResourceExtraction:
+        """Rebase downstream arithmetic while retaining semantic preconditions.
+
+        A confirmed downstream ADD/SUBTRACT/PROGRESS_ADD describes an intent
+        to apply that change, not a request to re-assert the obsolete value
+        that happened to precede it before Chapter N was rewritten.  SET
+        keeps its target value, while equipment owner/state preconditions are
+        retained so an ownership rewrite still produces a deterministic
+        mismatch instead of silently retargeting the event.
+        """
+
+        payload = extraction.model_dump(mode="python")
+        current_values: dict[str, Any] = {
+            entry.fact_id: entry.value for entry in start_snapshot.entries
+        }
+        rebased: list[dict[str, Any]] = []
+        for raw in payload.get("deltas") or []:
+            item = dict(raw)
+            operation = str(item.get("operation") or "")
+            category = str(item.get("category") or "").casefold()
+            fact_id = str(item.get("fact_id") or "")
+            resource_key = str(item.get("resource_key") or "")
+            subject = str(item.get("subject") or "")
+            entry = start_snapshot.by_fact_id.get(fact_id)
+            if entry is None:
+                entry = start_snapshot.find(category, resource_key, subject=subject)
+            current = current_values.get(entry.fact_id) if entry is not None else None
+            if operation in {"ADD", "SUBTRACT", "PROGRESS_ADD"}:
+                try:
+                    current_number = float(current)
+                    change_number = float(item.get("change"))
+                except (TypeError, ValueError):
+                    current_number = None
+                    change_number = None
+                if current_number is not None and change_number is not None:
+                    next_number = current_number + (
+                        abs(change_number)
+                        if operation in {"ADD", "PROGRESS_ADD"}
+                        else -abs(change_number)
+                    )
+                    before_value: Any = int(current_number) if current_number.is_integer() else current_number
+                    after_value: Any = int(next_number) if next_number.is_integer() else next_number
+                    item["before"] = before_value
+                    item["after"] = after_value
+                    if entry is not None:
+                        current_values[entry.fact_id] = after_value
+                else:
+                    item["before"] = None
+                    item["after"] = None
+            elif operation in {"SET", "PROGRESS_SET"}:
+                if current is not None:
+                    item["before"] = deepcopy(current)
+                if entry is not None:
+                    current_values[entry.fact_id] = item.get("after", item.get("change"))
+            elif operation in {"TRANSFER", "EQUIP", "UNEQUIP"}:
+                if category not in {"equipment", "equipment_owner", "equipment_state", "equipment_equipped", "equipped"}:
+                    item["before"] = None
+            rebased.append(item)
+        payload["deltas"] = rebased
+        return FactResourceExtraction.model_validate(payload)
+
+    def _confirmed_reconciliation_extractions(
+        self,
+        *,
+        project_id: str,
+        rewrite_chapter: int,
+        latest_chapter: int,
+        first_chapter: int | None = None,
+        authority_records: list[dict[str, Any]],
+        ledger: FactResourceLedger,
+    ) -> tuple[list[FactResourceExtraction], list[FactResourceFinding], set[str]]:
+        replay_start = max(rewrite_chapter, int(first_chapter or rewrite_chapter))
+        candidates = self.candidate_store.list(project_id=project_id)
+        confirmed_by_chapter: dict[int, list[Any]] = {}
+        for item in candidates:
+            if item.status == "confirmed" and replay_start <= item.chapter_number <= latest_chapter:
+                confirmed_by_chapter.setdefault(item.chapter_number, []).append(item)
+
+        event_ids_by_chapter: dict[int, set[str]] = {}
+        for item in authority_records:
+            if item["chapter"] >= replay_start:
+                event_ids_by_chapter.setdefault(item["chapter"], set()).add(item["delta_id"])
+        for delta in ledger.history:
+            if delta.chapter >= replay_start:
+                event_ids_by_chapter.setdefault(delta.chapter, set()).add(delta.delta_id)
+
+        findings: list[FactResourceFinding] = []
+        extractions: list[FactResourceExtraction] = []
+        removable_ids: set[str] = set()
+        for chapter in range(replay_start, latest_chapter + 1):
+            matches = confirmed_by_chapter.get(chapter, [])
+            if len(matches) > 1:
+                findings.append(
+                    FactResourceFinding(
+                        code="FACT_RESOURCE_RECONCILIATION_UNSUPPORTED_HISTORY",
+                        severity="error",
+                        message=f"第 {chapter} 章存在多个 confirmed candidate，无法确定唯一资源历史。",
+                        chapter=chapter,
+                    )
+                )
+                continue
+            candidate = matches[0] if matches else None
+            if candidate is None and event_ids_by_chapter.get(chapter):
+                findings.append(
+                    FactResourceFinding(
+                        code="FACT_RESOURCE_RECONCILIATION_UNSUPPORTED_HISTORY",
+                        severity="error",
+                        message=f"第 {chapter} 章存在资源事件但没有可复用的 confirmed candidate extraction。",
+                        chapter=chapter,
+                    )
+                )
+                continue
+            if candidate is None:
+                extraction = FactResourceExtraction(chapter_number=chapter)
+            else:
+                raw = getattr(candidate, "fact_resource_extraction", None)
+                try:
+                    extraction = (
+                        raw
+                        if isinstance(raw, FactResourceExtraction)
+                        else FactResourceExtraction.model_validate(raw)
+                        if raw is not None
+                        else FactResourceExtraction(chapter_number=chapter)
+                    )
+                except Exception:
+                    findings.append(
+                        FactResourceFinding(
+                            code="FACT_RESOURCE_RECONCILIATION_UNSUPPORTED_HISTORY",
+                            severity="error",
+                            message=f"第 {chapter} 章 confirmed extraction 结构无法读取。",
+                            chapter=chapter,
+                        )
+                    )
+                    continue
+                if extraction.chapter_number != chapter:
+                    findings.append(
+                        FactResourceFinding(
+                            code="FACT_RESOURCE_RECONCILIATION_UNSUPPORTED_HISTORY",
+                            severity="error",
+                            message=f"第 {chapter} 章 extraction 的 chapter_number 不一致。",
+                            chapter=chapter,
+                        )
+                    )
+                    continue
+                extracted_ids = {item.delta_id for item in extraction.deltas}
+                missing_event_ids = event_ids_by_chapter.get(chapter, set()) - extracted_ids
+                if missing_event_ids:
+                    findings.append(
+                        FactResourceFinding(
+                            code="FACT_RESOURCE_RECONCILIATION_UNSUPPORTED_HISTORY",
+                            severity="error",
+                            message=(
+                                f"第 {chapter} 章的 authority event 无法在 confirmed extraction 中逐一定位："
+                                + ",".join(sorted(missing_event_ids))
+                            ),
+                            chapter=chapter,
+                        )
+                    )
+                    continue
+                removable_ids.update(delta.delta_id for delta in extraction.deltas)
+            extractions.append(extraction)
+
+        return extractions, findings, removable_ids
+
     def _plan_candidate_fact_resource_writes(
         self,
         candidate: Any,
-    ) -> FactResourceAuthorityWritePlan | None:
+    ) -> FactResourceAuthorityWritePlan | FactResourceReconciliationPlan | None:
         """Build a read-only authority/generic write plan for a candidate.
 
         The plan is made against the persisted raw state and project payloads,
@@ -1652,26 +2224,26 @@ class FileProjectStore(
             return None
 
         chapter_number = int(getattr(candidate, "chapter_number", 0) or 0)
-        if raw_extraction is None:
-            if existing_ledger is not None and chapter_number <= existing_ledger.latest_confirmed_chapter:
-                raise ValueError("fact_resource_historical_rewrite_requires_reconciliation")
-            return None
-
         extraction = (
             raw_extraction
             if isinstance(raw_extraction, FactResourceExtraction)
             else FactResourceExtraction.model_validate(raw_extraction)
+            if raw_extraction is not None
+            else FactResourceExtraction(chapter_number=chapter_number)
         )
-        if not (extraction.deltas or extraction.assertions):
-            return None
-
         persisted_chapters = max(self.chapter_numbers(), default=0)
         latest = max(
             existing_ledger.latest_confirmed_chapter if existing_ledger is not None else 0,
             persisted_chapters,
         )
         if chapter_number <= latest:
-            raise ValueError("fact_resource_historical_rewrite_requires_reconciliation")
+            return self._plan_candidate_fact_resource_reconciliation(
+                candidate,
+                extraction=extraction,
+                latest_chapter=latest,
+            )
+        if raw_extraction is None or not (extraction.deltas or extraction.assertions):
+            return None
 
         state = self.persisted_state()
         project = self._read_json(self.webnovel_dir / "project.json", {}) or {}
@@ -1702,9 +2274,514 @@ class FileProjectStore(
             )
         return plan
 
+    def _plan_candidate_fact_resource_reconciliation(
+        self,
+        candidate: Any,
+        *,
+        extraction: FactResourceExtraction,
+        latest_chapter: int,
+    ) -> FactResourceReconciliationPlan:
+        """Plan a historical replacement without touching project files."""
+
+        chapter_number = int(getattr(candidate, "chapter_number", 0) or 0)
+        candidate_id = str(getattr(candidate, "candidate_id", "") or "")
+        state = self.persisted_state()
+        project = self._read_json(self.webnovel_dir / "project.json", {}) or {}
+        if not isinstance(project, dict):
+            project = {}
+        original_ledger = self.fact_resource_ledger()
+        ledger = original_ledger or FactResourceLedger.empty()
+        persist_generic_ledger = original_ledger is not None
+        project_id = str(
+            project.get("project_id")
+            or project.get("active_story_id")
+            or state.get("story_id")
+            or self.root.name
+        )
+        authority_records = [
+            *self._resource_history_records(state, source="state"),
+            *self._resource_history_records(project, source="project"),
+        ]
+        unsupported = [
+            *self._legacy_resource_history_findings(
+                state,
+                source="state",
+                rewrite_chapter=chapter_number,
+                latest_chapter=latest_chapter,
+            ),
+            *self._legacy_resource_history_findings(
+                project,
+                source="project",
+                rewrite_chapter=chapter_number,
+                latest_chapter=latest_chapter,
+            ),
+        ]
+
+        downstream, downstream_findings, downstream_ids = self._confirmed_reconciliation_extractions(
+            project_id=project_id,
+            rewrite_chapter=chapter_number,
+            first_chapter=chapter_number + 1,
+            latest_chapter=latest_chapter,
+            authority_records=authority_records,
+            ledger=ledger,
+        )
+        findings = [*unsupported, *downstream_findings]
+        merged = self._merged_reconciliation_story(state, project)
+        base_ledger, removed_generic_ids = self._trim_generic_ledger(
+            ledger,
+            rewrite_chapter=chapter_number,
+        )
+        removable_ids = {
+            item["delta_id"]
+            for item in authority_records
+            if item["chapter"] >= chapter_number
+        }
+        removable_ids.update(removed_generic_ids)
+        removable_ids.update(downstream_ids)
+        if findings:
+            base_snapshot = project_fact_resource_snapshot(
+                merged,
+                as_of_chapter=chapter_number - 1,
+                generic_ledger=base_ledger,
+            )
+            return FactResourceReconciliationPlan(
+                status="UNSUPPORTED",
+                rewrite_chapter=chapter_number,
+                latest_confirmed_chapter=latest_chapter,
+                base_snapshot=base_snapshot,
+                replacement_extraction=extraction,
+                replayed_extractions=downstream,
+                staged_ledger=base_ledger,
+                findings=findings,
+                removed_delta_ids=sorted(removable_ids),
+                candidate_id=candidate_id,
+            )
+
+        staged_state = self._strip_reconciled_resource_events(
+            state,
+            rewrite_chapter=chapter_number,
+            delta_ids=removable_ids,
+        )
+        staged_project = self._strip_reconciled_resource_events(
+            project,
+            rewrite_chapter=chapter_number,
+            delta_ids=removable_ids,
+        )
+        if not isinstance(staged_state, dict) or not isinstance(staged_project, dict):
+            finding = FactResourceFinding(
+                code="FACT_RESOURCE_RECONCILIATION_UNSUPPORTED_HISTORY",
+                severity="error",
+                message="资源 authority payload 不是可重建的对象。",
+                chapter=chapter_number,
+            )
+            base_snapshot = project_fact_resource_snapshot(
+                merged,
+                as_of_chapter=chapter_number - 1,
+                generic_ledger=base_ledger,
+            )
+            return FactResourceReconciliationPlan(
+                status="UNSUPPORTED",
+                rewrite_chapter=chapter_number,
+                latest_confirmed_chapter=latest_chapter,
+                base_snapshot=base_snapshot,
+                replacement_extraction=extraction,
+                replayed_extractions=downstream,
+                staged_ledger=base_ledger,
+                findings=[finding],
+                removed_delta_ids=sorted(removable_ids),
+                candidate_id=candidate_id,
+            )
+
+        base_snapshot = project_fact_resource_snapshot(
+            self._merged_reconciliation_story(staged_state, staged_project),
+            as_of_chapter=chapter_number - 1,
+            generic_ledger=base_ledger,
+        )
+        self._reset_resource_mirrors(staged_state, staged_project, base_snapshot)
+        replay_extractions = [extraction, *downstream]
+        replacement_ids = [item.delta_id for item in extraction.deltas]
+        replayed_ids = [item.delta_id for item in downstream for item in item.deltas]
+        operations: list[dict[str, Any]] = []
+        for replay_index, replay_extraction in enumerate(replay_extractions):
+            replay_start = replay_extraction.chapter_number - 1
+            start = project_fact_resource_snapshot(
+                self._merged_reconciliation_story(staged_state, staged_project),
+                as_of_chapter=replay_start,
+                generic_ledger=base_ledger,
+            )
+            effective_extraction = (
+                replay_extraction
+                if replay_index == 0
+                else self._replay_intent_extraction(replay_extraction, start)
+            )
+            write_plan = plan_fact_resource_authority_writes(
+                staged_state,
+                staged_project,
+                effective_extraction,
+                start_snapshot=start,
+                candidate_id=(
+                    candidate_id
+                    if replay_index == 0
+                    else str(
+                        next(
+                            (
+                                item.candidate_id
+                                for item in self.candidate_store.list(project_id=project_id)
+                                if item.status == "confirmed"
+                                and item.chapter_number == effective_extraction.chapter_number
+                            ),
+                            "",
+                        )
+                    )
+                ),
+            )
+            if write_plan.blocking_findings:
+                first = write_plan.blocking_findings[0]
+                conflict = first.model_dump(mode="json")
+                conflict_delta = next(
+                    (
+                        item
+                        for item in effective_extraction.deltas
+                        if item.delta_id == first.delta_id
+                    ),
+                    None,
+                )
+                if conflict_delta is not None:
+                    conflict.setdefault("expected", deepcopy(conflict_delta.before))
+                    conflict.setdefault("attempted_change", deepcopy(conflict_delta.change))
+                    conflict.setdefault("attempted_after", deepcopy(conflict_delta.after))
+                    start_entry = start.by_fact_id.get(conflict_delta.fact_id)
+                    if start_entry is None:
+                        start_entry = start.find(
+                            conflict_delta.category,
+                            conflict_delta.resource_key,
+                            subject=conflict_delta.subject,
+                        )
+                    if start_entry is not None:
+                        observed = start_entry.value
+                        if conflict_delta.operation == "TRANSFER":
+                            observed = start_entry.owner
+                        elif conflict_delta.operation in {"EQUIP", "UNEQUIP"}:
+                            observed = start_entry.metadata.get("equipped")
+                        conflict.setdefault("observed", deepcopy(observed))
+                conflict["attempted_operation"] = next(
+                    (
+                        item.operation
+                        for item in effective_extraction.deltas
+                        if item.delta_id == first.delta_id
+                    ),
+                    "",
+                )
+                return FactResourceReconciliationPlan(
+                    status="CONFLICT",
+                    rewrite_chapter=chapter_number,
+                    latest_confirmed_chapter=latest_chapter,
+                    base_snapshot=base_snapshot,
+                    replacement_extraction=extraction,
+                    replayed_extractions=downstream,
+                    staged_ledger=base_ledger,
+                    findings=[first],
+                    first_conflict_chapter=effective_extraction.chapter_number,
+                    first_conflict=conflict,
+                    downstream_chapters=[item.chapter_number for item in downstream],
+                    replacement_delta_ids=replacement_ids,
+                    replayed_delta_ids=replayed_ids,
+                    removed_delta_ids=sorted(removable_ids),
+                    candidate_id=candidate_id,
+                )
+            try:
+                apply_fact_resource_authority_writes(
+                    staged_state,
+                    staged_project,
+                    write_plan,
+                )
+                if write_plan.generic_deltas or write_plan.generic_assertions:
+                    persist_generic_ledger = True
+                    generic_payload = effective_extraction.model_dump(mode="python")
+                    generic_payload["deltas"] = [
+                        item.model_dump(mode="python") for item in write_plan.generic_deltas
+                    ]
+                    generic_payload["assertions"] = [
+                        item.model_dump(mode="python") for item in write_plan.generic_assertions
+                    ]
+                    generic_payload["observed_assertions"] = list(generic_payload["assertions"])
+                    base_ledger.append(
+                        FactResourceExtraction.model_validate(generic_payload),
+                        candidate_id=(
+                            candidate_id
+                            if replay_index == 0
+                            else str(
+                                next(
+                                    (
+                                        item.candidate_id
+                                        for item in self.candidate_store.list(project_id=project_id)
+                                        if item.status == "confirmed"
+                                        and item.chapter_number == effective_extraction.chapter_number
+                                    ),
+                                    "",
+                                )
+                            )
+                        ),
+                    )
+                operations.extend(
+                    {
+                        "chapter": effective_extraction.chapter_number,
+                        "delta_id": item.delta.delta_id,
+                        "authority_source": item.authority_source,
+                        "storage": item.storage,
+                        "path": [str(part) for part in item.path],
+                    }
+                    for item in write_plan.authority_writes
+                )
+                operations.extend(
+                    {
+                        "chapter": effective_extraction.chapter_number,
+                        "delta_id": item.delta_id,
+                        "authority_source": "fact_resource_ledger",
+                    }
+                    for item in write_plan.generic_deltas
+                )
+            except ValueError as exc:
+                finding = FactResourceFinding(
+                    code="FACT_RESOURCE_RECONCILIATION_UNSUPPORTED_HISTORY",
+                    severity="error",
+                    message=str(exc),
+                    chapter=effective_extraction.chapter_number,
+                )
+                return FactResourceReconciliationPlan(
+                    status="UNSUPPORTED",
+                    rewrite_chapter=chapter_number,
+                    latest_confirmed_chapter=latest_chapter,
+                    base_snapshot=base_snapshot,
+                    replacement_extraction=extraction,
+                    replayed_extractions=downstream,
+                    staged_ledger=base_ledger,
+                    findings=[finding],
+                    first_conflict_chapter=effective_extraction.chapter_number,
+                    first_conflict=finding.model_dump(mode="json"),
+                    downstream_chapters=[item.chapter_number for item in downstream],
+                    replacement_delta_ids=replacement_ids,
+                    replayed_delta_ids=replayed_ids,
+                    removed_delta_ids=sorted(removable_ids),
+                    candidate_id=candidate_id,
+                )
+
+        base_ledger.latest_confirmed_chapter = max(
+            latest_chapter,
+            base_ledger.latest_confirmed_chapter,
+            *(item.chapter_number for item in replay_extractions),
+        )
+        if persist_generic_ledger:
+            already_audited = any(
+                isinstance(item, dict)
+                and item.get("type") == "historical_reconciliation"
+                and str(item.get("replacement_candidate_id") or "") == candidate_id
+                for item in base_ledger.audit
+            )
+            if not already_audited:
+                base_ledger.audit.append(
+                    {
+                        "type": "historical_reconciliation",
+                        "rewrite_chapter": chapter_number,
+                        "replacement_candidate_id": candidate_id,
+                        "affected_through_chapter": latest_chapter,
+                        "replayed_delta_ids": list(replayed_ids),
+                        "removed_delta_ids": sorted(removable_ids),
+                        "replacement_delta_ids": list(replacement_ids),
+                    }
+                )
+                base_ledger.revision += 1
+        base_ledger.entries = base_ledger.replay(
+            as_of_chapter=base_ledger.latest_confirmed_chapter
+        ).entries
+        status = "NOOP" if not removable_ids and not extraction.deltas and not extraction.assertions else "CLEAR"
+        return FactResourceReconciliationPlan(
+            status=status,
+            rewrite_chapter=chapter_number,
+            latest_confirmed_chapter=latest_chapter,
+            base_snapshot=base_snapshot,
+            replacement_extraction=extraction,
+            replayed_extractions=downstream,
+            staged_state=staged_state,
+            staged_project=staged_project,
+            staged_ledger=base_ledger,
+            findings=[],
+            downstream_chapters=[item.chapter_number for item in downstream],
+            authority_operations=operations,
+            replacement_delta_ids=replacement_ids,
+            replayed_delta_ids=replayed_ids,
+            removed_delta_ids=sorted(removable_ids),
+            candidate_id=candidate_id,
+            persist_generic_ledger=persist_generic_ledger,
+        )
+
+    @staticmethod
+    def _merge_reconciled_authority_payload(
+        target: dict[str, Any],
+        staged: dict[str, Any],
+    ) -> None:
+        """Merge fact/resource-owned fields without replacing other state."""
+
+        event_keys = {
+            "history",
+            "state_history",
+            "state_changes",
+            "progression_history",
+            "level_history",
+            "changes",
+            "snapshots",
+            "events",
+        }
+        scalar_keys = {
+            "level",
+            "character_level",
+            "experience",
+            "exp",
+            "character_exp",
+            "currency",
+            "game_currency",
+            "money",
+            "current_owner",
+            "owner",
+            "equipped",
+            "status",
+            "last_update_chapter",
+            "last_changed_chapter",
+        }
+        mapping_keys = {"inventory", "items", "backpack", "quest", "quests", "tasks"}
+
+        def merge_progression(target_value: Any, staged_value: Any) -> Any:
+            if not isinstance(staged_value, dict):
+                return deepcopy(staged_value)
+            if not isinstance(target_value, dict):
+                target_value = {}
+            for key, staged_item in staged_value.items():
+                key_text = str(key).casefold()
+                if key_text in event_keys:
+                    if isinstance(staged_item, list):
+                        target_value[key] = deepcopy(staged_item)
+                    continue
+                if key_text in scalar_keys:
+                    target_value[key] = deepcopy(staged_item)
+                    continue
+                if key_text in mapping_keys and isinstance(staged_item, dict):
+                    current_mapping = target_value.get(key)
+                    if not isinstance(current_mapping, dict):
+                        current_mapping = {}
+                        target_value[key] = current_mapping
+                    for item_key, item_value in staged_item.items():
+                        current_mapping[item_key] = deepcopy(item_value)
+                    continue
+                if isinstance(staged_item, dict):
+                    target_value[key] = merge_progression(target_value.get(key), staged_item)
+            return target_value
+
+        def merge_named_list(
+            target_items: Any,
+            staged_items: Any,
+            *,
+            kind: str,
+        ) -> Any:
+            if not isinstance(staged_items, list):
+                return target_items
+            if not isinstance(target_items, list):
+                return deepcopy(staged_items)
+            by_id: dict[str, dict[str, Any]] = {}
+            by_name: dict[str, dict[str, Any]] = {}
+            for item in target_items:
+                if not isinstance(item, dict):
+                    continue
+                item_id = str(item.get("id") or "").casefold()
+                item_name = str(item.get("name") or "").casefold()
+                if item_id:
+                    by_id[item_id] = item
+                if item_name:
+                    by_name[item_name] = item
+            for staged_item in staged_items:
+                if not isinstance(staged_item, dict):
+                    continue
+                staged_id = str(staged_item.get("id") or "").casefold()
+                staged_name = str(staged_item.get("name") or "").casefold()
+                target_item = by_id.get(staged_id) if staged_id else None
+                if target_item is None and staged_name:
+                    target_item = by_name.get(staged_name)
+                if target_item is None:
+                    continue
+                if kind == "equipment":
+                    for key in (
+                        "current_owner",
+                        "owner",
+                        "equipped",
+                        "status",
+                        "last_update_chapter",
+                    ):
+                        if key in staged_item:
+                            target_item[key] = deepcopy(staged_item[key])
+                    for key in event_keys:
+                        if isinstance(staged_item.get(key), list):
+                            target_item[key] = deepcopy(staged_item[key])
+                else:
+                    for key in ("trust", "tension", "last_changed_chapter"):
+                        if key in staged_item:
+                            target_item[key] = deepcopy(staged_item[key])
+                    if isinstance(staged_item.get("changes"), list):
+                        target_item["changes"] = deepcopy(staged_item["changes"])
+            return target_items
+
+        def merge_resource_slices(target_payload: dict[str, Any], staged_payload: dict[str, Any]) -> None:
+            if "progression_ledger" in staged_payload:
+                target_payload["progression_ledger"] = merge_progression(
+                    target_payload.get("progression_ledger"),
+                    staged_payload["progression_ledger"],
+                )
+            if "equipment_cards" in staged_payload:
+                target_payload["equipment_cards"] = merge_named_list(
+                    target_payload.get("equipment_cards"),
+                    staged_payload["equipment_cards"],
+                    kind="equipment",
+                )
+            if "relationship_graph" in staged_payload:
+                target_payload["relationship_graph"] = merge_named_list(
+                    target_payload.get("relationship_graph"),
+                    staged_payload["relationship_graph"],
+                    kind="relationship",
+                )
+
+            staged_blueprint = staged_payload.get("world_blueprint")
+            if isinstance(staged_blueprint, dict):
+                target_blueprint = target_payload.get("world_blueprint")
+                if not isinstance(target_blueprint, dict):
+                    target_blueprint = {}
+                    target_payload["world_blueprint"] = target_blueprint
+                merge_resource_slices(target_blueprint, staged_blueprint)
+
+            for collection_key in ("characters", "character_profiles"):
+                staged_characters = staged_payload.get(collection_key)
+                target_characters = target_payload.get(collection_key)
+                if not isinstance(staged_characters, list) or not isinstance(target_characters, list):
+                    continue
+                staged_by_name = {
+                    str(item.get("name") or ""): item
+                    for item in staged_characters
+                    if isinstance(item, dict) and str(item.get("name") or "")
+                }
+                for target_character in target_characters:
+                    if not isinstance(target_character, dict):
+                        continue
+                    source = staged_by_name.get(str(target_character.get("name") or ""))
+                    if not isinstance(source, dict):
+                        continue
+                    for namespace in ("game_state", "progression"):
+                        if isinstance(source.get(namespace), dict):
+                            target_character[namespace] = merge_progression(
+                                target_character.get(namespace), source[namespace]
+                            )
+
+        merge_resource_slices(target, staged)
+
     def _apply_candidate_fact_resource_writes(
         self,
-        plan: FactResourceAuthorityWritePlan | None,
+        plan: FactResourceAuthorityWritePlan | FactResourceReconciliationPlan | None,
     ) -> dict[str, Any]:
         """Apply one planned write after bundle persistence.
 
@@ -1716,6 +2793,45 @@ class FileProjectStore(
 
         if plan is None:
             return {"committed": False, "reason": "no_fact_resource_extraction"}
+
+        if isinstance(plan, FactResourceReconciliationPlan):
+            if plan.status == "NOOP":
+                return {
+                    "committed": False,
+                    "reason": "fact_resource_reconciliation_noop",
+                    "reconciliation": plan.to_result_dict(),
+                }
+            if plan.status != "CLEAR":
+                raise ValueError(
+                    "fact_resource_reconciliation_not_clear:" + plan.status
+                )
+            state_path = self.webnovel_dir / "state.json"
+            project_path = self.webnovel_dir / "project.json"
+            state = self.persisted_state()
+            project = self._read_json(project_path, {}) or {}
+            if not isinstance(project, dict):
+                project = {}
+            self._merge_reconciled_authority_payload(state, plan.staged_state)
+            self._merge_reconciled_authority_payload(project, plan.staged_project)
+            self._write_json_atomic(state_path, state)
+            self._write_json_atomic(project_path, project)
+            if plan.persist_generic_ledger and plan.staged_ledger is not None:
+                self._write_json_atomic(
+                    self.fact_resource_ledger_path,
+                    plan.staged_ledger.to_dict(),
+                )
+            return {
+                "committed": True,
+                "chapter_number": plan.rewrite_chapter,
+                "delta_ids": [
+                    *plan.replacement_delta_ids,
+                    *plan.replayed_delta_ids,
+                ],
+                "authority_write_count": len(plan.authority_operations),
+                "entry_count": len(plan.staged_ledger.entries) if plan.staged_ledger else 0,
+                "reconciliation": plan.to_result_dict(),
+                "reason": None,
+            }
 
         state_path = self.webnovel_dir / "state.json"
         project_path = self.webnovel_dir / "project.json"
@@ -7724,6 +8840,15 @@ class FileProjectStore(
         payload["body"] = candidate.body
         payload["chapter_title"] = candidate.chapter_title or payload.get("chapter_title")
         fact_resource_plan = self._plan_candidate_fact_resource_writes(candidate)
+        if (
+            isinstance(fact_resource_plan, FactResourceReconciliationPlan)
+            and fact_resource_plan.status not in {"CLEAR", "NOOP"}
+        ):
+            return {
+                "schema_version": "file-project-candidate-confirm/v1",
+                "candidate": candidate.to_dict(),
+                "fact_resource_reconciliation": fact_resource_plan.to_result_dict(),
+            }
 
         # The confirmation is the single atomic boundary the user
         # can trust. The body runs the legacy ``persist_bundle``
@@ -7764,9 +8889,14 @@ class FileProjectStore(
             # alongside the chapter / state / project writes.
             self._apply_candidate_canon_delta(candidate)
             self._wrap_confirmation_in_transaction(candidate)
-        if fact_resource_commit.get("committed"):
+        if fact_resource_commit.get("committed") or isinstance(
+            fact_resource_plan, FactResourceReconciliationPlan
+        ):
             review = dict(candidate.fact_resource_review or {})
-            review["commit"] = fact_resource_commit
+            if fact_resource_commit.get("committed"):
+                review["commit"] = fact_resource_commit
+            if isinstance(fact_resource_plan, FactResourceReconciliationPlan):
+                review["reconciliation"] = fact_resource_plan.to_result_dict()
             candidate.fact_resource_review = review
         candidate.confirm()
         self.candidate_store.save(candidate)
@@ -7787,6 +8917,7 @@ class FileProjectStore(
             self.webnovel_dir / "state.json",
             self.webnovel_dir / "project.json",
             self.story_system_dir / "MASTER_SETTING.json",
+            self.story_system_dir / "chapter-index.json",
             self.fact_resource_ledger_path,
         ]
 
