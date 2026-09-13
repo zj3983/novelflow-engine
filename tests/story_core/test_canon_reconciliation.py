@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from packages.story_core.candidate_draft import CandidateDraft
+from packages.story_core.canon.history import CanonHistory, CanonHistoryEvent
 from packages.story_core.continuity.delta import (
     ContinuityDelta,
     EntityAddition,
@@ -84,6 +85,85 @@ def test_normal_confirmation_bootstraps_and_appends_canon_journal_atomically(tmp
     assert _read_json(registry_path)["by_id"]["char-zhao"]["display_name"] == "赵六"
     assert _read_json(store.webnovel_dir / "state.json")["characters"][0]["canon_entity_id"] == "char-zhao"
     assert result["candidate"]["status"] == "confirmed"
+
+
+def test_direct_generated_canon_event_can_be_replaced_without_candidate_draft(tmp_path) -> None:
+    store = FileProjectStore(tmp_path)
+    direct_delta = ContinuityDelta(
+        chapter_number=1,
+        entity_additions=[_addition(1, "char-zhao", "赵六")],
+    )
+    store._commit_generated_bundle_canon(
+        SimpleNamespace(chapter_number=1, continuity_delta=direct_delta)
+    )
+
+    history_path = store.story_system_dir / "canon" / "history.json"
+    assert _read_json(history_path)["events"][0]["candidate_id"] == "generated:1"
+    assert not store.candidate_store.list(project_id=store.root.name, chapter_number=1)
+
+    replacement = _seed_candidate(
+        store,
+        chapter_number=1,
+        tag="直接生成重写",
+        operation="regenerate",
+        delta=ContinuityDelta(
+            chapter_number=1,
+            entity_additions=[_addition(1, "char-qian", "钱七")],
+        ),
+    )
+
+    result = store.confirm_candidate(replacement.candidate_id)
+
+    assert result["candidate"]["status"] == "confirmed"
+    history = _read_json(history_path)
+    assert [event["candidate_id"] for event in history["events"]] == [replacement.candidate_id]
+    registry = _read_json(store.story_system_dir / "canon" / "registry.json")
+    assert "char-zhao" not in registry["by_id"]
+    assert registry["by_id"]["char-qian"]["display_name"] == "钱七"
+
+
+def test_direct_generated_same_chapter_ambiguity_is_unsupported_without_mutation(tmp_path) -> None:
+    store = FileProjectStore(tmp_path)
+    direct_delta = ContinuityDelta(
+        chapter_number=1,
+        entity_additions=[_addition(1, "char-zhao", "赵六")],
+    )
+    store._commit_generated_bundle_canon(
+        SimpleNamespace(chapter_number=1, continuity_delta=direct_delta)
+    )
+    history_path = store.story_system_dir / "canon" / "history.json"
+    history = CanonHistory.from_dict(_read_json(history_path))
+    history.events.append(
+        CanonHistoryEvent.from_delta(
+            ContinuityDelta(chapter_number=1),
+            candidate_id="generated:other-1",
+            sequence=2,
+        )
+    )
+    store._write_json(history_path, history.to_dict())
+    replacement = _seed_candidate(
+        store,
+        chapter_number=1,
+        tag="歧义重写",
+        operation="regenerate",
+        delta=ContinuityDelta(
+            chapter_number=1,
+            entity_additions=[_addition(1, "char-qian", "钱七")],
+        ),
+    )
+    before = {
+        path: path.read_bytes()
+        for path in (
+            history_path,
+            store.story_system_dir / "canon" / "registry.json",
+        )
+    }
+
+    result = store.confirm_candidate(replacement.candidate_id)
+
+    assert result["canon_reconciliation"]["status"] == "UNSUPPORTED"
+    assert result["candidate"]["status"] == "pending"
+    assert all(path.read_bytes() == payload for path, payload in before.items())
 
 
 def test_duplicate_confirmation_does_not_append_history_or_projection_again(tmp_path) -> None:

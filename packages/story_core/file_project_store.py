@@ -9406,7 +9406,10 @@ class FileProjectStore(
                 if event.candidate_id == snapshot_candidate_id
                 and event.chapter_number == chapter_number
             ]
-            return matches[0] if len(matches) == 1 else None
+            if len(matches) == 1:
+                return matches[0]
+            if len(matches) > 1:
+                return None
         confirmed = [
             item
             for item in self.candidate_store.list(
@@ -9422,7 +9425,19 @@ class FileProjectStore(
             if event.candidate_id == item.candidate_id
             and event.chapter_number == chapter_number
         ]
-        return matches[0] if len(matches) == 1 else None
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            return None
+
+        # Direct-persisted chapters intentionally have a generated:<chapter>
+        # event but no CandidateDraft or continuity snapshot.  Once the
+        # journal is authoritative, a unique event for this chapter is the
+        # only safe identity fallback.  Never choose among multiple events.
+        chapter_events = [
+            event for event in history.events if event.chapter_number == chapter_number
+        ]
+        return chapter_events[0] if len(chapter_events) == 1 else None
 
     def _plan_candidate_canon_writes(self, candidate: Any) -> CanonHistoryPlan:
         """Stage a normal append or historical Canon replay without writes."""

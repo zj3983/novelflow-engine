@@ -409,10 +409,28 @@ def strict_validate_delta(registry: CanonRegistry, event: CanonHistoryEvent) -> 
             return _finding(event, code, f"{label} {entity_id} is not present at replay boundary")
         return None
 
+    # CanonService applies entity additions, then entity updates, and only
+    # then location movements.  Keep a local projection of the location
+    # field so an event containing A -> B followed by B -> C is validated in
+    # the same order without mutating the replay registry during preflight.
+    staged_locations: dict[str, str] = {}
+    for entity in registry.list_all():
+        if isinstance(entity.extensions, dict) and entity.extensions.get("location") is not None:
+            staged_locations[entity.entity_id] = str(entity.extensions["location"])
+    for addition in delta.entity_additions:
+        if isinstance(addition.attributes, dict) and addition.attributes.get("location") is not None:
+            staged_locations[addition.entity_id] = str(addition.attributes["location"])
+
     for update in delta.entity_updates:
         result = require(update.entity_id, "CANON_RECONCILIATION_ENTITY_MISSING", "entity")
         if result:
             return result
+        if isinstance(update.changes, dict) and "location" in update.changes:
+            location = update.changes.get("location")
+            if location is None:
+                staged_locations.pop(update.entity_id, None)
+            else:
+                staged_locations[update.entity_id] = str(location)
     for change in delta.relationship_changes:
         if not str(change.predicate).strip():
             return _finding(event, "CANON_RECONCILIATION_RELATIONSHIP_ENDPOINT_MISSING", "relationship predicate is empty")
@@ -435,18 +453,14 @@ def strict_validate_delta(registry: CanonRegistry, event: CanonHistoryEvent) -> 
         if result:
             return result
         if movement.from_location is not None:
-            entity = registry.get(movement.entity_id)
-            current_location = (
-                entity.extensions.get("location")
-                if entity is not None and isinstance(entity.extensions, dict)
-                else None
-            )
+            current_location = staged_locations.get(movement.entity_id)
             if current_location is not None and str(current_location) != str(movement.from_location):
                 return _finding(
                     event,
                     "CANON_RECONCILIATION_LOCATION_STATE_MISMATCH",
                     f"location movement expects {movement.from_location}, current state is {current_location}",
                 )
+        staged_locations[movement.entity_id] = str(movement.to_location)
 
     foreshadowing_ids = {str(item.get("foreshadowing_id")) for item in registry.foreshadowing()}
     for change in delta.foreshadowing_changes:

@@ -289,3 +289,98 @@ def test_location_replay_detects_from_location_mismatch() -> None:
     result = replay_canon_history(baseline, [_event(movement, "candidate-2", 1)])
     assert result.status == "CONFLICT"
     assert result.first_finding.code == "CANON_RECONCILIATION_LOCATION_STATE_MISMATCH"
+
+
+def test_location_replay_validates_multiple_movements_in_delta_order() -> None:
+    registry = _baseline()
+    registry.update_attributes("char-main", changes={"location": "山脚"})
+    baseline = registry_to_payload(registry)
+    movement = ContinuityDelta(
+        chapter_number=2,
+        location_movements=[
+            LocationMovement(
+                chapter_number=2,
+                source_sentence="林昭从山脚走到山腰",
+                entity_id="char-main",
+                from_location="山脚",
+                to_location="山腰",
+            ),
+            LocationMovement(
+                chapter_number=2,
+                source_sentence="林昭从山腰走到山顶",
+                entity_id="char-main",
+                from_location="山腰",
+                to_location="山顶",
+            ),
+        ],
+    )
+
+    result = replay_canon_history(baseline, [_event(movement, "candidate-2", 1)])
+
+    assert result.status == "CLEAR"
+    assert result.registry is not None
+    assert result.registry.get("char-main").extensions["location"] == "山顶"
+
+
+def test_location_replay_reports_second_ordered_movement_mismatch() -> None:
+    registry = _baseline()
+    registry.update_attributes("char-main", changes={"location": "山脚"})
+    baseline = registry_to_payload(registry)
+    movement = ContinuityDelta(
+        chapter_number=2,
+        location_movements=[
+            LocationMovement(
+                chapter_number=2,
+                source_sentence="林昭从山脚走到山腰",
+                entity_id="char-main",
+                from_location="山脚",
+                to_location="山腰",
+            ),
+            LocationMovement(
+                chapter_number=2,
+                source_sentence="林昭从别处走到山顶",
+                entity_id="char-main",
+                from_location="别处",
+                to_location="山顶",
+            ),
+        ],
+    )
+
+    result = replay_canon_history(baseline, [_event(movement, "candidate-2", 1)])
+
+    assert result.status == "CONFLICT"
+    assert result.first_finding is not None
+    assert result.first_finding.code == "CANON_RECONCILIATION_LOCATION_STATE_MISMATCH"
+    assert "山腰" in result.first_finding.message
+
+
+def test_location_entity_update_precedes_ordered_movement_validation() -> None:
+    registry = _baseline()
+    registry.update_attributes("char-main", changes={"location": "山脚"})
+    baseline = registry_to_payload(registry)
+    delta = ContinuityDelta(
+        chapter_number=2,
+        entity_updates=[
+            EntityUpdate(
+                chapter_number=2,
+                source_sentence="林昭转移到山腰",
+                entity_id="char-main",
+                changes={"location": "山腰"},
+            )
+        ],
+        location_movements=[
+            LocationMovement(
+                chapter_number=2,
+                source_sentence="林昭从山腰走到山顶",
+                entity_id="char-main",
+                from_location="山腰",
+                to_location="山顶",
+            )
+        ],
+    )
+
+    result = replay_canon_history(baseline, [_event(delta, "candidate-2", 1)])
+
+    assert result.status == "CLEAR"
+    assert result.registry is not None
+    assert result.registry.get("char-main").extensions["location"] == "山顶"
