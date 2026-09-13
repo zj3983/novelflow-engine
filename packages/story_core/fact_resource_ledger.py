@@ -1075,6 +1075,10 @@ def _chinese_number(raw: str) -> int | None:
 _AMOUNT = r"(?P<amount>\d+(?:\.\d+)?|[零一二两三四五六七八九十百千万]+)"
 _RESOURCE = r"(?P<resource>[\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9]{0,15})"
 _UNIT = r"(?P<unit>枚|颗|块|件|瓶|张|份|个|点|级|层|金币|灵石|元|铜钱|银两)?"
+_RELATIONSHIP_SUBJECT = (
+    r"(?:(?P<subject>[\u4e00-\u9fffA-Za-z]{2,12}?)"
+    r"(?:对(?:他|她|其|我|你)?的?|的)?\s*)?"
+)
 
 
 def _resource_category(resource: str, *, default: str = "resource") -> str:
@@ -1316,8 +1320,7 @@ def _relationship_entry_for_delta(
         for entry in snapshot.entries
         if _grounding_family(entry.category) == "relationship"
         and wanted_metric in _entry_lookup_keys(entry)
-        and (not wanted_subject or wanted_subject == _canonical_text(entry.subject)
-             or _canonical_text(entry.subject) in wanted_subject)
+        and (not wanted_subject or wanted_subject == _canonical_text(entry.subject))
         and _canonical_text(entry.subject) in _canonical_text(evidence)
     ]
     return candidates[0] if len(candidates) == 1 else None
@@ -2005,7 +2008,7 @@ def extract_fact_resource_changes(
     # relationship inference.  A missing starting value remains unknown and
     # is surfaced as a warning by deterministic validation.
     for match in re.finditer(
-        r"(?P<subject>[\u4e00-\u9fffA-Za-z]{2,12})?\s*"
+        _RELATIONSHIP_SUBJECT +
         r"(?P<metric>好感度|信任值|favorability|trust|tension)\s*"
         r"(?:(?P<verb>增加|上升|提升|下降|降低|减少)\s*)?"
         r"(?P<sign>[+-])?\s*"
@@ -2052,7 +2055,8 @@ def extract_fact_resource_changes(
         )
         sequence += 1
     for match in re.finditer(
-        r"(?P<subject>[\u4e00-\u9fffA-Za-z]{2,12})?\s*(?P<metric>好感度|信任值|favorability|trust|tension)"
+        _RELATIONSHIP_SUBJECT +
+        r"(?P<metric>好感度|信任值|favorability|trust|tension)"
         r"\s*(?:达到|为|是|变为)?\s*" + _AMOUNT,
         text,
     ):

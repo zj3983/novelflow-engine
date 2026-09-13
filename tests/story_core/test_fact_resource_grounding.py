@@ -290,6 +290,68 @@ def test_relationship_numeric_requires_a_grounded_existing_metric() -> None:
     assert extraction.deltas[0].subject == "林远"
 
 
+def test_relationship_subject_binds_exact_longer_authority_name() -> None:
+    start = _snapshot(
+        FactResourceEntry(
+            category="relationship_numeric",
+            subject="林远",
+            resource_key="好感度",
+            value=10,
+        ),
+        FactResourceEntry(
+            category="relationship_numeric",
+            subject="林远山",
+            resource_key="好感度",
+            value=20,
+        ),
+    )
+
+    extraction = extract_fact_resource_changes("林远山对他的好感度增加5点。", 1, start)
+
+    assert _delta_pairs(extraction) == [
+        ("relationship_numeric", "好感度", "ADD", 5)
+    ]
+    assert extraction.deltas[0].subject == "林远山"
+
+
+def test_relationship_subject_does_not_accept_a_prefix_authority_name() -> None:
+    start = _snapshot(
+        FactResourceEntry(
+            category="relationship_numeric",
+            subject="林远",
+            resource_key="好感度",
+            value=10,
+        )
+    )
+
+    extraction = extract_fact_resource_changes("林远山对他的好感度增加5点。", 1, start)
+
+    assert extraction.deltas == []
+    assert any(
+        item.code == "FACT_RESOURCE_ENTITY_UNRESOLVED"
+        for item in extraction.findings
+    )
+
+
+def test_relationship_unknown_subject_does_not_mutate_an_existing_edge() -> None:
+    start = _snapshot(
+        FactResourceEntry(
+            category="relationship_numeric",
+            subject="林远",
+            resource_key="好感度",
+            value=10,
+        )
+    )
+
+    extraction = extract_fact_resource_changes("顾闻舟对他的好感度增加5点。", 1, start)
+
+    assert extraction.deltas == []
+    assert any(
+        item.code == "FACT_RESOURCE_ENTITY_UNRESOLVED"
+        for item in extraction.findings
+    )
+
+
 def test_quest_target_is_not_current_progress() -> None:
     extraction = extract_fact_resource_changes("任务要求卖出10件。", 1)
 
