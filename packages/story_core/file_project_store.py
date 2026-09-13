@@ -2204,6 +2204,233 @@ class FileProjectStore(
 
         return extractions, findings, removable_ids
 
+    @staticmethod
+    def _canon_delta_semantic_key(delta: Any) -> str | None:
+        """Serialize only the canonical effects of one continuity delta.
+
+        Provenance (source sentence, confidence, and reference-validation
+        diagnostics) is deliberately excluded.  Those fields explain a
+        proposal but are not the effect that ``CanonService`` applies.  The
+        remaining fields are normalized with stable key ordering while
+        preserving the effect order consumed by ``CanonService``.
+        """
+
+        if delta is None:
+            return json.dumps(
+                {
+                    section: []
+                    for section in (
+                        "entity_additions",
+                        "entity_updates",
+                        "relationship_changes",
+                        "inventory_changes",
+                        "task_progressions",
+                        "location_movements",
+                        "timeline_advances",
+                        "foreshadowing_changes",
+                    )
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        if not callable(getattr(delta, "model_dump", None)):
+            return None
+        try:
+            raw = delta.model_dump(mode="json")
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(raw, dict):
+            return None
+
+        def normalize(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {
+                    str(key): normalize(item)
+                    for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+                }
+            if isinstance(value, list):
+                # CanonService applies each section in list order.  Keep
+                # that order because timeline, repeated updates, and
+                # same-key effects can be order-sensitive.
+                return [normalize(item) for item in value]
+            return value
+
+        fields = {
+            "entity_additions": (
+                "entity_id",
+                "kind",
+                "canonical_name",
+                "aliases",
+                "attributes",
+            ),
+            "entity_updates": ("entity_id", "changes"),
+            "relationship_changes": (
+                "subject_id",
+                "predicate",
+                "object_id",
+                "polarity",
+            ),
+            "inventory_changes": (
+                "entity_id",
+                "item",
+                "delta",
+                "resulting_quantity",
+            ),
+            "task_progressions": ("task_id", "status", "notes"),
+            "location_movements": (
+                "entity_id",
+                "from_location",
+                "to_location",
+            ),
+            "timeline_advances": ("marker",),
+            "foreshadowing_changes": (
+                "foreshadowing_id",
+                "action",
+                "detail",
+            ),
+        }
+        effects: dict[str, Any] = {}
+        for section, names in fields.items():
+            items = raw.get(section) or []
+            if not isinstance(items, list):
+                return None
+            effects[section] = [
+                normalize({name: item.get(name) for name in names})
+                for item in items
+                if isinstance(item, dict)
+            ]
+        return json.dumps(
+            effects,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    @staticmethod
+    def _canon_delta_is_empty(delta: Any) -> bool:
+        if delta is None:
+            return True
+        return not any(
+            bool(getattr(delta, section, None))
+            for section in (
+                "entity_additions",
+                "entity_updates",
+                "relationship_changes",
+                "inventory_changes",
+                "task_progressions",
+                "location_movements",
+                "timeline_advances",
+                "foreshadowing_changes",
+            )
+        )
+
+    def _historical_candidate_canon_compatibility(
+        self,
+        candidate: Any,
+    ) -> tuple[str, FactResourceFinding | None]:
+        """Allow only empty/equivalent historical canon deltas.
+
+        Canon has no Phase 3C replay path.  A historical replacement may
+        therefore proceed only when the old confirmed chapter effect is
+        provably empty or semantically identical to the replacement.  The
+        snapshot candidate id is preferred because repeated rewrites leave
+        more than one confirmed candidate for the same chapter.
+        """
+
+        chapter_number = int(getattr(candidate, "chapter_number", 0) or 0)
+        candidates = [
+            item
+            for item in self.candidate_store.list(
+                project_id=getattr(candidate, "project_id", None),
+                chapter_number=chapter_number,
+            )
+            if item.status == "confirmed"
+            and item.candidate_id != getattr(candidate, "candidate_id", "")
+        ]
+        snapshot_payload = self._read_json(
+            self.continuity_store.snapshot_path(chapter_number), {}
+        ) or {}
+        snapshot_candidate_id = (
+            str(snapshot_payload.get("candidate_id") or "")
+            if isinstance(snapshot_payload, dict)
+            else ""
+        )
+        if snapshot_candidate_id:
+            matches = [item for item in candidates if item.candidate_id == snapshot_candidate_id]
+            if len(matches) != 1:
+                message = (
+                    f"第 {chapter_number} 章的 continuity snapshot 指向的 confirmed candidate 不可唯一读取。"
+                )
+                return "UNSUPPORTED", FactResourceFinding(
+                    code="FACT_RESOURCE_RECONCILIATION_CANON_UNSUPPORTED",
+                    severity="error",
+                    message=message,
+                    chapter=chapter_number,
+                )
+            original = matches[0]
+        elif len(candidates) == 1:
+            original = candidates[0]
+        elif not candidates:
+            # A legacy chapter can be migrated in a brand-new project
+            # when there is provably no Canon material to reconcile and
+            # the replacement proposes no Canon effect.  This does not
+            # permit a non-empty replacement or an existing registry to
+            # bypass the old-candidate safety check.
+            new_delta = getattr(candidate, "continuity_delta", None)
+            registry = self._load_canon_registry()
+            has_canon_material = bool(
+                registry.list_all()
+                or registry.timeline()
+                or registry.foreshadowing()
+            )
+            if self._canon_delta_is_empty(new_delta) and not has_canon_material:
+                return "SAFE_EMPTY", None
+            message = (
+                f"第 {chapter_number} 章缺少唯一的旧 confirmed candidate，无法安全比较 Canon delta。"
+            )
+            return "UNSUPPORTED", FactResourceFinding(
+                code="FACT_RESOURCE_RECONCILIATION_CANON_UNSUPPORTED",
+                severity="error",
+                message=message,
+                chapter=chapter_number,
+            )
+        else:
+            message = (
+                f"第 {chapter_number} 章缺少唯一的旧 confirmed candidate，无法安全比较 Canon delta。"
+            )
+            return "UNSUPPORTED", FactResourceFinding(
+                code="FACT_RESOURCE_RECONCILIATION_CANON_UNSUPPORTED",
+                severity="error",
+                message=message,
+                chapter=chapter_number,
+            )
+
+        old_delta = getattr(original, "continuity_delta", None)
+        new_delta = getattr(candidate, "continuity_delta", None)
+        old_key = self._canon_delta_semantic_key(old_delta)
+        new_key = self._canon_delta_semantic_key(new_delta)
+        if old_key is None or new_key is None:
+            return "UNSUPPORTED", FactResourceFinding(
+                code="FACT_RESOURCE_RECONCILIATION_CANON_UNSUPPORTED",
+                severity="error",
+                message="旧版或替换 candidate 缺少可验证的结构化 continuity_delta。",
+                chapter=chapter_number,
+            )
+        if self._canon_delta_is_empty(old_delta) and self._canon_delta_is_empty(new_delta):
+            return "SAFE_EMPTY", None
+        if old_key == new_key:
+            return "SAFE_IDENTICAL", None
+        return "UNSUPPORTED", FactResourceFinding(
+            code="FACT_RESOURCE_RECONCILIATION_CANON_UNSUPPORTED",
+            severity="error",
+            message=(
+                f"第 {chapter_number} 章旧/new continuity_delta 不一致；"
+                "当前 Phase 3C 没有 Canon historical replay，拒绝继续确认。"
+            ),
+            chapter=chapter_number,
+        )
+
     def _plan_candidate_fact_resource_writes(
         self,
         candidate: Any,
@@ -8840,6 +9067,7 @@ class FileProjectStore(
         payload["body"] = candidate.body
         payload["chapter_title"] = candidate.chapter_title or payload.get("chapter_title")
         fact_resource_plan = self._plan_candidate_fact_resource_writes(candidate)
+        skip_historical_canon_apply = False
         if (
             isinstance(fact_resource_plan, FactResourceReconciliationPlan)
             and fact_resource_plan.status not in {"CLEAR", "NOOP"}
@@ -8849,6 +9077,17 @@ class FileProjectStore(
                 "candidate": candidate.to_dict(),
                 "fact_resource_reconciliation": fact_resource_plan.to_result_dict(),
             }
+        if isinstance(fact_resource_plan, FactResourceReconciliationPlan):
+            canon_status, canon_finding = self._historical_candidate_canon_compatibility(candidate)
+            if canon_finding is not None:
+                fact_resource_plan.status = "UNSUPPORTED"
+                fact_resource_plan.findings.append(canon_finding)
+                return {
+                    "schema_version": "file-project-candidate-confirm/v1",
+                    "candidate": candidate.to_dict(),
+                    "fact_resource_reconciliation": fact_resource_plan.to_result_dict(),
+                }
+            skip_historical_canon_apply = canon_status in {"SAFE_EMPTY", "SAFE_IDENTICAL"}
 
         # The confirmation is the single atomic boundary the user
         # can trust. The body runs the legacy ``persist_bundle``
@@ -8887,7 +9126,8 @@ class FileProjectStore(
             # apply happens *inside* the transaction so a
             # mid-flight failure rolls the canon write back
             # alongside the chapter / state / project writes.
-            self._apply_candidate_canon_delta(candidate)
+            if not skip_historical_canon_apply:
+                self._apply_candidate_canon_delta(candidate)
             self._wrap_confirmation_in_transaction(candidate)
         if fact_resource_commit.get("committed") or isinstance(
             fact_resource_plan, FactResourceReconciliationPlan

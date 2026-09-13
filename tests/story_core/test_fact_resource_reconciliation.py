@@ -10,6 +10,7 @@ from packages.story_core.fact_resource_ledger import (
     FactResourceLedger,
     get_fact_resource_snapshot,
 )
+from packages.story_core.continuity.delta import ContinuityDelta, EntityAddition
 from packages.story_core.file_project_store import FileProjectStore
 
 
@@ -185,19 +186,54 @@ def _candidate(
     sentence: str,
     claims: list[dict[str, object]],
     operation: str = "generate",
+    continuity_delta: ContinuityDelta | None = None,
 ):
     body = _body(sentence)
-    return store._save_candidate_from_bundle(
+    bundle_delta = (
+        continuity_delta.model_dump(mode="json")
+        if continuity_delta is not None
+        else None
+    )
+    candidate = store._save_candidate_from_bundle(
         SimpleNamespace(
             chapter_number=chapter,
             chapter_title=f"第{chapter}章",
             body=body,
             quality_report={"ok": True},
             fact_resource_claims=claims,
+            continuity_delta=bundle_delta,
         ),
         project_id=store.root.name,
         operation=operation,
     )
+    if continuity_delta is not None:
+        candidate.continuity_delta = continuity_delta
+        store.candidate_store.save(candidate)
+    return candidate
+
+
+def _canon_entity_delta(chapter: int, entity_id: str, name: str, *, source: str | None = None) -> ContinuityDelta:
+    return ContinuityDelta(
+        chapter_number=chapter,
+        entity_additions=[
+            EntityAddition(
+                chapter_number=chapter,
+                source_sentence=source or f"{name}出场",
+                confidence=0.91,
+                entity_id=entity_id,
+                kind="character",
+                canonical_name=name,
+            )
+        ],
+    )
+
+
+def _project_bytes(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file() and ".pytest_cache" not in path.parts
+    }
 
 
 def test_rewrite_rebuilds_generic_history_from_n_minus_one(tmp_path: Path) -> None:
@@ -355,6 +391,7 @@ def test_reconciliation_never_reextracts_confirmed_downstream_body(
 
 def test_downstream_conflict_is_first_and_leaves_candidate_pending(tmp_path: Path) -> None:
     store = _store(tmp_path)
+    canon_delta = _canon_entity_delta(10, "char-conflict", "冲突角色")
     first = _candidate(
         store,
         chapter=10,
@@ -366,6 +403,7 @@ def test_downstream_conflict_is_first_and_leaves_candidate_pending(tmp_path: Pat
             after=20,
             operation="ADD",
         ),
+        continuity_delta=canon_delta,
     )
     store.confirm_candidate(first.candidate_id)
     downstream = _candidate(
@@ -393,6 +431,9 @@ def test_downstream_conflict_is_first_and_leaves_candidate_pending(tmp_path: Pat
             operation="ADD",
         ),
         operation="regenerate",
+        continuity_delta=_canon_entity_delta(
+            10, "char-conflict", "冲突角色", source="同语义替换"
+        ),
     )
 
     before = {
@@ -413,6 +454,8 @@ def test_downstream_conflict_is_first_and_leaves_candidate_pending(tmp_path: Pat
     assert reconciliation["first_conflict_chapter"] == 11
     assert reconciliation["first_conflict"]["code"] == "NEGATIVE_RESOURCE_BALANCE"
     assert before == after
+    registry = store._read_json(store.story_system_dir / "canon" / "registry.json", {})
+    assert set((registry.get("by_id") or {})) == {"char-conflict"}
 
 
 def test_reconciliation_transaction_rolls_back_generic_after_authority_writes(
@@ -840,3 +883,134 @@ def test_relationship_numeric_reconciliation_replays_from_end_n_minus_one(tmp_pa
     assert get_fact_resource_snapshot(tmp_path, as_of_chapter=11).value_for(
         "relationship_numeric", "trust", subject="王铁匠"
     ) == 41
+
+
+def test_historical_rewrite_with_empty_canon_deltas_is_allowed_without_reapply(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    empty = ContinuityDelta(chapter_number=10)
+    original = _candidate(
+        store,
+        chapter=10,
+        sentence="本章没有资源变化。",
+        claims=[],
+        continuity_delta=empty,
+    )
+    store.confirm_candidate(original.candidate_id)
+    canon_path = store.story_system_dir / "canon" / "registry.json"
+    canon_before = canon_path.read_bytes()
+
+    replacement = _candidate(
+        store,
+        chapter=10,
+        sentence="重写后仍然没有资源变化。",
+        claims=[],
+        operation="regenerate",
+        continuity_delta=ContinuityDelta(chapter_number=10),
+    )
+    result = store.confirm_candidate(replacement.candidate_id)
+
+    assert result["candidate"]["status"] == "confirmed", result
+    assert canon_path.read_bytes() == canon_before
+    assert result["candidate"]["fact_resource_review"]["reconciliation"]["status"] == "NOOP"
+
+
+def test_historical_rewrite_with_identical_canon_delta_does_not_apply_twice(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    original = _candidate(
+        store,
+        chapter=10,
+        sentence="赵六出场。",
+        claims=[],
+        continuity_delta=_canon_entity_delta(10, "char-zhaoliu", "赵六", source="旧正文"),
+    )
+    store.confirm_candidate(original.candidate_id)
+    canon_path = store.story_system_dir / "canon" / "registry.json"
+    canon_before = canon_path.read_bytes()
+
+    replacement = _candidate(
+        store,
+        chapter=10,
+        sentence="重写正文仍引入赵六。",
+        claims=[],
+        operation="regenerate",
+        continuity_delta=_canon_entity_delta(
+            10, "char-zhaoliu", "赵六", source="替换正文中的证据"
+        ),
+    )
+    result = store.confirm_candidate(replacement.candidate_id)
+
+    assert result["candidate"]["status"] == "confirmed", result
+    assert canon_path.read_bytes() == canon_before
+    registry = store._read_json(canon_path, {})
+    assert list((registry.get("by_id") or {}).keys()).count("char-zhaoliu") == 1
+
+
+@pytest.mark.parametrize(
+    ("old_delta", "new_delta", "label"),
+    [
+        (
+            _canon_entity_delta(10, "char-zhaoliu", "赵六"),
+            _canon_entity_delta(10, "char-qianqi", "钱七"),
+            "different",
+        ),
+        (
+            _canon_entity_delta(10, "char-zhaoliu", "赵六"),
+            ContinuityDelta(chapter_number=10),
+            "old-only",
+        ),
+        (
+            ContinuityDelta(chapter_number=10),
+            _canon_entity_delta(10, "char-qianqi", "钱七"),
+            "new-only",
+        ),
+    ],
+)
+def test_historical_canon_delta_mismatch_is_unsupported_and_read_only(
+    tmp_path: Path,
+    old_delta: ContinuityDelta,
+    new_delta: ContinuityDelta,
+    label: str,
+) -> None:
+    del label
+    store = _store(tmp_path)
+    original = _candidate(
+        store,
+        chapter=10,
+        sentence="旧版 Canon 变化。",
+        claims=[],
+        continuity_delta=old_delta,
+    )
+    store.confirm_candidate(original.candidate_id)
+    before = _project_bytes(tmp_path)
+    replacement = _candidate(
+        store,
+        chapter=10,
+        sentence="新版 Canon 变化。",
+        claims=[],
+        operation="regenerate",
+        continuity_delta=new_delta,
+    )
+    before_confirm = _project_bytes(tmp_path)
+    result = store.confirm_candidate(replacement.candidate_id)
+    after = _project_bytes(tmp_path)
+
+    assert before_confirm != before
+    assert result["candidate"]["status"] == "pending"
+    reconciliation = result["fact_resource_reconciliation"]
+    assert reconciliation["status"] == "UNSUPPORTED"
+    assert any(
+        item["code"] == "FACT_RESOURCE_RECONCILIATION_CANON_UNSUPPORTED"
+        for item in reconciliation["findings"]
+    )
+    assert after == before_confirm
+    registry = store._read_json(store.story_system_dir / "canon" / "registry.json", {})
+    assert set((registry.get("by_id") or {})) == {
+        str(item.entity_id) for item in old_delta.entity_additions
+    }
+    assert not {
+        str(item.entity_id) for item in new_delta.entity_additions
+    }.intersection(registry.get("by_id") or {})
