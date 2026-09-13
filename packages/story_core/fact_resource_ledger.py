@@ -42,6 +42,48 @@ OPERATIONS = {
 
 SEVERITIES = {"error", "warning", "info"}
 
+# Grounding is deliberately a proposal-stage concern.  A delta is allowed to
+# reach the Phase 3A validator only after its entity and evidence have been
+# grounded here.  ``UNRESOLVED`` findings stay review-visible but do not block
+# the chapter candidate or create a canonical mutation.
+GROUNDING_STATUSES = {"GROUNDED", "UNRESOLVED", "INVALID"}
+
+_GROUNDING_RESOURCE_STOPWORDS = {
+    "来",
+    "去",
+    "了",
+    "着",
+    "过",
+    "到",
+    "上",
+    "下",
+    "里",
+    "中",
+    "的",
+    "地",
+    "得",
+    "是",
+    "有",
+    "无",
+    "并",
+    "还",
+    "再",
+}
+_EQUIPMENT_GROUNDING_CATEGORIES = {
+    "equipment",
+    "equipment_owner",
+    "equipment_state",
+    "equipment_equipped",
+    "equipped",
+}
+_RELATIONSHIP_GROUNDING_CATEGORIES = {
+    "relationship",
+    "relationship_numeric",
+    "relationship_value",
+    "trust",
+    "tension",
+}
+
 # These are *projection categories*, not an instruction to create another
 # history.  A project can expose one of these authorities only when the
 # corresponding structured source is present.  The generic ledger may own a
@@ -1148,6 +1190,511 @@ def _make_delta(
     )
 
 
+def _compact_evidence(value: Any) -> str:
+    return re.sub(r"\s+", "", _text(value))
+
+
+def _evidence_sentence(body: str, evidence: str) -> str:
+    """Return the smallest body window that contains one evidence span."""
+
+    wanted = _compact_evidence(evidence)
+    if not wanted:
+        return ""
+    for sentence in re.split(r"(?<=[。！？!?；;\n])", str(body or "")):
+        if wanted in _compact_evidence(sentence):
+            return sentence.strip()
+    return str(body or "")
+
+
+def _evidence_is_in_body(body: str, evidence: str) -> bool:
+    wanted = _compact_evidence(evidence)
+    return bool(wanted) and wanted in _compact_evidence(body)
+
+
+def _grounding_finding(
+    *,
+    code: str,
+    status: str,
+    delta_id: str = "",
+    fact_id: str = "",
+    category: str = "",
+    resource_key: str = "",
+    evidence: str = "",
+    message: str,
+    chapter: int,
+) -> FactResourceFinding:
+    if status not in GROUNDING_STATUSES:
+        raise ValueError("invalid_fact_resource_grounding_status")
+    return FactResourceFinding(
+        code=code,
+        severity="warning",
+        message=message,
+        delta_id=delta_id,
+        fact_id=fact_id,
+        category=category,
+        resource_key=resource_key,
+        evidence=evidence,
+        observed={"grounding_status": status},
+        chapter=chapter,
+    )
+
+
+def _entry_lookup_keys(entry: FactResourceEntry) -> set[str]:
+    keys = {entry.resource_key}
+    aliases = entry.metadata.get("lookup_keys") if isinstance(entry.metadata, Mapping) else None
+    if isinstance(aliases, Sequence) and not isinstance(aliases, (str, bytes, bytearray)):
+        keys.update(str(item) for item in aliases if _text(item))
+    return {_canonical_text(item) for item in keys if _canonical_text(item)}
+
+
+def _grounding_family(category: str) -> str:
+    lowered = _canonical_text(category)
+    if lowered in _EQUIPMENT_GROUNDING_CATEGORIES:
+        return "equipment"
+    if lowered in _RELATIONSHIP_GROUNDING_CATEGORIES:
+        return "relationship"
+    return lowered
+
+
+def _active_authority_for_category(
+    snapshot: FactResourceSnapshot,
+    category: str,
+) -> FactResourceAuthority | None:
+    group = fact_resource_authority_group(category)
+    if not group:
+        return None
+    return next(
+        (
+            authority
+            for authority in snapshot.authorities
+            if authority.active and authority.group == group
+        ),
+        None,
+    )
+
+
+def _exact_grounded_entry(
+    snapshot: FactResourceSnapshot,
+    *,
+    category: str,
+    resource_key: str,
+    subject: str = "",
+) -> FactResourceEntry | None:
+    wanted = _canonical_text(resource_key)
+    if not wanted:
+        return None
+    family = _grounding_family(category)
+    family_candidates: list[FactResourceEntry] = []
+    for entry in snapshot.entries:
+        if _grounding_family(entry.category) != family:
+            continue
+        if subject and _canonical_text(entry.subject) != _canonical_text(subject):
+            continue
+        if wanted in _entry_lookup_keys(entry):
+            family_candidates.append(entry)
+    exact_category = [
+        entry
+        for entry in family_candidates
+        if _canonical_text(entry.category) == _canonical_text(category)
+    ]
+    if len(exact_category) == 1:
+        return exact_category[0]
+    return family_candidates[0] if len(family_candidates) == 1 else None
+
+
+def _relationship_entry_for_delta(
+    snapshot: FactResourceSnapshot,
+    *,
+    resource_key: str,
+    subject: str,
+    evidence: str,
+) -> FactResourceEntry | None:
+    wanted_metric = _canonical_text(resource_key)
+    wanted_subject = _canonical_text(subject)
+    candidates = [
+        entry
+        for entry in snapshot.entries
+        if _grounding_family(entry.category) == "relationship"
+        and wanted_metric in _entry_lookup_keys(entry)
+        and (not wanted_subject or wanted_subject == _canonical_text(entry.subject)
+             or _canonical_text(entry.subject) in wanted_subject)
+        and _canonical_text(entry.subject) in _canonical_text(evidence)
+    ]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _equipment_action_is_grounded(
+    sentence: str,
+    *,
+    resource_key: str,
+    operation: str,
+    entry: FactResourceEntry,
+) -> bool:
+    if _canonical_text(resource_key) in {
+        _canonical_text(item) for item in _GROUNDING_RESOURCE_STOPWORDS
+    }:
+        return False
+    aliases = sorted(
+        {resource_key, entry.resource_key, *(
+            str(item)
+            for item in (entry.metadata.get("lookup_keys") or [])
+            if _text(item)
+        )},
+        key=len,
+        reverse=True,
+    )
+    verbs = {
+        "UNEQUIP": ("卸下", "脱下", "取下", "解除装备"),
+        "EQUIP": ("装备上", "穿上", "戴上", "装备", "穿戴"),
+        "TRANSFER": ("交给", "递给", "送给", "转给", "移交"),
+    }.get(operation, ())
+    for alias in aliases:
+        escaped = re.escape(alias)
+        if operation == "TRANSFER":
+            if re.search(
+                r"(?:把|将)?\s*" + escaped + r"[^。！？!?；;\n]{0,12}(?:"
+                + "|".join(map(re.escape, verbs))
+                + r")",
+                sentence,
+            ):
+                return True
+            continue
+        if re.search(
+            r"(?:" + "|".join(map(re.escape, verbs)) + r")\s*(?:了)?\s*" + escaped,
+            sentence,
+        ):
+            return True
+        if re.search(
+            r"(?:把|将)\s*" + escaped + r"[^。！？!?；;\n]{0,12}(?:"
+            + "|".join(map(re.escape, verbs))
+            + r")",
+            sentence,
+        ):
+            return True
+    return False
+
+
+def _factuality_finding_code(sentence: str, delta: FactResourceDelta) -> str | None:
+    """Reject plans, negation, quoted rules, and clearly historical events."""
+
+    text = _compact_evidence(sentence)
+    if not text:
+        return None
+    evidence = _compact_evidence(delta.evidence)
+    evidence_index = text.find(evidence) if evidence else -1
+    prefix = text[:evidence_index] if evidence_index >= 0 else text
+    if re.search(r"(?:没有|并未|未曾|不曾|没(?:有)?|未)", prefix[-16:]):
+        return "FACT_RESOURCE_NON_FACTUAL"
+    if re.search(r"(?:如果|若|假如|要是|一旦|除非)", text):
+        return "FACT_RESOURCE_NON_FACTUAL"
+    if re.search(r"(?:昨天|前天|此前|曾经|回忆起|想起)", text):
+        return "FACT_RESOURCE_TEMPORAL_AMBIGUITY"
+    if re.search(r"(?:明天|明日|以后|之后|将要|接下来|稍后|再(?:买|获得|得到|花|消耗))", text):
+        return "FACT_RESOURCE_TEMPORAL_AMBIGUITY"
+    if re.search(r"(?:奖励|报酬|可获得|能够获得|售价|报价|任务要求|规则)", text):
+        return "FACT_RESOURCE_NON_FACTUAL"
+    if re.search(r"(?:需要|还差)\s*", text):
+        return "FACT_RESOURCE_NON_FACTUAL"
+    if _grounding_family(delta.category) == "equipment" and re.search(r"想[^。！？!?；;\n]{0,12}(?:把|将|卸下|脱下|装备|交给)", text):
+        return "FACT_RESOURCE_NON_FACTUAL"
+    return None
+
+
+def _safe_resource_span(resource_key: str, evidence: str) -> bool:
+    normalized = _canonical_text(resource_key)
+    if not normalized or normalized in {_canonical_text(item) for item in _GROUNDING_RESOURCE_STOPWORDS}:
+        return False
+    if normalized not in _canonical_text(evidence):
+        return False
+    # A trailing aspect/complement particle is not an entity span unless an
+    # existing authority entry explicitly proves otherwise.
+    if len(normalized) > 1 and normalized[-1] in "了着过来去到上下":
+        return False
+    return True
+
+
+def _ground_delta(
+    delta: FactResourceDelta,
+    *,
+    body: str,
+    snapshot: FactResourceSnapshot,
+    proposal_source: str,
+) -> tuple[FactResourceDelta | None, FactResourceFinding | None]:
+    evidence = _text(delta.evidence)
+    if not evidence or not _evidence_is_in_body(body, evidence):
+        return None, _grounding_finding(
+            code="FACT_RESOURCE_EVIDENCE_UNGROUNDED",
+            status="INVALID",
+            delta_id=delta.delta_id,
+            fact_id=delta.fact_id,
+            category=delta.category,
+            resource_key=delta.resource_key,
+            evidence=evidence,
+            message="事实提案没有可在正文中定位的 evidence span。",
+            chapter=delta.chapter,
+        )
+
+    sentence = _evidence_sentence(body, evidence)
+    factuality_code = _factuality_finding_code(sentence, delta)
+    if factuality_code:
+        return None, _grounding_finding(
+            code=factuality_code,
+            status="UNRESOLVED",
+            delta_id=delta.delta_id,
+            fact_id=delta.fact_id,
+            category=delta.category,
+            resource_key=delta.resource_key,
+            evidence=evidence,
+            message="正文只表达计划、条件、否定、规则、奖励说明或历史回忆，未形成当前事实变化。",
+            chapter=delta.chapter,
+        )
+
+    family = _grounding_family(delta.category)
+    entry = _exact_grounded_entry(
+        snapshot,
+        category=delta.category,
+        resource_key=delta.resource_key,
+        subject=delta.subject,
+    )
+    source = "body_evidence"
+    normalized_key = _text(delta.resource_key)
+    if family == "equipment":
+        if entry is None:
+            return None, _grounding_finding(
+                code="FACT_RESOURCE_ENTITY_UNRESOLVED",
+                status="UNRESOLVED",
+                delta_id=delta.delta_id,
+                fact_id=delta.fact_id,
+                category=delta.category,
+                resource_key=delta.resource_key,
+                evidence=evidence,
+                message="装备操作没有绑定到唯一的既有 equipment entity；不产生装备变化。",
+                chapter=delta.chapter,
+            )
+        if not _equipment_action_is_grounded(
+            sentence,
+            resource_key=delta.resource_key,
+            operation=delta.operation,
+            entry=entry,
+        ):
+            return None, _grounding_finding(
+                code="FACT_RESOURCE_ACTION_UNGROUNDED",
+                status="UNRESOLVED",
+                delta_id=delta.delta_id,
+                fact_id=delta.fact_id,
+                category=delta.category,
+                resource_key=delta.resource_key,
+                evidence=evidence,
+                message="正文没有证明该已知装备执行了提案中的操作。",
+                chapter=delta.chapter,
+            )
+        normalized_key = entry.resource_key
+        source = "equipment_authority"
+    elif family == "relationship":
+        if entry is None:
+            return None, _grounding_finding(
+                code="FACT_RESOURCE_ENTITY_UNRESOLVED",
+                status="UNRESOLVED",
+                delta_id=delta.delta_id,
+                fact_id=delta.fact_id,
+                category=delta.category,
+                resource_key=delta.resource_key,
+                evidence=evidence,
+                message="数值关系变化没有绑定到唯一 relationship edge 与 metric。",
+                chapter=delta.chapter,
+            )
+        normalized_key = entry.resource_key
+        source = "relationship_authority"
+    elif (authority := _active_authority_for_category(snapshot, delta.category)) is not None:
+        if entry is None and (
+            _canonical_text(delta.category) not in {"inventory", "quest", "quest_progress", "task", "currency"}
+            or not _safe_resource_span(normalized_key, evidence)
+        ):
+            return None, _grounding_finding(
+                code="FACT_RESOURCE_ENTITY_UNRESOLVED",
+                status="UNRESOLVED",
+                delta_id=delta.delta_id,
+                fact_id=delta.fact_id,
+                category=delta.category,
+                resource_key=delta.resource_key,
+                evidence=evidence,
+                message="已有 authority 的资源变化没有绑定到唯一的实体 key；不转写为通用资源。",
+                chapter=delta.chapter,
+            )
+        if entry is not None:
+            normalized_key = entry.resource_key
+        source = f"{authority.group}_authority"
+    elif not _safe_resource_span(normalized_key, evidence):
+        return None, _grounding_finding(
+            code="FACT_RESOURCE_ENTITY_UNRESOLVED",
+            status="UNRESOLVED",
+            delta_id=delta.delta_id,
+            fact_id=delta.fact_id,
+            category=delta.category,
+            resource_key=delta.resource_key,
+            evidence=evidence,
+            message="resource key 不是可解释的正文实体 span，提案保持 unresolved。",
+            chapter=delta.chapter,
+        )
+
+    metadata = deepcopy(delta.metadata)
+    metadata["grounding"] = {
+        "status": "GROUNDED",
+        "source": source,
+        "proposal_source": proposal_source,
+        "confidence": 1.0,
+        "evidence": normalized_key,
+        "original_resource_key": delta.resource_key,
+    }
+    payload = delta.model_dump(mode="python")
+    payload["metadata"] = metadata
+    if normalized_key != delta.resource_key:
+        payload["resource_key"] = normalized_key
+        payload["fact_id"] = entry.fact_id if entry is not None else ""
+        payload["delta_id"] = ""
+    return FactResourceDelta.model_validate(payload), None
+
+
+def _ground_assertion(
+    assertion: FactResourceAssertion,
+    *,
+    body: str,
+    snapshot: FactResourceSnapshot,
+) -> tuple[FactResourceAssertion | None, FactResourceFinding | None]:
+    evidence = _text(assertion.evidence)
+    if not evidence or not _evidence_is_in_body(body, evidence):
+        return None, _grounding_finding(
+            code="FACT_RESOURCE_EVIDENCE_UNGROUNDED",
+            status="INVALID",
+            fact_id=assertion.fact_id,
+            category=assertion.category,
+            resource_key=assertion.resource_key,
+            evidence=evidence,
+            message="事实断言没有可在正文中定位的 evidence span。",
+            chapter=max(1, snapshot.as_of_chapter + 1),
+        )
+    sentence = _evidence_sentence(body, evidence)
+    probe = FactResourceDelta(
+        chapter=max(1, snapshot.as_of_chapter + 1),
+        category=assertion.category,
+        resource_key=assertion.resource_key,
+        operation="SET",
+        evidence=evidence,
+    )
+    factuality_code = _factuality_finding_code(sentence, probe)
+    if factuality_code:
+        return None, _grounding_finding(
+            code=factuality_code,
+            status="UNRESOLVED",
+            fact_id=assertion.fact_id,
+            category=assertion.category,
+            resource_key=assertion.resource_key,
+            evidence=evidence,
+            message="正文断言属于非当前事实语境，未进入候选状态。",
+            chapter=probe.chapter,
+        )
+    family = _grounding_family(assertion.category)
+    entry = _exact_grounded_entry(
+        snapshot,
+        category=assertion.category,
+        resource_key=assertion.resource_key,
+        subject=assertion.subject,
+    )
+    if family in {"equipment", "relationship"} and entry is None:
+        return None, _grounding_finding(
+            code="FACT_RESOURCE_ENTITY_UNRESOLVED",
+            status="UNRESOLVED",
+            fact_id=assertion.fact_id,
+            category=assertion.category,
+            resource_key=assertion.resource_key,
+            evidence=evidence,
+            message="断言没有绑定到唯一的既有 authority-compatible entity。",
+            chapter=probe.chapter,
+        )
+    if family not in {"equipment", "relationship"} and not (
+        _safe_resource_span(assertion.resource_key, evidence)
+        or _canonical_text(assertion.resource_key) in _canonical_text(evidence)
+        or _canonical_text(assertion.category) in {"level", "experience", "exp"}
+    ):
+        return None, _grounding_finding(
+            code="FACT_RESOURCE_ENTITY_UNRESOLVED",
+            status="UNRESOLVED",
+            fact_id=assertion.fact_id,
+            category=assertion.category,
+            resource_key=assertion.resource_key,
+            evidence=evidence,
+            message="断言的 resource key 无法回溯到正文实体 span。",
+            chapter=probe.chapter,
+        )
+    return assertion, None
+
+
+def _delta_semantic_key(delta: FactResourceDelta) -> tuple[Any, ...]:
+    return (
+        delta.chapter,
+        _canonical_text(delta.category),
+        _canonical_text(delta.subject),
+        _canonical_text(delta.resource_key),
+        delta.operation,
+        _json_value(delta.change),
+        _compact_evidence(delta.evidence),
+    )
+
+
+def _delta_evidence_overlaps(left: str, right: str) -> bool:
+    left_text = _compact_evidence(left)
+    right_text = _compact_evidence(right)
+    return bool(left_text and right_text and (left_text in right_text or right_text in left_text))
+
+
+def _ground_fact_resource_proposals(
+    *,
+    body: str,
+    snapshot: FactResourceSnapshot,
+    deltas: Sequence[FactResourceDelta],
+    assertions: Sequence[FactResourceAssertion],
+    proposal_sources: Sequence[str] | None = None,
+) -> tuple[list[FactResourceDelta], list[FactResourceAssertion], list[FactResourceFinding]]:
+    grounded_deltas: list[FactResourceDelta] = []
+    grounded_assertions: list[FactResourceAssertion] = []
+    findings: list[FactResourceFinding] = []
+    seen: set[tuple[Any, ...]] = set()
+    seen_evidence: list[tuple[tuple[Any, ...], str]] = []
+    sources = list(proposal_sources or [])
+    for index, delta in enumerate(deltas):
+        source = sources[index] if index < len(sources) else "body_fallback"
+        grounded, finding = _ground_delta(
+            delta,
+            body=body,
+            snapshot=snapshot,
+            proposal_source=source,
+        )
+        if grounded is None:
+            if finding is not None:
+                findings.append(finding)
+            continue
+        key = _delta_semantic_key(grounded)
+        key_prefix = key[:-1]
+        duplicate = key in seen or any(
+            prior_key[:-1] == key_prefix
+            and _delta_evidence_overlaps(prior_evidence, grounded.evidence)
+            for prior_key, prior_evidence in seen_evidence
+        )
+        if duplicate:
+            continue
+        seen.add(key)
+        seen_evidence.append((key, grounded.evidence))
+        grounded_deltas.append(grounded)
+    for assertion in assertions:
+        grounded, finding = _ground_assertion(assertion, body=body, snapshot=snapshot)
+        if grounded is None:
+            if finding is not None:
+                findings.append(finding)
+            continue
+        grounded_assertions.append(grounded)
+    return grounded_deltas, grounded_assertions, findings
+
+
 def extract_fact_resource_changes(
     body: str,
     chapter_number: int,
@@ -1169,6 +1716,7 @@ def extract_fact_resource_changes(
     assertions: list[FactResourceAssertion] = []
     findings: list[FactResourceFinding] = []
     sequence = 0
+    body_delta_count = 0
 
     # Explicit remaining/set assertions: “还剩15枚记录水晶”.
     for match in re.finditer(
@@ -1198,7 +1746,7 @@ def extract_fact_resource_changes(
     # the amount/resource pair to avoid treating unrelated scene numbers as
     # ledger events.
     for match in re.finditer(
-        r"(?P<verb>获得|得到|拿到|收获|捡到|增加(?:了)?|补充(?:了)?|消耗(?:了)?|使用(?:了)?|花费(?:了)?|支付(?:了)?|失去(?:了)?|减少(?:了)?)"
+        r"(?P<verb>获得|得到|拿到|收获|捡到|增加(?:了)?|补充(?:了)?|消耗(?:了)?|使用(?:了)?|花费(?:了)?|花|支付(?:了)?|失去(?:了)?|减少(?:了)?)"
         r"[^。；，,\n]{0,18}?" + _AMOUNT + r"\s*" + _UNIT + r"\s*" + _RESOURCE,
         text,
     ):
@@ -1207,9 +1755,21 @@ def extract_fact_resource_changes(
         verb = _text(match.group("verb"))
         if amount is None or not resource:
             continue
+        if verb in {"花费", "花", "支付", "支付了"} and _text(match.group("unit")) in {
+            "金币",
+            "灵石",
+            "铜钱",
+            "银两",
+            "元",
+        }:
+            # The currency-specific matcher below owns this form.  Without
+            # this guard the optional unit can consume “金币” and the broad
+            # resource matcher can mistake the following purchase clause for
+            # an inventory resource.
+            continue
         if not _looks_trackable_resource(resource) and _known_entry_for_text(snapshot, resource) is None:
             continue
-        subtract = any(token in verb for token in ("消耗", "使用", "花费", "支付", "失去", "减少"))
+        subtract = any(token in verb for token in ("消耗", "使用", "花费", "花", "支付", "失去", "减少"))
         category = _resource_category(resource, default="inventory")
         if category == "level":
             operation = "SET"
@@ -1224,6 +1784,67 @@ def extract_fact_resource_changes(
                 category=category,
                 resource=resource,
                 operation=operation,
+                amount=amount,
+                unit=_text(match.group("unit")),
+                snapshot=snapshot,
+                evidence=match.group(0),
+            )
+        )
+        sequence += 1
+
+    # Currency is often written without a counter/resource token after the
+    # amount ("花100金币").  Keep this narrow and category-specific so a
+    # general verb phrase cannot manufacture an inventory key from its tail.
+    for match in re.finditer(
+        r"(?P<verb>花费|花|支付(?:了)?)\s*"
+        + _AMOUNT
+        + r"\s*(?P<resource>金币|灵石|铜钱|银两|元)",
+        text,
+    ):
+        amount = _parse_amount(match.group("amount"))
+        if amount is None:
+            continue
+        deltas.append(
+            _make_delta(
+                chapter_number=chapter_number,
+                sequence=sequence,
+                category="currency",
+                resource=_text(match.group("resource")),
+                operation="SUBTRACT",
+                amount=amount,
+                unit=_text(match.group("resource")),
+                snapshot=snapshot,
+                evidence=match.group(0),
+            )
+        )
+        sequence += 1
+
+    # A purchase is two facts only when the body states both the payment and
+    # the acquired stack.  Each proposal gets its own evidence and stable
+    # sequence; the grounding gate below can discard one without swallowing
+    # the other.
+    for match in re.finditer(
+        r"(?:购买|买(?:了|下)?)\s*"
+        + _AMOUNT
+        + r"\s*"
+        + _UNIT
+        + r"\s*"
+        + _RESOURCE,
+        text,
+    ):
+        amount = _parse_amount(match.group("amount"))
+        resource = _text(match.group("resource"))
+        if amount is None or not resource:
+            continue
+        if _resource_category(resource, default="inventory") == "currency":
+            continue
+        deltas.append(
+            _make_delta(
+                chapter_number=chapter_number,
+                sequence=sequence,
+                category="inventory",
+                resource=resource,
+                operation="ADD",
                 amount=amount,
                 unit=_text(match.group("unit")),
                 snapshot=snapshot,
@@ -1305,6 +1926,7 @@ def extract_fact_resource_changes(
             )
         )
         sequence += 1
+
     for match in re.finditer(r"(?:经验值|经验)\s*(?:增加|增加了|为|达到|变为)?\s*" + _AMOUNT, text):
         amount = _parse_amount(match.group("amount"))
         if amount is None:
@@ -1406,6 +2028,13 @@ def extract_fact_resource_changes(
             ),
             None,
         )
+        if existing is None:
+            existing = _relationship_entry_for_delta(
+                snapshot,
+                resource_key=metric,
+                subject=subject,
+                evidence=match.group(0),
+            )
         if existing is None and not subject and len(relationship_entries) == 1:
             existing = relationship_entries[0]
         deltas.append(
@@ -1460,6 +2089,39 @@ def extract_fact_resource_changes(
     quest_entries = [
         item for item in snapshot.entries if _canonical_text(item.category) in {"quest", "quest_progress", "task"}
     ]
+
+    # Explicit quest completion is a progress mutation only when the quest
+    # key already exists.  A target/requirement sentence is not progress.
+    for entry in quest_entries:
+        if not entry.resource_key:
+            continue
+        match = re.search(
+            re.escape(entry.resource_key)
+            + r"(?:已|当前)?完成(?P<amount>\d+)\s*(?:件|个|项)?",
+            text,
+        )
+        if not match:
+            continue
+        amount = int(match.group("amount"))
+        deltas.append(
+            _make_delta(
+                chapter_number=chapter_number,
+                sequence=sequence,
+                category="quest",
+                resource=entry.resource_key,
+                operation="PROGRESS_ADD",
+                amount=amount,
+                snapshot=snapshot,
+                evidence=match.group(0),
+                metadata=(
+                    {"target": entry.metadata.get("target")}
+                    if entry.metadata.get("target") is not None
+                    else None
+                ),
+            )
+        )
+        sequence += 1
+
     for match in re.finditer(
         r"(?:完成|当前|任务)?[^。；\n]{0,8}?进度\s*"
         r"(?P<done>\d+)\s*(?:/|／|之)\s*(?P<target>\d+)",
@@ -1554,7 +2216,7 @@ def extract_fact_resource_changes(
 
     # Ownership and equipped-state statements are exact named transitions.
     for match in re.finditer(
-        r"将(?P<item>[\u4e00-\u9fffA-Za-z0-9]{1,20})交给(?P<owner>[\u4e00-\u9fffA-Za-z0-9]{1,12})",
+        r"(?:将|把)(?P<item>[\u4e00-\u9fffA-Za-z0-9]{1,20})交给(?P<owner>[\u4e00-\u9fffA-Za-z0-9]{1,12})",
         text,
     ):
         item, owner = _text(match.group("item")), _text(match.group("owner"))
@@ -1607,6 +2269,8 @@ def extract_fact_resource_changes(
         )
         sequence += 1
 
+    body_delta_count = len(deltas)
+
     # Optional structured claims are accepted only when explicitly marked and
     # sufficiently confident; the body remains the evidence boundary.
     for raw in candidate_claims or []:
@@ -1640,10 +2304,22 @@ def extract_fact_resource_changes(
         deltas.append(delta)
         sequence += 1
 
-    return FactResourceExtraction(
-        chapter_number=chapter_number,
+    grounded_deltas, grounded_assertions, grounding_findings = _ground_fact_resource_proposals(
+        body=text,
+        snapshot=snapshot,
         deltas=deltas,
         assertions=assertions,
+        proposal_sources=(
+            ["body_fallback"] * body_delta_count
+            + ["structured_writer"] * max(0, len(deltas) - body_delta_count)
+        ),
+    )
+    findings.extend(grounding_findings)
+
+    return FactResourceExtraction(
+        chapter_number=chapter_number,
+        deltas=grounded_deltas,
+        assertions=grounded_assertions,
         findings=findings,
         source_text_sha256=sha256(text.encode("utf-8")).hexdigest(),
     )

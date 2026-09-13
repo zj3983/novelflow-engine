@@ -163,7 +163,7 @@ def test_inventory_currency_and_quest_use_progression_authority_only(tmp_path):
 
     quest = _candidate(
         store,
-        "任务记录更新。",
+        "采集任务进度+2。",
         chapter=13,
         claims=[
             {
