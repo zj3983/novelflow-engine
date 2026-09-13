@@ -316,6 +316,8 @@ class CandidateConfirmationStoreMixin:
             generated.append(
                 {
                     "name": name,
+                    "canon_entity_id": str(getattr(addition, "entity_id", "") or ""),
+                    "canon_projection_source": "confirmed_continuity_delta",
                     "role": occupation or "配角",
                     "character_tier": "supporting",
                     "aliases": list(getattr(addition, "aliases", []) or []),

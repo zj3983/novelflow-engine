@@ -85,6 +85,7 @@ from packages.story_core.character_profiles import (
     record_character_appearances,
     remove_cross_character_aliases,
 )
+from packages.story_core.continuity.delta import ContinuityDelta
 from packages.story_core.ai_flavor_review import review_ai_flavor
 from packages.story_core.book_style import normalize_book_style
 from packages.story_core.cold_reader_review import review_cold_reader_experience
@@ -121,6 +122,17 @@ from packages.story_core.fact_resource_ledger import (
     plan_fact_resource_authority_writes,
     project_fact_resource_snapshot,
     validate_fact_resource_extraction,
+)
+from packages.story_core.canon.history import (
+    CanonBaseline,
+    CanonHistory,
+    CanonHistoryEvent,
+    CanonHistoryPlan,
+    CanonReplayFinding,
+    registry_to_payload,
+    registry_from_payload,
+    replay_canon_history,
+    semantic_registry_hash,
 )
 from packages.story_core.inventory_normalization import (
     normalize_inventory_item_name,
@@ -9011,11 +9023,16 @@ class FileProjectStore(
             candidate_claims=getattr(bundle, "fact_resource_claims", None),
         )
         direct_candidate = SimpleNamespace(
-            candidate_id="",
+            candidate_id=f"generated:{int(getattr(bundle, 'chapter_number', 0) or 0)}",
+            project_id=self._canon_project_id(),
             chapter_number=int(getattr(bundle, "chapter_number", 0) or 0),
             fact_resource_extraction=fact_resource_extraction,
+            continuity_delta=getattr(bundle, "continuity_delta", None),
         )
         fact_resource_plan = self._plan_candidate_fact_resource_writes(direct_candidate)
+        canon_plan = self._plan_candidate_canon_writes(direct_candidate)
+        if canon_plan.status not in {"CLEAR", "NOOP"}:
+            raise ValueError("canon_reconciliation_not_clear:" + canon_plan.status)
         from packages.story_core.persistence.project_transaction import ProjectTransaction
 
         with ProjectTransaction.create(
@@ -9032,7 +9049,10 @@ class FileProjectStore(
             )
             fact_resource_commit = self._apply_candidate_fact_resource_writes(fact_resource_plan)
             persisted["fact_resource"] = fact_resource_commit
-            persisted["canon_updates"] = self._commit_generated_bundle_canon(bundle)
+            persisted["canon_updates"] = self._commit_generated_bundle_canon(
+                bundle,
+                canon_plan=canon_plan,
+            )
         return {
             "schema_version": "file-project-generate-next/v1",
             "root": str(self.root),
@@ -9077,16 +9097,57 @@ class FileProjectStore(
                 "candidate": candidate.to_dict(),
                 "fact_resource_reconciliation": fact_resource_plan.to_result_dict(),
             }
-        if isinstance(fact_resource_plan, FactResourceReconciliationPlan):
+        canon_plan = self._plan_candidate_canon_writes(candidate)
+        if canon_plan.status not in {"CLEAR", "NOOP"}:
+            result = {
+                "schema_version": "file-project-candidate-confirm/v1",
+                "candidate": candidate.to_dict(),
+                "canon_reconciliation": canon_plan.to_result_dict(),
+            }
+            if isinstance(fact_resource_plan, FactResourceReconciliationPlan):
+                first = canon_plan.first_finding
+                fact_resource_plan.status = "UNSUPPORTED"
+                fact_resource_plan.findings.append(
+                    FactResourceFinding(
+                        code="FACT_RESOURCE_RECONCILIATION_CANON_UNSUPPORTED",
+                        severity="error",
+                        message=(
+                            first.message
+                            if first is not None
+                            else "Canon historical reconciliation is unsupported"
+                        ),
+                        chapter=int(candidate.chapter_number),
+                    )
+                )
+                result["fact_resource_reconciliation"] = fact_resource_plan.to_result_dict()
+            return result
+        if canon_plan.mode == "legacy" and (
+            candidate.chapter_number
+            <= max(
+                max(self.chapter_numbers(), default=0),
+                int((self.state() or {}).get("current_chapter") or 0),
+            )
+        ):
+            # A legacy project has no provable Canon journal. Keep Phase 3C's
+            # conservative empty/identical boundary and do not guess a
+            # Chapter 0 baseline from the latest registry projection.
             canon_status, canon_finding = self._historical_candidate_canon_compatibility(candidate)
             if canon_finding is not None:
-                fact_resource_plan.status = "UNSUPPORTED"
-                fact_resource_plan.findings.append(canon_finding)
-                return {
+                if isinstance(fact_resource_plan, FactResourceReconciliationPlan):
+                    fact_resource_plan.status = "UNSUPPORTED"
+                    fact_resource_plan.findings.append(canon_finding)
+                result = {
                     "schema_version": "file-project-candidate-confirm/v1",
                     "candidate": candidate.to_dict(),
-                    "fact_resource_reconciliation": fact_resource_plan.to_result_dict(),
+                    "canon_reconciliation": {
+                        **canon_plan.to_result_dict(),
+                        "status": "UNSUPPORTED",
+                        "findings": [canon_finding.model_dump(mode="json")],
+                    },
                 }
+                if isinstance(fact_resource_plan, FactResourceReconciliationPlan):
+                    result["fact_resource_reconciliation"] = fact_resource_plan.to_result_dict()
+                return result
             skip_historical_canon_apply = canon_status in {"SAFE_EMPTY", "SAFE_IDENTICAL"}
 
         # The confirmation is the single atomic boundary the user
@@ -9126,8 +9187,15 @@ class FileProjectStore(
             # apply happens *inside* the transaction so a
             # mid-flight failure rolls the canon write back
             # alongside the chapter / state / project writes.
-            if not skip_historical_canon_apply:
+            if canon_plan.mode == "legacy" and not skip_historical_canon_apply:
                 self._apply_candidate_canon_delta(candidate)
+                canon_commit = {
+                    "committed": True,
+                    "reason": "legacy_canon_append",
+                }
+            else:
+                canon_commit = self._apply_candidate_canon_writes(canon_plan)
+                self._sync_reconciled_canon_character_projection(canon_plan)
             self._wrap_confirmation_in_transaction(candidate)
         if fact_resource_commit.get("committed") or isinstance(
             fact_resource_plan, FactResourceReconciliationPlan
@@ -9137,6 +9205,11 @@ class FileProjectStore(
                 review["commit"] = fact_resource_commit
             if isinstance(fact_resource_plan, FactResourceReconciliationPlan):
                 review["reconciliation"] = fact_resource_plan.to_result_dict()
+            candidate.fact_resource_review = review
+        if canon_plan.mode != "legacy":
+            review = dict(candidate.fact_resource_review or {})
+            review["canon_reconciliation"] = canon_plan.to_result_dict()
+            review["canon_commit"] = canon_commit
             candidate.fact_resource_review = review
         candidate.confirm()
         self.candidate_store.save(candidate)
@@ -9179,6 +9252,511 @@ class FileProjectStore(
         ]
 
     # --- Canon delta application -------------------------------------------
+
+    @property
+    def canon_baseline_path(self) -> Path:
+        return self.story_system_dir / "canon" / "baseline.json"
+
+    @property
+    def canon_history_path(self) -> Path:
+        return self.story_system_dir / "canon" / "history.json"
+
+    def _canon_project_id(self) -> str:
+        project = self.project()
+        state = self.state()
+        return str(
+            project.get("project_id")
+            or project.get("active_story_id")
+            or state.get("story_id")
+            or self.root.name
+        )
+
+    def _read_canon_history_bundle(self) -> tuple[CanonBaseline, CanonHistory] | None:
+        """Load a complete Phase 3D authority pair, never half-migrate it."""
+
+        baseline_exists = self.canon_baseline_path.is_file()
+        history_exists = self.canon_history_path.is_file()
+        if not baseline_exists and not history_exists:
+            return None
+        if baseline_exists != history_exists:
+            return None
+        try:
+            baseline = CanonBaseline.from_dict(
+                self._read_json(self.canon_baseline_path, {}) or {}
+            )
+            history = CanonHistory.from_dict(
+                self._read_json(self.canon_history_path, {}) or {}
+            )
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if history.baseline_revision != baseline.baseline_revision:
+            return None
+        return baseline, history
+
+    def _canon_baseline_from_explicit_source(self) -> CanonBaseline | None:
+        """Find an opt-in initial Canon payload for controlled migrations."""
+
+        if self.canon_baseline_path.is_file():
+            try:
+                raw_baseline = CanonBaseline.from_dict(
+                    self._read_json(self.canon_baseline_path, {}) or {}
+                )
+                return raw_baseline
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return None
+        master = self._read_json(self.story_system_dir / "MASTER_SETTING.json", {}) or {}
+        if not isinstance(master, dict):
+            return None
+        for key in ("canon_baseline", "initial_canon_registry"):
+            raw = master.get(key)
+            if not isinstance(raw, dict):
+                continue
+            registry_payload = raw.get("registry") if isinstance(raw.get("registry"), dict) else raw
+            if isinstance(registry_payload, dict) and isinstance(registry_payload.get("by_id"), dict):
+                try:
+                    return CanonBaseline(registry=registry_payload)
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    def _confirmed_canon_candidates(self) -> list[Any]:
+        return [
+            item
+            for item in self.candidate_store.list(project_id=self._canon_project_id())
+            if item.status == "confirmed"
+        ]
+
+    def _build_bootstrap_canon_bundle(
+        self,
+    ) -> tuple[CanonBaseline, CanonHistory] | None:
+        """Build a journal only when its replay can be proved complete."""
+
+        confirmed = self._confirmed_canon_candidates()
+        current_registry = self._load_canon_registry()
+        if not confirmed:
+            # A non-empty registry is an initial Canon only before any chapter
+            # exists.  A later legacy project may already contain future
+            # materialization, and must not be silently moved into Chapter 0.
+            state = self.state()
+            if self.chapter_numbers() or int(state.get("current_chapter") or 0) > 0:
+                return None
+            baseline = CanonBaseline(registry=registry_to_payload(current_registry))
+            return baseline, CanonHistory.empty(baseline_revision=baseline.baseline_revision)
+
+        baseline = self._canon_baseline_from_explicit_source()
+        if baseline is None:
+            # Without an explicit initial state there is no safe way to
+            # separate Chapter 0 material from later direct registry writes.
+            return None
+        history = CanonHistory.empty(baseline_revision=baseline.baseline_revision)
+        confirmed_chapters = [int(item.chapter_number) for item in confirmed]
+        if len(set(confirmed_chapters)) != len(confirmed_chapters):
+            return None
+        for sequence, candidate in enumerate(
+            sorted(confirmed, key=lambda item: (int(item.chapter_number), str(item.created_at), item.candidate_id)),
+            start=1,
+        ):
+            delta = getattr(candidate, "continuity_delta", None)
+            if delta is None:
+                delta = ContinuityDelta(chapter_number=int(candidate.chapter_number))
+            if int(delta.chapter_number) != int(candidate.chapter_number):
+                return None
+            event = CanonHistoryEvent.from_delta(
+                delta,
+                candidate_id=candidate.candidate_id,
+                sequence=sequence,
+                confirmed_at=str(getattr(candidate, "created_at", "") or "") or None,
+            )
+            history.events.append(event)
+            history.latest_confirmed_chapter = max(
+                history.latest_confirmed_chapter,
+                int(event.chapter_number),
+            )
+            history.confirmed_candidates[candidate.candidate_id] = event.event_id
+        replay = replay_canon_history(
+            baseline.registry,
+            history.events,
+            as_of_chapter=None,
+            strict=True,
+        )
+        if replay.status != "CLEAR" or replay.registry is None:
+            return None
+        if semantic_registry_hash(replay.registry) != semantic_registry_hash(current_registry):
+            return None
+        return baseline, history
+
+    def _historical_canon_event_for_candidate(
+        self,
+        candidate: Any,
+        history: CanonHistory,
+    ) -> CanonHistoryEvent | None:
+        chapter_number = int(getattr(candidate, "chapter_number", 0) or 0)
+        snapshot_payload = self._read_json(
+            self.continuity_store.snapshot_path(chapter_number), {}
+        ) or {}
+        snapshot_candidate_id = (
+            str(snapshot_payload.get("candidate_id") or "")
+            if isinstance(snapshot_payload, dict)
+            else ""
+        )
+        if snapshot_candidate_id:
+            matches = [
+                event
+                for event in history.events
+                if event.candidate_id == snapshot_candidate_id
+                and event.chapter_number == chapter_number
+            ]
+            return matches[0] if len(matches) == 1 else None
+        confirmed = [
+            item
+            for item in self.candidate_store.list(
+                project_id=getattr(candidate, "project_id", self._canon_project_id()),
+                chapter_number=chapter_number,
+            )
+            if item.status == "confirmed" and item.candidate_id != candidate.candidate_id
+        ]
+        matches = [
+            event
+            for item in confirmed
+            for event in history.events
+            if event.candidate_id == item.candidate_id
+            and event.chapter_number == chapter_number
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    def _plan_candidate_canon_writes(self, candidate: Any) -> CanonHistoryPlan:
+        """Stage a normal append or historical Canon replay without writes."""
+
+        chapter_number = int(getattr(candidate, "chapter_number", 0) or 0)
+        candidate_id = str(getattr(candidate, "candidate_id", "") or "")
+        delta = getattr(candidate, "continuity_delta", None)
+        if delta is None:
+            delta = ContinuityDelta(chapter_number=chapter_number)
+        elif not isinstance(delta, ContinuityDelta):
+            delta = ContinuityDelta.model_validate(delta)
+        if int(delta.chapter_number) != chapter_number:
+            finding = CanonReplayFinding(
+                code="CANON_RECONCILIATION_HISTORY_UNSUPPORTED",
+                message="candidate chapter and continuity delta chapter differ",
+                chapter_number=chapter_number,
+                candidate_id=candidate_id,
+            )
+            return CanonHistoryPlan(
+                status="UNSUPPORTED",
+                mode="unsupported",
+                rewrite_chapter=chapter_number,
+                latest_confirmed_chapter=0,
+                findings=[finding],
+            )
+
+        bundle = self._read_canon_history_bundle()
+        if bundle is None:
+            bootstrap = self._build_bootstrap_canon_bundle()
+            if bootstrap is None:
+                # Historical legacy projects retain Phase 3C's conservative
+                # empty/identical Canon boundary.  No Phase 3D files are
+                # created until a complete journal can be proved.
+                return CanonHistoryPlan(
+                    status="CLEAR",
+                    mode="legacy",
+                    rewrite_chapter=chapter_number,
+                    latest_confirmed_chapter=max(self.chapter_numbers(), default=0),
+                )
+            baseline, history = bootstrap
+            # A fresh project has no confirmed Canon event yet.  The first
+            # candidate becomes the first journal event, including an empty
+            # delta so the chapter boundary remains explicit.
+            if not history.events and chapter_number >= 1:
+                event = CanonHistoryEvent.from_delta(
+                    delta,
+                    candidate_id=candidate_id,
+                    sequence=1,
+                )
+                history.events.append(event)
+                history.latest_confirmed_chapter = chapter_number
+                if candidate_id:
+                    history.confirmed_candidates[candidate_id] = event.event_id
+                replay = replay_canon_history(baseline.registry, history.events, strict=True)
+                if replay.status != "CLEAR" or replay.registry is None:
+                    return CanonHistoryPlan(
+                        status=replay.status,
+                        mode="append",
+                        rewrite_chapter=chapter_number,
+                        latest_confirmed_chapter=0,
+                        findings=[replay.first_finding] if replay.first_finding else [],
+                    )
+                return CanonHistoryPlan(
+                    status="CLEAR",
+                    mode="append",
+                    rewrite_chapter=chapter_number,
+                    latest_confirmed_chapter=chapter_number,
+                    baseline_payload=baseline.to_dict(),
+                    history_payload=history.to_dict(),
+                    registry_payload=registry_to_payload(replay.registry),
+                    replacement_event_id=event.event_id,
+                    replayed_event_ids=replay.replayed_event_ids,
+                    bootstrap=True,
+                )
+            # Explicit baseline + reconstructed events is a ready journal.
+            bundle = (baseline, history)
+
+        baseline, history = bundle
+        # The journal is authoritative.  Refuse to append or reconcile when
+        # the materialized projection has drifted, rather than using the
+        # drifted registry as an implicit second truth.
+        current_registry = self._load_canon_registry()
+        current_replay = replay_canon_history(
+            baseline.registry,
+            history.events,
+            as_of_chapter=history.latest_confirmed_chapter,
+            # Normal confirmation historically uses CanonService's tolerant
+            # apply semantics.  Historical replacement below opts into the
+            # stricter dependency gate; this check only verifies that the
+            # projection is the result of the persisted journal.
+            strict=False,
+        )
+        if (
+            current_replay.status != "CLEAR"
+            or current_replay.registry is None
+            or semantic_registry_hash(current_replay.registry)
+            != semantic_registry_hash(current_registry)
+        ):
+            finding = CanonReplayFinding(
+                code="CANON_RECONCILIATION_HISTORY_UNSUPPORTED",
+                message="Canon history replay does not match the materialized registry projection",
+                chapter_number=chapter_number,
+                candidate_id=candidate_id,
+            )
+            return CanonHistoryPlan(
+                status="UNSUPPORTED",
+                mode="history",
+                rewrite_chapter=chapter_number,
+                latest_confirmed_chapter=history.latest_confirmed_chapter,
+                findings=[finding],
+            )
+        existing_event = history.event_for_candidate(candidate_id) if candidate_id else None
+        if existing_event is not None:
+            return CanonHistoryPlan(
+                status="NOOP",
+                mode="noop",
+                rewrite_chapter=chapter_number,
+                latest_confirmed_chapter=history.latest_confirmed_chapter,
+                replacement_event_id=existing_event.event_id,
+                replayed_event_ids=[event.event_id for event in history.events_through(history.latest_confirmed_chapter)],
+            )
+
+        if chapter_number > history.latest_confirmed_chapter:
+            sequence = max((event.sequence for event in history.events), default=0) + 1
+            event = CanonHistoryEvent.from_delta(delta, candidate_id=candidate_id, sequence=sequence)
+            staged_history = CanonHistory.from_dict(history.to_dict())
+            staged_history.events.append(event)
+            if candidate_id:
+                staged_history.confirmed_candidates[candidate_id] = event.event_id
+            replay = replay_canon_history(baseline.registry, staged_history.events, strict=False)
+            if replay.status != "CLEAR" or replay.registry is None:
+                return CanonHistoryPlan(
+                    status=replay.status,
+                    mode="append",
+                    rewrite_chapter=chapter_number,
+                    latest_confirmed_chapter=history.latest_confirmed_chapter,
+                    findings=[replay.first_finding] if replay.first_finding else [],
+                    replacement_event_id=event.event_id,
+                    replayed_event_ids=replay.replayed_event_ids,
+                )
+            return CanonHistoryPlan(
+                status="CLEAR",
+                mode="append",
+                rewrite_chapter=chapter_number,
+                latest_confirmed_chapter=chapter_number,
+                history_payload=staged_history.to_dict(),
+                registry_payload=registry_to_payload(replay.registry),
+                replacement_event_id=event.event_id,
+                replayed_event_ids=replay.replayed_event_ids,
+            )
+
+        old_event = self._historical_canon_event_for_candidate(candidate, history)
+        if old_event is None:
+            finding = CanonReplayFinding(
+                code="CANON_RECONCILIATION_HISTORY_UNSUPPORTED",
+                message=f"第 {chapter_number} 章缺少唯一可识别的旧 Canon history event",
+                chapter_number=chapter_number,
+                candidate_id=candidate_id,
+            )
+            return CanonHistoryPlan(
+                status="UNSUPPORTED",
+                mode="historical",
+                rewrite_chapter=chapter_number,
+                latest_confirmed_chapter=history.latest_confirmed_chapter,
+                findings=[finding],
+            )
+        replacement = CanonHistoryEvent.from_delta(
+            delta,
+            candidate_id=candidate_id,
+            sequence=old_event.sequence,
+        )
+        staged_history = CanonHistory.from_dict(history.to_dict())
+        staged_history.events = [
+            event for event in staged_history.events if event.event_id != old_event.event_id
+        ]
+        staged_history.events.append(replacement)
+        if old_event.candidate_id:
+            staged_history.confirmed_candidates.pop(old_event.candidate_id, None)
+        if candidate_id:
+            staged_history.confirmed_candidates[candidate_id] = replacement.event_id
+        replay = replay_canon_history(
+            baseline.registry,
+            staged_history.events,
+            as_of_chapter=history.latest_confirmed_chapter,
+            strict=True,
+        )
+        if replay.status != "CLEAR" or replay.registry is None:
+            return CanonHistoryPlan(
+                status=replay.status,
+                mode="historical",
+                rewrite_chapter=chapter_number,
+                latest_confirmed_chapter=history.latest_confirmed_chapter,
+                findings=[replay.first_finding] if replay.first_finding else [],
+                old_event_id=old_event.event_id,
+                replacement_event_id=replacement.event_id,
+                replayed_event_ids=replay.replayed_event_ids,
+            )
+        staged_history.audit.append(
+            {
+                "type": "canon_historical_reconciliation",
+                "rewrite_chapter": chapter_number,
+                "old_candidate_id": old_event.candidate_id,
+                "replacement_candidate_id": candidate_id,
+                "affected_through_chapter": history.latest_confirmed_chapter,
+                "old_event_id": old_event.event_id,
+                "replacement_event_id": replacement.event_id,
+                "replayed_event_ids": list(replay.replayed_event_ids),
+                "result_hash": semantic_registry_hash(replay.registry),
+            }
+        )
+        return CanonHistoryPlan(
+            status="CLEAR",
+            mode="historical",
+            rewrite_chapter=chapter_number,
+            latest_confirmed_chapter=history.latest_confirmed_chapter,
+            history_payload=staged_history.to_dict(),
+            registry_payload=registry_to_payload(replay.registry),
+            old_event_id=old_event.event_id,
+            replacement_event_id=replacement.event_id,
+            replayed_event_ids=replay.replayed_event_ids,
+        )
+
+    def _apply_candidate_canon_writes(self, plan: CanonHistoryPlan) -> dict[str, Any]:
+        """Persist one staged Canon history/projection inside the caller's transaction."""
+
+        if plan.status == "NOOP" or plan.mode == "legacy":
+            return {
+                "committed": False,
+                "reason": "canon_history_noop" if plan.status == "NOOP" else "legacy_canon_boundary",
+                "reconciliation": plan.to_result_dict(),
+            }
+        if plan.status != "CLEAR":
+            raise ValueError("canon_reconciliation_not_clear:" + plan.status)
+        if plan.baseline_payload is not None:
+            self._write_json_atomic(self.canon_baseline_path, plan.baseline_payload)
+        if plan.history_payload is not None:
+            self._write_json_atomic(self.canon_history_path, plan.history_payload)
+        if plan.registry_payload is not None:
+            self._write_json_atomic(
+                self.story_system_dir / "canon" / "registry.json",
+                plan.registry_payload,
+            )
+        return {
+            "committed": True,
+            "chapter_number": plan.rewrite_chapter,
+            "event_id": plan.replacement_event_id,
+            "replayed_event_ids": list(plan.replayed_event_ids),
+            "reconciliation": plan.to_result_dict(),
+        }
+
+    def _sync_reconciled_canon_character_projection(
+        self,
+        plan: CanonHistoryPlan,
+    ) -> None:
+        """Refresh only explicitly Canon-owned character-card projections.
+
+        Cards without ``canon_entity_id`` are user/baseline data and are
+        intentionally retained.  This marker lets a later replay remove a
+        card introduced by an old confirmed delta without guessing that a
+        similarly named manual card belongs to Canon.
+        """
+
+        if not plan.history_payload or not plan.registry_payload:
+            return
+        events = plan.history_payload.get("events") or []
+        owned_ids = {
+            str(addition.get("entity_id") or "")
+            for event in events
+            if isinstance(event, dict)
+            for addition in ((event.get("continuity_delta") or {}).get("entity_additions") or [])
+            if isinstance(addition, dict) and str(addition.get("kind") or "") == "character"
+        }
+        registry = registry_from_payload(plan.registry_payload)
+        final_entities = {
+            entity.entity_id: entity
+            for entity in registry.list_all("character")
+            if entity.entity_id in owned_ids
+        }
+        project = self.project()
+        state = self.state()
+        sources = [
+            *(project.get("character_profiles", []) if isinstance(project.get("character_profiles"), list) else []),
+            *(state.get("characters", []) if isinstance(state.get("characters"), list) else []),
+        ]
+        cards: list[dict[str, Any]] = []
+        seen_names: set[str] = set()
+        for raw in sources:
+            if not isinstance(raw, dict):
+                continue
+            marker = str(raw.get("canon_entity_id") or "")
+            if marker and marker not in final_entities:
+                continue
+            name = str(raw.get("name") or "").strip()
+            if not name or name in seen_names:
+                continue
+            seen_names.add(name)
+            cards.append(deepcopy(raw))
+
+        for entity in final_entities.values():
+            if entity.entity_id in {
+                str(card.get("canon_entity_id") or "") for card in cards
+            }:
+                continue
+            if entity.display_name in seen_names:
+                # A manual card with the same name wins; do not overwrite it
+                # or silently attach Canon ownership to it.
+                continue
+            attributes = dict(entity.extensions or {})
+            occupation = str(attributes.get("occupation_or_role") or "").strip()
+            card = {
+                "name": entity.display_name,
+                "role": occupation or "配角",
+                "character_tier": "supporting",
+                "aliases": list(entity.aliases),
+                "canon_entity_id": entity.entity_id,
+                "canon_projection_source": "confirmed_continuity_delta",
+                "identity_profile": {
+                    "aliases": list(entity.aliases),
+                    "current_identity": str(attributes.get("identity") or ""),
+                    "occupation": occupation,
+                    "origin": str(attributes.get("origin") or ""),
+                },
+                "current_state": {
+                    "summary": str(attributes.get("current_state") or "")
+                } if str(attributes.get("current_state") or "").strip() else {},
+            }
+            cards.append(card)
+            seen_names.add(entity.display_name)
+        if not cards and not owned_ids:
+            return
+        project["character_profiles"] = deepcopy(cards)
+        state["characters"] = deepcopy(cards)
+        self._write_json_atomic(self.webnovel_dir / "project.json", project)
+        self._write_json_atomic(self.webnovel_dir / "state.json", state)
 
     def _apply_candidate_canon_delta(self, candidate: Any) -> dict[str, int]:
         """Apply a candidate's ``continuity_delta`` to the project canon.

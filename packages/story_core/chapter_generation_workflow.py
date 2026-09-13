@@ -31,7 +31,12 @@ from packages.story_core.skill_packs import (
 
 
 class ChapterGenerationWorkflowMixin:
-    def _commit_generated_bundle_canon(self, bundle: Any) -> dict[str, int]:
+    def _commit_generated_bundle_canon(
+        self,
+        bundle: Any,
+        *,
+        canon_plan: Any | None = None,
+    ) -> dict[str, int]:
         """Commit the continuity delta of a directly persisted chapter.
 
         Candidate confirmation already applies this delta. The normal
@@ -48,8 +53,36 @@ class ChapterGenerationWorkflowMixin:
             if isinstance(raw_delta, ContinuityDelta)
             else ContinuityDelta.model_validate(raw_delta)
         )
-        candidate_like = SimpleNamespace(continuity_delta=delta)
-        counts = self._apply_candidate_canon_delta(candidate_like)
+        candidate_like = SimpleNamespace(
+            candidate_id=f"generated:{int(delta.chapter_number)}",
+            chapter_number=int(delta.chapter_number),
+            continuity_delta=delta,
+        )
+        plan = canon_plan
+        if plan is None and hasattr(self, "_plan_candidate_canon_writes"):
+            plan = self._plan_candidate_canon_writes(candidate_like)
+        if plan is not None and getattr(plan, "status", "CLEAR") not in {"CLEAR", "NOOP"}:
+            raise ValueError("canon_reconciliation_not_clear:" + str(plan.status))
+        if plan is not None and hasattr(self, "_apply_candidate_canon_writes"):
+            self._apply_candidate_canon_writes(plan)
+            if getattr(plan, "mode", "") == "legacy":
+                counts = self._apply_candidate_canon_delta(candidate_like)
+            else:
+                counts = {
+                    section: len(getattr(delta, section, []) or [])
+                    for section in (
+                        "entity_additions",
+                        "entity_updates",
+                        "relationship_changes",
+                        "inventory_changes",
+                        "task_progressions",
+                        "location_movements",
+                        "timeline_advances",
+                        "foreshadowing_changes",
+                    )
+                }
+        else:
+            counts = self._apply_candidate_canon_delta(candidate_like)
         self._sync_candidate_character_additions(candidate_like)
         return counts
 
