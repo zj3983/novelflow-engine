@@ -602,10 +602,12 @@ def test_historical_rewrite_persists_ledger_rebuilt_from_saved_chapter_summaries
     assert chapter_two_threads == {"new-target-clue"}
     assert chapter_three_threads == set(expected)
 
-    regeneration_base = store._regeneration_base_state(3, store.state())
-    assert {
-        entry["text"] for entry in regeneration_base["foreshadowing"]
-    } == {"new-target-clue"}
+    # This fixture predates ContinuityStore snapshots.  Its embedded
+    # updated_story is not a trusted historical boundary under Phase 3E, so
+    # later reconstruction must report the missing baseline rather than
+    # consume that legacy payload.
+    with pytest.raises(ValueError, match="^continuity_history_baseline_unavailable$"):
+        store._regeneration_base_state(3, store.state())
 
 
 def test_plain_historical_rewrite_rebuilds_persisted_ledger_without_attribute_rules(tmp_path):
