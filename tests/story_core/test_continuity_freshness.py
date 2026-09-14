@@ -7,6 +7,8 @@ from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from packages.story_core.continuity.snapshot import ChapterSnapshot
 from packages.story_core.continuity.store import ContinuityStore
 from packages.story_core.continuity.delta import ContinuityDelta
@@ -126,6 +128,113 @@ def test_historical_confirmation_writes_snapshot_at_end_target_without_future_st
     assert "FUTURE_ONLY_CHARACTER" not in json.dumps(snapshot.state_after, ensure_ascii=False)
     assert store.continuity_store.get_stale_chapters() == [2, 3]
     assert {path: path.read_bytes() for path in downstream_files} == downstream_files
+
+
+def test_historical_candidate_updated_story_is_not_trusted_as_snapshot_authority(tmp_path):
+    store = _make_project(tmp_path)
+    for chapter in (1, 2, 3):
+        store.confirm_candidate(_candidate(store, chapter, tag=f"正文-{chapter}").candidate_id)
+
+    replacement = _candidate(store, 1, operation="regenerate", tag="候选第一章")
+    candidate_story = deepcopy(store.persisted_state())
+    candidate_story["current_chapter"] = 1
+    candidate_story["progression_ledger"] = {
+        "chapter_one_only": "CHAPTER_ONE_ONLY",
+        "future_only": "FUTURE_ONLY_PROGRESSION",
+    }
+    candidate_story["characters"] = [
+        {"name": "FUTURE_ONLY_CHARACTER", "role": "npc"},
+    ]
+    replacement.submission_payload["updated_story"] = candidate_story
+    replacement.submission_payload["chapter_summary"] = {
+        "chapter_number": 1,
+        "chapter_title": "候选第一章",
+        "summary": "CHAPTER_ONE_ONLY",
+        "facts": ["CHAPTER_ONE_ONLY"],
+        "next_focus": "继续推进",
+    }
+    store.candidate_store.save(replacement)
+
+    result = store.confirm_candidate(replacement.candidate_id)
+
+    assert result["candidate"]["status"] == "confirmed"
+    snapshot = store.continuity_store.read_fresh_snapshot(1)
+    assert snapshot is not None
+    snapshot_text = json.dumps(snapshot.state_after, ensure_ascii=False)
+    assert "CHAPTER_ONE_ONLY" in snapshot_text
+    assert "FUTURE_ONLY_PROGRESSION" not in snapshot_text
+    assert "FUTURE_ONLY_CHARACTER" not in snapshot_text
+
+
+def test_reconstruction_ignores_legacy_updated_story_without_continuity_snapshots(tmp_path):
+    store = _make_project(tmp_path)
+    current_state = store.persisted_state()
+    current_state["current_chapter"] = 2
+    _write_json(tmp_path / ".webnovel" / "state.json", current_state)
+    for chapter in (1, 2):
+        state = deepcopy(store.persisted_state())
+        state["current_chapter"] = chapter
+        state["progression_ledger"] = {
+            "replayed": f"chapter-{chapter}",
+            "future_only": "FUTURE_ONLY_CHAPTER_8_STATE" if chapter == 2 else None,
+        }
+        state["characters"] = (
+            [{"name": "FUTURE_ONLY_CHARACTER", "role": "npc"}]
+            if chapter == 2
+            else []
+        )
+        _write_json(
+            tmp_path / ".story-system" / "chapters" / f"{chapter:04d}.json",
+            {
+                "chapter_number": chapter,
+                "chapter_title": f"第{chapter}章",
+                "body": _body(f"正文-{chapter}"),
+                "chapter_summary": {
+                    "chapter_number": chapter,
+                    "chapter_title": f"第{chapter}章",
+                    "summary": f"可重放章节-{chapter}",
+                    "facts": [f"可重放事实-{chapter}"],
+                    "next_focus": "继续",
+                },
+                "updated_story": state,
+            },
+        )
+
+    rebuilt = store._reconstruct_state_at_end(2, store.state())
+
+    assert rebuilt is not None
+    state, source_chapter = rebuilt
+    assert source_chapter == 0
+    assert state["current_chapter"] == 2
+    state_text = json.dumps(state, ensure_ascii=False)
+    assert "FUTURE_ONLY_CHAPTER_8_STATE" not in state_text
+    assert "FUTURE_ONLY_CHARACTER" not in state_text
+    assert "可重放事实-2" in state_text
+
+
+def test_legacy_updated_story_does_not_rescue_missing_trusted_baseline(tmp_path):
+    store = _make_project(tmp_path, current_chapter=2)
+    (tmp_path / ".story-system" / "MASTER_SETTING.json").unlink()
+    legacy_state = deepcopy(store.persisted_state())
+    legacy_state["current_chapter"] = 1
+    legacy_state["progression_ledger"] = {"future_only": "FUTURE_ONLY_LEGACY_STATE"}
+    _write_json(
+        tmp_path / ".story-system" / "chapters" / "0001.json",
+        {
+            "chapter_number": 1,
+            "chapter_title": "旧第一章",
+            "body": _body("旧第一章正文"),
+            "updated_story": legacy_state,
+        },
+    )
+    candidate = _candidate(store, 1, operation="regenerate")
+
+    plan = store._plan_continuity_snapshot(candidate)
+
+    assert plan.mode == "STALE_ONLY"
+    assert "CONTINUITY_HISTORY_BASELINE_UNAVAILABLE" in plan.findings
+    with pytest.raises(ValueError, match="^continuity_history_baseline_unavailable$"):
+        store._regeneration_base_state(2, store.state())
 
 
 def test_stale_marker_failure_rolls_back_historical_confirmation(tmp_path, monkeypatch):

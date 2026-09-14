@@ -9987,20 +9987,13 @@ class FileProjectStore(
             base_state = self._continuity_snapshot_state(snapshot, current_state)
             snapshot_number = int(snapshot.chapter_number)
         else:
-            # Older projects may have no ContinuityStore snapshot yet, but
-            # their chapter JSON can still carry the validated embedded
-            # ``updated_story`` boundary. Preserve that compatibility while
-            # still refusing it once the chapter is explicitly stale.
-            base_state = None
+            # A legacy chapter's embedded ``updated_story`` has no freshness
+            # provenance.  It may have been produced from the latest visible
+            # state, so it is never a historical boundary or replay input.
+            # Fall back only to the explicit chapter-zero baseline and replay
+            # persisted chapter artifacts from there.
+            base_state = self._trusted_initial_regeneration_state(current_state)
             snapshot_number = 0
-            for previous_number in range(target, 0, -1):
-                legacy_state = self._chapter_snapshot_state(previous_number, current_state)
-                if legacy_state is not None:
-                    base_state = legacy_state
-                    snapshot_number = previous_number
-                    break
-            if base_state is None:
-                base_state = self._trusted_initial_regeneration_state(current_state)
         if base_state is None or snapshot_number > target:
             return None
 
@@ -10012,20 +10005,10 @@ class FileProjectStore(
                 chapter = deepcopy(self.chapter(previous_number))
             except FileNotFoundError:
                 return None
-            # A legacy chapter may carry a validated structured END-state in
-            # its JSON while not having a ContinuityStore snapshot yet. It is
-            # safe compatibility input only when that chapter is not marked
-            # stale and has no newer snapshot format to supersede it. Once a
-            # stale marker exists, replay the persisted chapter artifact
-            # deterministically instead of consuming the stale state.
-            legacy_state = None
-            if not self.continuity_store.snapshot_path(previous_number).is_file():
-                legacy_state = self._chapter_snapshot_state(previous_number, current_state)
-            if legacy_state is not None:
-                base_state = legacy_state
-            else:
-                base_state = self._sync_state_after_chapter(base_state, chapter)
-                base_state = self._sync_ledger_from_chapter_body(base_state, chapter)
+            # Embedded chapter ``updated_story`` is intentionally ignored:
+            # its shape proves only schema validity, not the time boundary.
+            base_state = self._sync_state_after_chapter(base_state, chapter)
+            base_state = self._sync_ledger_from_chapter_body(base_state, chapter)
         base_state["current_chapter"] = target
         return base_state, snapshot_number
 
@@ -10080,16 +10063,13 @@ class FileProjectStore(
 
         base_state, source_chapter = rebuilt
         chapter = self._candidate_continuity_chapter(candidate)
-        candidate_payload = getattr(candidate, "submission_payload", {})
-        candidate_story = (
-            candidate_payload.get("updated_story")
-            if isinstance(candidate_payload, dict)
-            else None
-        )
-        end_state = self._validated_runtime_state(candidate_story, base_state)
-        if end_state is None or int(end_state.get("current_chapter") or 0) != chapter_number:
-            end_state = self._sync_state_after_chapter(deepcopy(base_state), chapter)
-            end_state = self._sync_ledger_from_chapter_body(end_state, chapter)
+        # A historical candidate's embedded ``updated_story`` is only a
+        # proposal-shaped payload.  Even a fully valid StoryState with
+        # current_chapter == N can contain fields copied from N+1..latest.
+        # Rebuild END N exclusively from the trusted END N-1 boundary and the
+        # replacement chapter artifact.
+        end_state = self._sync_state_after_chapter(deepcopy(base_state), chapter)
+        end_state = self._sync_ledger_from_chapter_body(end_state, chapter)
         end_state["current_chapter"] = chapter_number
         from packages.story_core.persistence.project_transaction import slice_state_for_snapshot
 
@@ -10543,39 +10523,6 @@ class FileProjectStore(
                 baseline[field] = deepcopy(current_state[field])
         return baseline
 
-    def _chapter_snapshot_state(
-        self,
-        chapter_number: int,
-        current_state: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        continuity_snapshot = self.continuity_store.read_fresh_snapshot(chapter_number)
-        if continuity_snapshot is not None:
-            return self._continuity_snapshot_state(continuity_snapshot, current_state)
-        # A stale snapshot is retained for diagnosis but is never a trusted
-        # generation boundary. The embedded chapter copy is only a legacy
-        # fallback for projects that predate ContinuityStore snapshots.
-        if self.continuity_store.is_stale(chapter_number):
-            return None
-        if self.continuity_store.snapshot_path(chapter_number).is_file():
-            return None
-        try:
-            chapter = self.chapter(chapter_number)
-        except FileNotFoundError:
-            return None
-        updated_story = chapter.get("updated_story") if isinstance(chapter, dict) else None
-        if not isinstance(updated_story, dict):
-            return None
-        try:
-            snapshot_chapter = int(updated_story.get("current_chapter") or 0)
-        except (TypeError, ValueError):
-            return None
-        if snapshot_chapter != chapter_number:
-            return None
-        hydrated_snapshot = self._conservative_regeneration_state(current_state)
-        hydrated_snapshot.update(deepcopy(updated_story))
-        usable = self._validated_runtime_state(hydrated_snapshot, current_state)
-        return dict(usable) if usable is not None else None
-
     @staticmethod
     def _merge_regeneration_configuration(
         base_state: dict[str, Any],
@@ -10751,17 +10698,40 @@ class FileProjectStore(
                 "candidate": candidate.to_dict(),
                 "simulation_variant": variant_payload,
             }
-        persisted = self.persist_bundle(
-            bundle,
+        direct_candidate = SimpleNamespace(
+            candidate_id=f"generated:{chapter_number}",
+            chapter_number=chapter_number,
+            chapter_title=getattr(bundle, "chapter_title", "") or "",
+            body=getattr(bundle, "body", "") or "",
             operation="regenerate",
-            commit_message=commit_message or f"regenerate chapter {chapter_number} ({variant_payload.get('id')})",
+            submission_payload=self._bundle_to_dict(bundle),
+            continuity_delta=getattr(bundle, "continuity_delta", None),
         )
+        continuity_plan = self._plan_continuity_snapshot(direct_candidate)
+        from packages.story_core.persistence.project_transaction import ProjectTransaction
+
+        with ProjectTransaction.create(
+            self.root,
+            snapshot_store=self.snapshot_store,
+            managed_paths=self._managed_paths_for_transaction(),
+            managed_directories=self._managed_directories_for_transaction(),
+        ):
+            persisted = self.persist_bundle(
+                bundle,
+                operation="regenerate",
+                commit_message=commit_message or f"regenerate chapter {chapter_number} ({variant_payload.get('id')})",
+            )
+            self._wrap_confirmation_in_transaction(
+                direct_candidate,
+                continuity_plan=continuity_plan,
+            )
         return {
             "schema_version": "file-project-regenerate/v1",
             "root": str(self.root),
             "chapter_number": persisted["chapter_number"],
             "chapter_title": persisted["chapter_title"],
             "simulation_variant": variant_payload,
+            "continuity_snapshot": continuity_plan.to_result_dict(),
             "persisted": persisted,
             "quality_warning": quality_report.get("regeneration_quality_warning")
             if isinstance(quality_report, dict)

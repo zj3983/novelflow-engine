@@ -3033,6 +3033,13 @@ def test_state_before_current_chapter_uses_previous_chapter_snapshot(tmp_path):
             },
         },
     )
+    _seed_trusted_continuity_snapshot(
+        store,
+        1,
+        state_after={
+            "progression_ledger": {"quests": {"清道夫委托": "进行中 8/16"}},
+        },
+    )
 
     before = store._state_before_chapter(2)
 
@@ -8408,6 +8415,16 @@ def test_rewriting_later_chapter_uses_previous_snapshot_not_current_state(tmp_pa
             },
         },
     )
+    _seed_trusted_continuity_snapshot(
+        store,
+        1,
+        state_after={
+            "world_facts": [prior_marker],
+            "characters": [
+                {"name": "林修", "role": "protagonist", "memory": [prior_marker]}
+            ],
+        },
+    )
 
     packet = store.writing_packet(2)
     rendered = json.dumps(packet, ensure_ascii=False)
@@ -9142,6 +9159,11 @@ def test_rewrite_latest_chapter_rebuilds_state_from_previous_snapshot_and_keeps_
         "progression_ledger": {"protagonist": {"level": "Lv.1"}},
     }
     chapter3_path.write_text(json.dumps(chapter3, ensure_ascii=False), encoding="utf-8")
+    _seed_trusted_continuity_snapshot(
+        store,
+        3,
+        state_after={"progression_ledger": {"protagonist": {"level": "Lv.1"}}},
+    )
     state_path = root / ".webnovel" / "state.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
     state["current_chapter"] = 4
@@ -9449,6 +9471,14 @@ def test_regenerate_historical_chapter_rebases_structured_attribute_ledger_throu
                 "chapter_summaries": deepcopy(updated_story["chapter_summaries"]),
                 "world_facts": deepcopy(updated_story["world_facts"]),
             }
+    first_chapter = json.loads(
+        (store.story_system_dir / "chapters" / "0001.json").read_text(encoding="utf-8")
+    )
+    _seed_trusted_continuity_snapshot(
+        store,
+        1,
+        state_after=first_chapter["updated_story"],
+    )
 
     class FakeEngine:
         def generate_next_chapter(self, story):
@@ -10007,9 +10037,12 @@ def test_regenerate_serializes_state_read_and_generation_per_project(tmp_path):
     assert not thread_a.is_alive()
     assert not thread_b.is_alive()
     assert errors == []
-    assert observed_b_attributes == {"Strength": 5, "Intelligence": 10}
+    # Chapter 2 was directly persisted without a trusted snapshot before
+    # Phase 3E.  Its embedded updated_story is deliberately not a replay
+    # authority, so Chapter 3 is rebuilt from the chapter artifact itself.
+    assert observed_b_attributes == {"Strength": 5, "Intelligence": 5}
     final_state = json.loads((store_a.webnovel_dir / "state.json").read_text(encoding="utf-8"))
-    assert final_state["progression_ledger"]["protagonist"]["attributes"]["Intelligence"] == 10
+    assert final_state["progression_ledger"]["protagonist"]["attributes"]["Intelligence"] == 5
 
 
 def test_regenerate_generation_lock_is_independent_between_projects(tmp_path):
@@ -10946,6 +10979,7 @@ def test_regenerate_second_chapter_uses_previous_snapshot_for_attribute_realloca
             "chapter_summary": {"chapter_number": 1, "summary": "Ari earns five points."},
         },
     )
+    _seed_trusted_continuity_snapshot(store, 1, state_after=chapter_one_state)
     store._write_json(
         store.story_system_dir / "chapters" / "0002.json",
         {
