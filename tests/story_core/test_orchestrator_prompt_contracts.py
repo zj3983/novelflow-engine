@@ -6,6 +6,7 @@ import pytest
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.models import StoryState
 from packages.story_core.orchestrator import StoryOrchestrator
+from packages.story_core.continuity.snapshot import ChapterSnapshot
 
 
 class _StoryCaptured(RuntimeError):
@@ -84,7 +85,19 @@ def _make_outline_project(root: Path, *, current_chapter: int) -> FileProjectSto
         root / ".story-system" / "chapters" / "0011.json",
         {"chapter_number": 11, "chapter_title": "Previous", "updated_story": {}},
     )
-    return FileProjectStore(root)
+    store = FileProjectStore(root)
+    store.continuity_store.write_snapshot(
+        ChapterSnapshot(
+            chapter_number=11,
+            candidate_id="trusted-11",
+            operation="generate",
+            confirmed_at="2026-01-01T00:00:00+00:00",
+            body_sha256="fixture",
+            body_chars=1,
+            state_after={"current_chapter": 11},
+        )
+    )
+    return store
 
 
 def test_story_state_outline_context_is_transient_and_reaches_plan_prompt() -> None:

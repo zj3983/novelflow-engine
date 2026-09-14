@@ -17,13 +17,39 @@ module just provides a typed view.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from .snapshot import ChapterSnapshot
 
 
 _STALE_SCHEMA_VERSION = "continuity-stale/v1"
+
+
+@dataclass
+class ContinuitySnapshotPlan:
+    """Read-only decision for the continuity side of confirmation."""
+
+    status: str
+    mode: str
+    chapter_number: int
+    candidate_id: str = ""
+    boundary_source_chapter: int | None = None
+    snapshot_payload: dict[str, Any] | None = None
+    stale_from_chapter: int | None = None
+    findings: list[str] = field(default_factory=list)
+
+    def to_result_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "mode": self.mode,
+            "chapter_number": self.chapter_number,
+            "candidate_id": self.candidate_id,
+            "boundary_source_chapter": self.boundary_source_chapter,
+            "stale_from_chapter": self.stale_from_chapter,
+            "findings": list(self.findings),
+        }
 
 
 class ContinuityStore:
@@ -53,7 +79,34 @@ class ContinuityStore:
         target = self.snapshot_path(chapter_number)
         if not target.is_file():
             return None
-        return ChapterSnapshot.from_dict(json.loads(target.read_text(encoding="utf-8")))
+        try:
+            payload = json.loads(target.read_text(encoding="utf-8"))
+            return ChapterSnapshot.from_dict(payload)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None
+
+    def is_stale(self, chapter_number: int) -> bool:
+        """Return whether a snapshot is currently outside the trusted chain."""
+
+        return int(chapter_number) in set(self.get_stale_chapters())
+
+    def read_fresh_snapshot(self, chapter_number: int) -> ChapterSnapshot | None:
+        """Read a snapshot only when its chapter is not marked stale."""
+
+        if self.is_stale(chapter_number):
+            return None
+        return self.read_snapshot(chapter_number)
+
+    def latest_fresh_snapshot_before(self, chapter_number: int) -> ChapterSnapshot | None:
+        """Return the nearest trusted snapshot strictly before ``chapter_number``."""
+
+        target = int(chapter_number)
+        candidates = [
+            snapshot
+            for snapshot in self.list_snapshots()
+            if snapshot.chapter_number < target and not self.is_stale(snapshot.chapter_number)
+        ]
+        return max(candidates, key=lambda item: item.chapter_number, default=None)
 
     def list_snapshots(self) -> list[ChapterSnapshot]:
         if not self.snapshots_dir.is_dir():
@@ -118,4 +171,8 @@ class ContinuityStore:
         )
 
 
-__all__ = ["ContinuityStore", "_STALE_SCHEMA_VERSION"]
+__all__ = [
+    "ContinuitySnapshotPlan",
+    "ContinuityStore",
+    "_STALE_SCHEMA_VERSION",
+]

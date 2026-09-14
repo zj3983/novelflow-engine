@@ -86,6 +86,7 @@ from packages.story_core.character_profiles import (
     remove_cross_character_aliases,
 )
 from packages.story_core.continuity.delta import ContinuityDelta
+from packages.story_core.continuity.store import ContinuitySnapshotPlan, ContinuityStore
 from packages.story_core.ai_flavor_review import review_ai_flavor
 from packages.story_core.book_style import normalize_book_style
 from packages.story_core.cold_reader_review import review_cold_reader_experience
@@ -1569,8 +1570,6 @@ class FileProjectStore(
         self.candidate_store = CandidateStore(self.root)
         self.chapter_store = ChapterStore(self.root)
         self.snapshot_store = SnapshotStore()
-        from packages.story_core.continuity.store import ContinuityStore
-
         self.continuity_store = ContinuityStore(self.root)
 
     @property
@@ -9026,6 +9025,10 @@ class FileProjectStore(
             candidate_id=f"generated:{int(getattr(bundle, 'chapter_number', 0) or 0)}",
             project_id=self._canon_project_id(),
             chapter_number=int(getattr(bundle, "chapter_number", 0) or 0),
+            chapter_title=str(getattr(bundle, "chapter_title", "") or ""),
+            body=str(getattr(bundle, "body", "") or ""),
+            operation="generate",
+            submission_payload=self._bundle_to_dict(bundle),
             fact_resource_extraction=fact_resource_extraction,
             continuity_delta=getattr(bundle, "continuity_delta", None),
         )
@@ -9033,6 +9036,7 @@ class FileProjectStore(
         canon_plan = self._plan_candidate_canon_writes(direct_candidate)
         if canon_plan.status not in {"CLEAR", "NOOP"}:
             raise ValueError("canon_reconciliation_not_clear:" + canon_plan.status)
+        continuity_plan = self._plan_continuity_snapshot(direct_candidate)
         from packages.story_core.persistence.project_transaction import ProjectTransaction
 
         with ProjectTransaction.create(
@@ -9053,12 +9057,17 @@ class FileProjectStore(
                 bundle,
                 canon_plan=canon_plan,
             )
+            self._wrap_confirmation_in_transaction(
+                direct_candidate,
+                continuity_plan=continuity_plan,
+            )
         return {
             "schema_version": "file-project-generate-next/v1",
             "root": str(self.root),
             "chapter_number": persisted["chapter_number"],
             "chapter_title": persisted["chapter_title"],
             "chapter_direction": chapter_direction,
+            "continuity_snapshot": continuity_plan.to_result_dict(),
             "persisted": persisted,
         }
 
@@ -9149,6 +9158,7 @@ class FileProjectStore(
                     result["fact_resource_reconciliation"] = fact_resource_plan.to_result_dict()
                 return result
             skip_historical_canon_apply = canon_status in {"SAFE_EMPTY", "SAFE_IDENTICAL"}
+        continuity_plan = self._plan_continuity_snapshot(candidate)
 
         # The confirmation is the single atomic boundary the user
         # can trust. The body runs the legacy ``persist_bundle``
@@ -9196,7 +9206,10 @@ class FileProjectStore(
             else:
                 canon_commit = self._apply_candidate_canon_writes(canon_plan)
                 self._sync_reconciled_canon_character_projection(canon_plan)
-            self._wrap_confirmation_in_transaction(candidate)
+            self._wrap_confirmation_in_transaction(
+                candidate,
+                continuity_plan=continuity_plan,
+            )
         if fact_resource_commit.get("committed") or isinstance(
             fact_resource_plan, FactResourceReconciliationPlan
         ):
@@ -9213,7 +9226,11 @@ class FileProjectStore(
             candidate.fact_resource_review = review
         candidate.confirm()
         self.candidate_store.save(candidate)
-        return {"schema_version": "file-project-candidate-confirm/v1", "candidate": candidate.to_dict()}
+        return {
+            "schema_version": "file-project-candidate-confirm/v1",
+            "candidate": candidate.to_dict(),
+            "continuity_snapshot": continuity_plan.to_result_dict(),
+        }
 
     # --- Transaction-managed paths -----------------------------------------
 
@@ -9921,7 +9938,177 @@ class FileProjectStore(
         SnapshotStore().write_json_atomic(target, payload)
         return target
 
-    def _wrap_confirmation_in_transaction(self, candidate: Any) -> None:
+    def _trusted_initial_regeneration_state(
+        self,
+        current_state: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Return a chapter-zero state only when its boundary is explicit."""
+
+        master = self._read_json(self.story_system_dir / "MASTER_SETTING.json", {}) or {}
+        master_state = master.get("state") if isinstance(master, dict) else None
+        if isinstance(master_state, dict) and int(master_state.get("current_chapter") or 0) == 0:
+            return self._conservative_regeneration_state(current_state)
+        if not self.chapter_numbers() and int(current_state.get("current_chapter") or 0) == 0:
+            return self._conservative_regeneration_state(current_state)
+        return None
+
+    def _continuity_snapshot_state(
+        self,
+        snapshot: Any,
+        current_state: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if snapshot is None:
+            return None
+        state_after = getattr(snapshot, "state_after", None)
+        if not isinstance(state_after, dict):
+            return None
+        hydrated = self._conservative_regeneration_state(current_state)
+        hydrated.update(deepcopy(state_after))
+        hydrated["current_chapter"] = int(getattr(snapshot, "chapter_number", 0) or 0)
+        usable = self._validated_runtime_state(hydrated, current_state)
+        return dict(usable) if usable is not None else None
+
+    def _reconstruct_state_at_end(
+        self,
+        chapter_number: int,
+        current_state: dict[str, Any],
+    ) -> tuple[dict[str, Any], int] | None:
+        """Rebuild a trusted END chapter state without consuming stale snapshots."""
+
+        target = int(chapter_number)
+        if target < 0:
+            return None
+        if target == 0:
+            baseline = self._trusted_initial_regeneration_state(current_state)
+            return (baseline, 0) if baseline is not None else None
+
+        snapshot = self.continuity_store.latest_fresh_snapshot_before(target + 1)
+        if snapshot is not None:
+            base_state = self._continuity_snapshot_state(snapshot, current_state)
+            snapshot_number = int(snapshot.chapter_number)
+        else:
+            # Older projects may have no ContinuityStore snapshot yet, but
+            # their chapter JSON can still carry the validated embedded
+            # ``updated_story`` boundary. Preserve that compatibility while
+            # still refusing it once the chapter is explicitly stale.
+            base_state = None
+            snapshot_number = 0
+            for previous_number in range(target, 0, -1):
+                legacy_state = self._chapter_snapshot_state(previous_number, current_state)
+                if legacy_state is not None:
+                    base_state = legacy_state
+                    snapshot_number = previous_number
+                    break
+            if base_state is None:
+                base_state = self._trusted_initial_regeneration_state(current_state)
+        if base_state is None or snapshot_number > target:
+            return None
+
+        available = set(self.chapter_numbers())
+        for previous_number in range(snapshot_number + 1, target + 1):
+            if previous_number not in available:
+                return None
+            try:
+                chapter = deepcopy(self.chapter(previous_number))
+            except FileNotFoundError:
+                return None
+            # A legacy chapter may carry a validated structured END-state in
+            # its JSON while not having a ContinuityStore snapshot yet. It is
+            # safe compatibility input only when that chapter is not marked
+            # stale and has no newer snapshot format to supersede it. Once a
+            # stale marker exists, replay the persisted chapter artifact
+            # deterministically instead of consuming the stale state.
+            legacy_state = None
+            if not self.continuity_store.snapshot_path(previous_number).is_file():
+                legacy_state = self._chapter_snapshot_state(previous_number, current_state)
+            if legacy_state is not None:
+                base_state = legacy_state
+            else:
+                base_state = self._sync_state_after_chapter(base_state, chapter)
+                base_state = self._sync_ledger_from_chapter_body(base_state, chapter)
+        base_state["current_chapter"] = target
+        return base_state, snapshot_number
+
+    def _candidate_continuity_chapter(self, candidate: Any) -> dict[str, Any]:
+        payload = dict(getattr(candidate, "submission_payload", {}) or {})
+        payload["chapter_number"] = int(getattr(candidate, "chapter_number", 0) or 0)
+        payload["chapter_title"] = str(getattr(candidate, "chapter_title", "") or "")
+        payload["body"] = str(getattr(candidate, "body", "") or "")
+        # A candidate's embedded updated_story can have been produced from a
+        # latest visible state. Historical snapshot planning must derive from
+        # the trusted boundary instead of copying that potentially-future
+        # projection.
+        payload.pop("updated_story", None)
+        return payload
+
+    def _plan_continuity_snapshot(self, candidate: Any) -> ContinuitySnapshotPlan:
+        """Plan the continuity snapshot/freshness side effects read-only."""
+
+        chapter_number = int(getattr(candidate, "chapter_number", 0) or 0)
+        candidate_id = str(getattr(candidate, "candidate_id", "") or "")
+        if chapter_number <= 0:
+            return ContinuitySnapshotPlan(
+                status="NOOP",
+                mode="NOOP",
+                chapter_number=chapter_number,
+                candidate_id=candidate_id,
+            )
+
+        latest = max(
+            max(self.chapter_numbers(), default=0),
+            int((self.persisted_state() or {}).get("current_chapter") or 0),
+        )
+        if chapter_number > latest:
+            return ContinuitySnapshotPlan(
+                status="CLEAR",
+                mode="NORMAL_APPEND",
+                chapter_number=chapter_number,
+                candidate_id=candidate_id,
+            )
+
+        current_state = self.state()
+        rebuilt = self._reconstruct_state_at_end(chapter_number - 1, current_state)
+        if rebuilt is None:
+            return ContinuitySnapshotPlan(
+                status="CLEAR",
+                mode="STALE_ONLY",
+                chapter_number=chapter_number,
+                candidate_id=candidate_id,
+                stale_from_chapter=chapter_number,
+                findings=["CONTINUITY_HISTORY_BASELINE_UNAVAILABLE"],
+            )
+
+        base_state, source_chapter = rebuilt
+        chapter = self._candidate_continuity_chapter(candidate)
+        candidate_payload = getattr(candidate, "submission_payload", {})
+        candidate_story = (
+            candidate_payload.get("updated_story")
+            if isinstance(candidate_payload, dict)
+            else None
+        )
+        end_state = self._validated_runtime_state(candidate_story, base_state)
+        if end_state is None or int(end_state.get("current_chapter") or 0) != chapter_number:
+            end_state = self._sync_state_after_chapter(deepcopy(base_state), chapter)
+            end_state = self._sync_ledger_from_chapter_body(end_state, chapter)
+        end_state["current_chapter"] = chapter_number
+        from packages.story_core.persistence.project_transaction import slice_state_for_snapshot
+
+        return ContinuitySnapshotPlan(
+            status="CLEAR",
+            mode="WRITE_FRESH",
+            chapter_number=chapter_number,
+            candidate_id=candidate_id,
+            boundary_source_chapter=source_chapter,
+            snapshot_payload=slice_state_for_snapshot(end_state),
+            stale_from_chapter=chapter_number,
+        )
+
+    def _wrap_confirmation_in_transaction(
+        self,
+        candidate: Any,
+        *,
+        continuity_plan: ContinuitySnapshotPlan | None = None,
+    ) -> None:
         """Attach the chapter snapshot (and stale markers) to a confirmed candidate.
 
         Called from ``confirm_candidate`` after ``persist_bundle``
@@ -9940,27 +10127,36 @@ class FileProjectStore(
         if chapter_number <= 0:
             return
 
-        # The post-confirm state is the source-of-truth for
-        # regenerations, so the snapshot stores a small slice of it.
-        post_state = self.state()
+        plan = continuity_plan or self._plan_continuity_snapshot(candidate)
+        if plan.mode == "STALE_ONLY":
+            stale = [number for number in self.chapter_numbers() if number >= chapter_number]
+            if stale:
+                self.continuity_store.mark_stale(stale)
+            return
+        if plan.mode == "NOOP":
+            return
+
+        state_after = plan.snapshot_payload
+        if state_after is None:
+            # A normal append is written after persist_bundle, so the current
+            # state is exactly END N. Historical plans never use this branch.
+            state_after = slice_state_for_snapshot(self.state())
         snapshot = build_chapter_snapshot(
             chapter_number=chapter_number,
             candidate_id=str(getattr(candidate, "candidate_id", "")),
             operation=str(getattr(candidate, "operation", "generate")),
             body=str(getattr(candidate, "body", "") or ""),
-            state_after=slice_state_for_snapshot(post_state),
+            state_after=state_after,
             continuity_delta_summary=summarise_continuity_delta(
                 getattr(candidate, "continuity_delta", None)
             ),
         )
         self.continuity_store.write_snapshot(snapshot)
 
-        if str(getattr(candidate, "operation", "generate")) == "regenerate":
-            stale = [
-                number
-                for number in self.chapter_numbers()
-                if number > chapter_number
-            ]
+        if plan.mode == "WRITE_FRESH":
+            if self.continuity_store.is_stale(chapter_number):
+                self.continuity_store.clear_stale([chapter_number])
+            stale = [number for number in self.chapter_numbers() if number > chapter_number]
             if stale:
                 self.continuity_store.mark_stale(stale)
 
@@ -10352,6 +10548,16 @@ class FileProjectStore(
         chapter_number: int,
         current_state: dict[str, Any],
     ) -> dict[str, Any] | None:
+        continuity_snapshot = self.continuity_store.read_fresh_snapshot(chapter_number)
+        if continuity_snapshot is not None:
+            return self._continuity_snapshot_state(continuity_snapshot, current_state)
+        # A stale snapshot is retained for diagnosis but is never a trusted
+        # generation boundary. The embedded chapter copy is only a legacy
+        # fallback for projects that predate ContinuityStore snapshots.
+        if self.continuity_store.is_stale(chapter_number):
+            return None
+        if self.continuity_store.snapshot_path(chapter_number).is_file():
+            return None
         try:
             chapter = self.chapter(chapter_number)
         except FileNotFoundError:
@@ -10393,26 +10599,10 @@ class FileProjectStore(
         chapter_number: int,
         current_state: dict[str, Any],
     ) -> dict[str, Any]:
-        snapshot_number = 0
-        base_state: dict[str, Any] | None = None
-        for previous_number in range(chapter_number - 1, 0, -1):
-            base_state = self._chapter_snapshot_state(previous_number, current_state)
-            if base_state is not None:
-                snapshot_number = previous_number
-                break
-        if base_state is None:
-            base_state = self._conservative_regeneration_state(current_state)
-
-        replay_numbers = [
-            number
-            for number in self.chapter_numbers()
-            if snapshot_number < number < chapter_number
-        ]
-        for previous_number in replay_numbers:
-            chapter = self.chapter(previous_number)
-            base_state = self._sync_state_after_chapter(base_state, deepcopy(chapter))
-            base_state = self._sync_ledger_from_chapter_body(base_state, deepcopy(chapter))
-
+        rebuilt = self._reconstruct_state_at_end(chapter_number - 1, current_state)
+        if rebuilt is None:
+            raise ValueError("continuity_history_baseline_unavailable")
+        base_state, _source_chapter = rebuilt
         base_state["current_chapter"] = chapter_number - 1
         return self._merge_regeneration_configuration(base_state, current_state)
 

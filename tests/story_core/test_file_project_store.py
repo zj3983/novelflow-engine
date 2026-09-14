@@ -32,6 +32,7 @@ from packages.story_core.outline_planning_generation import (
 from packages.story_core.project_outline import ArcOutline
 from packages.story_core.outline_rolling_store import RollingOutlineStore
 from packages.story_core.volume_detail_checkpoints import VolumeDetailCheckpointStore
+from packages.story_core.continuity.snapshot import ChapterSnapshot
 
 
 def _seed_generation_outline(root: Path, chapter_number: int) -> None:
@@ -493,6 +494,20 @@ def _long_test_body(label: str = "Night Ember keeps the chapter grounded.") -> s
     unit = label + " He checks the task, pays a visible cost, gains a result, and leaves a next step.\n"
     unit_chars = max(1, len("".join(unit.split())))
     return unit * max(1, 4500 // unit_chars)
+
+
+def _seed_trusted_continuity_snapshot(store: FileProjectStore, chapter_number: int = 1, state_after: dict | None = None) -> None:
+    store.continuity_store.write_snapshot(
+        ChapterSnapshot(
+            chapter_number=chapter_number,
+            candidate_id=f"trusted-{chapter_number}",
+            operation="generate",
+            confirmed_at="2026-01-01T00:00:00+00:00",
+            body_sha256="fixture",
+            body_chars=1,
+            state_after={"current_chapter": chapter_number, **(state_after or {})},
+        )
+    )
 
 
 def test_first_chapter_regeneration_removes_post_chapter_character_states(tmp_path):
@@ -7644,6 +7659,13 @@ def test_file_project_store_generates_next_chapter_without_api(tmp_path):
     assert generated["schema_version"] == "file-project-generate-next/v1"
     assert generated["chapter_number"] == 1
     assert (root / ".story-system" / "chapters" / "0001.json").exists()
+    direct_snapshot = json.loads(
+        (root / ".story-system" / "continuity" / "snapshots" / "0001.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert direct_snapshot["chapter_number"] == 1
+    assert direct_snapshot["candidate_id"] == "generated:1"
     assert (root / "chapters" / "0001-Chapter 1.md").read_text(encoding="utf-8").startswith("Night Ember")
     state = json.loads((root / ".webnovel" / "state.json").read_text(encoding="utf-8"))
     assert state["current_chapter"] == 1
@@ -8424,6 +8446,8 @@ def test_rewriting_chapter_uses_only_chapters_before_target_for_writer_context(t
             store.story_system_dir / "reviews" / f"{number:04d}.json",
             {"ok": True, "issues": [review_marker]},
         )
+
+    _seed_trusted_continuity_snapshot(store, 1)
 
     first_packet = store.writing_packet(1)
     first_json = json.dumps(first_packet, ensure_ascii=False)
@@ -9699,6 +9723,21 @@ def _historical_rebase_transaction_case(root):
             "unallocated_attribute_points": 0,
             "attribute_point_awards": [award_two],
             "attribute_allocations": [new_two],
+        },
+    )
+    _seed_trusted_continuity_snapshot(
+        store,
+        1,
+        state_after={
+            "progression_ledger": {
+                "protagonist": {
+                    "level": "Lv.1",
+                    "attributes": {"Strength": 5, "Intelligence": 5},
+                    "unallocated_attribute_points": 5,
+                    "attribute_point_awards": [],
+                    "attribute_allocations": [],
+                }
+            }
         },
     )
     future_story = story(
@@ -11010,7 +11049,8 @@ def test_regenerate_without_previous_snapshot_does_not_reuse_completed_chapter_s
         lambda bundle, **_kwargs: {"chapter_number": bundle.chapter_number, "chapter_title": bundle.chapter_title},
     )
 
-    store.regenerate_chapter(2, engine=FakeEngine())
+    with pytest.raises(ValueError, match="^continuity_history_baseline_unavailable$"):
+        store.regenerate_chapter(2, engine=FakeEngine())
 
 
 def test_regenerate_without_snapshot_whitelists_stable_state_only(monkeypatch, tmp_path):
@@ -11091,7 +11131,8 @@ def test_regenerate_without_snapshot_whitelists_stable_state_only(monkeypatch, t
         },
     )
 
-    store.regenerate_chapter(2, engine=FakeEngine())
+    with pytest.raises(ValueError, match="^continuity_history_baseline_unavailable$"):
+        store.regenerate_chapter(2, engine=FakeEngine())
 
 
 def test_regenerate_without_snapshot_uses_static_standard_character_profiles(monkeypatch, tmp_path):
@@ -11182,7 +11223,8 @@ def test_regenerate_without_snapshot_uses_static_standard_character_profiles(mon
         },
     )
 
-    store.regenerate_chapter(2, engine=FakeEngine())
+    with pytest.raises(ValueError, match="^continuity_history_baseline_unavailable$"):
+        store.regenerate_chapter(2, engine=FakeEngine())
 
 
 def test_file_project_store_passes_temporary_guidance_to_regeneration(tmp_path):
