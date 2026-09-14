@@ -245,6 +245,70 @@ def test_historical_canon_authority_without_as_of_projection_is_stale_only(tmp_p
     assert canon["by_id"]["char-qian"]["display_name"] == "钱七"
 
 
+def test_canon_noop_retry_keeps_nonempty_historical_delta_stale_only(tmp_path, monkeypatch):
+    store = _make_project(tmp_path)
+    for chapter in (1, 2):
+        store.confirm_candidate(_candidate(store, chapter, tag=f"旧正文-{chapter}").candidate_id)
+
+    replacement = _candidate(store, 1, operation="regenerate", tag="Canon重试")
+    replacement.continuity_delta = ContinuityDelta(
+        chapter_number=1,
+        entity_additions=[
+            EntityAddition(
+                chapter_number=1,
+                source_sentence="钱七出场",
+                confidence=0.95,
+                entity_id="char-qian-retry",
+                kind="character",
+                canonical_name="钱七",
+            )
+        ],
+    )
+    store.candidate_store.save(replacement)
+
+    original_save = store.candidate_store.save
+
+    def fail_final_candidate_save(candidate):
+        if candidate.candidate_id == replacement.candidate_id and candidate.status == "confirmed":
+            raise OSError("candidate_final_save_failed")
+        return original_save(candidate)
+
+    monkeypatch.setattr(store.candidate_store, "save", fail_final_candidate_save)
+    with pytest.raises(OSError, match="candidate_final_save_failed"):
+        store.confirm_candidate(replacement.candidate_id)
+
+    assert store.candidate_store.get(replacement.candidate_id).status == "pending"
+    history_path = tmp_path / ".story-system" / "canon" / "history.json"
+    registry_path = tmp_path / ".story-system" / "canon" / "registry.json"
+    history_after_first_commit = history_path.read_bytes()
+    registry_after_first_commit = registry_path.read_bytes()
+    history_payload = json.loads(history_after_first_commit.decode("utf-8"))
+    assert len(
+        [
+            event
+            for event in history_payload["events"]
+            if event.get("candidate_id") == replacement.candidate_id
+        ]
+    ) == 1
+
+    monkeypatch.setattr(store.candidate_store, "save", original_save)
+    retry = store.confirm_candidate(replacement.candidate_id)
+
+    assert retry["continuity_snapshot"]["mode"] == "STALE_ONLY"
+    assert store.continuity_store.read_fresh_snapshot(1) is None
+    assert store.continuity_store.get_stale_chapters() == [1, 2]
+    assert history_path.read_bytes() == history_after_first_commit
+    assert registry_path.read_bytes() == registry_after_first_commit
+    history_after_retry = json.loads(history_path.read_text(encoding="utf-8"))
+    assert len(
+        [
+            event
+            for event in history_after_retry["events"]
+            if event.get("candidate_id") == replacement.candidate_id
+        ]
+    ) == 1
+
+
 def test_reconstruction_ignores_legacy_updated_story_without_continuity_snapshots(tmp_path):
     store = _make_project(tmp_path)
     current_state = store.persisted_state()

@@ -10094,7 +10094,7 @@ class FileProjectStore(
         remains safely stale until an as-of-N Canon projection exists.
         """
 
-        if plan is None or plan.mode == "noop":
+        if plan is None:
             return True
         delta = getattr(candidate, "continuity_delta", None)
         if isinstance(delta, dict):
