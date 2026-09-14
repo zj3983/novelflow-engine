@@ -417,7 +417,16 @@ def strict_validate_delta(registry: CanonRegistry, event: CanonHistoryEvent) -> 
     for entity in registry.list_all():
         if isinstance(entity.extensions, dict) and entity.extensions.get("location") is not None:
             staged_locations[entity.entity_id] = str(entity.extensions["location"])
+    created_addition_ids: set[str] = set()
     for addition in delta.entity_additions:
+        # CanonService ignores a re-add whose entity_id is already present;
+        # only a genuinely new entity gets the addition attributes before
+        # later operations in this same delta run.
+        if registry.get(addition.entity_id) is not None:
+            continue
+        if addition.entity_id in created_addition_ids:
+            continue
+        created_addition_ids.add(addition.entity_id)
         if isinstance(addition.attributes, dict) and addition.attributes.get("location") is not None:
             staged_locations[addition.entity_id] = str(addition.attributes["location"])
 

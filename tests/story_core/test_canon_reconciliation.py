@@ -53,6 +53,32 @@ def _read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _write_character_sources(
+    store: FileProjectStore,
+    *,
+    project_cards: list[dict],
+    state_cards: list[dict],
+    project_extra: dict | None = None,
+) -> None:
+    project_payload = {
+        "project_id": store.root.name,
+        "character_profiles": project_cards,
+        **(project_extra or {}),
+    }
+    store._write_json(
+        store.webnovel_dir / "project.json",
+        project_payload,
+    )
+    store._write_json(
+        store.webnovel_dir / "state.json",
+        {
+            "story_id": store.root.name,
+            "current_chapter": 0,
+            "characters": state_cards,
+        },
+    )
+
+
 def _addition(chapter: int, entity_id: str, name: str, *, title: str = "") -> EntityAddition:
     return EntityAddition(
         chapter_number=chapter,
@@ -85,6 +111,219 @@ def test_normal_confirmation_bootstraps_and_appends_canon_journal_atomically(tmp
     assert _read_json(registry_path)["by_id"]["char-zhao"]["display_name"] == "赵六"
     assert _read_json(store.webnovel_dir / "state.json")["characters"][0]["canon_entity_id"] == "char-zhao"
     assert result["candidate"]["status"] == "confirmed"
+
+
+def test_reconciled_projection_preserves_raw_state_runtime_on_normal_append(tmp_path) -> None:
+    store = FileProjectStore(tmp_path)
+    project_card = {
+        "name": "林昭",
+        "role": "protagonist",
+        "personality_portrait": {"voice": {"relaxed_style": "project-static"}},
+    }
+    state_card = {
+        **project_card,
+        "current_state": {"sentinel": "runtime-only"},
+        "game_state": {"current": {"location": "黑市"}},
+        "real_state": {"current": {"balance": "27.60"}},
+        "location": "黑市",
+    }
+    _write_character_sources(
+        store,
+        project_cards=[project_card],
+        state_cards=[state_card],
+        project_extra={"world_blueprint": {"genre_plugin_ids": ["game_webnovel"]}},
+    )
+    candidate = _seed_candidate(
+        store,
+        chapter_number=1,
+        tag="普通追加",
+        delta=ContinuityDelta(
+            chapter_number=1,
+            entity_additions=[_addition(1, "char-qian", "钱七")],
+        ),
+    )
+    plan = store._plan_candidate_canon_writes(candidate)
+    assert plan.status == "CLEAR"
+    store._apply_candidate_canon_writes(plan)
+    store._sync_reconciled_canon_character_projection(plan)
+
+    saved_project = _read_json(store.webnovel_dir / "project.json")
+    saved_state = _read_json(store.webnovel_dir / "state.json")
+    project_lin = next(card for card in saved_project["character_profiles"] if card["name"] == "林昭")
+    state_lin = next(card for card in saved_state["characters"] if card["name"] == "林昭")
+    assert project_lin == project_card
+    assert state_lin["current_state"]["sentinel"] == "runtime-only"
+    assert state_lin["game_state"]["current"]["location"] == "黑市"
+    assert state_lin["real_state"]["current"]["balance"] == "27.60"
+
+
+def test_normal_confirmation_preserves_raw_state_runtime_card_fields(tmp_path) -> None:
+    store = FileProjectStore(tmp_path)
+    project_card = {
+        "name": "林昭",
+        "role": "protagonist",
+        "personality_portrait": {"voice": {"relaxed_style": "project-static"}},
+    }
+    state_card = {
+        **project_card,
+        "game_state": {
+            "current": {
+                "location": "黑市",
+                "runtime_sentinel": "normal-confirm-runtime-only",
+            }
+        },
+        "real_state": {"current": {"balance": "27.60"}},
+        "location": "黑市",
+    }
+    _write_character_sources(
+        store,
+        project_cards=[project_card],
+        state_cards=[state_card],
+        project_extra={"world_blueprint": {"genre_plugin_ids": ["game_webnovel"]}},
+    )
+    candidate = _seed_candidate(
+        store,
+        chapter_number=1,
+        tag="普通确认",
+        delta=ContinuityDelta(
+            chapter_number=1,
+            entity_additions=[_addition(1, "char-qian", "钱七")],
+        ),
+    )
+
+    result = store.confirm_candidate(candidate.candidate_id)
+
+    assert result["candidate"]["status"] == "confirmed"
+    saved_state = _read_json(store.webnovel_dir / "state.json")
+    state_lin = next(card for card in saved_state["characters"] if card["name"] == "林昭")
+    assert state_lin["game_state"]["current"]["runtime_sentinel"] == "normal-confirm-runtime-only"
+    assert state_lin["game_state"]["current"]["location"] == "黑市"
+    assert state_lin["real_state"]["current"]["balance"] == "27.60"
+
+
+def test_historical_reconciled_projection_preserves_raw_state_runtime(tmp_path) -> None:
+    store = FileProjectStore(tmp_path)
+    project_card = {
+        "name": "林昭",
+        "role": "protagonist",
+        "personality_portrait": {"voice": {"relaxed_style": "project-static"}},
+    }
+    state_card = {
+        **project_card,
+        "current_state": {"sentinel": "historical-runtime-only"},
+        "game_state": {
+            "current": {
+                "location": "黑市",
+                "runtime_sentinel": "historical-runtime-only",
+            }
+        },
+        "real_state": {"current": {"balance": "27.60"}},
+        "location": "黑市",
+    }
+    _write_character_sources(
+        store,
+        project_cards=[project_card],
+        state_cards=[state_card],
+        project_extra={"world_blueprint": {"genre_plugin_ids": ["game_webnovel"]}},
+    )
+    first = _seed_candidate(
+        store,
+        chapter_number=1,
+        tag="初始章节",
+        delta=ContinuityDelta(
+            chapter_number=1,
+            entity_additions=[_addition(1, "char-zhao", "赵六")],
+        ),
+    )
+    store.confirm_candidate(first.candidate_id)
+    second = _seed_candidate(store, chapter_number=2, tag="后续章节", delta=ContinuityDelta(chapter_number=2))
+    store.confirm_candidate(second.candidate_id)
+    rewrite = _seed_candidate(
+        store,
+        chapter_number=1,
+        tag="历史重写",
+        operation="regenerate",
+        delta=ContinuityDelta(
+            chapter_number=1,
+            entity_additions=[_addition(1, "char-qian", "钱七")],
+        ),
+    )
+
+    result = store.confirm_candidate(rewrite.candidate_id)
+
+    assert result["candidate"]["status"] == "confirmed"
+    saved_state = _read_json(store.webnovel_dir / "state.json")
+    state_lin = next(card for card in saved_state["characters"] if card["name"] == "林昭")
+    assert state_lin["game_state"]["current"]["runtime_sentinel"] == "historical-runtime-only"
+    assert state_lin["game_state"]["current"]["location"] == "黑市"
+    assert state_lin["real_state"]["current"]["balance"] == "27.60"
+
+
+def test_reconciled_projection_keeps_project_only_manual_card_in_project(tmp_path) -> None:
+    store = FileProjectStore(tmp_path)
+    manual = {"name": "项目手工", "role": "supporting", "manual_sentinel": "project"}
+    _write_character_sources(store, project_cards=[manual], state_cards=[])
+    candidate = _seed_candidate(
+        store,
+        chapter_number=1,
+        tag="项目手工卡",
+        delta=ContinuityDelta(chapter_number=1, entity_additions=[_addition(1, "char-zhao", "赵六")]),
+    )
+    plan = store._plan_candidate_canon_writes(candidate)
+    store._apply_candidate_canon_writes(plan)
+    store._sync_reconciled_canon_character_projection(plan)
+
+    saved_project = _read_json(store.webnovel_dir / "project.json")
+    saved_state = _read_json(store.webnovel_dir / "state.json")
+    assert next(card for card in saved_project["character_profiles"] if card["name"] == "项目手工")["manual_sentinel"] == "project"
+    assert not any(card.get("name") == "项目手工" for card in saved_state.get("characters", []))
+
+
+def test_reconciled_projection_keeps_state_only_manual_card_in_state(tmp_path) -> None:
+    store = FileProjectStore(tmp_path)
+    manual = {"name": "状态手工", "role": "supporting", "manual_sentinel": "state"}
+    _write_character_sources(store, project_cards=[], state_cards=[manual])
+    candidate = _seed_candidate(
+        store,
+        chapter_number=1,
+        tag="状态手工卡",
+        delta=ContinuityDelta(chapter_number=1, entity_additions=[_addition(1, "char-zhao", "赵六")]),
+    )
+    plan = store._plan_candidate_canon_writes(candidate)
+    store._apply_candidate_canon_writes(plan)
+    store._sync_reconciled_canon_character_projection(plan)
+
+    saved_project = _read_json(store.webnovel_dir / "project.json")
+    saved_state = _read_json(store.webnovel_dir / "state.json")
+    assert not any(card.get("name") == "状态手工" for card in saved_project.get("character_profiles", []))
+    assert next(card for card in saved_state["characters"] if card["name"] == "状态手工")["manual_sentinel"] == "state"
+
+
+def test_reconciled_projection_does_not_attach_canon_to_same_name_manual_cards(tmp_path) -> None:
+    store = FileProjectStore(tmp_path)
+    project_manual = {"name": "钱七", "role": "manual", "manual_sentinel": "project"}
+    state_manual = {"name": "钱七", "role": "manual", "manual_sentinel": "state"}
+    _write_character_sources(
+        store, project_cards=[project_manual], state_cards=[state_manual]
+    )
+    candidate = _seed_candidate(
+        store,
+        chapter_number=1,
+        tag="同名手工卡",
+        delta=ContinuityDelta(chapter_number=1, entity_additions=[_addition(1, "char-qian", "钱七")]),
+    )
+    plan = store._plan_candidate_canon_writes(candidate)
+    store._apply_candidate_canon_writes(plan)
+    store._sync_reconciled_canon_character_projection(plan)
+
+    saved_project = _read_json(store.webnovel_dir / "project.json")
+    saved_state = _read_json(store.webnovel_dir / "state.json")
+    saved_project_card = next(card for card in saved_project["character_profiles"] if card["name"] == "钱七")
+    saved_state_card = next(card for card in saved_state["characters"] if card["name"] == "钱七")
+    assert saved_project_card == project_manual
+    assert saved_state_card == state_manual
+    assert "canon_entity_id" not in saved_project_card
+    assert "canon_entity_id" not in saved_state_card
 
 
 def test_direct_generated_canon_event_can_be_replaced_without_candidate_draft(tmp_path) -> None:
@@ -253,8 +492,14 @@ def test_historical_rewrite_replaces_event_and_replays_downstream_delta(tmp_path
         card["name"]
         for card in _read_json(store.webnovel_dir / "state.json").get("characters", [])
     }
+    projected_project_names = {
+        card["name"]
+        for card in _read_json(store.webnovel_dir / "project.json").get("character_profiles", [])
+    }
     assert "赵六" not in projected_names
     assert "钱七" in projected_names
+    assert "赵六" not in projected_project_names
+    assert "钱七" in projected_project_names
 
 
 def test_historical_rewrite_dependency_conflict_has_zero_mutation(tmp_path) -> None:

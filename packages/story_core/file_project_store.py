@@ -9716,38 +9716,21 @@ class FileProjectStore(
             for entity in registry.list_all("character")
             if entity.entity_id in owned_ids
         }
-        project = self.project()
-        state = self.state()
-        sources = [
-            *(project.get("character_profiles", []) if isinstance(project.get("character_profiles"), list) else []),
-            *(state.get("characters", []) if isinstance(state.get("characters"), list) else []),
-        ]
-        cards: list[dict[str, Any]] = []
-        seen_names: set[str] = set()
-        for raw in sources:
-            if not isinstance(raw, dict):
-                continue
-            marker = str(raw.get("canon_entity_id") or "")
-            if marker and marker not in final_entities:
-                continue
-            name = str(raw.get("name") or "").strip()
-            if not name or name in seen_names:
-                continue
-            seen_names.add(name)
-            cards.append(deepcopy(raw))
+        # These are two different persistence roles.  Read project.json and
+        # the raw state.json independently; ``state()`` is a visible derived
+        # view and must never be used as the source for a state write.
+        project_payload = self._read_json(self.webnovel_dir / "project.json", {}) or {}
+        if isinstance(project_payload, dict) and project_payload:
+            project = dict(project_payload)
+        else:
+            master_project = self.master_setting().get("project", {})
+            project = dict(master_project) if isinstance(master_project, dict) else {}
+        state = self.persisted_state()
 
-        for entity in final_entities.values():
-            if entity.entity_id in {
-                str(card.get("canon_entity_id") or "") for card in cards
-            }:
-                continue
-            if entity.display_name in seen_names:
-                # A manual card with the same name wins; do not overwrite it
-                # or silently attach Canon ownership to it.
-                continue
+        def projection_card(entity: Any) -> dict[str, Any]:
             attributes = dict(entity.extensions or {})
             occupation = str(attributes.get("occupation_or_role") or "").strip()
-            card = {
+            return {
                 "name": entity.display_name,
                 "role": occupation or "配角",
                 "character_tier": "supporting",
@@ -9764,14 +9747,57 @@ class FileProjectStore(
                     "summary": str(attributes.get("current_state") or "")
                 } if str(attributes.get("current_state") or "").strip() else {},
             }
-            cards.append(card)
-            seen_names.add(entity.display_name)
-        if not cards and not owned_ids:
-            return
-        project["character_profiles"] = deepcopy(cards)
-        state["characters"] = deepcopy(cards)
-        self._write_json_atomic(self.webnovel_dir / "project.json", project)
-        self._write_json_atomic(self.webnovel_dir / "state.json", state)
+
+        def reconcile_cards(raw_cards: Any) -> list[Any]:
+            cards = list(raw_cards) if isinstance(raw_cards, list) else []
+            result: list[Any] = []
+            owned_card_ids: set[str] = set()
+            manual_names: set[str] = set()
+            for raw in cards:
+                if not isinstance(raw, dict):
+                    # Preserve malformed/untyped entries rather than letting
+                    # this projection repair turn into unrelated data loss.
+                    result.append(deepcopy(raw))
+                    continue
+                marker = str(raw.get("canon_entity_id") or "").strip()
+                if marker:
+                    if marker not in final_entities:
+                        continue
+                    owned_card_ids.add(marker)
+                    refreshed = deepcopy(raw)
+                    entity = final_entities[marker]
+                    refreshed["name"] = entity.display_name
+                    refreshed["canon_entity_id"] = marker
+                    refreshed["canon_projection_source"] = str(
+                        raw.get("canon_projection_source")
+                        or "confirmed_continuity_delta"
+                    )
+                    result.append(refreshed)
+                    continue
+                manual_name = str(raw.get("name") or "").strip()
+                if manual_name:
+                    manual_names.add(manual_name)
+                result.append(deepcopy(raw))
+
+            for entity in final_entities.values():
+                if entity.entity_id in owned_card_ids or entity.display_name in manual_names:
+                    # Preserve an existing marked projection by id.  An
+                    # unmarked card with the same name remains manual and is
+                    # never silently claimed by Canon.
+                    continue
+                result.append(projection_card(entity))
+            return result
+
+        project_cards = project.get("character_profiles")
+        state_cards = state.get("characters")
+        reconciled_project_cards = reconcile_cards(project_cards)
+        reconciled_state_cards = reconcile_cards(state_cards)
+        if reconciled_project_cards != (project_cards if isinstance(project_cards, list) else []):
+            project["character_profiles"] = reconciled_project_cards
+            self._write_json_atomic(self.webnovel_dir / "project.json", project)
+        if reconciled_state_cards != (state_cards if isinstance(state_cards, list) else []):
+            state["characters"] = reconciled_state_cards
+            self._write_json_atomic(self.webnovel_dir / "state.json", state)
 
     def _apply_candidate_canon_delta(self, candidate: Any) -> dict[str, int]:
         """Apply a candidate's ``continuity_delta`` to the project canon.

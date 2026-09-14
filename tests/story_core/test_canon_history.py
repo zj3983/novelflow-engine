@@ -384,3 +384,70 @@ def test_location_entity_update_precedes_ordered_movement_validation() -> None:
     assert result.status == "CLEAR"
     assert result.registry is not None
     assert result.registry.get("char-main").extensions["location"] == "山顶"
+
+
+def test_existing_entity_addition_does_not_stage_unapplied_location_attributes() -> None:
+    registry = _baseline()
+    registry.update_attributes("char-main", changes={"location": "A"})
+    baseline = registry_to_payload(registry)
+    delta = ContinuityDelta(
+        chapter_number=2,
+        entity_additions=[
+            EntityAddition(
+                chapter_number=2,
+                source_sentence="林昭再次出现",
+                entity_id="char-main",
+                kind="character",
+                canonical_name="林昭",
+                attributes={"location": "B"},
+            )
+        ],
+        location_movements=[
+            LocationMovement(
+                chapter_number=2,
+                source_sentence="林昭从B走到C",
+                entity_id="char-main",
+                from_location="B",
+                to_location="C",
+            )
+        ],
+    )
+
+    result = replay_canon_history(baseline, [_event(delta, "candidate-2", 1)])
+
+    assert result.status == "CONFLICT"
+    assert result.first_finding is not None
+    assert result.first_finding.code == "CANON_RECONCILIATION_LOCATION_STATE_MISMATCH"
+
+
+def test_new_entity_addition_location_can_seed_following_movement() -> None:
+    registry = _baseline()
+    baseline = registry_to_payload(registry)
+    delta = ContinuityDelta(
+        chapter_number=2,
+        entity_additions=[
+            EntityAddition(
+                chapter_number=2,
+                source_sentence="赵六登场",
+                entity_id="char-zhao",
+                kind="character",
+                canonical_name="赵六",
+                attributes={"location": "B"},
+            )
+        ],
+        location_movements=[
+            LocationMovement(
+                chapter_number=2,
+                source_sentence="赵六从B走到C",
+                entity_id="char-zhao",
+                from_location="B",
+                to_location="C",
+            )
+        ],
+    )
+
+    result = replay_canon_history(baseline, [_event(delta, "candidate-2", 1)])
+
+    assert result.status == "CLEAR"
+    assert result.registry is not None
+    assert result.registry.get("char-zhao").extensions["location"] == "C"
