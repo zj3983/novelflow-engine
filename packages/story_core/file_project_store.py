@@ -9158,7 +9158,11 @@ class FileProjectStore(
                     result["fact_resource_reconciliation"] = fact_resource_plan.to_result_dict()
                 return result
             skip_historical_canon_apply = canon_status in {"SAFE_EMPTY", "SAFE_IDENTICAL"}
-        continuity_plan = self._plan_continuity_snapshot(candidate)
+        continuity_plan = self._plan_continuity_snapshot(
+            candidate,
+            fact_resource_plan=fact_resource_plan,
+            canon_plan=canon_plan,
+        )
 
         # The confirmation is the single atomic boundary the user
         # can trust. The body runs the legacy ``persist_bundle``
@@ -10024,7 +10028,97 @@ class FileProjectStore(
         payload.pop("updated_story", None)
         return payload
 
-    def _plan_continuity_snapshot(self, candidate: Any) -> ContinuitySnapshotPlan:
+    def _apply_fact_resource_plan_to_continuity_state(
+        self,
+        state: dict[str, Any],
+        candidate: Any,
+        plan: FactResourceAuthorityWritePlan | FactResourceReconciliationPlan | None,
+    ) -> dict[str, Any] | None:
+        """Apply only Chapter N's resource authority to an END N-1 copy.
+
+        A historical FactResource reconciliation plan also contains the
+        staged result through the latest chapter.  That payload is correct
+        for the authority commit, but is too far forward for Snapshot N.
+        Re-plan just the replacement extraction against the plan's trusted
+        END N-1 resource snapshot and apply it to the local state copy.
+        """
+
+        if plan is None:
+            return state
+        if isinstance(plan, FactResourceReconciliationPlan):
+            extraction = plan.replacement_extraction
+            start_snapshot = plan.base_snapshot
+        elif isinstance(plan, FactResourceAuthorityWritePlan):
+            extraction = plan.extraction
+            start_snapshot = plan.start_snapshot
+        else:  # pragma: no cover - the public union is intentionally narrow
+            return None
+        if not extraction.deltas and not extraction.assertions:
+            return state
+
+        project = self._read_json(self.webnovel_dir / "project.json", {}) or {}
+        if not isinstance(project, dict):
+            project = {}
+        staged_state = deepcopy(state)
+        staged_project = deepcopy(project)
+        try:
+            snapshot_plan = plan_fact_resource_authority_writes(
+                staged_state,
+                staged_project,
+                extraction,
+                start_snapshot=start_snapshot,
+                candidate_id=str(getattr(candidate, "candidate_id", "") or ""),
+            )
+            if snapshot_plan.blocking_findings:
+                return None
+            apply_fact_resource_authority_writes(
+                staged_state,
+                staged_project,
+                snapshot_plan,
+            )
+        except (TypeError, ValueError, KeyError):
+            return None
+        return staged_state
+
+    @staticmethod
+    def _historical_continuity_authority_is_provable(
+        plan: CanonHistoryPlan | None,
+        candidate: Any,
+    ) -> bool:
+        """Return whether Canon can currently prove an END N projection.
+
+        Phase 3D can replay the complete Canon history through the latest
+        chapter, but this Phase 3E boundary does not yet project that replay
+        into a snapshot at an intermediate chapter.  Empty/legacy/no-op
+        plans do not add Canon state; a non-empty historical effect therefore
+        remains safely stale until an as-of-N Canon projection exists.
+        """
+
+        if plan is None or plan.mode == "noop":
+            return True
+        delta = getattr(candidate, "continuity_delta", None)
+        if isinstance(delta, dict):
+            try:
+                delta = ContinuityDelta.model_validate(delta)
+            except (TypeError, ValueError):
+                return False
+        # A non-empty Canon delta is currently replayed through the latest
+        # boundary by Phase 3D. Until an as-of-N projection is available,
+        # do not label the intermediate continuity snapshot fresh.
+        return FileProjectStore._canon_delta_is_empty(
+            delta
+        )
+
+    def _plan_continuity_snapshot(
+        self,
+        candidate: Any,
+        *,
+        fact_resource_plan: FactResourceAuthorityWritePlan
+        | FactResourceReconciliationPlan
+        | None = None,
+        canon_plan: CanonHistoryPlan | None = None,
+        require_authority_plans: bool = False,
+    ) -> ContinuitySnapshotPlan:
         """Plan the continuity snapshot/freshness side effects read-only."""
 
         chapter_number = int(getattr(candidate, "chapter_number", 0) or 0)
@@ -10049,6 +10143,26 @@ class FileProjectStore(
                 candidate_id=candidate_id,
             )
 
+        if require_authority_plans and (fact_resource_plan is None or canon_plan is None):
+            return ContinuitySnapshotPlan(
+                status="CLEAR",
+                mode="STALE_ONLY",
+                chapter_number=chapter_number,
+                candidate_id=candidate_id,
+                stale_from_chapter=chapter_number,
+                findings=["CONTINUITY_AUTHORITY_BOUNDARY_UNAVAILABLE"],
+            )
+
+        if not self._historical_continuity_authority_is_provable(canon_plan, candidate):
+            return ContinuitySnapshotPlan(
+                status="CLEAR",
+                mode="STALE_ONLY",
+                chapter_number=chapter_number,
+                candidate_id=candidate_id,
+                stale_from_chapter=chapter_number,
+                findings=["CONTINUITY_CANON_AS_OF_BOUNDARY_UNAVAILABLE"],
+            )
+
         current_state = self.state()
         rebuilt = self._reconstruct_state_at_end(chapter_number - 1, current_state)
         if rebuilt is None:
@@ -10070,6 +10184,21 @@ class FileProjectStore(
         # replacement chapter artifact.
         end_state = self._sync_state_after_chapter(deepcopy(base_state), chapter)
         end_state = self._sync_ledger_from_chapter_body(end_state, chapter)
+        end_state = self._apply_fact_resource_plan_to_continuity_state(
+            end_state,
+            candidate,
+            fact_resource_plan,
+        )
+        if end_state is None:
+            return ContinuitySnapshotPlan(
+                status="CLEAR",
+                mode="STALE_ONLY",
+                chapter_number=chapter_number,
+                candidate_id=candidate_id,
+                boundary_source_chapter=source_chapter,
+                stale_from_chapter=chapter_number,
+                findings=["CONTINUITY_FACT_RESOURCE_AS_OF_BOUNDARY_UNAVAILABLE"],
+            )
         end_state["current_chapter"] = chapter_number
         from packages.story_core.persistence.project_transaction import slice_state_for_snapshot
 
@@ -10707,7 +10836,14 @@ class FileProjectStore(
             submission_payload=self._bundle_to_dict(bundle),
             continuity_delta=getattr(bundle, "continuity_delta", None),
         )
-        continuity_plan = self._plan_continuity_snapshot(direct_candidate)
+        # Direct persistence does not run the Phase 3C/3D historical
+        # authority planners.  A historical direct regeneration may still
+        # replace the chapter body, but it must not manufacture a fresh
+        # continuity boundary over unchanged authorities.
+        continuity_plan = self._plan_continuity_snapshot(
+            direct_candidate,
+            require_authority_plans=True,
+        )
         from packages.story_core.persistence.project_transaction import ProjectTransaction
 
         with ProjectTransaction.create(

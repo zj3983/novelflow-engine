@@ -11,7 +11,8 @@ import pytest
 
 from packages.story_core.continuity.snapshot import ChapterSnapshot
 from packages.story_core.continuity.store import ContinuityStore
-from packages.story_core.continuity.delta import ContinuityDelta
+from packages.story_core.continuity.delta import ContinuityDelta, EntityAddition
+from packages.story_core.fact_resource_ledger import FactResourceDelta, FactResourceExtraction
 from packages.story_core.file_project_store import FileProjectStore
 
 
@@ -164,6 +165,84 @@ def test_historical_candidate_updated_story_is_not_trusted_as_snapshot_authority
     assert "CHAPTER_ONE_ONLY" in snapshot_text
     assert "FUTURE_ONLY_PROGRESSION" not in snapshot_text
     assert "FUTURE_ONLY_CHARACTER" not in snapshot_text
+
+
+def test_historical_fact_resource_authority_is_reflected_in_end_n_snapshot(tmp_path):
+    store = _make_project(tmp_path)
+    initial_state = store.persisted_state()
+    initial_state["progression_ledger"] = {
+        "economy": {
+            "game_currency": "10金币",
+            "history": [{"chapter": 0, "current": {"currency": "10金币"}}],
+        }
+    }
+    master = store.master_setting()
+    master["state"] = deepcopy(initial_state)
+    _write_json(tmp_path / ".webnovel" / "state.json", initial_state)
+    _write_json(tmp_path / ".story-system" / "MASTER_SETTING.json", master)
+    for chapter in (1, 2, 3):
+        store.confirm_candidate(_candidate(store, chapter, tag=f"正文-{chapter}").candidate_id)
+
+    replacement = _candidate(store, 1, operation="regenerate", tag="结构化货币替换")
+    replacement.fact_resource_extraction = FactResourceExtraction(
+        chapter_number=1,
+        deltas=[
+            FactResourceDelta(
+                chapter=1,
+                category="currency",
+                resource_key="currency",
+                operation="SET",
+                before=10,
+                change=25,
+                after=25,
+                evidence="结构化 authority 直接设置余额为25金币",
+            )
+        ],
+    )
+    replacement.continuity_delta = ContinuityDelta(chapter_number=1)
+    store.candidate_store.save(replacement)
+
+    result = store.confirm_candidate(replacement.candidate_id)
+
+    assert result["candidate"]["status"] == "confirmed"
+    snapshot = store.continuity_store.read_fresh_snapshot(1)
+    assert snapshot is not None
+    snapshot_text = json.dumps(snapshot.state_after, ensure_ascii=False)
+    assert "25金币" in snapshot_text
+    assert "FUTURE_ONLY" not in snapshot_text
+    assert store.continuity_store.get_stale_chapters() == [2, 3]
+
+
+def test_historical_canon_authority_without_as_of_projection_is_stale_only(tmp_path):
+    store = _make_project(tmp_path)
+    for chapter in (1, 2, 3):
+        store.confirm_candidate(_candidate(store, chapter, tag=f"正文-{chapter}").candidate_id)
+
+    replacement = _candidate(store, 1, operation="regenerate", tag="Canon替换")
+    replacement.continuity_delta = ContinuityDelta(
+        chapter_number=1,
+        entity_additions=[
+            EntityAddition(
+                chapter_number=1,
+                source_sentence="钱七出场",
+                confidence=0.95,
+                entity_id="char-qian",
+                kind="character",
+                canonical_name="钱七",
+            )
+        ],
+    )
+    store.candidate_store.save(replacement)
+
+    result = store.confirm_candidate(replacement.candidate_id)
+
+    assert result["candidate"]["status"] == "confirmed"
+    assert store.continuity_store.read_fresh_snapshot(1) is None
+    assert store.continuity_store.get_stale_chapters() == [1, 2, 3]
+    canon = json.loads(
+        (tmp_path / ".story-system" / "canon" / "registry.json").read_text(encoding="utf-8")
+    )
+    assert canon["by_id"]["char-qian"]["display_name"] == "钱七"
 
 
 def test_reconstruction_ignores_legacy_updated_story_without_continuity_snapshots(tmp_path):
@@ -352,3 +431,54 @@ def test_direct_generated_chapter_gets_snapshot_and_can_be_replaced_historically
 
     assert confirmed["candidate"]["status"] == "confirmed"
     assert store.continuity_store.read_snapshot(1).candidate_id == replacement.candidate_id
+
+
+def test_direct_historical_regenerate_cannot_mark_continuity_fresh_without_authority_plans(
+    tmp_path,
+    monkeypatch,
+):
+    store = _make_project(tmp_path)
+    for chapter in (1, 2):
+        store.confirm_candidate(_candidate(store, chapter, tag=f"旧正文-{chapter}").candidate_id)
+    before_registry = (
+        tmp_path / ".story-system" / "canon" / "registry.json"
+    ).read_bytes()
+    monkeypatch.setattr(store, "rolling_fill_status", lambda _target: {"status": "present"})
+    monkeypatch.setattr(store, "require_volume_detail_for_prose", lambda _target: {})
+
+    class Engine:
+        def generate_next_chapter(self, story):
+            return SimpleNamespace(
+                chapter_number=1,
+                chapter_title="直接重生成第一章",
+                body=_body("直接历史重生成"),
+                quality_report={"ok": True},
+                chapter_summary={
+                    "summary": "新的第一章正文",
+                    "facts": [],
+                    "next_focus": "continue",
+                },
+                updated_story=story.model_copy(update={"current_chapter": 1}),
+                continuity_delta=ContinuityDelta(
+                    chapter_number=1,
+                    entity_additions=[
+                        EntityAddition(
+                            chapter_number=1,
+                            source_sentence="钱七出场",
+                            confidence=0.95,
+                            entity_id="char-qian-direct",
+                            kind="character",
+                            canonical_name="钱七",
+                        )
+                    ],
+                ).model_dump(mode="json"),
+            )
+
+    result = store.regenerate_chapter(1, engine=Engine(), persist=True)
+
+    assert result["continuity_snapshot"]["mode"] == "STALE_ONLY"
+    assert store.continuity_store.read_fresh_snapshot(1) is None
+    assert store.continuity_store.get_stale_chapters() == [1, 2]
+    assert (
+        tmp_path / ".story-system" / "canon" / "registry.json"
+    ).read_bytes() == before_registry
