@@ -9748,6 +9748,43 @@ class FileProjectStore(
                 } if str(attributes.get("current_state") or "").strip() else {},
             }
 
+        def refresh_owned_card(raw: dict[str, Any], entity: Any) -> dict[str, Any]:
+            canonical = projection_card(entity)
+            refreshed = deepcopy(raw)
+            # These are the only fields this projection owns.  Keep authored
+            # profile fields and state-side runtime fields outside this set.
+            for field in (
+                "name",
+                "role",
+                "character_tier",
+                "aliases",
+                "canon_entity_id",
+                "canon_projection_source",
+                "identity_profile",
+            ):
+                refreshed[field] = deepcopy(canonical[field])
+
+            canonical_current = canonical.get("current_state")
+            existing_current = refreshed.get("current_state")
+            if isinstance(existing_current, dict):
+                merged_current = deepcopy(existing_current)
+                if isinstance(canonical_current, dict) and "summary" in canonical_current:
+                    merged_current["summary"] = deepcopy(canonical_current["summary"])
+                else:
+                    # A prior Canon summary must not survive when the
+                    # replayed entity no longer projects one, but any other
+                    # runtime keys remain untouched.
+                    merged_current.pop("summary", None)
+                if merged_current:
+                    refreshed["current_state"] = merged_current
+                else:
+                    refreshed.pop("current_state", None)
+            elif isinstance(canonical_current, dict) and canonical_current:
+                refreshed["current_state"] = deepcopy(canonical_current)
+            else:
+                refreshed.pop("current_state", None)
+            return refreshed
+
         def reconcile_cards(raw_cards: Any) -> list[Any]:
             cards = list(raw_cards) if isinstance(raw_cards, list) else []
             result: list[Any] = []
@@ -9764,15 +9801,7 @@ class FileProjectStore(
                     if marker not in final_entities:
                         continue
                     owned_card_ids.add(marker)
-                    refreshed = deepcopy(raw)
-                    entity = final_entities[marker]
-                    refreshed["name"] = entity.display_name
-                    refreshed["canon_entity_id"] = marker
-                    refreshed["canon_projection_source"] = str(
-                        raw.get("canon_projection_source")
-                        or "confirmed_continuity_delta"
-                    )
-                    result.append(refreshed)
+                    result.append(refresh_owned_card(raw, final_entities[marker]))
                     continue
                 manual_name = str(raw.get("name") or "").strip()
                 if manual_name:
