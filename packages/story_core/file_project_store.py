@@ -9760,9 +9760,26 @@ class FileProjectStore(
                 "aliases",
                 "canon_entity_id",
                 "canon_projection_source",
-                "identity_profile",
             ):
                 refreshed[field] = deepcopy(canonical[field])
+
+            # IdentityProfile contains both Canon-projected identity fields
+            # and authored/profile fields.  Merge only the fields owned by
+            # this projection so long-lived profile data is not lost during
+            # a normal confirmation or historical replay refresh.
+            existing_identity = refreshed.get("identity_profile")
+            merged_identity = (
+                deepcopy(existing_identity)
+                if isinstance(existing_identity, dict)
+                else {}
+            )
+            canonical_identity = canonical.get("identity_profile")
+            if isinstance(canonical_identity, dict):
+                for field in ("aliases", "current_identity", "occupation", "origin"):
+                    # Write empty values too: a replay that clears a Canon
+                    # field must not leave stale projected data behind.
+                    merged_identity[field] = deepcopy(canonical_identity.get(field))
+            refreshed["identity_profile"] = merged_identity
 
             canonical_current = canonical.get("current_state")
             existing_current = refreshed.get("current_state")

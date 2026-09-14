@@ -85,6 +85,7 @@ def _addition(
     name: str,
     *,
     title: str = "",
+    aliases: list[str] | None = None,
     attributes: dict | None = None,
 ) -> EntityAddition:
     merged_attributes = dict(attributes or {})
@@ -96,6 +97,7 @@ def _addition(
         entity_id=entity_id,
         kind="character",
         canonical_name=name,
+        aliases=list(aliases or []),
         attributes=merged_attributes,
     )
 
@@ -288,6 +290,7 @@ def test_historical_same_id_replacement_refreshes_canon_fields_and_keeps_manual_
                     1,
                     "char-zhao",
                     "赵六",
+                    aliases=["老赵"],
                     attributes={
                         "occupation_or_role": "掌柜",
                         "identity": "商人",
@@ -310,9 +313,13 @@ def test_historical_same_id_replacement_refreshes_canon_fields_and_keeps_manual_
         "canon_projection_source": "confirmed_continuity_delta",
         "identity_profile": {
             "aliases": ["旧别名"],
+            "gender": "男",
+            "age": 28,
+            "birthplace": "临江",
             "current_identity": "商人",
             "occupation": "掌柜",
             "origin": "旧出处",
+            "affiliation": "白河商会",
         },
         "current_state": {"summary": "经营店铺"},
         "personality_portrait": {"voice": {"relaxed_style": "authored"}},
@@ -344,9 +351,11 @@ def test_historical_same_id_replacement_refreshes_canon_fields_and_keeps_manual_
                     1,
                     "char-zhao",
                     "赵六",
+                    aliases=["赵执事"],
                     attributes={
                         "occupation_or_role": "执事",
                         "identity": "内门弟子",
+                        "origin": "新出处",
                         "current_state": "秘密调查",
                     },
                 )
@@ -361,6 +370,7 @@ def test_historical_same_id_replacement_refreshes_canon_fields_and_keeps_manual_
     assert registry["by_id"]["char-zhao"]["extensions"] == {
         "occupation_or_role": "执事",
         "identity": "内门弟子",
+        "origin": "新出处",
         "current_state": "秘密调查",
     }
     saved_project = _read_json(store.webnovel_dir / "project.json")
@@ -369,8 +379,14 @@ def test_historical_same_id_replacement_refreshes_canon_fields_and_keeps_manual_
     state_card = next(card for card in saved_state["characters"] if card.get("canon_entity_id") == "char-zhao")
     for card in (project_card, state_card):
         assert card["role"] == "执事"
+        assert card["identity_profile"]["aliases"] == ["赵执事"]
         assert card["identity_profile"]["current_identity"] == "内门弟子"
         assert card["identity_profile"]["occupation"] == "执事"
+        assert card["identity_profile"]["origin"] == "新出处"
+        assert card["identity_profile"]["gender"] == "男"
+        assert card["identity_profile"]["age"] == 28
+        assert card["identity_profile"]["birthplace"] == "临江"
+        assert card["identity_profile"]["affiliation"] == "白河商会"
         assert card["current_state"]["summary"] == "秘密调查"
     assert project_card["personality_portrait"] == old_project_card["personality_portrait"]
     assert project_card["custom_static"] == "must-survive"
