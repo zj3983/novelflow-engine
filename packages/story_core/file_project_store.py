@@ -9994,6 +9994,13 @@ class FileProjectStore(
             return None
         if not isinstance(chapter, dict):
             return None
+        raw_chapter_number = chapter.get("chapter_number")
+        if (
+            isinstance(raw_chapter_number, bool)
+            or not isinstance(raw_chapter_number, int)
+            or raw_chapter_number != int(chapter_number)
+        ):
+            return None
         body = chapter.get("body")
         if not isinstance(body, str):
             return None
@@ -10007,6 +10014,90 @@ class FileProjectStore(
         ]
         candidate_id = confirmed[0].candidate_id if len(confirmed) == 1 else None
         return sha256(body.encode("utf-8")).hexdigest(), len(body), candidate_id
+
+    def _validated_replay_chapter(
+        self,
+        chapter_number: int,
+        *,
+        stale_chapters: set[int],
+    ) -> dict[str, Any] | None:
+        """Read one replay input and prove it belongs to the confirmed chain.
+
+        A replay must not silently skip a damaged artifact or use its embedded
+        ``updated_story`` as a replacement boundary.  A fresh snapshot, when
+        present, is an integrity witness for the current chapter artifact; a
+        stale snapshot is deliberately ignored because it describes an older
+        chain.  Direct-generated and legacy chapters remain valid without a
+        CandidateDraft when the artifact and any available witness are sound.
+        """
+
+        chapter_number = int(chapter_number)
+        chapter_path = self.story_system_dir / "chapters" / f"{chapter_number:04d}.json"
+        if not chapter_path.is_file():
+            return None
+        try:
+            chapter = deepcopy(
+                self.chapter_store.read_chapter(
+                    chapter_number,
+                    default=None,
+                    include_body=True,
+                )
+            )
+        except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError):
+            return None
+        if not isinstance(chapter, dict):
+            return None
+        raw_chapter_number = chapter.get("chapter_number")
+        if (
+            isinstance(raw_chapter_number, bool)
+            or not isinstance(raw_chapter_number, int)
+            or raw_chapter_number != chapter_number
+        ):
+            return None
+        body = chapter.get("body")
+        if not isinstance(body, str):
+            return None
+
+        confirmed = [
+            item
+            for item in self.candidate_store.list(
+                project_id=self._canon_project_id(),
+                chapter_number=chapter_number,
+            )
+            if item.status == "confirmed"
+        ]
+        confirmed_candidate = confirmed[0] if len(confirmed) == 1 else None
+        if confirmed_candidate is not None:
+            if str(getattr(confirmed_candidate, "body", "") or "") != body:
+                return None
+            persisted_candidate_id = chapter.get("candidate_id")
+            if (
+                persisted_candidate_id is not None
+                and str(persisted_candidate_id)
+                != str(getattr(confirmed_candidate, "candidate_id", ""))
+            ):
+                return None
+
+        snapshot_path = self.continuity_store.snapshot_path(chapter_number)
+        if chapter_number not in stale_chapters and snapshot_path.exists():
+            witness = self.continuity_store.read_snapshot_integrity(
+                chapter_number,
+                expected_body_sha256=sha256(body.encode("utf-8")).hexdigest(),
+                expected_body_chars=len(body),
+                expected_candidate_id=(
+                    str(getattr(confirmed_candidate, "candidate_id", ""))
+                    if confirmed_candidate is not None
+                    else None
+                ),
+            )
+            if witness.status in {"BODY_MISMATCH", "IDENTITY_MISMATCH"}:
+                return None
+            # A malformed/unreadable snapshot is not an integrity witness,
+            # but it also need not poison a replay that has an independent
+            # earlier trusted boundary and a sound chapter artifact.  The
+            # source selector has already skipped such snapshots; only an
+            # actually readable witness can prove a mismatch here.
+        return chapter
 
     def _latest_validated_fresh_snapshot_before(
         self,
@@ -10059,8 +10150,10 @@ class FileProjectStore(
         # untrusted. Do not fall through to the Chapter 0 replay path: that
         # would silently turn an unavailable freshness boundary into a fresh
         # one.
-        if not self.continuity_store.read_stale_metadata().trusted:
+        stale_metadata = self.continuity_store.read_stale_metadata()
+        if not stale_metadata.trusted:
             return None
+        stale = set(stale_metadata.chapters)
 
         snapshot = self._latest_validated_fresh_snapshot_before(target + 1)
         if snapshot is not None:
@@ -10077,13 +10170,12 @@ class FileProjectStore(
         if base_state is None or snapshot_number > target:
             return None
 
-        available = set(self.chapter_numbers())
         for previous_number in range(snapshot_number + 1, target + 1):
-            if previous_number not in available:
-                return None
-            try:
-                chapter = deepcopy(self.chapter(previous_number))
-            except FileNotFoundError:
+            chapter = self._validated_replay_chapter(
+                previous_number,
+                stale_chapters=stale,
+            )
+            if chapter is None:
                 return None
             # Embedded chapter ``updated_story`` is intentionally ignored:
             # its shape proves only schema validity, not the time boundary.

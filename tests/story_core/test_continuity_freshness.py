@@ -776,3 +776,120 @@ def test_direct_historical_regenerate_cannot_mark_continuity_fresh_without_autho
     assert (
         tmp_path / ".story-system" / "canon" / "registry.json"
     ).read_bytes() == before_registry
+
+
+def _replace_chapter_body(store: FileProjectStore, chapter_number: int, body: str) -> None:
+    path = store.story_system_dir / "chapters" / f"{chapter_number:04d}.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    body_path = payload.get("body_path")
+    if body_path:
+        (store.root / str(body_path)).write_text(body, encoding="utf-8")
+    else:
+        payload["body"] = body
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def test_replay_rejects_middle_chapter_body_mismatch_even_with_healthy_downstream(tmp_path):
+    store = _make_project(tmp_path)
+    for chapter in (1, 2, 3):
+        store.confirm_candidate(_candidate(store, chapter, tag=f"正文-{chapter}").candidate_id)
+    _replace_chapter_body(store, 2, _body("外部修改第二章"))
+    store.continuity_store.mark_stale([3])
+
+    assert store._reconstruct_state_at_end(3, store.state()) is None
+
+
+def test_replay_rejects_malformed_middle_chapter_json_without_skipping_it(tmp_path):
+    store = _make_project(tmp_path)
+    for chapter in (1, 2, 3):
+        store.confirm_candidate(_candidate(store, chapter, tag=f"正文-{chapter}").candidate_id)
+    chapter_path = tmp_path / ".story-system" / "chapters" / "0002.json"
+    chapter_path.write_text("{malformed", encoding="utf-8")
+    store.continuity_store.mark_stale([3])
+
+    assert store._reconstruct_state_at_end(3, store.state()) is None
+
+
+def test_replay_rejects_chapter_path_identity_mismatch(tmp_path):
+    store = _make_project(tmp_path)
+    for chapter in (1, 2, 3):
+        store.confirm_candidate(_candidate(store, chapter, tag=f"正文-{chapter}").candidate_id)
+    chapter_path = tmp_path / ".story-system" / "chapters" / "0002.json"
+    payload = json.loads(chapter_path.read_text(encoding="utf-8"))
+    payload["chapter_number"] = 99
+    chapter_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    store.continuity_store.mark_stale([2, 3])
+
+    assert store._reconstruct_state_at_end(3, store.state()) is None
+
+
+def test_replay_rejects_unique_confirmed_candidate_body_mismatch(tmp_path):
+    store = _make_project(tmp_path)
+    for chapter in (1, 2, 3):
+        store.confirm_candidate(_candidate(store, chapter, tag=f"正文-{chapter}").candidate_id)
+    _replace_chapter_body(store, 2, _body("候选正文被替换"))
+    store.continuity_store.mark_stale([3])
+
+    assert store._reconstruct_state_at_end(3, store.state()) is None
+
+
+def test_replay_rejects_fresh_snapshot_witness_mismatch(tmp_path):
+    store = _make_project(tmp_path)
+    for chapter in (1, 2, 3):
+        store.confirm_candidate(_candidate(store, chapter, tag=f"正文-{chapter}").candidate_id)
+    snapshot_path = store.continuity_store.snapshot_path(2)
+    payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    payload["body_chars"] += 1
+    snapshot_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    store.continuity_store.mark_stale([3])
+
+    assert store._reconstruct_state_at_end(3, store.state()) is None
+
+
+def test_stale_snapshot_old_body_is_not_used_as_replay_witness(tmp_path):
+    store = _make_project(tmp_path)
+    for chapter in (1, 2):
+        store.confirm_candidate(_candidate(store, chapter, tag=f"正文-{chapter}").candidate_id)
+    snapshot_path = store.continuity_store.snapshot_path(1)
+    payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    payload["body_sha256"] = sha256("旧正文".encode("utf-8")).hexdigest()
+    snapshot_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    store.continuity_store.mark_stale([1])
+
+    rebuilt = store._reconstruct_state_at_end(1, store.state())
+
+    assert rebuilt is not None
+    assert rebuilt[1] == 0
+    assert snapshot_path.read_bytes() != b""
+
+
+def test_replay_accepts_direct_generated_or_legacy_chapter_without_candidate_draft(tmp_path):
+    store = _make_project(tmp_path)
+    body = _body("直写章节")
+    _write_json(
+        tmp_path / ".story-system" / "chapters" / "0001.json",
+        {
+            "chapter_number": 1,
+            "chapter_title": "第一章",
+            "body": body,
+        },
+    )
+    _snapshot(store.continuity_store, 1, "one", body=body)
+
+    rebuilt = store._reconstruct_state_at_end(1, store.state())
+
+    assert rebuilt is not None
+    assert rebuilt[1] == 1
+
+
+def test_historical_confirmation_degrades_to_stale_only_when_prior_replay_is_broken(tmp_path):
+    store = _make_project(tmp_path)
+    for chapter in (1, 2, 3):
+        store.confirm_candidate(_candidate(store, chapter, tag=f"正文-{chapter}").candidate_id)
+    _replace_chapter_body(store, 2, _body("确认前第二章被修改"))
+    replacement = _candidate(store, 3, operation="regenerate", tag="重写第三章")
+
+    result = store.confirm_candidate(replacement.candidate_id)
+
+    assert result["candidate"]["status"] == "confirmed"
+    assert result["continuity_snapshot"]["mode"] == "STALE_ONLY"
