@@ -90,6 +90,113 @@ def test_continuity_store_fresh_reads_skip_stale_snapshots(tmp_path):
     assert store.latest_fresh_snapshot_before(3).chapter_number == 1
 
 
+def test_continuity_store_distinguishes_missing_and_valid_stale_metadata(tmp_path):
+    store = ContinuityStore(tmp_path)
+    _snapshot(store, 1, "one")
+
+    missing = store.read_stale_metadata()
+    assert missing.status == "MISSING"
+    assert store.read_fresh_snapshot(1) is not None
+
+    _write_json(
+        store.stale_path,
+        {"schema_version": "continuity-stale/v1", "chapters": [1]},
+    )
+    valid = store.read_stale_metadata()
+    assert valid.status == "VALID"
+    assert list(valid.chapters) == [1]
+    assert store.read_fresh_snapshot(1) is None
+
+
+def test_corrupt_stale_metadata_blocks_fresh_reads_and_reconstruction(tmp_path):
+    store = _make_project(tmp_path, current_chapter=2)
+    for chapter in (1, 2):
+        store.confirm_candidate(_candidate(store, chapter).candidate_id)
+    store.continuity_store.stale_path.write_text("{not-json", encoding="utf-8")
+
+    metadata = store.continuity_store.read_stale_metadata()
+    assert metadata.status == "CORRUPT"
+    assert store.continuity_store.read_fresh_snapshot(1) is None
+    assert store.continuity_store.latest_fresh_snapshot_before(3) is None
+    assert store.continuity_store.is_stale(1) is True
+    with pytest.raises(ValueError, match="^continuity_freshness_metadata_unavailable$"):
+        store._regeneration_base_state(2, store.state())
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"schema_version": "wrong", "chapters": []},
+        {"schema_version": "continuity-stale/v1"},
+        {"schema_version": "continuity-stale/v1", "chapters": "1"},
+        {"schema_version": "continuity-stale/v1", "chapters": [True]},
+        {"schema_version": "continuity-stale/v1", "chapters": [0]},
+    ],
+)
+def test_invalid_stale_metadata_shape_is_not_fresh(tmp_path, payload):
+    store = ContinuityStore(tmp_path)
+    _snapshot(store, 1, "one")
+    _write_json(store.stale_path, payload)
+
+    assert store.read_stale_metadata().status == "CORRUPT"
+    assert store.read_fresh_snapshot(1) is None
+    assert store.latest_fresh_snapshot_before(3) is None
+
+
+def test_unreadable_stale_metadata_is_not_fresh(tmp_path, monkeypatch):
+    store = ContinuityStore(tmp_path)
+    _snapshot(store, 1, "one")
+    store.stale_path.write_text(
+        json.dumps({"schema_version": "continuity-stale/v1", "chapters": []}),
+        encoding="utf-8",
+    )
+    original_read_text = Path.read_text
+
+    def fail_stale_read(path, *args, **kwargs):
+        if Path(path) == store.stale_path:
+            raise OSError("stale_metadata_unreadable")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_stale_read)
+
+    assert store.read_stale_metadata().status == "UNREADABLE"
+    assert store.read_fresh_snapshot(1) is None
+    assert store.latest_fresh_snapshot_before(3) is None
+
+
+def test_corrupt_stale_metadata_is_not_overwritten_by_mark_or_clear(tmp_path):
+    store = ContinuityStore(tmp_path)
+    store.stale_path.parent.mkdir(parents=True, exist_ok=True)
+    store.stale_path.write_text("partial-write", encoding="utf-8")
+    before = store.stale_path.read_bytes()
+
+    with pytest.raises(ValueError, match="^continuity_freshness_metadata_unavailable$"):
+        store.mark_stale([1])
+    assert store.stale_path.read_bytes() == before
+
+    with pytest.raises(ValueError, match="^continuity_freshness_metadata_unavailable$"):
+        store.clear_stale([1])
+    assert store.stale_path.read_bytes() == before
+
+
+def test_corrupt_stale_metadata_makes_historical_confirmation_stale_only(tmp_path):
+    store = _make_project(tmp_path, current_chapter=2)
+    for chapter in (1, 2):
+        store.confirm_candidate(_candidate(store, chapter).candidate_id)
+    store.continuity_store.stale_path.write_text("{not-json", encoding="utf-8")
+    before = store.continuity_store.stale_path.read_bytes()
+    candidate = _candidate(store, 1, operation="regenerate")
+
+    result = store.confirm_candidate(candidate.candidate_id)
+
+    assert result["candidate"]["status"] == "confirmed"
+    assert result["continuity_snapshot"]["mode"] == "STALE_ONLY"
+    assert "CONTINUITY_FRESHNESS_METADATA_UNAVAILABLE" in result["continuity_snapshot"]["findings"]
+    assert store.continuity_store.read_fresh_snapshot(1) is None
+    assert store.continuity_store.stale_path.read_bytes() == before
+
+
 def test_normal_append_writes_a_fresh_end_chapter_snapshot(tmp_path):
     store = _make_project(tmp_path)
     candidate = _candidate(store, 1)

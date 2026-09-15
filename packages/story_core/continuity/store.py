@@ -17,6 +17,7 @@ module just provides a typed view.
 from __future__ import annotations
 
 import json
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -25,6 +26,27 @@ from .snapshot import ChapterSnapshot
 
 
 _STALE_SCHEMA_VERSION = "continuity-stale/v1"
+_STALE_METADATA_VALID = "VALID"
+_STALE_METADATA_MISSING = "MISSING"
+_STALE_METADATA_CORRUPT = "CORRUPT"
+_STALE_METADATA_UNREADABLE = "UNREADABLE"
+
+
+@dataclass(frozen=True)
+class StaleMetadataRead:
+    """Strict read result for the stale-chapter trust metadata."""
+
+    status: str
+    chapters: tuple[int, ...] = ()
+    error: str | None = None
+
+    @property
+    def trusted(self) -> bool:
+        return self.status in {_STALE_METADATA_VALID, _STALE_METADATA_MISSING}
+
+    @property
+    def writable(self) -> bool:
+        return self.trusted
 
 
 @dataclass
@@ -88,12 +110,20 @@ class ContinuityStore:
     def is_stale(self, chapter_number: int) -> bool:
         """Return whether a snapshot is currently outside the trusted chain."""
 
-        return int(chapter_number) in set(self.get_stale_chapters())
+        metadata = self.read_stale_metadata()
+        if not metadata.trusted:
+            # An unreadable/corrupt trust file must never make a snapshot look
+            # fresh.  The status-aware readers below also return no authority,
+            # but treating the individual chapter as stale keeps this bool
+            # API fail-safe for existing callers.
+            return True
+        return int(chapter_number) in set(metadata.chapters)
 
     def read_fresh_snapshot(self, chapter_number: int) -> ChapterSnapshot | None:
         """Read a snapshot only when its chapter is not marked stale."""
 
-        if self.is_stale(chapter_number):
+        metadata = self.read_stale_metadata()
+        if not metadata.trusted or int(chapter_number) in set(metadata.chapters):
             return None
         return self.read_snapshot(chapter_number)
 
@@ -101,10 +131,14 @@ class ContinuityStore:
         """Return the nearest trusted snapshot strictly before ``chapter_number``."""
 
         target = int(chapter_number)
+        metadata = self.read_stale_metadata()
+        if not metadata.trusted:
+            return None
         candidates = [
             snapshot
             for snapshot in self.list_snapshots()
-            if snapshot.chapter_number < target and not self.is_stale(snapshot.chapter_number)
+            if snapshot.chapter_number < target
+            and snapshot.chapter_number not in set(metadata.chapters)
         ]
         return max(candidates, key=lambda item: item.chapter_number, default=None)
 
@@ -125,13 +159,82 @@ class ContinuityStore:
 
     # --- stale markers -----------------------------------------------------
 
-    def _read_stale(self) -> dict[str, object]:
-        if not self.stale_path.is_file():
-            return {"schema_version": _STALE_SCHEMA_VERSION, "chapters": []}
+    def read_stale_metadata(self) -> StaleMetadataRead:
+        """Read stale metadata without treating failures as an empty set.
+
+        A missing file is the compatible new-project state.  Once a file
+        exists, malformed JSON, invalid schema, or an I/O failure makes the
+        freshness trust boundary unavailable.  Callers that decide whether a
+        snapshot is authoritative must inspect this result rather than
+        falling back to ``chapters=[]``.
+        """
+
         try:
-            return json.loads(self.stale_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            return {"schema_version": _STALE_SCHEMA_VERSION, "chapters": []}
+            stale_stat = self.stale_path.stat()
+        except FileNotFoundError:
+            return StaleMetadataRead(status=_STALE_METADATA_MISSING)
+        except OSError as exc:
+            return StaleMetadataRead(
+                status=_STALE_METADATA_UNREADABLE,
+                error=str(exc),
+            )
+        if not stat.S_ISREG(stale_stat.st_mode):
+            return StaleMetadataRead(
+                status=_STALE_METADATA_CORRUPT,
+                error="stale_metadata_path_not_regular_file",
+            )
+        try:
+            raw = self.stale_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            return StaleMetadataRead(
+                status=_STALE_METADATA_UNREADABLE,
+                error=str(exc),
+            )
+        try:
+            payload = json.loads(raw)
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            return StaleMetadataRead(
+                status=_STALE_METADATA_CORRUPT,
+                error=str(exc),
+            )
+        if not isinstance(payload, dict):
+            return StaleMetadataRead(
+                status=_STALE_METADATA_CORRUPT,
+                error="stale_metadata_payload_not_object",
+            )
+        if payload.get("schema_version") != _STALE_SCHEMA_VERSION:
+            return StaleMetadataRead(
+                status=_STALE_METADATA_CORRUPT,
+                error="stale_metadata_schema_version_invalid",
+            )
+        chapters = payload.get("chapters")
+        if not isinstance(chapters, list):
+            return StaleMetadataRead(
+                status=_STALE_METADATA_CORRUPT,
+                error="stale_metadata_chapters_not_list",
+            )
+        normalized: set[int] = set()
+        for chapter in chapters:
+            if (
+                isinstance(chapter, bool)
+                or not isinstance(chapter, int)
+                or chapter <= 0
+            ):
+                return StaleMetadataRead(
+                    status=_STALE_METADATA_CORRUPT,
+                    error="stale_metadata_chapter_number_invalid",
+                )
+            normalized.add(chapter)
+        return StaleMetadataRead(
+            status=_STALE_METADATA_VALID,
+            chapters=tuple(sorted(normalized)),
+        )
+
+    def _require_writable_stale_metadata(self) -> StaleMetadataRead:
+        metadata = self.read_stale_metadata()
+        if not metadata.writable:
+            raise ValueError("continuity_freshness_metadata_unavailable")
+        return metadata
 
     def _write_stale(self, payload: dict[str, object]) -> Path:
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -142,12 +245,14 @@ class ContinuityStore:
         return self.stale_path
 
     def get_stale_chapters(self) -> list[int]:
-        payload = self._read_stale()
-        chapters = payload.get("chapters") or []
-        return sorted({int(item) for item in chapters if isinstance(item, int) or (isinstance(item, str) and item.isdigit())})
+        metadata = self.read_stale_metadata()
+        if not metadata.trusted:
+            raise ValueError("continuity_freshness_metadata_unavailable")
+        return list(metadata.chapters)
 
     def mark_stale(self, chapter_numbers: Iterable[int]) -> Path:
-        existing = set(self.get_stale_chapters())
+        metadata = self._require_writable_stale_metadata()
+        existing = set(metadata.chapters)
         for number in chapter_numbers:
             existing.add(int(number))
         return self._write_stale(
@@ -158,11 +263,12 @@ class ContinuityStore:
         )
 
     def clear_stale(self, chapter_numbers: Iterable[int] | None = None) -> Path:
+        metadata = self._require_writable_stale_metadata()
         if chapter_numbers is None:
             return self._write_stale(
                 {"schema_version": _STALE_SCHEMA_VERSION, "chapters": []}
             )
-        keep = set(self.get_stale_chapters()) - {int(item) for item in chapter_numbers}
+        keep = set(metadata.chapters) - {int(item) for item in chapter_numbers}
         return self._write_stale(
             {
                 "schema_version": _STALE_SCHEMA_VERSION,
@@ -174,5 +280,6 @@ class ContinuityStore:
 __all__ = [
     "ContinuitySnapshotPlan",
     "ContinuityStore",
+    "StaleMetadataRead",
     "_STALE_SCHEMA_VERSION",
 ]

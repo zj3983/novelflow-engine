@@ -9986,6 +9986,13 @@ class FileProjectStore(
             baseline = self._trusted_initial_regeneration_state(current_state)
             return (baseline, 0) if baseline is not None else None
 
+        # A present-but-unreadable stale marker makes every existing snapshot
+        # untrusted. Do not fall through to the Chapter 0 replay path: that
+        # would silently turn an unavailable freshness boundary into a fresh
+        # one.
+        if not self.continuity_store.read_stale_metadata().trusted:
+            return None
+
         snapshot = self.continuity_store.latest_fresh_snapshot_before(target + 1)
         if snapshot is not None:
             base_state = self._continuity_snapshot_state(snapshot, current_state)
@@ -10143,6 +10150,17 @@ class FileProjectStore(
                 candidate_id=candidate_id,
             )
 
+        stale_metadata = self.continuity_store.read_stale_metadata()
+        if not stale_metadata.trusted:
+            return ContinuitySnapshotPlan(
+                status="CLEAR",
+                mode="STALE_ONLY",
+                chapter_number=chapter_number,
+                candidate_id=candidate_id,
+                stale_from_chapter=chapter_number,
+                findings=["CONTINUITY_FRESHNESS_METADATA_UNAVAILABLE"],
+            )
+
         if require_authority_plans and (fact_resource_plan is None or canon_plan is None):
             return ContinuitySnapshotPlan(
                 status="CLEAR",
@@ -10238,9 +10256,15 @@ class FileProjectStore(
 
         plan = continuity_plan or self._plan_continuity_snapshot(candidate)
         if plan.mode == "STALE_ONLY":
-            stale = [number for number in self.chapter_numbers() if number >= chapter_number]
-            if stale:
-                self.continuity_store.mark_stale(stale)
+            stale_metadata = self.continuity_store.read_stale_metadata()
+            if stale_metadata.writable:
+                stale = [
+                    number
+                    for number in self.chapter_numbers()
+                    if number >= chapter_number
+                ]
+                if stale:
+                    self.continuity_store.mark_stale(stale)
             return
         if plan.mode == "NOOP":
             return
@@ -10675,6 +10699,11 @@ class FileProjectStore(
         chapter_number: int,
         current_state: dict[str, Any],
     ) -> dict[str, Any]:
+        if (
+            int(chapter_number) > 1
+            and not self.continuity_store.read_stale_metadata().trusted
+        ):
+            raise ValueError("continuity_freshness_metadata_unavailable")
         rebuilt = self._reconstruct_state_at_end(chapter_number - 1, current_state)
         if rebuilt is None:
             raise ValueError("continuity_history_baseline_unavailable")
