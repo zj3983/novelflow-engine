@@ -35,7 +35,7 @@ from .delta import (
     TimelineAdvance,
 )
 from .snapshot import ChapterSnapshot, SNAPSHOT_SCHEMA_VERSION
-from .store import ContinuityStore
+from .store import ContinuityStore, SnapshotIntegrityRead
 
 __all__ = [
     "ChapterSnapshot",
@@ -43,6 +43,7 @@ __all__ = [
     "CheckFinding",
     "ContinuityDelta",
     "ContinuityStore",
+    "SnapshotIntegrityRead",
     "DeterministicChecks",
     "EntityAddition",
     "EntityUpdate",

@@ -9972,6 +9972,75 @@ class FileProjectStore(
         usable = self._validated_runtime_state(hydrated, current_state)
         return dict(usable) if usable is not None else None
 
+    def _continuity_snapshot_expectations(
+        self,
+        chapter_number: int,
+    ) -> tuple[str, int, str | None] | None:
+        """Return current chapter identity material for snapshot validation.
+
+        The body is read from the chapter artifact rather than from the
+        visible state projection.  Candidate provenance is only enforced when
+        the persisted candidate store gives us one unique confirmed identity;
+        direct-generated chapters intentionally have no such draft.
+        """
+
+        try:
+            chapter = self.chapter_store.read_chapter(
+                int(chapter_number),
+                default=None,
+                include_body=True,
+            )
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None
+        if not isinstance(chapter, dict):
+            return None
+        body = chapter.get("body")
+        if not isinstance(body, str):
+            return None
+        confirmed = [
+            item
+            for item in self.candidate_store.list(
+                project_id=self._canon_project_id(),
+                chapter_number=int(chapter_number),
+            )
+            if item.status == "confirmed"
+        ]
+        candidate_id = confirmed[0].candidate_id if len(confirmed) == 1 else None
+        return sha256(body.encode("utf-8")).hexdigest(), len(body), candidate_id
+
+    def _latest_validated_fresh_snapshot_before(
+        self,
+        chapter_number: int,
+    ) -> Any | None:
+        """Select the nearest fresh snapshot that matches its chapter artifact."""
+
+        metadata = self.continuity_store.read_stale_metadata()
+        if not metadata.trusted:
+            return None
+        stale = set(metadata.chapters)
+        target = int(chapter_number)
+        for snapshot_number in sorted(
+            (
+                number
+                for number in self.continuity_store.snapshot_numbers()
+                if number < target and number not in stale
+            ),
+            reverse=True,
+        ):
+            expectations = self._continuity_snapshot_expectations(snapshot_number)
+            if expectations is None:
+                continue
+            body_sha256, body_chars, candidate_id = expectations
+            result = self.continuity_store.read_snapshot_integrity(
+                snapshot_number,
+                expected_body_sha256=body_sha256,
+                expected_body_chars=body_chars,
+                expected_candidate_id=candidate_id,
+            )
+            if result.valid:
+                return result.snapshot
+        return None
+
     def _reconstruct_state_at_end(
         self,
         chapter_number: int,
@@ -9993,7 +10062,7 @@ class FileProjectStore(
         if not self.continuity_store.read_stale_metadata().trusted:
             return None
 
-        snapshot = self.continuity_store.latest_fresh_snapshot_before(target + 1)
+        snapshot = self._latest_validated_fresh_snapshot_before(target + 1)
         if snapshot is not None:
             base_state = self._continuity_snapshot_state(snapshot, current_state)
             snapshot_number = int(snapshot.chapter_number)

@@ -5,6 +5,7 @@ import os
 import re
 import threading
 from copy import deepcopy
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -497,14 +498,31 @@ def _long_test_body(label: str = "Night Ember keeps the chapter grounded.") -> s
 
 
 def _seed_trusted_continuity_snapshot(store: FileProjectStore, chapter_number: int = 1, state_after: dict | None = None) -> None:
+    chapter_path = store.story_system_dir / "chapters" / f"{chapter_number:04d}.json"
+    chapter = store.chapter_store.read_chapter(chapter_number, {}, include_body=True)
+    body = chapter.get("body") if isinstance(chapter, dict) else ""
+    if not isinstance(body, str):
+        body = ""
+    if not chapter_path.is_file():
+        chapter = {
+            "chapter_number": chapter_number,
+            "chapter_title": f"Chapter {chapter_number}",
+            "body": body,
+        }
+        chapter_path.parent.mkdir(parents=True, exist_ok=True)
+        chapter_path.write_text(json.dumps(chapter, ensure_ascii=False, indent=2), encoding="utf-8")
+    elif isinstance(chapter, dict) and "body" not in chapter and not chapter.get("body_path"):
+        updated = dict(chapter)
+        updated["body"] = body
+        chapter_path.write_text(json.dumps(updated, ensure_ascii=False, indent=2), encoding="utf-8")
     store.continuity_store.write_snapshot(
         ChapterSnapshot(
             chapter_number=chapter_number,
             candidate_id=f"trusted-{chapter_number}",
             operation="generate",
             confirmed_at="2026-01-01T00:00:00+00:00",
-            body_sha256="fixture",
-            body_chars=1,
+            body_sha256=sha256(body.encode("utf-8")).hexdigest(),
+            body_chars=len(body),
             state_after={"current_chapter": chapter_number, **(state_after or {})},
         )
     )

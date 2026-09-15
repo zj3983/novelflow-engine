@@ -1,4 +1,5 @@
 import json
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -83,7 +84,7 @@ def _make_outline_project(root: Path, *, current_chapter: int) -> FileProjectSto
     )
     _write_json(
         root / ".story-system" / "chapters" / "0011.json",
-        {"chapter_number": 11, "chapter_title": "Previous", "updated_story": {}},
+        {"chapter_number": 11, "chapter_title": "Previous", "body": "", "updated_story": {}},
     )
     store = FileProjectStore(root)
     store.continuity_store.write_snapshot(
@@ -92,8 +93,8 @@ def _make_outline_project(root: Path, *, current_chapter: int) -> FileProjectSto
             candidate_id="trusted-11",
             operation="generate",
             confirmed_at="2026-01-01T00:00:00+00:00",
-            body_sha256="fixture",
-            body_chars=1,
+            body_sha256=sha256("".encode("utf-8")).hexdigest(),
+            body_chars=0,
             state_after={"current_chapter": 11},
         )
     )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -64,14 +65,21 @@ def _candidate(store: FileProjectStore, chapter: int, *, operation: str = "gener
     return store._save_candidate_from_bundle(bundle, project_id="phase3e-story", operation=operation)
 
 
-def _snapshot(store: ContinuityStore, chapter: int, marker: str) -> ChapterSnapshot:
+def _snapshot(
+    store: ContinuityStore,
+    chapter: int,
+    marker: str,
+    *,
+    body: str | None = None,
+) -> ChapterSnapshot:
+    snapshot_body = body or "body"
     snapshot = ChapterSnapshot(
         chapter_number=chapter,
         candidate_id=f"candidate-{chapter}",
         operation="generate",
         confirmed_at="2026-01-01T00:00:00+00:00",
-        body_sha256="body",
-        body_chars=4,
+        body_sha256=sha256(snapshot_body.encode("utf-8")).hexdigest(),
+        body_chars=len(snapshot_body),
         state_after={"current_chapter": chapter, "progression_ledger": {"marker": marker}},
     )
     store.write_snapshot(snapshot)
@@ -106,6 +114,67 @@ def test_continuity_store_distinguishes_missing_and_valid_stale_metadata(tmp_pat
     assert valid.status == "VALID"
     assert list(valid.chapters) == [1]
     assert store.read_fresh_snapshot(1) is None
+
+
+def test_snapshot_integrity_validates_body_and_identity(tmp_path):
+    store = ContinuityStore(tmp_path)
+    body = "已确认的第一章正文"
+    snapshot = _snapshot(store, 1, "one", body=body)
+
+    result = store.read_snapshot_integrity(
+        1,
+        expected_body_sha256=sha256(body.encode("utf-8")).hexdigest(),
+        expected_body_chars=len(body),
+        expected_candidate_id=snapshot.candidate_id,
+    )
+
+    assert result.status == "VALID"
+    assert result.snapshot is not None
+    assert result.snapshot.chapter_number == 1
+
+
+def test_snapshot_integrity_rejects_body_hash_and_length_mismatch(tmp_path):
+    store = ContinuityStore(tmp_path)
+    _snapshot(store, 1, "one", body="已确认正文")
+
+    hash_result = store.read_snapshot_integrity(
+        1,
+        expected_body_sha256=sha256("外部修改正文".encode("utf-8")).hexdigest(),
+        expected_body_chars=5,
+    )
+    assert hash_result.status == "BODY_MISMATCH"
+
+    length_result = store.read_snapshot_integrity(
+        1,
+        expected_body_sha256=sha256("已确认正文".encode("utf-8")).hexdigest(),
+        expected_body_chars=999,
+    )
+    assert length_result.status == "BODY_MISMATCH"
+
+
+def test_snapshot_integrity_rejects_malformed_and_wrong_path_identity(tmp_path):
+    store = ContinuityStore(tmp_path)
+    store.snapshot_path(1).parent.mkdir(parents=True, exist_ok=True)
+    store.snapshot_path(1).write_text("{not-json", encoding="utf-8")
+    assert store.read_snapshot_integrity(1).status == "CORRUPT"
+
+    _snapshot(store, 1, "one", body="正文")
+    payload = json.loads(store.snapshot_path(1).read_text(encoding="utf-8"))
+    payload["chapter_number"] = 2
+    store.snapshot_path(1).write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    assert store.read_snapshot_integrity(1).status == "IDENTITY_MISMATCH"
+
+
+def test_snapshot_integrity_rejects_candidate_identity_when_proven(tmp_path):
+    store = ContinuityStore(tmp_path)
+    _snapshot(store, 1, "one", body="正文")
+
+    result = store.read_snapshot_integrity(1, expected_candidate_id="confirmed-other")
+
+    assert result.status == "IDENTITY_MISMATCH"
 
 
 def test_corrupt_stale_metadata_blocks_fresh_reads_and_reconstruction(tmp_path):
@@ -542,12 +611,11 @@ def test_regeneration_base_uses_nearest_fresh_snapshot_and_replays_past_stale_ch
         _write_json(tmp_path / ".story-system" / "chapters" / f"{chapter:04d}.json", {
             "chapter_number": chapter,
             "chapter_title": f"第{chapter}章",
+            "body": f"body-{chapter}",
             "chapter_summary": {"summary": f"chapter {chapter}", "facts": [], "next_focus": "continue"},
         })
-    _snapshot(store.continuity_store, 1, "fresh-1")
-    _snapshot(store.continuity_store, 2, "fresh-2")
-    _snapshot(store.continuity_store, 3, "stale-3")
-    _snapshot(store.continuity_store, 4, "stale-4")
+    for chapter, marker in ((1, "fresh-1"), (2, "fresh-2"), (3, "stale-3"), (4, "stale-4")):
+        _snapshot(store.continuity_store, chapter, marker, body=f"body-{chapter}")
     store.continuity_store.mark_stale([3, 4])
 
     base = store._regeneration_base_state(5, store.state())
@@ -555,6 +623,61 @@ def test_regeneration_base_uses_nearest_fresh_snapshot_and_replays_past_stale_ch
     assert base["current_chapter"] == 4
     assert base["progression_ledger"]["marker"] == "fresh-2"
     assert [item["chapter_number"] for item in base["chapter_summaries"]] == [3, 4]
+
+
+def test_snapshot_body_mismatch_is_skipped_without_repairing_the_snapshot(tmp_path):
+    store = _make_project(tmp_path, current_chapter=2)
+    body = "原始正文"
+    _write_json(
+        tmp_path / ".story-system" / "chapters" / "0001.json",
+        {"chapter_number": 1, "chapter_title": "第一章", "body": "外部修改正文"},
+    )
+    _snapshot(store.continuity_store, 1, "old", body=body)
+    before = store.continuity_store.snapshot_path(1).read_bytes()
+
+    assert store._latest_validated_fresh_snapshot_before(2) is None
+    assert store.continuity_store.snapshot_path(1).read_bytes() == before
+
+
+def test_corrupt_nearest_snapshot_uses_earlier_valid_boundary(tmp_path):
+    store = _make_project(tmp_path, current_chapter=3)
+    for chapter in (1, 2, 3):
+        _write_json(
+            tmp_path / ".story-system" / "chapters" / f"{chapter:04d}.json",
+            {
+                "chapter_number": chapter,
+                "chapter_title": f"第{chapter}章",
+                "body": f"正文-{chapter}",
+                "chapter_summary": {
+                    "summary": f"chapter {chapter}",
+                    "facts": [],
+                    "next_focus": "continue",
+                },
+            },
+        )
+    _snapshot(store.continuity_store, 1, "valid-1", body="正文-1")
+    corrupt_path = store.continuity_store.snapshot_path(2)
+    corrupt_path.parent.mkdir(parents=True, exist_ok=True)
+    corrupt_path.write_text("{partial", encoding="utf-8")
+    before = corrupt_path.read_bytes()
+
+    rebuilt = store._reconstruct_state_at_end(2, store.state())
+
+    assert rebuilt is not None
+    _state, source_chapter = rebuilt
+    assert source_chapter == 1
+    assert corrupt_path.read_bytes() == before
+
+
+def test_no_valid_snapshot_or_explicit_baseline_makes_regeneration_unavailable(tmp_path):
+    store = _make_project(tmp_path, current_chapter=1)
+    (tmp_path / ".story-system" / "MASTER_SETTING.json").unlink()
+    corrupt_path = store.continuity_store.snapshot_path(1)
+    corrupt_path.parent.mkdir(parents=True, exist_ok=True)
+    corrupt_path.write_text("{partial", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="^continuity_history_baseline_unavailable$"):
+        store._regeneration_base_state(2, store.state())
 
 
 def test_historical_plan_degrades_to_stale_only_without_trusted_boundary(tmp_path):
