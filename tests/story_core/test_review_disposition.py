@@ -95,6 +95,17 @@ def test_consistency_finding_never_blocks_style_even_if_caller_marks_it_blocking
     assert finding.blocking is False
 
 
+def test_consistency_finding_never_blocks_unavailable_even_if_outer_fallback_marks_it_blocking():
+    finding = ConsistencyFinding(
+        code="consistency.unavailable",
+        message="事实审稿 pipeline 异常；本次未完成核验。",
+        source="consistency",
+        blocking=True,
+    )
+
+    assert finding.blocking is False
+
+
 def test_consistency_runtime_failure_is_unverified_not_blocking():
     class RaisingRuntime:
         def complete(self, request):
