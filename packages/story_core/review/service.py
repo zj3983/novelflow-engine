@@ -5,10 +5,13 @@ chapter reviewers, converts their pass/issues-style output into structured
 `ReviewFinding` objects, and produces a `ReviewResult` that downstream code
 uses to make save, rewrite, and display decisions.
 
-Hard-gate sources cover anything that can block a chapter save: length,
-continuity, fragments, world-event consistency, critical prose rules, and the
-genre profile's deterministic checks. Soft-review sources return advisory
-findings only and never block.
+Hard-gate sources cover verifiable chapter-contract failures such as length,
+continuity, fragments, world-event consistency, and the hard subset of
+critical prose rules. Critical prose reviewers may also emit soft findings;
+those remain advisory. Genre-profile findings are advisory by default because
+type feel and payoff strength are editorial judgments, but a structured genre
+finding can explicitly opt into blocking when it represents a real contract
+violation.
 
 Subclasses (typically test doubles) can override the individual ``_run_*``
 hooks; the public ``run_hard_gate`` / ``run_soft_review`` / ``combine``
@@ -23,8 +26,10 @@ from typing import Any, Callable, Iterable
 from .contracts import ReviewFinding, ReviewResult, ReviewStatus
 
 
-# Hard-gate reviewer sources. Order is preserved in the recorded call list
-# so tests can assert the exact dispatch sequence.
+# Reviewer sources executed during the hard-gate pass. Individual adapters can
+# still emit advisory findings when a layered reviewer reports a soft concern.
+# Order is preserved in the recorded call list so tests can assert the exact
+# dispatch sequence.
 HARD_SOURCES: tuple[str, ...] = (
     "continuity",
     "fragments",
@@ -258,7 +263,7 @@ class ReviewService:
             body,
             protagonist_names=context.get("protagonist_aliases") or (),
         )
-        return _adapt_report(report, source="critical", default_blocking=True), report
+        return _adapt_critical_report(report), report
 
     def _run_genre(self, *, body: str, context: dict[str, Any]) -> tuple[ReviewResult | None, Any]:
         if self.profile_for is None:
@@ -398,6 +403,55 @@ def _adapt_report(
     return ReviewResult.from_findings(findings, diagnostics=diagnostics)
 
 
+def _adapt_critical_report(report: Any) -> ReviewResult:
+    """Preserve the critical prose reviewer's own hard/soft classification.
+
+    ``review_critical_prose_rules`` already separates factual/contract-breaking
+    failures (POV leakage, planning metadata, role-boundary violations, etc.)
+    from subjective craft concerns such as paragraph texture or metaphor
+    density. Treating every returned issue as blocking discards that distinction
+    and can make automatic revision chase stylistic thresholds indefinitely.
+
+    Legacy critical reviewers that do not expose ``hard_issues`` / ``soft_issues``
+    keep the previous fail-closed behavior.
+    """
+    if not isinstance(report, dict):
+        return ReviewResult.from_findings([])
+
+    has_layered_classification = "hard_issues" in report or "soft_issues" in report
+    if not has_layered_classification:
+        return _adapt_report(report, source="critical", default_blocking=True)
+
+    diagnostics = {key: value for key, value in report.items() if key not in {"issues", "revision_plan", "scores"}}
+    issues = list(report.get("issues") or [])
+    plan_items = list(report.get("revision_plan") or [])
+    hard_messages = {str(item).strip() for item in (report.get("hard_issues") or []) if str(item).strip()}
+    findings: list[ReviewFinding] = []
+
+    for index, issue in enumerate(issues):
+        message, suggestion, evidence, explicit_blocking = _normalize_issue(issue)
+        if not message:
+            continue
+        if index < len(plan_items):
+            plan_text = str(plan_items[index] or "").strip()
+            if plan_text:
+                suggestion = plan_text
+        blocking = bool(explicit_blocking) if explicit_blocking is not None else message in hard_messages
+        findings.append(
+            ReviewFinding(
+                code=f"critical.{_slugify(message)}",
+                category="hard" if blocking else "prose",
+                blocking=blocking,
+                message=message,
+                suggestion=suggestion,
+                source="critical",
+                evidence=evidence,
+            )
+        )
+
+    return ReviewResult.from_findings(findings, diagnostics=diagnostics)
+
+
 def _adapt_genre_report(report: Any) -> ReviewResult:
     if not isinstance(report, dict):
         return ReviewResult.from_findings([])
@@ -405,7 +459,6 @@ def _adapt_genre_report(report: Any) -> ReviewResult:
     active = report.get("active_genre_reviews")
     if isinstance(active, dict):
         diagnostics["active_genre_reviews"] = active
-    overall_blocking = not bool(report.get("pass", True))
     issues = list(report.get("issues") or [])
     plan_items = list(report.get("revision_plan") or [])
     findings: list[ReviewFinding] = []
@@ -420,15 +473,11 @@ def _adapt_genre_report(report: Any) -> ReviewResult:
             plan_text = str(plan_items[index] or "").strip()
             if plan_text:
                 suggestion = plan_text
-        # Genre reports are deterministic rule checkers. The current genre
-        # reviewers report issues as plain strings; in the absence of an
-        # explicit per-issue `blocking` flag, treat the whole report as
-        # blocking when its overall `pass` is False. Future genre reviewers
-        # are expected to set `blocking` per finding.
-        if explicit_blocking is None:
-            blocking = overall_blocking
-        else:
-            blocking = bool(explicit_blocking)
+        # Genre fit, payoff strength, trope coverage and similar findings are
+        # editorial judgments. A report-level ``pass: false`` must not turn all
+        # of them into hard blockers. Structured genre findings can still opt
+        # into blocking explicitly for a real contract/fact violation.
+        blocking = bool(explicit_blocking) if explicit_blocking is not None else False
         findings.append(
             ReviewFinding(
                 code=f"genre.{_slugify(message)}",
