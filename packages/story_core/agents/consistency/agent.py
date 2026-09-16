@@ -154,9 +154,12 @@ def _downgrade_non_factual(code: str, source: str, blocking: bool) -> bool:
     The director artifact is an executable writing plan, not committed canon.
     A draft may realise a beat with a different action or move the final camera
     position without creating a continuity error. Keep those findings visible,
-    but do not let them masquerade as factual contradictions.
+    but do not let them masquerade as factual contradictions. Review runtime
+    failures likewise mean "unverified", never "canon contradicted".
     """
     normalized_code = code.strip().lower()
+    if normalized_code in {"consistency.unavailable", "consistency.invalid_response"}:
+        return False
     if (
         code in _STYLE_CODES
         or normalized_code.startswith("style.")
