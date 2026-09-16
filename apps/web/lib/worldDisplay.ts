@@ -95,24 +95,36 @@ function cleanText(value: unknown): string {
 const NON_CHARACTER_ROLES = new Set(["信息源", "玩家群体", "市场机制", "任务线", "服务设施", "系统机制", "收购方NPC"]);
 const NON_CHARACTER_NAMES = new Set(["论坛", "公共频道", "交易行告示牌", "清道夫委托", "系统公告", "白河仓库收购方"]);
 
-function canonicalCharacterName(name: unknown): string {
-  const text = cleanText(name);
-  const aliases: Record<string, string> = {
-    药剂师NPC: "药剂师洛婶",
-    药剂师: "药剂师洛婶",
-    药剂铺老妇人: "药剂师洛婶",
-    灰头巾老妇人: "药剂师洛婶",
-    老妇人: "药剂师洛婶",
-    洛婶: "药剂师洛婶",
-    "补给商·铁栓": "仓库管理员铁栓",
-    补给商铁栓: "仓库管理员铁栓",
-    铁栓: "仓库管理员铁栓",
-  };
-  return aliases[text] ?? text;
+type CharacterRosterEntry = {
+  name?: unknown;
+  aliases?: unknown;
+  identity_profile?: { aliases?: unknown } | null;
+};
+
+function explicitCharacterAliases(character: CharacterRosterEntry): string[] {
+  const identityAliases = character.identity_profile?.aliases;
+  return [
+    ...(Array.isArray(character.aliases) ? character.aliases : []),
+    ...(Array.isArray(identityAliases) ? identityAliases : []),
+  ]
+    .map(cleanText)
+    .filter(Boolean);
 }
 
-function isCharacterLike(value: { name?: unknown; role?: unknown }): boolean {
-  const name = canonicalCharacterName(value.name);
+function canonicalCharacterName(name: unknown, roster: CharacterRosterEntry[] = []): string {
+  const text = cleanText(name);
+  if (!text) return text;
+  if (roster.some((card) => cleanText(card.name) === text)) return text;
+  const matches = new Set<string>();
+  for (const card of roster) {
+    const canonical = cleanText(card.name);
+    if (canonical && explicitCharacterAliases(card).includes(text)) matches.add(canonical);
+  }
+  return matches.size === 1 ? Array.from(matches)[0] : text;
+}
+
+function isCharacterLike(value: { name?: unknown; role?: unknown }, roster: CharacterRosterEntry[] = []): boolean {
+  const name = canonicalCharacterName(value.name, roster);
   const role = cleanText(value.role);
   if (!name) return false;
   if (NON_CHARACTER_NAMES.has(name)) return false;
@@ -122,7 +134,7 @@ function isCharacterLike(value: { name?: unknown; role?: unknown }): boolean {
 
 const IDENTITY_ALIAS_PATTERN = /(?:现实身份|本名|真名|原名|现实姓名|游戏ID|游戏名|网名|化名)\s*[：:]?\s*([A-Za-z0-9_\-\u4e00-\u9fff]{2,24})/g;
 
-function characterIdentityTokens(character: ProfileWithRuntime): Set<string> {
+function characterIdentityTokens(character: ProfileWithRuntime, roster: CharacterRosterEntry[] = []): Set<string> {
   const tokens = new Set<string>();
   const add = (value: unknown) => {
     const text = cleanText(value);
@@ -133,7 +145,9 @@ function characterIdentityTokens(character: ProfileWithRuntime): Set<string> {
   add(character.game_panel?.game_id);
   add(character.game_state?.current?.game_id);
   const identity = character.identity_profile as Record<string, unknown> | undefined;
-  for (const alias of Array.isArray(identity?.aliases) ? identity.aliases : []) add(alias);
+  for (const alias of explicitCharacterAliases(character)) {
+    if (roster.length > 0 && canonicalCharacterName(alias, roster) !== alias) add(alias);
+  }
   for (const value of [character.role, identity?.current_identity]) {
     const text = cleanText(value);
     for (const match of text.matchAll(IDENTITY_ALIAS_PATTERN)) add(match[1]);
@@ -213,21 +227,23 @@ export function mergeCharacters(
 ): DisplayCharacter[] {
   const byName = new Map<string, DisplayCharacter>();
   const tokensByName = new Map<string, Set<string>>();
+  const roster = (profiles ?? []) as CharacterRosterEntry[];
 
   const addCharacter = (raw: ProfileWithRuntime) => {
-    if (!isCharacterLike(raw)) return;
-    const name = canonicalCharacterName(raw.name);
-    const tokens = characterIdentityTokens(raw);
-    const existingName = Array.from(tokensByName.entries()).find(([, existingTokens]) => (
+    if (!isCharacterLike(raw, roster)) return;
+    const name = canonicalCharacterName(raw.name, roster);
+    const normalized = { ...raw, name };
+    const tokens = characterIdentityTokens(raw, roster);
+    const existingName = byName.has(name) ? name : Array.from(tokensByName.entries()).find(([, existingTokens]) => (
       Array.from(tokens).some((token) => existingTokens.has(token))
     ))?.[0];
     if (!existingName) {
-      byName.set(name, { ...raw, name });
+      byName.set(name, normalized);
       tokensByName.set(name, tokens);
       return;
     }
     const previous = byName.get(existingName) ?? { name: existingName };
-    const merged = mergeDisplayCharacter(previous, { ...raw, name });
+    const merged = mergeDisplayCharacter(previous, normalized);
     byName.delete(existingName);
     byName.set(merged.name, merged);
     const mergedTokens = tokensByName.get(existingName) ?? new Set<string>();

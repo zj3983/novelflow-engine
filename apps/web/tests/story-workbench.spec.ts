@@ -3546,6 +3546,10 @@ test("character hierarchy respects explicit taxonomy and preserves compact editi
   await expect(groups.nth(0).getByRole("heading", { name: "新主角", exact: true })).toBeVisible();
   await expect(groups.nth(1).getByRole("heading", { name: "核心敌", exact: true })).toBeVisible();
   await expect(groups.nth(1)).not.toContainText("新主角");
+  await groups.nth(0).getByRole("button", { name: "编辑", exact: true }).click();
+  await expect(groups.nth(0).locator('[data-testid="character-card-protagonist"]')).toHaveCount(1);
+  await expect(groups.nth(0).getByRole("heading", { name: "性格与动机", exact: true })).toBeVisible();
+  await groups.nth(0).getByRole("button", { name: "取消", exact: true }).click();
   const minor = groups.nth(4);
   await expect(minor).toContainText("已就绪 · 完整度 75%");
   await expect(groups).not.toContainText(["protagonist", "long_term_antagonist", "stage_antagonist", "supporting", "ready", "unknown_function"]);
@@ -4211,6 +4215,53 @@ test("角色卡不把白河仓库收购方显示为人物", () => {
   );
 
   expect(merged.map((character) => character.name)).toEqual(["药剂师洛婶"]);
+});
+
+test("角色卡只按当前项目 roster 解析显式别名", () => {
+  const merged = mergeCharacters(
+    [
+      { name: "老妇人", role: "supporting" },
+      { name: "药剂师洛婶", role: "服务NPC", identity_profile: { aliases: ["洛婶"] } },
+    ],
+    [{ name: "洛婶", role: "服务NPC" }],
+  );
+
+  expect(merged.map((character) => character.name)).toEqual(["老妇人", "药剂师洛婶"]);
+
+  const ambiguous = mergeCharacters(
+    [
+      { name: "张婶", role: "supporting", aliases: ["老妇人"] },
+      { name: "李婶", role: "supporting", aliases: ["老妇人"] },
+    ],
+    [{ name: "老妇人", role: "supporting" }],
+  );
+
+  expect(ambiguous.map((character) => character.name)).toEqual(["张婶", "李婶", "老妇人"]);
+});
+
+test("未声明别名的项目角色保存时仍使用原名", async ({ page }) => {
+  const fixture = await routeCurrentFileProject(page, "character-alias-save");
+  const character = {
+    name: "老妇人", role: "supporting", importance: "supporting", narrative_function: "other",
+    profile_status: "ready", profile_completeness: 0.75,
+  };
+  Object.assign(fixture.project, { character_profiles: [character] });
+  Object.assign(fixture.overview, { characters: [character] });
+  let savedIdentifier = "";
+  await page.route(`**/file-projects/${fixture.encodedId}/characters/*`, async (route) => {
+    if (route.request().method() === "PUT") {
+      savedIdentifier = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1) || "");
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...character, ...route.request().postDataJSON() }) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(character) });
+  });
+
+  await page.goto(`/projects/${fixture.encodedId}/characters`);
+  await expect(page.getByRole("heading", { name: "老妇人", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  await page.getByRole("button", { name: "保存角色卡", exact: true }).click();
+  await expect.poll(() => savedIdentifier).toBe("老妇人");
 });
 
 test("非法状态 JSON 页面内报错且不发请求，非网游隐藏游戏状态", async ({ page }) => {

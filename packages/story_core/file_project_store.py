@@ -4088,6 +4088,11 @@ class FileProjectStore(
         synced = dict(state)
         summary = self._chapter_summary_payload(chapter)
         current_project = self.project()
+        character_roster = (
+            current_project.get("character_profiles")
+            if isinstance(current_project.get("character_profiles"), list)
+            else []
+        )
         normalized_world = normalize_world_context(
             blueprint=current_project.get("world_blueprint"),
             state=synced,
@@ -4196,7 +4201,7 @@ class FileProjectStore(
             appearance_memory,
         )
         character_entity_names = [
-            self._canonical_character_name(str(card.get("name") or ""))
+            self._canonical_character_name(str(card.get("name") or ""), character_roster)
             for card in entity_cards
             if self._is_character_card(card)
         ]
@@ -4314,7 +4319,7 @@ class FileProjectStore(
         for character in state.get("characters", []) if isinstance(state.get("characters"), list) else []:
             if not isinstance(character, dict):
                 continue
-            source = self._canonical_character_name(str(character.get("name") or ""))
+            source = self._canonical_character_name(str(character.get("name") or ""), existing_profiles)
             relationships = character.get("relationships")
             if isinstance(relationships, dict):
                 items = relationships.items()
@@ -4326,7 +4331,8 @@ class FileProjectStore(
                 if not isinstance(relation, dict):
                     continue
                 target = self._canonical_character_name(
-                    str(relation.get("target") or relation.get("name") or fallback_target or "")
+                    str(relation.get("target") or relation.get("name") or fallback_target or ""),
+                    existing_profiles,
                 )
                 if not source or not target or source == target:
                     continue

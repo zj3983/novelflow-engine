@@ -1010,6 +1010,7 @@ export type ImportedOpeningArc = {
 
 export type ImportedCharacterProfile = {
   name: string;
+  aliases?: string[];
   importance?: string | number;
   narrative_function?: string;
   profile_status?: "stub" | "ready" | string;

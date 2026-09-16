@@ -223,8 +223,13 @@ const CHARACTER_TEMPLATES: Record<CharacterTemplateKind, TemplateSection[]> = {
 };
 
 function characterTemplateKind(character: DisplayCharacter): CharacterTemplateKind {
+  if (isProtagonist(character)) return "protagonist";
+  const explicitImportance = enumToken(character.importance);
+  const importanceGroup = importanceGroupOf(character);
+  if (["core", "major", "supporting"].includes(importanceGroup)) return "supporting";
+  if (explicitImportance) return "minor";
+  if (["ally", "rival", "mentor", "love_interest", "stage_antagonist", "long_term_antagonist", "resource_contact"].includes(narrativeFunctionOf(character))) return "supporting";
   const tier = String(character.character_tier || character.role || "").trim().toLowerCase().replaceAll("_", " ");
-  if (tier === "protagonist" || tier === "主角") return "protagonist";
   if (["supporting", "recurring", "recurring npc", "stage antagonist", "long term antagonist", "配角", "重要配角"].includes(tier)) return "supporting";
   return "minor";
 }

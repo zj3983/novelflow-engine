@@ -10385,6 +10385,44 @@ def test_sync_project_after_chapter_applies_relationship_state_changes(tmp_path)
     assert edge["changes"][-1]["chapter_number"] == 3
 
 
+def test_sync_project_after_chapter_uses_roster_aliases_for_relationship_updates(tmp_path):
+    store = _make_minimal_file_project(tmp_path / "novel")
+    project = {
+        "project_id": "p-file",
+        "character_profiles": [
+            {"name": "林照", "role": "protagonist"},
+            {"name": "药剂师洛婶", "role": "服务NPC", "aliases": ["洛婶"]},
+        ],
+        "relationship_graph": [
+            {"source": "林照", "target": "药剂师洛婶", "origin": "first meeting"}
+        ],
+    }
+    state = {
+        "characters": [
+            {
+                "name": "洛婶",
+                "role": "服务NPC",
+                "relationships": {
+                    "林照": {"target": "林照", "bond": "asked for medicine", "trust": 10, "tension": 20}
+                },
+            }
+        ]
+    }
+    chapter = {
+        "chapter_number": 3,
+        "chapter_title": "药剂铺问价",
+        "body": "洛婶把药瓶推到林照面前。",
+        "chapter_summary": {"summary": "洛婶把药瓶推到林照面前。", "facts": [], "next_focus": "continue"},
+    }
+
+    synced = store._sync_project_after_chapter(project, state, chapter)
+
+    edges = synced["relationship_graph"]
+    assert len(edges) == 1
+    assert {edges[0]["source"], edges[0]["target"]} == {"林照", "药剂师洛婶"}
+    assert edges[0]["bond"] == "asked for medicine"
+
+
 def test_sync_after_chapter_records_only_visible_character_appearances(tmp_path):
     project = {
         "project_id": "p-file",
