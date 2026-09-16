@@ -1477,8 +1477,8 @@ def test_story_overview_data_matches_state_character_synthesis_in_one_chapter_pa
     assert overview["state"]["characters"] == expected_state["characters"]
     assert {card["name"] for card in overview["state"]["characters"]} >= {
         "苏叶",
-        "药剂师洛婶",
     }
+    assert "药剂师洛婶" not in {card["name"] for card in overview["state"]["characters"]}
     assert overview["chapters"][0]["chapter_title"] == "药剂铺窗口"
     assert read_counts == {1: 1}
 
@@ -10296,7 +10296,11 @@ def test_file_project_store_dedupes_npc_aliases_and_filters_surface_entities(tmp
         "chapter_summary": {"summary": "夜烬问药剂师。"},
     }
 
-    cards = store._merge_character_cards([], store._chapter_entity_cards(chapter))
+    roster = [{"name": "药剂师洛婶", "role": "服务NPC", "aliases": ["药剂师NPC", "药剂铺老妇人"]}]
+    cards = store._merge_character_cards(
+        roster,
+        [*store._chapter_entity_cards(chapter), {"name": "药剂师NPC"}, {"name": "药剂铺老妇人"}],
+    )
 
     assert [card["name"] for card in cards] == ["药剂师洛婶"]
     assert cards[0]["role"] == "服务NPC"
@@ -10312,7 +10316,7 @@ def test_file_project_store_filters_stale_non_character_profiles(tmp_path):
         "project_id": "p-file",
         "character_profiles": [
             {"name": "公共频道", "role": "玩家群体", "memory": ["旧噪音。"]},
-            {"name": "药剂铺老妇人", "role": "服务NPC", "memory": ["旧药剂铺卡。"]},
+            {"name": "药剂师洛婶", "aliases": ["药剂师NPC"], "role": "服务NPC", "memory": ["旧药剂铺卡。"]},
         ],
     }
     state = {

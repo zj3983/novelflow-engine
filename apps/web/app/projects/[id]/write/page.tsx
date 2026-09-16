@@ -134,6 +134,17 @@ function chapterSearchText(bundle: ChapterIndexEntry): string {
     .toLowerCase();
 }
 
+function keepChapterInView(container: HTMLElement, chapterItem: HTMLElement): void {
+  const containerBounds = container.getBoundingClientRect();
+  const chapterBounds = chapterItem.getBoundingClientRect();
+
+  if (chapterBounds.top < containerBounds.top) {
+    container.scrollTop -= containerBounds.top - chapterBounds.top;
+  } else if (chapterBounds.bottom > containerBounds.bottom) {
+    container.scrollTop += chapterBounds.bottom - containerBounds.bottom;
+  }
+}
+
 export default function WritePage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -157,6 +168,7 @@ export default function WritePage() {
   const [candidateAction, setCandidateAction] = useState<"confirm" | "force-confirm" | "discard" | null>(null);
   const mountedRef = useRef(false);
   const operationTokenRef = useRef(0);
+  const chapterListRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -219,6 +231,22 @@ export default function WritePage() {
   const totalPages = Math.max(1, Math.ceil(filteredBundles.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
   const visibleBundles = filteredBundles.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+  const activeBundleIndex = filteredBundles.findIndex((bundle) => bundle.chapter_number === requestedChapter);
+  const activePage = activeBundleIndex >= 0 ? Math.floor(activeBundleIndex / PAGE_SIZE) + 1 : null;
+
+  useEffect(() => {
+    if (activePage === null) return;
+    setPage((currentPage) => currentPage === activePage ? currentPage : activePage);
+  }, [activePage, filteredBundles, normalizedQuery, requestedChapter]);
+
+  useEffect(() => {
+    const container = chapterListRef.current;
+    if (!container) return;
+    const chapterItem = container.querySelector<HTMLElement>(`[data-chapter-number="${requestedChapter}"]`);
+    if (!chapterItem) return;
+    keepChapterInView(container, chapterItem);
+  }, [filteredBundles, refreshVersion, requestedChapter, safePage]);
+
   const isFileProject = projectId.startsWith("file:") || project?.storage_source === "file";
   const canRegenerate = Boolean(
     chapter &&
@@ -601,7 +629,7 @@ export default function WritePage() {
                   placeholder="标题、章节号、摘要"
                 />
               </label>
-              <div className="ws-chapter-list">
+              <div className="ws-chapter-list" ref={chapterListRef}>
                 {visibleBundles.map((bundle) => {
                   const active = bundle.chapter_number === requestedChapter;
                   return (
@@ -610,6 +638,7 @@ export default function WritePage() {
                       href={`/projects/${encodedProjectId}/write?chapter=${bundle.chapter_number}#chapter-reader`}
                       className={`ws-chapter-list__item${active ? " ws-chapter-list__item--active" : ""}`}
                       aria-current={active ? "page" : undefined}
+                      data-chapter-number={bundle.chapter_number}
                     >
                       <span>第 {bundle.chapter_number} 章</span>
                       <strong>{bundle.chapter_title || "未命名"}</strong>

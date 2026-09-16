@@ -73,6 +73,23 @@ export type CharacterPortrait = {
   writing_limits?: string[];
 };
 
+export type CharacterPerformanceProfile = {
+  speech_style?: string;
+  action_style?: string;
+  risk_posture?: string;
+  emotional_triggers?: string[];
+  decision_rules?: string[];
+  reveal_limits?: string[];
+  voice?: {
+    signature_phrases?: string[];
+    lexicon?: string[];
+    taboo?: string[];
+    sentence_rhythm?: string;
+    self_reference?: string;
+    subtext_habit?: string;
+  };
+};
+
 export type AgentSettings = NonNullable<CreateStoryRequest["agent_settings"]>;
 export type RuntimeStrategySettings = AgentSettings;
 
@@ -779,6 +796,10 @@ export type StoryResponse = {
   characters: Array<{
     name: string;
     role: string;
+    importance?: string | number;
+    narrative_function?: string;
+    profile_status?: "stub" | "ready" | string;
+    profile_completeness?: number | Record<string, unknown>;
     game_id?: string;
     game_panel?: GamePanel;
     current_state?: CharacterStateLayer | string;
@@ -989,6 +1010,10 @@ export type ImportedOpeningArc = {
 
 export type ImportedCharacterProfile = {
   name: string;
+  importance?: string | number;
+  narrative_function?: string;
+  profile_status?: "stub" | "ready" | string;
+  profile_completeness?: number | Record<string, unknown>;
   game_id?: string;
   current_state?: CharacterStateLayer | string;
   real_state?: CharacterStateLayer;
@@ -1002,6 +1027,7 @@ export type ImportedCharacterProfile = {
   current_life_profile?: CharacterCurrentLifeProfile;
   story_drive?: CharacterStoryDrive;
   dialogue_examples?: string[];
+  performance_profile?: CharacterPerformanceProfile;
   relationship_notes?: CharacterRelationshipNote[];
   character_type?: string;
   core_motivation?: string;

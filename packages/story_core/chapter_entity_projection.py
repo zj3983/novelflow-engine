@@ -283,24 +283,6 @@ class ChapterEntityProjectionMixin:
                 "active": True,
             },
             {
-                "name": "药剂师NPC",
-                "triggers": ("药剂师", "药剂铺"),
-                "role": "服务NPC",
-                "location": "起始村药剂铺",
-                "goal": "按规则收取任务材料、出售法力药水并提示下一环任务",
-                "memory": "药剂师NPC负责委托、药水价格和材料提交，话术机械且边界明确。",
-                "active": True,
-            },
-            {
-                "name": "药剂铺老妇人",
-                "triggers": ("灰头巾老妇人", "老妇人", "药剂铺"),
-                "role": "服务NPC",
-                "location": "起始村药剂铺",
-                "goal": "执行药剂铺收货规则：十份一批，少了不收",
-                "memory": "药剂铺老妇人明确毒腺十份一批，不零收；单份交易需走交易木牌。",
-                "active": False,
-            },
-            {
                 "name": "清道夫委托",
                 "triggers": ("清道夫委托", "提交十份灰狼毒腺"),
                 "role": "任务线",
@@ -414,19 +396,20 @@ class ChapterEntityProjectionMixin:
             )
         return cards
 
-    def _canonical_character_name(self, name: str) -> str:
-        aliases = {
-            "药剂师NPC": "药剂师洛婶",
-            "药剂师": "药剂师洛婶",
-            "药剂铺老妇人": "药剂师洛婶",
-            "灰头巾老妇人": "药剂师洛婶",
-            "老妇人": "药剂师洛婶",
-            "洛婶": "药剂师洛婶",
-            "补给商·铁栓": "仓库管理员铁栓",
-            "补给商铁栓": "仓库管理员铁栓",
-            "铁栓": "仓库管理员铁栓",
-        }
-        return aliases.get(name.strip(), name.strip())
+    def _canonical_character_name(self, name: str, cards: list[Any] | None = None) -> str:
+        """Resolve only aliases explicitly declared in the supplied book roster."""
+        name = name.strip()
+        roster = [card for card in (cards or []) if isinstance(card, dict)]
+        if any(str(card.get("name") or "").strip() == name for card in roster):
+            return name
+        matches: set[str] = set()
+        for card in roster:
+            identity = card.get("identity_profile") if isinstance(card.get("identity_profile"), dict) else {}
+            aliases = [*(card.get("aliases") or []), *(identity.get("aliases") or [])]
+            canonical = str(card.get("name") or "").strip()
+            if canonical and name in [str(alias).strip() for alias in aliases]:
+                matches.add(canonical)
+        return next(iter(matches)) if len(matches) == 1 else name
 
     def _is_character_card(self, card: dict[str, Any]) -> bool:
         name = self._canonical_character_name(str(card.get("name") or ""))
@@ -443,7 +426,7 @@ class ChapterEntityProjectionMixin:
             if not isinstance(item, dict):
                 continue
             item = dict(item)
-            name = self._canonical_character_name(str(item.get("name") or ""))
+            name = self._canonical_character_name(str(item.get("name") or ""), existing)
             if name:
                 item["name"] = name
             if not self._is_character_card(item):
@@ -452,7 +435,7 @@ class ChapterEntityProjectionMixin:
                 by_name[name] = dict(item)
         for card in additions:
             card = dict(card)
-            name = self._canonical_character_name(str(card.get("name") or ""))
+            name = self._canonical_character_name(str(card.get("name") or ""), existing)
             if not name:
                 continue
             card["name"] = name

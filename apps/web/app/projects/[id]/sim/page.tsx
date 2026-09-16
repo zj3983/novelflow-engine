@@ -9,6 +9,8 @@ import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceP
 import { useChapterDetail } from "../../../../components/ws/useChapterDetail";
 import type { ChapterBundle } from "../../../../lib/api";
 
+import styles from "./state.module.css";
+
 type WorldPulse = {
   pulse_index?: number;
   chapter_number?: number;
@@ -115,23 +117,27 @@ function recordLines(value: Record<string, unknown> | undefined): string[] {
     .slice(0, 10);
 }
 
-function StateBlock({ title, lines }: { title: string; lines: string[] }) {
+function StateBlock({ title, lines, collapsed = false }: { title: string; lines: string[]; collapsed?: boolean }) {
   if (!lines.length) return null;
   return (
-    <div className="ws-character-block">
-      <strong>{title}</strong>
+    <details className={styles.stateBlock} open={!collapsed}>
+      <summary><strong>{title}</strong><span>{lines.length} 项</span></summary>
       <ul>
         {lines.map((line, index) => (
           <li key={`${title}-${index}`}>{line}</li>
         ))}
       </ul>
-    </div>
+    </details>
   );
 }
 
 export default function WorldStatePage() {
   const { project, story, chapterIndex, error, encodedProjectId, projectId, refreshVersion } = useProjectWorkspace();
   const stateIndex = useMemo(() => chapterIndex.filter((entry) => entry.has_simulation).reverse(), [chapterIndex]);
+  const [activeSection, setActiveSection] = useState("responses");
+  const [factQuery, setFactQuery] = useState("");
+  const facts = story?.continuity_facts ?? story?.world_facts ?? [];
+  const filteredFacts = facts.filter((fact) => (typeof fact === "string" ? fact : fact.text).toLowerCase().includes(factQuery.trim().toLowerCase()));
   const [selectedChapter, setSelectedChapter] = useState(0);
 
   useEffect(() => {
@@ -152,18 +158,35 @@ export default function WorldStatePage() {
   });
 
   return (
-    <div className="ws-page">
+    <div className={`ws-page ${styles.page}`}>
       <PageHeader
         crumbs={[
           { label: "我的作品", href: "/projects" },
           { label: project?.title || "作品", href: `/projects/${encodedProjectId}` },
         ]}
         title="世界状态"
-        subtitle={project?.world_summary || "当前世界状态"}
+        subtitle="查看章节带来的变化，追踪最新局面与已确认事实。"
       />
 
       {error ? <p className="ws-inline-error">加载失败：{userFacingErrorMessage(error)}</p> : null}
 
+      <div className={styles.workspace}>
+        <nav className={styles.navigation} aria-label="世界状态分类">
+          <p className={styles.caption}>状态目录</p>
+          {[
+            { id: "responses", title: "章节响应", hint: `${stateIndex.length} 章有响应记录` },
+            { id: "snapshot", title: "最新世界快照", hint: "当前章结束后的局面" },
+            { id: "facts", title: "已确认事实", hint: "由章节回写的连续性记录" },
+          ].map((item, index) => <button key={item.id} type="button"
+            aria-current={activeSection === item.id ? "page" : undefined}
+            aria-controls={`state-panel-${item.id}`} onClick={() => setActiveSection(item.id)}>
+            <span className={styles.number}>0{index + 1}</span>
+            <span><strong>{item.title}</strong><small>{item.hint}</small></span>
+          </button>)}
+          <p className={styles.note}>这里展示已记录的状态。<br />世界设定请前往<Link href={`/projects/${encodedProjectId}/world`}>世界观</Link>维护。</p>
+        </nav>
+        <div className={styles.content}>
+          <div id="state-panel-snapshot" hidden={activeSection !== "snapshot"}>
       {story?.world_snapshot && Object.keys(story.world_snapshot).length > 0 ? (
         <section className="ws-card">
           <div className="ws-section-head">
@@ -176,8 +199,22 @@ export default function WorldStatePage() {
         </section>
       ) : null}
 
-      <ConfirmedFactsPanel facts={story?.continuity_facts ?? story?.world_facts ?? []} />
-
+            {!story?.world_snapshot || Object.keys(story.world_snapshot).length === 0 ? <section className="ws-card">
+              <h2 className="ws-card__title">当前世界快照</h2>
+              <p className="ws-card__hint">暂无世界快照，章节回写后会在这里显示最新局面。</p>
+            </section> : null}
+          </div>
+          <div id="state-panel-facts" hidden={activeSection !== "facts"}>
+            <label className={styles.factSearch}>
+              <span>搜索已确认事实</span>
+              <input className="ws-input" type="search" value={factQuery} onChange={(event) => setFactQuery(event.target.value)} placeholder="输入人物、地点或事件关键词" />
+            </label>
+            {factQuery.trim() && filteredFacts.length === 0 ? <p role="status" className="ws-card__hint">没有匹配的事实，试试其他关键词。</p> : null}
+            <ConfirmedFactsPanel facts={filteredFacts} />
+          </div>
+          <div id="state-panel-responses" hidden={activeSection !== "responses"}>
+            <div className={styles.responseHead}>
+              <div><h2>章节响应</h2><p>选择章节，查看该章带来的变化与后续影响。</p></div>
       {stateIndex.length > 1 ? (
         <label className="ws-search">
           <span>响应章节</span>
@@ -191,17 +228,21 @@ export default function WorldStatePage() {
         </label>
       ) : null}
 
+            </div>
       {chapterError ? <p className="ws-inline-error">章节加载失败：{userFacingErrorMessage(chapterError)}</p> : null}
       {loading && chapter?.chapter_number !== selectedChapter ? <p className="ws-card__hint">正在加载章节...</p> : null}
 
       {chapter && chapter.chapter_number === selectedChapter ? (
-        <WorldStateRecord bundle={chapter} encodedProjectId={encodedProjectId} />
+        <WorldStateRecord key={chapter.chapter_number} bundle={chapter} encodedProjectId={encodedProjectId} />
       ) : !loading && !chapterError ? (
         <section className="ws-card">
           <p className="ws-card__title">世界状态</p>
           <p className="ws-card__hint">尚无已确认的世界状态。</p>
         </section>
       ) : null}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -228,13 +269,15 @@ function WorldStateRecord({ bundle, encodedProjectId }: { bundle: ChapterBundle;
         </Link>
       </div>
 
-      <p className="ws-card__hint">{summary}</p>
+      <p className={styles.summary}>{summary}</p>
+      <div className={styles.blocks}>
       <StateBlock title="公开痕迹" lines={publicTraces} />
       <StateBlock title="后续压力" lines={pressures} />
       <StateBlock title="下一章可见信息" lines={inbox} />
-      <StateBlock title="后台变化" lines={backgroundEvents} />
-      <StateBlock title="隐藏状态" lines={hiddenState} />
-      <StateBlock title="市场状态" lines={marketState} />
+      <StateBlock collapsed title="后台变化" lines={backgroundEvents} />
+      <StateBlock collapsed title="隐藏状态" lines={hiddenState} />
+      <StateBlock collapsed title="市场状态" lines={marketState} />
+      </div>
     </section>
   );
 }
