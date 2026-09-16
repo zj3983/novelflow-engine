@@ -5,13 +5,10 @@ contradict the established facts or the approved director
 plan?* It does not grade literary style; style findings stay
 warnings the user can accept and ship with.
 
-The agent is **fail-closed**: a runtime exception or a
-malformed response becomes a blocking ``consistency.unavailable``
-or ``consistency.invalid_response`` finding rather than a
-silent ``[]`` that lets a contradictory draft reach the
-confirmation gate. Style findings keep the original
-``blocking=False`` downgrade; only the failure modes are
-treated as blocking.
+A runtime exception or malformed response means the facts were
+**not verified**; it is not evidence that the draft contradicted
+canon. Those availability findings remain visible but advisory,
+while actual established-fact contradictions may still block.
 """
 
 from __future__ import annotations
@@ -142,26 +139,6 @@ def build_consistency_prompt(
     )
 
 
-@dataclass
-class ConsistencyFinding:
-    """One factual contradiction surfaced by the agent.
-
-    The agent is the only source of these findings; the
-    deterministic checks live in ``continuity.checks``.
-    ``blocking`` is preserved if the runtime tagged it
-    blocking, but the wrapper downgrades style issues to
-    advisory so the user can accept them. A runtime failure
-    surfaces as a blocking ``consistency.unavailable`` finding
-    so the candidate page shows the same failure the
-    confirmation will reject.
-    """
-
-    code: str
-    message: str
-    source: str = "consistency"
-    blocking: bool = True
-
-
 _STYLE_CODES: set[str] = {
     "style.report_voice",
     "style.ai_tone",
@@ -176,10 +153,16 @@ def _downgrade_non_factual(code: str, source: str, blocking: bool) -> bool:
 
     The director artifact is an executable writing plan, not committed canon.
     A draft may realise a beat with a different action or move the final camera
-    position without creating a continuity error.  Keep those findings visible,
+    position without creating a continuity error. Keep those findings visible,
     but do not let them masquerade as factual contradictions.
     """
-    if code in _STYLE_CODES:
+    normalized_code = code.strip().lower()
+    if (
+        code in _STYLE_CODES
+        or normalized_code.startswith("style.")
+        or normalized_code.startswith("dialogue.")
+        or normalized_code.startswith("exposition.")
+    ):
         return False
     normalized_source = source.strip().lower()
     if normalized_source.startswith("顺序") or normalized_source in {
@@ -191,6 +174,26 @@ def _downgrade_non_factual(code: str, source: str, blocking: bool) -> bool:
     }:
         return False
     return blocking
+
+
+@dataclass
+class ConsistencyFinding:
+    """One consistency finding surfaced by the focused review boundary.
+
+    Only established-fact contradictions are allowed to stay blocking. Style,
+    dialogue, exposition and director-plan deviations are automatically kept
+    advisory even if a caller accidentally constructs them with
+    ``blocking=True``. This also protects deterministic pipeline findings that
+    bypass the model-response adapter.
+    """
+
+    code: str
+    message: str
+    source: str = "consistency"
+    blocking: bool = True
+
+    def __post_init__(self) -> None:
+        self.blocking = _downgrade_non_factual(self.code, self.source, self.blocking)
 
 
 class FocusedConsistencyAgent:
@@ -222,11 +225,9 @@ class FocusedConsistencyAgent:
                 "schema_version": director_artifact.schema_version,
             },
         )
-        # Fail closed: a runtime exception becomes a blocking
-        # ``consistency.unavailable`` finding instead of a silent
-        # ``[]``. The orchestrator's confirmation gate re-runs the
-        # deterministic check, so a contradicted draft never
-        # reaches the user as "通过".
+        # Runtime/model availability is not a fact about the manuscript. Surface
+        # verification failures so the caller can mark the review as degraded,
+        # but never treat them as proof of a canon contradiction.
         try:
             response = self._runtime.complete(request)
         except Exception as exc:  # noqa: BLE001 — public boundary
@@ -235,7 +236,7 @@ class FocusedConsistencyAgent:
                     code="consistency.unavailable",
                     message=f"事实审稿未完成：{type(exc).__name__}: {exc}",
                     source="consistency",
-                    blocking=True,
+                    blocking=False,
                 )
             ]
         if getattr(response, "ok", True) is False:
@@ -245,7 +246,7 @@ class FocusedConsistencyAgent:
                     code="consistency.unavailable",
                     message=f"事实审稿未完成：{error}",
                     source="consistency",
-                    blocking=True,
+                    blocking=False,
                 )
             ]
         payload = _extract_payload(response)
@@ -254,9 +255,9 @@ class FocusedConsistencyAgent:
             return [
                 ConsistencyFinding(
                     code="consistency.invalid_response",
-                    message="事实审稿未返回结构化 issues 列表。",
+                    message="事实审稿未返回结构化 issues 列表；本次仅标记为未完成核验。",
                     source="consistency",
-                    blocking=True,
+                    blocking=False,
                 )
             ]
         findings: list[ConsistencyFinding] = []
@@ -275,7 +276,7 @@ class FocusedConsistencyAgent:
                     code=code,
                     message=message,
                     source=source,
-                    blocking=_downgrade_non_factual(code, source, blocking),
+                    blocking=blocking,
                 )
             )
         return findings
