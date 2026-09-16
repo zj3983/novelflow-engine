@@ -1,0 +1,92 @@
+.page {
+  width: 100%;
+  max-width: 1440px;
+  padding: 40px clamp(20px, 3vw, 48px) 72px;
+}
+.page > :global(.ws-card .ws-section-head) { flex-wrap: wrap; gap: 20px; }
+.page > :global(.ws-card .ws-toolbar) { display: flex; flex-wrap: wrap; gap: 10px; }
+.page > :global(.ws-card .ws-btn) { white-space: nowrap; }
+
+.workspace {
+  display: grid;
+  grid-template-columns: 208px minmax(0, 1fr);
+  gap: 32px;
+  margin-top: 28px;
+  align-items: start;
+}
+
+.navigation { position: sticky; top: 24px; }
+.navCaption {
+  margin: 0 0 16px 14px;
+  font-size: 12px;
+  letter-spacing: .18em;
+  color: var(--ws-ink-muted);
+}
+.navigation button {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  width: 100%;
+  padding: 16px 14px;
+  margin-bottom: 6px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  color: var(--ws-ink-muted);
+  cursor: pointer;
+}
+.navigation button:hover { background: var(--ws-surface); }
+.navigation button[aria-current] {
+  color: var(--ws-accent);
+  border-color: var(--ws-line);
+  background: var(--ws-surface-strong);
+  box-shadow: 0 4px 16px rgba(31,29,26,.04);
+}
+.navigation button:focus-visible { outline: 2px solid var(--ws-accent); outline-offset: 3px; }
+.navigation strong { display: block; font-size: 16px; }
+.navigation small { display: block; margin-top: 7px; font-size: 12px; color: var(--ws-ink-muted); }
+.navNumber { font-size: 12px; font-variant-numeric: tabular-nums; opacity: .65; }
+.navNote { margin: 24px 14px 0; padding-top: 20px; border-top: 1px solid var(--ws-line); color: var(--ws-ink-muted); font-size: 12px; line-height: 1.9; }
+.content { min-width: 0; }
+.content [hidden] { display: none !important; }
+.content :global(.ws-card) { padding: clamp(20px, 3vw, 36px); margin: 0; box-shadow: none; }
+.content :global(.ws-section-head) { gap: 18px; flex-wrap: wrap; margin-bottom: 28px; }
+.content :global(.ws-card__title) { font-size: 23px; }
+.content :global(.ws-card__hint) { line-height: 1.8; overflow-wrap: anywhere; }
+.content :global(.ws-form-grid) { grid-template-columns: minmax(0, 1fr); gap: 28px; }
+.content :global(.ws-form-grid__wide) { grid-column: 1 / -1; }
+.content :global(.ws-search) { width: 100%; min-width: 0; gap: 10px; }
+.content :global(.ws-input) { width: 100%; min-width: 0; line-height: 1.85; padding: 12px 14px; }
+.content textarea { resize: vertical; min-height: 144px; }
+.content :global(.ws-toolbar) { gap: 12px; flex-wrap: wrap; margin-top: 16px; }
+.content :global(.ws-rule-item) { padding: 20px; overflow-wrap: anywhere; }
+.content :global(.ws-rule-list) { gap: 18px; }
+.content :global(.world-rule-sections) { display: grid; gap: 14px; margin-top: 24px; }
+.content :global(.world-rule-section) { border: 1px solid var(--ws-line); border-radius: 10px; overflow: hidden; }
+.content :global(.world-rule-section > summary) { padding: 20px; cursor: pointer; background: rgba(255,255,255,.25); }
+.content :global(.world-rule-section > summary h3) { display: inline; font-size: 17px; margin: 0 16px 0 8px; }
+.content :global(.world-rule-section > summary:focus-visible) { outline: 2px solid var(--ws-accent); outline-offset: -3px; }
+.content :global(.world-rule-section-body) { padding: 24px; border-top: 1px solid var(--ws-line); }
+.content :global(.ws-list__row summary) { line-height: 1.8; overflow-wrap: anywhere; cursor: pointer; }
+.content :global(.ws-list__row summary .ws-card__hint) { display: block; margin-top: 8px; }
+.content pre { overflow-wrap: anywhere; }
+
+@media (max-width: 1100px) {
+  .workspace { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+  .navigation { position: static; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .navigation button { margin: 0; padding: 12px; }
+  .navCaption { grid-column: 1 / -1; margin: 0 0 4px; }
+  .navNote { display: none; }
+}
+@media (max-width: 600px) {
+  .page { padding: 24px 16px 48px; }
+  .workspace { margin-top: 20px; }
+  .navigation { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .navigation strong { font-size: 14px; }
+  .navNumber { display: none; }
+  .content :global(.ws-card) { padding: 20px 16px; }
+  .content :global(.world-rule-section-body) { padding: 18px 14px; }
+  .content :global(.world-rule-section > summary) { padding: 16px 12px; }
+}
