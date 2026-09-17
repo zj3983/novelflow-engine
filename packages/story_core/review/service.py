@@ -452,6 +452,44 @@ def _adapt_critical_report(report: Any) -> ReviewResult:
     return ReviewResult.from_findings(findings, diagnostics=diagnostics)
 
 
+_LEGACY_GENRE_HARD_PREFIXES: tuple[str, ...] = (
+    "低等级越级：",
+    "Lv.1越级：",
+    "经验账本不清：",
+)
+
+
+def _genre_hard_messages(report: dict[str, Any]) -> set[str]:
+    """Collect only objective legacy genre findings that may block.
+
+    New/structured genre reviewers should emit ``blocking`` on an issue or
+    expose ``hard_issues``. The game-webnovel reviewer still returns a legacy
+    flat ``issues`` list, so keep a deliberately narrow bridge for established
+    level/progression mechanics and for the dedicated numeric-consistency
+    subreview. Editorial opening/pacing/payoff/style findings stay advisory.
+    """
+    hard_messages: set[str] = set()
+    for item in report.get("hard_issues") or []:
+        message, _, _, _ = _normalize_issue(item)
+        if message:
+            hard_messages.add(message)
+
+    active = report.get("active_genre_reviews")
+    if isinstance(active, dict):
+        numeric = active.get("numeric_consistency_review")
+        if isinstance(numeric, dict):
+            for item in numeric.get("issues") or []:
+                message, _, _, _ = _normalize_issue(item)
+                if message:
+                    hard_messages.add(message)
+
+    for item in report.get("issues") or []:
+        message, _, _, _ = _normalize_issue(item)
+        if message and message.startswith(_LEGACY_GENRE_HARD_PREFIXES):
+            hard_messages.add(message)
+    return hard_messages
+
+
 def _adapt_genre_report(report: Any) -> ReviewResult:
     if not isinstance(report, dict):
         return ReviewResult.from_findings([])
@@ -461,6 +499,7 @@ def _adapt_genre_report(report: Any) -> ReviewResult:
         diagnostics["active_genre_reviews"] = active
     issues = list(report.get("issues") or [])
     plan_items = list(report.get("revision_plan") or [])
+    hard_messages = _genre_hard_messages(report)
     findings: list[ReviewFinding] = []
     for index, issue in enumerate(issues):
         message, suggestion, evidence, explicit_blocking = _normalize_issue(issue)
@@ -476,8 +515,14 @@ def _adapt_genre_report(report: Any) -> ReviewResult:
         # Genre fit, payoff strength, trope coverage and similar findings are
         # editorial judgments. A report-level ``pass: false`` must not turn all
         # of them into hard blockers. Structured genre findings can still opt
-        # into blocking explicitly for a real contract/fact violation.
-        blocking = bool(explicit_blocking) if explicit_blocking is not None else False
+        # into blocking explicitly; the narrow legacy bridge above preserves
+        # objective level/progression/numeric contradictions until those
+        # reviewers emit structured disposition themselves.
+        blocking = (
+            bool(explicit_blocking)
+            if explicit_blocking is not None
+            else message in hard_messages
+        )
         findings.append(
             ReviewFinding(
                 code=f"genre.{_slugify(message)}",
