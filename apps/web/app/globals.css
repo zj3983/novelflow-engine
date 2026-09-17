@@ -1482,6 +1482,13 @@ fieldset.ws-outline-grid {
   gap: 8px;
 }
 
+.ws-editor-layout--chapters .ws-chapter-list {
+  max-height: min(70vh, 720px);
+  overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
+}
+
 .ws-chapter-list__item {
   display: grid;
   gap: 4px;

@@ -32,6 +32,21 @@ import {
 import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
 
 const PAGE_SIZE = 80;
+const LAST_READ_CHAPTER_STORAGE_PREFIX = "novel-autogrowth.last-read-chapter:";
+
+function lastReadChapterStorageKey(projectId: string): string {
+  return `${LAST_READ_CHAPTER_STORAGE_PREFIX}${projectId}`;
+}
+
+function readLastReadChapter(projectId: string): number | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const chapterNumber = Number(window.localStorage.getItem(lastReadChapterStorageKey(projectId)));
+    return Number.isInteger(chapterNumber) && chapterNumber > 0 ? chapterNumber : null;
+  } catch {
+    return null;
+  }
+}
 
 function WritingProgressRow({ status, href }: { status: string; href: string }) {
   return (
@@ -169,6 +184,9 @@ export default function WritePage() {
   const mountedRef = useRef(false);
   const operationTokenRef = useRef(0);
   const chapterListRef = useRef<HTMLDivElement | null>(null);
+  const chapterParam = searchParams?.get("chapter");
+  const [lastReadChapter, setLastReadChapter] = useState<number | null>(null);
+  const [chapterPreferenceReady, setChapterPreferenceReady] = useState(false);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -182,13 +200,38 @@ export default function WritePage() {
     setPage(1);
   }, [query]);
 
-  const requestedChapter = Number(searchParams?.get("chapter") || story?.current_chapter || chapterIndex.at(-1)?.chapter_number || 0);
+  useEffect(() => {
+    setChapterPreferenceReady(false);
+    if (chapterParam) {
+      setLastReadChapter(null);
+      setChapterPreferenceReady(true);
+      return;
+    }
+    setLastReadChapter(readLastReadChapter(projectId));
+    setChapterPreferenceReady(true);
+  }, [chapterParam, projectId]);
+
+  const rememberedChapter = chapterPreferenceReady && lastReadChapter !== null
+    && chapterIndex.some((entry) => entry.chapter_number === lastReadChapter)
+    ? lastReadChapter
+    : null;
+  const requestedChapter = Number(chapterParam || rememberedChapter || story?.current_chapter || chapterIndex.at(-1)?.chapter_number || 0);
   const { chapter, loading: chapterLoading, error: chapterError } = useChapterDetail({
     projectId,
     story: story ?? null,
     chapterNumber: requestedChapter,
     refreshVersion,
   });
+
+  useEffect(() => {
+    if (!chapterPreferenceReady || !Number.isInteger(requestedChapter) || requestedChapter <= 0) return;
+    if (!chapterIndex.some((entry) => entry.chapter_number === requestedChapter)) return;
+    try {
+      window.localStorage.setItem(lastReadChapterStorageKey(projectId), String(requestedChapter));
+    } catch {
+      // Ignore storage errors; the URL remains the source of truth for direct links.
+    }
+  }, [chapterIndex, chapterPreferenceReady, projectId, requestedChapter]);
   const guidanceStorageKey = chapter ? `book-dissection-guidance:${projectId}:${chapter.chapter_number}` : "";
 
   useEffect(() => {
@@ -635,7 +678,8 @@ export default function WritePage() {
                   return (
                     <Link
                       key={bundle.chapter_number}
-                      href={`/projects/${encodedProjectId}/write?chapter=${bundle.chapter_number}#chapter-reader`}
+                      href={`/projects/${encodedProjectId}/write?chapter=${bundle.chapter_number}`}
+                      scroll={false}
                       className={`ws-chapter-list__item${active ? " ws-chapter-list__item--active" : ""}`}
                       aria-current={active ? "page" : undefined}
                       data-chapter-number={bundle.chapter_number}

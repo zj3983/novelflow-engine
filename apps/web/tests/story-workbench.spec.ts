@@ -2490,7 +2490,7 @@ test("write page copies the current chapter title and body", async ({ page }) =>
   expect(copiedText).toBe(`第 1 章 ${currentChapter.chapter_title}\n\n${currentChapter.body}`);
 });
 
-test("narrow write page keeps the reader reachable below a long directory", async ({ page }) => {
+test("narrow write page keeps the reader below the directory without body auto-scroll", async ({ page }) => {
   await page.setViewportSize({ width: 667, height: 882 });
   const fixture = await routeCurrentFileProject(page, "narrow-reader", { chapterCount: 80 });
   await page.goto(`/projects/${fixture.encodedId}/write?chapter=1`, { waitUntil: "domcontentloaded" });
@@ -2504,12 +2504,13 @@ test("narrow write page keeps the reader reachable below a long directory", asyn
   expect(listDimensions.clientHeight).toBeLessThanOrEqual(440);
   expect(listDimensions.scrollHeight).toBeGreaterThan(listDimensions.clientHeight);
 
-  await page.locator(`a[href="/projects/${fixture.encodedId}/write?chapter=2#chapter-reader"]`).click();
-  await expect(page).toHaveURL(`/projects/${fixture.encodedId}/write?chapter=2#chapter-reader`);
+  const pageScrollTop = await page.evaluate(() => document.scrollingElement?.scrollTop ?? 0);
+  await page.locator(`a[href="/projects/${fixture.encodedId}/write?chapter=2"]`).click();
+  await expect(page).toHaveURL(`/projects/${fixture.encodedId}/write?chapter=2`);
   await expect(page.getByRole("heading", { name: "章节：第 2 章" })).toBeVisible();
   const readerTop = await page.locator("#chapter-reader").evaluate((element) => element.getBoundingClientRect().top);
   expect(readerTop).toBeGreaterThanOrEqual(0);
-  expect(readerTop).toBeLessThan(882);
+  expect(await page.evaluate(() => document.scrollingElement?.scrollTop ?? 0)).toBe(pageScrollTop);
 });
 
 test("chapter directory keeps the opened chapter visible without moving the reader", async ({ page }) => {
@@ -2563,9 +2564,46 @@ test("chapter directory keeps the opened chapter visible without moving the read
   await page.goto(`/projects/${fixture.encodedId}/write?chapter=160`, { waitUntil: "domcontentloaded" });
   await page.getByPlaceholder("标题、章节号、摘要").fill("铜牌余波 120");
   await page.getByRole("link", { name: /第 120 章/ }).click();
-  await expect(page).toHaveURL(`/projects/${fixture.encodedId}/write?chapter=120#chapter-reader`);
+  await expect(page).toHaveURL(`/projects/${fixture.encodedId}/write?chapter=120`);
   await expect.poll(async () => directory.locator("[data-chapter-number=\"120\"]").isVisible()).toBe(true);
   expect((await readDirectoryState(120)).activeHighlighted).toBe(true);
+});
+
+test("wide chapter directory scrolls inside the directory and restores the last opened chapter", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const fixture = await routeCurrentFileProject(page, "wide-chapter-directory", { chapterCount: 160 });
+  const directory = page.locator(".ws-chapter-index .ws-chapter-list");
+
+  await page.goto(`/projects/${fixture.encodedId}/write?chapter=1`, { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("heading", { name: "章节：第 1 章" })).toBeVisible();
+  const chapterOneState = await directory.evaluate((element) => {
+    const active = element.querySelector<HTMLElement>('[data-chapter-number="1"]');
+    const containerBounds = element.getBoundingClientRect();
+    const activeBounds = active?.getBoundingClientRect();
+    return {
+      scrollable: element.scrollHeight > element.clientHeight,
+      activeVisible: Boolean(
+        activeBounds
+          && activeBounds.top >= containerBounds.top
+          && activeBounds.bottom <= containerBounds.bottom,
+      ),
+      activeHighlighted: active?.classList.contains("ws-chapter-list__item--active") ?? false,
+      scrollTop: element.scrollTop,
+      pageScrollTop: document.scrollingElement?.scrollTop ?? 0,
+    };
+  });
+  expect(chapterOneState.scrollable).toBe(true);
+  expect(chapterOneState.activeVisible).toBe(true);
+  expect(chapterOneState.activeHighlighted).toBe(true);
+  expect(chapterOneState.scrollTop).toBeGreaterThan(0);
+  expect(chapterOneState.pageScrollTop).toBe(0);
+
+  await page.goto(`/projects/${fixture.encodedId}/write?chapter=120`, { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("heading", { name: "章节：第 120 章" })).toBeVisible();
+  await page.goto(`/projects/${fixture.encodedId}/chapters`, { waitUntil: "domcontentloaded" });
+  await expect(page).toHaveURL(new RegExp(`/projects/${fixture.encodedId}/write$`));
+  await expect(page.getByRole("heading", { name: "章节：第 120 章" })).toBeVisible();
+  await expect(directory.locator('[data-chapter-number="120"]')).toHaveClass(/ws-chapter-list__item--active/);
 });
 
 test("file workspace loads overview and one chapter without requesting the full story", async ({ page }) => {
