@@ -48,7 +48,7 @@ def test_genre_failure_is_advisory_by_default():
         }
     )
 
-    assert result.status == "passed"
+    assert result.status == "warning"
     assert len(result.findings) == 1
     assert result.findings[0].blocking is False
     assert result.findings[0].category == "prose"
@@ -72,6 +72,44 @@ def test_genre_issue_can_explicitly_opt_into_blocking():
     assert len(result.findings) == 1
     assert result.findings[0].blocking is True
     assert result.findings[0].category == "hard"
+
+
+def test_legacy_game_progression_conflict_remains_blocking():
+    result = _adapt_genre_report(
+        {
+            "pass": False,
+            "issues": [
+                "Lv.1越级：第二章仍是新手村阶段，不能接取或开始转职任务、职业试炼。",
+                "第一章节奏过载：登录、金手指、刷怪和追查被压进同一章。",
+            ],
+            "revision_plan": ["退回新手村阶段。", "拆分开篇节奏。"],
+        }
+    )
+
+    assert result.status == "blocked"
+    assert [finding.blocking for finding in result.findings] == [True, False]
+    assert [finding.category for finding in result.findings] == ["hard", "prose"]
+
+
+def test_numeric_genre_subreview_remains_blocking():
+    issue = "净到账计算错误：兑换总额10.00元扣除手续费1.00元后，应到账9.00元。"
+    result = _adapt_genre_report(
+        {
+            "pass": False,
+            "issues": [issue, "本章爽点兑现偏弱"],
+            "revision_plan": ["重算到账金额。", "增强可见回报。"],
+            "active_genre_reviews": {
+                "numeric_consistency_review": {
+                    "pass": False,
+                    "issues": [issue],
+                    "revision_plan": ["重算到账金额。"],
+                }
+            },
+        }
+    )
+
+    assert result.status == "blocked"
+    assert [finding.blocking for finding in result.findings] == [True, False]
 
 
 def _director_artifact() -> DirectorArtifact:
