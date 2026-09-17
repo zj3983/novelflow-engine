@@ -3374,10 +3374,10 @@ test("concrete character card shows and saves factual profile fields", async ({ 
   expect(savedBody).not.toHaveProperty("relationship_notes");
 });
 
-test("character cards use fixed detail levels for protagonists and supporting roles", async ({ page }) => {
+test("character workspace groups roles and keeps non-protagonist cards compact until expanded", async ({ page }) => {
   const characters = [
     {
-      name: "林照", role: "protagonist", character_tier: "protagonist", first_appearance: 1,
+      name: "林照", role: "protagonist", character_tier: "protagonist", importance: "core", narrative_function: "protagonist", profile_status: "ready", first_appearance: 1,
       identity_profile: { gender: "男", age: 19, current_identity: "祖祠杂役", occupation: "守炉人", affiliation: "赤霄宗" },
       background_profile: { family: "父亲失踪", upbringing: "由老仆带大", formative_events: ["十三岁目睹父亲被带走"] },
       current_life_profile: { residence: "祖祠偏房", resources_and_ability: "识字，会修香炉" },
@@ -3390,7 +3390,7 @@ test("character cards use fixed detail levels for protagonists and supporting ro
       dialogue_examples: ["账册不会自己烧掉。"], story_function: "推动旧案主线", lifecycle_state: "active",
     },
     {
-      name: "周满", role: "supporting", character_tier: "supporting", first_appearance: 3,
+      name: "周满", role: "supporting", character_tier: "supporting", importance: "supporting", narrative_function: "ally", first_appearance: 3,
       identity_profile: { current_identity: "巡夜弟子", occupation: "巡夜人", affiliation: "赤霄宗" },
       current_life_profile: { resources_and_ability: "熟悉山门暗道" },
       story_drive: { immediate_goal: "保住巡夜差事", main_conflict_reason: "隐瞒当夜行踪" },
@@ -3398,11 +3398,12 @@ test("character cards use fixed detail levels for protagonists and supporting ro
       story_function: "提供巡夜线索", lifecycle_state: "active",
     },
     {
-      name: "刘婶", role: "npc", character_tier: "minor", first_appearance: 4,
+      name: "刘婶", role: "npc", character_tier: "minor", importance: "minor", narrative_function: "resource_contact", first_appearance: 4,
       identity_profile: { current_identity: "食堂帮工", affiliation: "外院" },
       story_drive: { immediate_goal: "按时交饭" }, story_function: "传递外院消息", lifecycle_state: "active",
     },
   ];
+  characters.push(characters.shift()!);
   const project = {
     project_id: "file:character-template-fixture", title: "Character Templates", source_path: "", seed_outline: "祖祠旧案", world_summary: "",
     current_focus: "", author_constraints: [], world_blueprint: {}, character_profiles: characters,
@@ -3425,12 +3426,66 @@ test("character cards use fixed detail levels for protagonists and supporting ro
   const minor = page.getByTestId("character-card-minor");
 
   await expect(protagonist.getByRole("heading", { level: 3 })).toHaveText(["基本身份", "性格与动机", "当前剧情"]);
+  await expect(page.locator(".ws-character-group__head h3")).toHaveText(["主角", "配角", "次要角色"]);
+  await expect(page.locator(".ws-character-group__head span")).toHaveText(["1 人", "1 人", "1 人"]);
+  await expect(supporting.getByRole("heading", { level: 3 })).toHaveCount(0);
+  await expect(minor.getByRole("heading", { level: 3 })).toHaveCount(0);
+  await supporting.getByRole("button", { name: "查看详情" }).click();
+  await minor.getByRole("button", { name: "查看详情" }).click();
   await expect(supporting.getByRole("heading", { level: 3 })).toHaveText(["基本身份", "性格与动机", "关系与作用"]);
   await expect(minor.getByRole("heading", { level: 3 })).toHaveText(["角色摘要"]);
   await expect(supporting.getByText("人物弧光", { exact: true })).toHaveCount(0);
   await expect(minor.getByText("成长经历", { exact: true })).toHaveCount(0);
+  await page.getByLabel("搜索人物").fill("巡夜");
+  await expect(page.getByText("周满", { exact: true })).toBeVisible();
+  await expect(page.getByText("刘婶", { exact: true })).toHaveCount(0);
+  await page.getByLabel("搜索人物").fill("");
+  await page.getByLabel("角色分类").selectOption("minor");
+  await expect(page.getByText("刘婶", { exact: true })).toBeVisible();
+  await expect(page.getByText("周满", { exact: true })).toHaveCount(0);
   await page.setViewportSize({ width: 360, height: 780 });
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+});
+
+test("character hierarchy gives explicit taxonomy fields priority over legacy values", async ({ page }) => {
+  const fixture = await routeCurrentFileProject(page, "character-hierarchy-conflicts");
+  const characters = [
+    { name: "显式同盟", role: "protagonist", character_tier: "core", importance: "core", narrative_function: "ally" },
+    { name: "显式次要", role: "npc", character_tier: "core", importance: "minor", narrative_function: "ally" },
+    { name: "旧主角", role: "protagonist", character_tier: "core", importance: "core" },
+    { name: "旧导师", role: "npc", character_tier: "mentor" },
+    { name: "旧核心", role: "npc", character_tier: "core" },
+    { name: "旧配角", role: "npc", character_tier: "supporting" },
+    { name: "未知角色", role: "npc", character_tier: "minor", importance: "future_class", narrative_function: "future_function" },
+  ];
+  Object.assign(fixture.project, { character_profiles: characters });
+  Object.assign(fixture.overview, { characters });
+
+  await page.goto(`/projects/${fixture.encodedId}/characters`);
+
+  const groups = page.locator(".ws-character-group");
+  await expect(groups.locator(".ws-character-group__head h3")).toHaveText(["主角", "核心角色", "重要角色", "配角", "次要角色", "其他角色"]);
+  await expect(groups.locator(".ws-character-group__head span")).toHaveText(["1 人", "2 人", "1 人", "1 人", "1 人", "1 人"]);
+  await expect(groups.nth(0).getByText("旧主角", { exact: true })).toBeVisible();
+  await expect(groups.nth(0).getByText("显式同盟", { exact: true })).toHaveCount(0);
+  await expect(groups.nth(1).getByText("显式同盟", { exact: true })).toBeVisible();
+  await expect(groups.nth(1).getByText("旧主角", { exact: true })).toHaveCount(0);
+  await expect(groups.nth(4).getByText("显式次要", { exact: true })).toBeVisible();
+
+  const narrativeOptions = await page.getByLabel("叙事功能").locator("option").allTextContents();
+  expect(narrativeOptions).not.toContain("核心角色");
+  expect(narrativeOptions).not.toContain("配角");
+  expect(narrativeOptions.filter((label) => label === "其他叙事角色")).toHaveLength(1);
+  await expect(page.getByLabel("叙事功能").locator("option")).toHaveText(["全部功能", "盟友", "导师", "其他叙事角色", "主角"]);
+
+  await page.getByLabel("叙事功能").selectOption("ally");
+  await expect(page.getByText("显式同盟", { exact: true })).toBeVisible();
+  await expect(page.getByText("显式次要", { exact: true })).toBeVisible();
+  await expect(page.getByText("旧主角", { exact: true })).toHaveCount(0);
+  await page.getByLabel("叙事功能").selectOption("all");
+  await page.getByLabel("角色分类").selectOption("minor");
+  await expect(page.getByText("显式次要", { exact: true })).toBeVisible();
+  await expect(page.getByText("旧核心", { exact: true })).toHaveCount(0);
 });
 
 test("relationship workspace defaults to protagonist and saves the canonical graph", async ({ page }) => {
