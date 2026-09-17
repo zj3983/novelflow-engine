@@ -688,10 +688,17 @@ class ChapterStateSyncMixin:
                     if line == "game":
                         _sync_game_panel_from_state(character)
 
-    def _sync_ledger_from_chapter_body(self, state: dict[str, Any], chapter: dict[str, Any]) -> dict[str, Any]:
+    def _sync_ledger_from_chapter_body(
+        self,
+        state: dict[str, Any],
+        chapter: dict[str, Any],
+        *,
+        project_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         body = str(chapter.get("body") or "")
         protagonist_body = _without_monster_stat_surfaces(body)
-        is_game_story = self._is_game_story_payload(self.project(), state)
+        project = project_context if isinstance(project_context, dict) else self.project()
+        is_game_story = self._is_game_story_payload(project, state)
         if not body or not is_game_story:
             self._apply_chapter_state_events(state, chapter, is_game_story=is_game_story)
             return state

@@ -914,6 +914,26 @@ def test_historical_replay_matches_normal_confirmed_end_transition(tmp_path):
     assert slice_state_for_snapshot(replayed) == expected
 
 
+def test_historical_replay_does_not_read_latest_project_context(tmp_path, monkeypatch):
+    store = _make_project(tmp_path)
+    for chapter in (1, 2):
+        store.confirm_candidate(_candidate(store, chapter).candidate_id)
+    store.continuity_store.mark_stale([2])
+    trusted_input = store.state()
+
+    def fail_latest_project():
+        raise AssertionError("historical replay must not read latest project context")
+
+    monkeypatch.setattr(store, "project", fail_latest_project)
+
+    rebuilt = store._reconstruct_state_at_end(2, trusted_input)
+
+    assert rebuilt is not None
+    replayed, source_chapter = rebuilt
+    assert source_chapter == 1
+    assert replayed["current_chapter"] == 2
+
+
 def test_historical_replay_does_not_reapply_factresource_or_canon_hooks(
     tmp_path,
     monkeypatch,
@@ -985,12 +1005,99 @@ def test_persisted_progression_authority_is_replayed_once_without_reextraction(t
         deepcopy(state),
         chapter,
         replay_persisted_authority=True,
+        project_context={},
     )
 
     assert replayed is not None
     assert replayed["progression_ledger"]["protagonist"]["level"] == "Lv.13"
     history = replayed["progression_ledger"]["protagonist"]["history"]
     assert len([item for item in history if item.get("chapter") == 1]) == 1
+
+
+def test_legacy_confirmed_candidate_extraction_is_replayed_in_memory_only(tmp_path):
+    store = _make_project(tmp_path)
+    initial_state = store.persisted_state()
+    initial_state["progression_ledger"] = {
+        "protagonist": {
+            "level": "Lv.12",
+            "history": [{"chapter": 0, "current": {"level": "Lv.12"}}],
+        }
+    }
+    master = store.master_setting()
+    master["state"] = deepcopy(initial_state)
+    _write_json(tmp_path / ".webnovel" / "state.json", initial_state)
+    _write_json(tmp_path / ".story-system" / "MASTER_SETTING.json", master)
+
+    candidate = _candidate(store, 1, tag="旧候选结构化等级")
+    candidate.fact_resource_extraction = FactResourceExtraction(
+        chapter_number=1,
+        deltas=[
+            FactResourceDelta(
+                chapter=1,
+                category="level",
+                resource_key="level",
+                operation="SET",
+                before=12,
+                change=13,
+                after=13,
+                evidence="legacy persisted candidate extraction",
+            )
+        ],
+    )
+    store.candidate_store.save(candidate)
+    store.confirm_candidate(candidate.candidate_id)
+
+    chapter_path = tmp_path / ".story-system" / "chapters" / "0001.json"
+    chapter_payload = json.loads(chapter_path.read_text(encoding="utf-8"))
+    chapter_payload.pop("fact_resource_extraction", None)
+    chapter_payload.pop("fact_resource_candidate_id", None)
+    _write_json(chapter_path, chapter_payload)
+    artifact_before_replay = chapter_path.read_bytes()
+    store.continuity_store.mark_stale([1])
+
+    rebuilt = store._reconstruct_state_at_end(1, store.state())
+
+    assert rebuilt is not None
+    replayed, source_chapter = rebuilt
+    assert source_chapter == 0
+    assert replayed["progression_ledger"]["protagonist"]["level"] == "Lv.13"
+    assert chapter_path.read_bytes() == artifact_before_replay
+
+
+def test_legacy_replay_fails_safe_when_confirmed_candidate_identity_is_ambiguous(tmp_path):
+    store = _make_project(tmp_path)
+    candidate = _candidate(store, 1, tag="首个确认候选")
+    candidate.fact_resource_extraction = FactResourceExtraction(
+        chapter_number=1,
+        deltas=[
+            FactResourceDelta(
+                chapter=1,
+                category="level",
+                resource_key="level",
+                operation="SET",
+                before=1,
+                change=2,
+                after=2,
+                evidence="ambiguous legacy extraction",
+            )
+        ],
+    )
+    store.candidate_store.save(candidate)
+    store.confirm_candidate(candidate.candidate_id)
+
+    duplicate = _candidate(store, 1, tag="第二个确认候选")
+    duplicate.status = "confirmed"
+    duplicate.fact_resource_extraction = candidate.fact_resource_extraction
+    store.candidate_store.save(duplicate)
+
+    chapter_path = tmp_path / ".story-system" / "chapters" / "0001.json"
+    chapter_payload = json.loads(chapter_path.read_text(encoding="utf-8"))
+    chapter_payload.pop("fact_resource_extraction", None)
+    chapter_payload.pop("fact_resource_candidate_id", None)
+    _write_json(chapter_path, chapter_payload)
+    store.continuity_store.mark_stale([1])
+
+    assert store._reconstruct_state_at_end(1, store.state()) is None
 
 
 def test_historical_replay_matches_confirmed_progression_authority_snapshot(tmp_path):

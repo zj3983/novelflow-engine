@@ -5317,7 +5317,13 @@ class FileProjectStore(
                 inventory["小法力药水"] = int(inventory["小法力药水"]) - 1
         return inventory
 
-    def _character_names_in_chapter(self, state: dict[str, Any], chapter: dict[str, Any]) -> list[str]:
+    def _character_names_in_chapter(
+        self,
+        state: dict[str, Any],
+        chapter: dict[str, Any],
+        *,
+        project_context: dict[str, Any] | None = None,
+    ) -> list[str]:
         directed_names = [
             str(move.get("name") or "").strip()
             for move in (
@@ -5339,7 +5345,7 @@ class FileProjectStore(
             ]
         )
         names: list[str] = []
-        project = self.project()
+        project = project_context if isinstance(project_context, dict) else self.project()
         candidates = [
             *(state.get("characters", []) if isinstance(state.get("characters"), list) else []),
             *(
@@ -5736,13 +5742,19 @@ class FileProjectStore(
         state["time_state"] = time_state
         return time_state
 
-    def _sync_state_after_chapter(self, state: dict[str, Any], chapter: dict[str, Any]) -> dict[str, Any]:
+    def _sync_state_after_chapter(
+        self,
+        state: dict[str, Any],
+        chapter: dict[str, Any],
+        *,
+        project_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         chapter_number = int(chapter.get("chapter_number") or 0)
         if chapter_number <= 0:
             return state
         synced = dict(state)
         summary = self._chapter_summary_payload(chapter)
-        current_project = self.project()
+        current_project = project_context if isinstance(project_context, dict) else self.project()
         normalized_world = normalize_world_context(
             blueprint=current_project.get("world_blueprint"),
             state=synced,
@@ -5797,7 +5809,11 @@ class FileProjectStore(
             "chapter_title": summary["chapter_title"],
             "summary": summary["summary"],
             "tags": [],
-            "characters": self._character_names_in_chapter(synced, chapter),
+            "characters": self._character_names_in_chapter(
+                synced,
+                chapter,
+                project_context=current_project,
+            ),
             "locations": [],
             "factions": [],
             "quests": [],
@@ -5818,7 +5834,11 @@ class FileProjectStore(
             list(synced.get("characters") or []),
             [*protagonist_cards, *entity_cards],
         )
-        visible_character_names = self._character_names_in_chapter(synced, chapter)
+        visible_character_names = self._character_names_in_chapter(
+            synced,
+            chapter,
+            project_context=current_project,
+        )
         appearance_memory = replace_chapter_record(
             list(synced.get("memory_index") or []),
             memory_entry,
@@ -6042,6 +6062,8 @@ class FileProjectStore(
         *,
         include_body_derived_projection: bool = True,
         replay_persisted_authority: bool = False,
+        project_context: dict[str, Any] | None = None,
+        historical_replay: bool = False,
     ) -> dict[str, Any] | None:
         """Apply the deterministic END-of-chapter state transition once.
 
@@ -6056,9 +6078,27 @@ class FileProjectStore(
         the latest project projection.
         """
 
-        transitioned = self._sync_state_after_chapter(state, chapter)
+        if (historical_replay or replay_persisted_authority) and not isinstance(
+            project_context,
+            dict,
+        ):
+            return None
+        transition_project = (
+            project_context
+            if isinstance(project_context, dict)
+            else self.project()
+        )
+        transitioned = self._sync_state_after_chapter(
+            state,
+            chapter,
+            project_context=transition_project,
+        )
         if include_body_derived_projection:
-            transitioned = self._sync_ledger_from_chapter_body(transitioned, chapter)
+            transitioned = self._sync_ledger_from_chapter_body(
+                transitioned,
+                chapter,
+                project_context=transition_project,
+            )
         if replay_persisted_authority:
             transitioned = self._replay_persisted_fact_resource_authority(
                 transitioned,
@@ -10040,28 +10080,41 @@ class FileProjectStore(
     def _trusted_initial_regeneration_state(
         self,
         current_state: dict[str, Any],
+        *,
+        project_context: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """Return a chapter-zero state only when its boundary is explicit."""
 
         master = self._read_json(self.story_system_dir / "MASTER_SETTING.json", {}) or {}
         master_state = master.get("state") if isinstance(master, dict) else None
         if isinstance(master_state, dict) and int(master_state.get("current_chapter") or 0) == 0:
-            return self._conservative_regeneration_state(current_state)
+            return self._conservative_regeneration_state(
+                current_state,
+                project_context=project_context,
+            )
         if not self.chapter_numbers() and int(current_state.get("current_chapter") or 0) == 0:
-            return self._conservative_regeneration_state(current_state)
+            return self._conservative_regeneration_state(
+                current_state,
+                project_context=project_context,
+            )
         return None
 
     def _continuity_snapshot_state(
         self,
         snapshot: Any,
         current_state: dict[str, Any],
+        *,
+        project_context: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         if snapshot is None:
             return None
         state_after = getattr(snapshot, "state_after", None)
         if not isinstance(state_after, dict):
             return None
-        hydrated = self._conservative_regeneration_state(current_state)
+        hydrated = self._conservative_regeneration_state(
+            current_state,
+            project_context=project_context,
+        )
         hydrated.update(deepcopy(state_after))
         hydrated["current_chapter"] = int(getattr(snapshot, "chapter_number", 0) or 0)
         usable = self._validated_runtime_state(hydrated, current_state)
@@ -10070,6 +10123,8 @@ class FileProjectStore(
     def _continuity_snapshot_expectations(
         self,
         chapter_number: int,
+        *,
+        project_id: str | None = None,
     ) -> tuple[str, int, str | None] | None:
         """Return current chapter identity material for snapshot validation.
 
@@ -10102,7 +10157,7 @@ class FileProjectStore(
         confirmed = [
             item
             for item in self.candidate_store.list(
-                project_id=self._canon_project_id(),
+                project_id=str(project_id or self._canon_project_id()),
                 chapter_number=int(chapter_number),
             )
             if item.status == "confirmed"
@@ -10115,6 +10170,7 @@ class FileProjectStore(
         chapter_number: int,
         *,
         stale_chapters: set[int],
+        project_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Read one replay input and prove it belongs to the confirmed chain.
 
@@ -10156,7 +10212,7 @@ class FileProjectStore(
         confirmed = [
             item
             for item in self.candidate_store.list(
-                project_id=self._canon_project_id(),
+                project_id=str(project_id or self._canon_project_id()),
                 chapter_number=chapter_number,
             )
             if item.status == "confirmed"
@@ -10172,6 +10228,27 @@ class FileProjectStore(
                 != str(getattr(confirmed_candidate, "candidate_id", ""))
             ):
                 return None
+
+        # Older confirmed chapter artifacts predate the persisted extraction
+        # fields.  When exactly one confirmed CandidateDraft owns the chapter,
+        # recover its already-persisted structured extraction in this in-memory
+        # replay payload only.  Never re-extract prose or rewrite the artifact.
+        if not isinstance(chapter.get("fact_resource_extraction"), dict):
+            if len(confirmed) > 1:
+                return None
+            elif confirmed_candidate is not None:
+                has_persisted_extraction, raw_extraction = (
+                    self._persisted_candidate_fact_resource_extraction(
+                    confirmed_candidate
+                    )
+                )
+                if has_persisted_extraction and raw_extraction is None:
+                    return None
+                if raw_extraction is not None:
+                    chapter["fact_resource_extraction"] = raw_extraction
+                    chapter["fact_resource_candidate_id"] = str(
+                        confirmed_candidate.candidate_id
+                    )
 
         snapshot_path = self.continuity_store.snapshot_path(chapter_number)
         if chapter_number not in stale_chapters and snapshot_path.exists():
@@ -10194,9 +10271,38 @@ class FileProjectStore(
             # actually readable witness can prove a mismatch here.
         return chapter
 
+    @staticmethod
+    def _persisted_candidate_fact_resource_extraction(
+        candidate: Any,
+    ) -> tuple[bool, dict[str, Any] | None]:
+        """Return a confirmed candidate's stored extraction without parsing prose."""
+
+        raw_extraction = getattr(candidate, "fact_resource_extraction", None)
+        if raw_extraction is None:
+            payload = getattr(candidate, "submission_payload", None)
+            if isinstance(payload, dict):
+                raw_extraction = payload.get("fact_resource_extraction")
+        if raw_extraction is None:
+            return False, None
+        if hasattr(raw_extraction, "model_dump"):
+            raw_extraction = raw_extraction.model_dump(mode="json")
+        if not isinstance(raw_extraction, dict):
+            return True, None
+        try:
+            return (
+                True,
+                FactResourceExtraction.model_validate(raw_extraction).model_dump(
+                    mode="json"
+                ),
+            )
+        except (TypeError, ValueError):
+            return True, None
+
     def _latest_validated_fresh_snapshot_before(
         self,
         chapter_number: int,
+        *,
+        project_id: str | None = None,
     ) -> Any | None:
         """Select the nearest fresh snapshot that matches its chapter artifact."""
 
@@ -10213,7 +10319,10 @@ class FileProjectStore(
             ),
             reverse=True,
         ):
-            expectations = self._continuity_snapshot_expectations(snapshot_number)
+            expectations = self._continuity_snapshot_expectations(
+                snapshot_number,
+                project_id=project_id,
+            )
             if expectations is None:
                 continue
             body_sha256, body_chars, candidate_id = expectations
@@ -10237,8 +10346,12 @@ class FileProjectStore(
         target = int(chapter_number)
         if target < 0:
             return None
+        project_id = str(current_state.get("story_id") or self.root.name)
         if target == 0:
-            baseline = self._trusted_initial_regeneration_state(current_state)
+            baseline = self._trusted_initial_regeneration_state(
+                current_state,
+                project_context={},
+            )
             return (baseline, 0) if baseline is not None else None
 
         # A present-but-unreadable stale marker makes every existing snapshot
@@ -10250,9 +10363,16 @@ class FileProjectStore(
             return None
         stale = set(stale_metadata.chapters)
 
-        snapshot = self._latest_validated_fresh_snapshot_before(target + 1)
+        snapshot = self._latest_validated_fresh_snapshot_before(
+            target + 1,
+            project_id=project_id,
+        )
         if snapshot is not None:
-            base_state = self._continuity_snapshot_state(snapshot, current_state)
+            base_state = self._continuity_snapshot_state(
+                snapshot,
+                current_state,
+                project_context={},
+            )
             snapshot_number = int(snapshot.chapter_number)
         else:
             # A legacy chapter's embedded ``updated_story`` has no freshness
@@ -10260,15 +10380,23 @@ class FileProjectStore(
             # state, so it is never a historical boundary or replay input.
             # Fall back only to the explicit chapter-zero baseline and replay
             # persisted chapter artifacts from there.
-            base_state = self._trusted_initial_regeneration_state(current_state)
+            base_state = self._trusted_initial_regeneration_state(
+                current_state,
+                project_context={},
+            )
             snapshot_number = 0
         if base_state is None or snapshot_number > target:
+            return None
+
+        project_context = self._historical_replay_project_context(base_state)
+        if project_context is None:
             return None
 
         for previous_number in range(snapshot_number + 1, target + 1):
             chapter = self._validated_replay_chapter(
                 previous_number,
                 stale_chapters=stale,
+                project_id=project_id,
             )
             if chapter is None:
                 return None
@@ -10278,11 +10406,34 @@ class FileProjectStore(
                 base_state,
                 chapter,
                 replay_persisted_authority=True,
+                project_context=project_context,
+                historical_replay=True,
             )
             if base_state is None:
                 return None
+            project_context = self._historical_replay_project_context(base_state)
+            if project_context is None:
+                return None
         base_state["current_chapter"] = target
         return base_state, snapshot_number
+
+    @staticmethod
+    def _historical_replay_project_context(
+        state: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Build only as-of context already present in the trusted state."""
+
+        if not isinstance(state, dict):
+            return None
+        context: dict[str, Any] = {}
+        for key in ("genre", "genre_plugin_ids", "current_focus"):
+            if key in state:
+                context[key] = deepcopy(state[key])
+        if isinstance(state.get("world_blueprint"), dict):
+            context["world_blueprint"] = deepcopy(state["world_blueprint"])
+        if isinstance(state.get("characters"), list):
+            context["character_profiles"] = deepcopy(state["characters"])
+        return context
 
     def _candidate_continuity_chapter(self, candidate: Any) -> dict[str, Any]:
         payload = dict(getattr(candidate, "submission_payload", {}) or {})
@@ -10732,8 +10883,14 @@ class FileProjectStore(
     def _conservative_regeneration_state(
         self,
         current_state: dict[str, Any],
+        *,
+        project_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        project = self.project()
+        project = (
+            project_context
+            if isinstance(project_context, dict)
+            else self.project()
+        )
         world_blueprint = (
             project.get("world_blueprint")
             if isinstance(project.get("world_blueprint"), dict)
