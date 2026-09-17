@@ -15,6 +15,7 @@ from packages.story_core.continuity.store import ContinuityStore
 from packages.story_core.continuity.delta import ContinuityDelta, EntityAddition
 from packages.story_core.fact_resource_ledger import FactResourceDelta, FactResourceExtraction
 from packages.story_core.file_project_store import FileProjectStore
+from packages.story_core.persistence.project_transaction import slice_state_for_snapshot
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -893,3 +894,148 @@ def test_historical_confirmation_degrades_to_stale_only_when_prior_replay_is_bro
 
     assert result["candidate"]["status"] == "confirmed"
     assert result["continuity_snapshot"]["mode"] == "STALE_ONLY"
+
+
+def test_historical_replay_matches_normal_confirmed_end_transition(tmp_path):
+    store = _make_project(tmp_path)
+    for chapter in (1, 2, 3):
+        store.confirm_candidate(
+            _candidate(store, chapter, tag=f"确定性章节-{chapter}").candidate_id
+        )
+
+    expected = store.continuity_store.read_snapshot(3).state_after
+    store.continuity_store.mark_stale([2, 3])
+
+    rebuilt = store._reconstruct_state_at_end(3, store.state())
+
+    assert rebuilt is not None
+    replayed, source_chapter = rebuilt
+    assert source_chapter == 1
+    assert slice_state_for_snapshot(replayed) == expected
+
+
+def test_historical_replay_does_not_reapply_factresource_or_canon_hooks(
+    tmp_path,
+    monkeypatch,
+):
+    store = _make_project(tmp_path)
+    for chapter in (1, 2):
+        store.confirm_candidate(_candidate(store, chapter).candidate_id)
+    store.continuity_store.mark_stale([2])
+
+    def fail_fact_resource(*_args, **_kwargs):
+        raise AssertionError("historical replay must not commit FactResource authority")
+
+    def fail_canon(*_args, **_kwargs):
+        raise AssertionError("historical replay must not commit Canon authority")
+
+    monkeypatch.setattr(store, "_apply_candidate_fact_resource_writes", fail_fact_resource)
+    monkeypatch.setattr(store, "_apply_candidate_canon_delta", fail_canon)
+
+    rebuilt = store._reconstruct_state_at_end(2, store.state())
+
+    assert rebuilt is not None
+
+
+def test_persisted_progression_authority_is_replayed_once_without_reextraction(tmp_path):
+    store = _make_project(tmp_path)
+    state = store.persisted_state()
+    state["progression_ledger"] = {
+        "protagonist": {
+            "level": "Lv.12",
+            "history": [
+                {
+                    "chapter": 0,
+                    "current": {"level": "Lv.12"},
+                }
+            ],
+        }
+    }
+    _write_json(tmp_path / ".webnovel" / "state.json", state)
+
+    chapter = {
+        "chapter_number": 1,
+        "chapter_title": "结构化等级推进",
+        "body": "这一章没有可供重新抽取的等级文本。",
+        "chapter_summary": {
+            "chapter_number": 1,
+            "chapter_title": "结构化等级推进",
+            "summary": "结构化等级推进",
+            "facts": [],
+            "next_focus": "continue",
+        },
+        "fact_resource_extraction": FactResourceExtraction(
+            chapter_number=1,
+            deltas=[
+                FactResourceDelta(
+                    chapter=1,
+                    category="level",
+                    resource_key="level",
+                    operation="SET",
+                    before=12,
+                    change=13,
+                    after=13,
+                    evidence="persisted structured authority",
+                )
+            ],
+        ).model_dump(mode="json"),
+    }
+
+    replayed = store._apply_confirmed_chapter_transition(
+        deepcopy(state),
+        chapter,
+        replay_persisted_authority=True,
+    )
+
+    assert replayed is not None
+    assert replayed["progression_ledger"]["protagonist"]["level"] == "Lv.13"
+    history = replayed["progression_ledger"]["protagonist"]["history"]
+    assert len([item for item in history if item.get("chapter") == 1]) == 1
+
+
+def test_historical_replay_matches_confirmed_progression_authority_snapshot(tmp_path):
+    store = _make_project(tmp_path)
+    state = store.persisted_state()
+    state["progression_ledger"] = {
+        "protagonist": {
+            "level": "Lv.12",
+            "history": [
+                {"chapter": 0, "current": {"level": "Lv.12"}},
+            ],
+        }
+    }
+    master = store.master_setting()
+    master["state"] = deepcopy(state)
+    _write_json(tmp_path / ".webnovel" / "state.json", state)
+    _write_json(tmp_path / ".story-system" / "MASTER_SETTING.json", master)
+
+    store.confirm_candidate(_candidate(store, 1).candidate_id)
+    replacement = _candidate(store, 2, tag="结构化等级变更")
+    replacement.fact_resource_extraction = FactResourceExtraction(
+        chapter_number=2,
+        deltas=[
+            FactResourceDelta(
+                chapter=2,
+                category="level",
+                resource_key="level",
+                operation="SET",
+                before=12,
+                change=13,
+                after=13,
+                evidence="persisted level authority",
+            )
+        ],
+    )
+    store.candidate_store.save(replacement)
+    store.confirm_candidate(replacement.candidate_id)
+
+    expected = store.continuity_store.read_snapshot(2).state_after
+    store.continuity_store.mark_stale([2])
+    rebuilt = store._reconstruct_state_at_end(2, store.state())
+
+    assert rebuilt is not None
+    replayed, source_chapter = rebuilt
+    assert source_chapter == 1
+    assert slice_state_for_snapshot(replayed) == expected
+    history = replayed["progression_ledger"]["protagonist"]["history"]
+    assert len([item for item in history if item.get("chapter") == 2]) == 1

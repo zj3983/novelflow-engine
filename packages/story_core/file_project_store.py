@@ -119,6 +119,7 @@ from packages.story_core.fact_resource_ledger import (
     FactResourceValidation,
     apply_fact_resource_authority_writes,
     extract_fact_resource_changes,
+    fact_resource_authority_group,
     get_fact_resource_snapshot,
     plan_fact_resource_authority_writes,
     project_fact_resource_snapshot,
@@ -5002,8 +5003,10 @@ class FileProjectStore(
         if target_state is None or int(target_state.get("current_chapter") or 0) != target_chapter:
             raise ValueError(f"attribute_rebase_invalid_target_snapshot:{target_chapter}")
         prepared_chapter = self._hydrate_chapter_display_fields(deepcopy(chapter), target_state)
-        target_state = self._sync_state_after_chapter(deepcopy(target_state), prepared_chapter)
-        target_state = self._sync_ledger_from_chapter_body(target_state, prepared_chapter)
+        target_state = self._apply_confirmed_chapter_transition(
+            deepcopy(target_state),
+            prepared_chapter,
+        )
         target_state["current_chapter"] = target_chapter
         target_protagonist = self._protagonist_ledger(target_state, chapter_number=target_chapter)
 
@@ -6020,8 +6023,7 @@ class FileProjectStore(
         state: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         base_state = dict(state or self.state())
-        synced_state = self._sync_state_after_chapter(base_state, chapter)
-        synced_state = self._sync_ledger_from_chapter_body(synced_state, chapter)
+        synced_state = self._apply_confirmed_chapter_transition(base_state, chapter)
         chapter["updated_story"] = synced_state
         chapter["chapter_summary"] = self._chapter_summary_payload(chapter)
         new_lessons = lessons_from_quality_report(chapter.get("quality_report") if isinstance(chapter.get("quality_report"), dict) else {})
@@ -6032,6 +6034,79 @@ class FileProjectStore(
         blueprint["writing_learning"] = learning_snapshot(synced_state.get("writing_lessons"))
         synced_project["world_blueprint"] = blueprint
         return synced_state, synced_project
+
+    def _apply_confirmed_chapter_transition(
+        self,
+        state: dict[str, Any],
+        chapter: dict[str, Any],
+        *,
+        include_body_derived_projection: bool = True,
+        replay_persisted_authority: bool = False,
+    ) -> dict[str, Any] | None:
+        """Apply the deterministic END-of-chapter state transition once.
+
+        Normal confirmation and historical reconstruction must share this
+        transition.  Canon authority writes deliberately do not live here.
+        FactResource writes are also outside the normal transition, but
+        historical replay may apply a persisted progression-only extraction
+        through the existing authority adapter when that authority is present
+        in the reconstructed state. Equipment/relationship authority needs an
+        as-of project projection that the continuity snapshot does not carry,
+        so replay fails closed for those chapters instead of guessing against
+        the latest project projection.
+        """
+
+        transitioned = self._sync_state_after_chapter(state, chapter)
+        if include_body_derived_projection:
+            transitioned = self._sync_ledger_from_chapter_body(transitioned, chapter)
+        if replay_persisted_authority:
+            transitioned = self._replay_persisted_fact_resource_authority(
+                transitioned,
+                chapter,
+            )
+        return transitioned
+
+    def _replay_persisted_fact_resource_authority(
+        self,
+        state: dict[str, Any],
+        chapter: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Replay persisted authority evidence without re-extraction."""
+
+        raw_extraction = chapter.get("fact_resource_extraction")
+        if not isinstance(raw_extraction, dict):
+            return state
+        try:
+            extraction = FactResourceExtraction.model_validate(raw_extraction)
+        except (TypeError, ValueError):
+            return None
+        authority_groups = {
+            fact_resource_authority_group(delta.category)
+            for delta in extraction.deltas
+            if fact_resource_authority_group(delta.category) is not None
+        }
+        if not authority_groups:
+            return state
+        if authority_groups - {"progression"}:
+            return None
+
+        staged_state = deepcopy(state)
+        plan = plan_fact_resource_authority_writes(
+            staged_state,
+            {},
+            extraction,
+            candidate_id=(
+                str(chapter.get("fact_resource_candidate_id") or "")
+                or f"historical-replay:{int(extraction.chapter_number)}"
+            ),
+        )
+        if plan.blocking_findings:
+            return None
+        try:
+            apply_fact_resource_authority_writes(staged_state, {}, plan)
+        except (TypeError, ValueError, KeyError):
+            return None
+        return staged_state
 
     def _sync_after_chapter(self, chapter: dict[str, Any], state: dict[str, Any] | None = None) -> dict[str, Any]:
         synced_state, synced_project = self._prepare_sync_after_chapter(chapter, state)
@@ -8773,11 +8848,10 @@ class FileProjectStore(
             synced_state["foreshadowing"] = deepcopy(historical_foreshadowing["final"])
 
             if target_snapshot is not None:
-                target_snapshot = self._sync_state_after_chapter(
+                target_snapshot = self._apply_confirmed_chapter_transition(
                     deepcopy(target_snapshot),
                     chapter,
                 )
-                target_snapshot = self._sync_ledger_from_chapter_body(target_snapshot, chapter)
                 target_snapshot["current_chapter"] = chapter_number
                 chapter["updated_story"] = target_snapshot
 
@@ -9021,6 +9095,18 @@ class FileProjectStore(
             chapter_number=int(getattr(bundle, "chapter_number", 0) or 0),
             candidate_claims=getattr(bundle, "fact_resource_claims", None),
         )
+        bundle_payload = self._bundle_to_dict(bundle)
+        if (
+            fact_resource_extraction.deltas
+            or fact_resource_extraction.assertions
+            or fact_resource_extraction.findings
+        ):
+            bundle_payload["fact_resource_extraction"] = fact_resource_extraction.model_dump(
+                mode="json"
+            )
+            bundle_payload["fact_resource_candidate_id"] = (
+                f"generated:{int(getattr(bundle, 'chapter_number', 0) or 0)}"
+            )
         direct_candidate = SimpleNamespace(
             candidate_id=f"generated:{int(getattr(bundle, 'chapter_number', 0) or 0)}",
             project_id=self._canon_project_id(),
@@ -9028,7 +9114,7 @@ class FileProjectStore(
             chapter_title=str(getattr(bundle, "chapter_title", "") or ""),
             body=str(getattr(bundle, "body", "") or ""),
             operation="generate",
-            submission_payload=self._bundle_to_dict(bundle),
+            submission_payload=bundle_payload,
             fact_resource_extraction=fact_resource_extraction,
             continuity_delta=getattr(bundle, "continuity_delta", None),
         )
@@ -9046,7 +9132,7 @@ class FileProjectStore(
             managed_directories=self._managed_directories_for_transaction(),
         ):
             persisted = self.persist_bundle(
-                bundle,
+                bundle_payload,
                 operation="generate",
                 commit_message=commit_message,
                 accept_quality_warnings=accept_quality_warnings,
@@ -9095,6 +9181,15 @@ class FileProjectStore(
             raise ValueError("candidate_submission_payload_missing")
         payload["body"] = candidate.body
         payload["chapter_title"] = candidate.chapter_title or payload.get("chapter_title")
+        candidate_extraction = getattr(candidate, "fact_resource_extraction", None)
+        if candidate_extraction is not None and "fact_resource_extraction" not in payload:
+            payload["fact_resource_extraction"] = (
+                candidate_extraction.model_dump(mode="json")
+                if hasattr(candidate_extraction, "model_dump")
+                else dict(candidate_extraction)
+            )
+        if candidate_extraction is not None:
+            payload["fact_resource_candidate_id"] = str(candidate.candidate_id)
         fact_resource_plan = self._plan_candidate_fact_resource_writes(candidate)
         skip_historical_canon_apply = False
         if (
@@ -10179,8 +10274,13 @@ class FileProjectStore(
                 return None
             # Embedded chapter ``updated_story`` is intentionally ignored:
             # its shape proves only schema validity, not the time boundary.
-            base_state = self._sync_state_after_chapter(base_state, chapter)
-            base_state = self._sync_ledger_from_chapter_body(base_state, chapter)
+            base_state = self._apply_confirmed_chapter_transition(
+                base_state,
+                chapter,
+                replay_persisted_authority=True,
+            )
+            if base_state is None:
+                return None
         base_state["current_chapter"] = target
         return base_state, snapshot_number
 
@@ -10361,8 +10461,10 @@ class FileProjectStore(
         # current_chapter == N can contain fields copied from N+1..latest.
         # Rebuild END N exclusively from the trusted END N-1 boundary and the
         # replacement chapter artifact.
-        end_state = self._sync_state_after_chapter(deepcopy(base_state), chapter)
-        end_state = self._sync_ledger_from_chapter_body(end_state, chapter)
+        end_state = self._apply_confirmed_chapter_transition(
+            deepcopy(base_state),
+            chapter,
+        )
         end_state = self._apply_fact_resource_plan_to_continuity_state(
             end_state,
             candidate,
@@ -11140,11 +11242,10 @@ class FileProjectStore(
         chapter["quality_report"] = review
         historical_foreshadowing = self._historical_foreshadowing_for_rewrite(chapter)
         if historical_foreshadowing is not None:
-            target_state = self._sync_state_after_chapter(
+            target_state = self._apply_confirmed_chapter_transition(
                 self._state_before_chapter(chapter_number),
                 chapter,
             )
-            target_state = self._sync_ledger_from_chapter_body(target_state, chapter)
             target_state["current_chapter"] = chapter_number
             chapter["updated_story"] = target_state
 
