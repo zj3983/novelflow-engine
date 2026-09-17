@@ -880,7 +880,7 @@ def test_orchestrator_runs_focused_consistency_review(tmp_path: Path):
     assert "canon_violation" in writing_review["issues"]
 
 
-def test_deterministic_prose_findings_block_dense_simile_stacking():
+def test_deterministic_prose_findings_report_dense_simile_stacking_as_advisory():
     body = "。".join(
         [
             "风仿佛一只手",
@@ -897,7 +897,7 @@ def test_deterministic_prose_findings_block_dense_simile_stacking():
     findings = _deterministic_prose_findings(body, [])
 
     assert any(
-        finding.code == "style.simile_stacking" and finding.blocking
+        finding.code == "style.simile_stacking" and not finding.blocking
         for finding in findings
     )
 
