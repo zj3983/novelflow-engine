@@ -1,12 +1,10 @@
 """Tests for the focused consistency agent.
 
-The plan rule for the consistency review is *fail closed*: a
-runtime exception or a malformed response becomes a blocking
-finding instead of a silent ``[]`` that lets a contradicted
-draft reach the confirmation gate. These tests pin the new
-contract — the prompt renders the current character state, a
-broken runtime surfaces ``consistency.unavailable``, and a
-malformed response surfaces ``consistency.invalid_response``.
+The consistency agent distinguishes factual contradictions from review
+availability. A runtime exception or malformed response must stay visible as
+``consistency.unavailable`` / ``consistency.invalid_response`` but is advisory:
+not completing a fact check is not proof that the manuscript contradicts canon.
+Actual established-fact conflicts remain blocking.
 
 The consistency stage must also have its own gateway-backed
 runtime (``GatewayConsistencyRuntime``) instead of reusing
@@ -68,7 +66,7 @@ def test_consistency_prompt_includes_relevant_character_state() -> None:
     assert "新手短剑" in prompt
 
 
-def test_consistency_runtime_failure_is_not_silent_pass() -> None:
+def test_consistency_runtime_failure_is_visible_but_advisory() -> None:
     class BrokenRuntime:
         def complete(self, request: Any) -> Any:
             raise RuntimeError("offline")
@@ -83,7 +81,7 @@ def test_consistency_runtime_failure_is_not_silent_pass() -> None:
     finding = findings[0]
     assert isinstance(finding, ConsistencyFinding)
     assert finding.code == "consistency.unavailable"
-    assert finding.blocking is True
+    assert finding.blocking is False
 
 
 def test_consistency_gateway_failure_preserves_provider_error() -> None:
@@ -107,7 +105,7 @@ def test_consistency_gateway_failure_preserves_provider_error() -> None:
     assert "rate_limited" in findings[0].message
 
 
-def test_consistency_invalid_response_is_blocking() -> None:
+def test_consistency_invalid_response_is_advisory() -> None:
     class GarbledRuntime:
         def complete(self, request: Any) -> Any:
             return _Response(text="not json at all", payload={})
@@ -120,7 +118,7 @@ def test_consistency_invalid_response_is_blocking() -> None:
     )
     assert len(findings) == 1
     assert findings[0].code == "consistency.invalid_response"
-    assert findings[0].blocking is True
+    assert findings[0].blocking is False
 
 
 def test_consistency_accepts_prompt_contract_top_level_issue_list() -> None:
