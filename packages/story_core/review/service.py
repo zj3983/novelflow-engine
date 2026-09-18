@@ -425,7 +425,17 @@ def _adapt_critical_report(report: Any) -> ReviewResult:
     diagnostics = {key: value for key, value in report.items() if key not in {"issues", "revision_plan", "scores"}}
     issues = list(report.get("issues") or [])
     plan_items = list(report.get("revision_plan") or [])
-    hard_messages = {str(item).strip() for item in (report.get("hard_issues") or []) if str(item).strip()}
+    hard_messages: set[str] = set()
+    soft_messages: set[str] = set()
+    for item in report.get("hard_issues") or []:
+        message, _, _, _ = _normalize_issue(item)
+        if message:
+            hard_messages.add(message)
+    for item in report.get("soft_issues") or []:
+        message, _, _, _ = _normalize_issue(item)
+        if message:
+            soft_messages.add(message)
+
     findings: list[ReviewFinding] = []
 
     for index, issue in enumerate(issues):
@@ -436,7 +446,17 @@ def _adapt_critical_report(report: Any) -> ReviewResult:
             plan_text = str(plan_items[index] or "").strip()
             if plan_text:
                 suggestion = plan_text
-        blocking = bool(explicit_blocking) if explicit_blocking is not None else message in hard_messages
+        if explicit_blocking is not None:
+            blocking = bool(explicit_blocking)
+        elif message in hard_messages:
+            blocking = True
+        elif message in soft_messages:
+            blocking = False
+        else:
+            # Layered reports must classify every issue explicitly. If an issue
+            # is omitted from both lists, preserve the critical reviewer's
+            # fail-closed safety boundary instead of silently downgrading it.
+            blocking = True
         findings.append(
             ReviewFinding(
                 code=f"critical.{_slugify(message)}",
