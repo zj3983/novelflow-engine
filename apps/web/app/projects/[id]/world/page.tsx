@@ -20,6 +20,8 @@ import {
 import { isGameWebnovel } from "../../../../lib/worldDisplay";
 import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
 
+import styles from "./world.module.css";
+
 type ArtifactFieldLabels = Record<string, string>;
 
 const ARTIFACT_FIELD_LABELS: Record<string, ArtifactFieldLabels> = {
@@ -112,6 +114,7 @@ function sortArtifacts(artifacts: WorldBuildArtifact[]): WorldBuildArtifact[] {
 export default function WorldPage() {
   const { project, story, error, encodedProjectId, projectId, refresh } = useProjectWorkspace();
   const blueprint = project?.world_blueprint ?? {};
+  const [activeSection, setActiveSection] = useState("background");
   const [enriching, setEnriching] = useState(false);
   const [setupMessage, setSetupMessage] = useState("");
   const [worldBuildJob, setWorldBuildJob] = useState<WorldBuildJobResponse | null>(null);
@@ -225,14 +228,14 @@ export default function WorldPage() {
   const isOpening = (story?.current_chapter ?? 0) === 0;
 
   return (
-    <div className="ws-page">
+    <div className={`ws-page ${styles.page}`}>
       <PageHeader
         crumbs={[
           { label: "我的作品", href: "/projects" },
           { label: project?.title || "作品", href: `/projects/${encodedProjectId}` },
         ]}
         title="世界观"
-        subtitle={project?.world_summary || "维护世界背景、规则、地点、阵营和题材体系。"}
+        subtitle="从世界的起点，到运行的规则。按分类整理你的设定。"
       />
 
       {error ? (
@@ -289,6 +292,46 @@ export default function WorldPage() {
               ) : null}
             </section>
           ) : null}
+          <div className={styles.workspace}>
+            <nav className={styles.navigation} aria-label="世界观分类">
+              <p className={styles.navCaption}>设定目录</p>
+              {[
+                { id: "background", title: "世界背景", hint: "摘要与故事前提" },
+                { id: "rules", title: "世界规则", hint: "体系、边界与约束" },
+                { id: "entities", title: "地点与阵营", hint: "舞台与势力关系" },
+                ...(isGameWebnovel(project) ? [
+                  { id: "equipment", title: "装备图鉴", hint: "装备与物品资料" },
+                  { id: "monsters", title: "怪物图鉴", hint: "生态与战斗资料" },
+                ] : []),
+                { id: "records", title: "构建记录", hint: `${orderedArtifacts.length} 个已完成模块` },
+              ].map((item, index) => (
+                <button key={item.id} type="button" aria-current={activeSection === item.id ? "page" : undefined}
+                  aria-controls={`world-panel-${item.id}`} onClick={() => setActiveSection(item.id)}>
+                  <span className={styles.navNumber}>{String(index + 1).padStart(2, "0")}</span>
+                  <span><strong>{item.title}</strong><small>{item.hint}</small></span>
+                </button>
+              ))}
+              <p className={styles.navNote}>分区编辑，分别保存。<br />切换分类会保留当前输入。</p>
+            </nav>
+            <div className={styles.content}>
+              <div id="world-panel-background" hidden={activeSection !== "background"}>
+                <WorldBackgroundEditor projectId={projectId} worldSummary={project.world_summary} blueprint={blueprint} onSaved={refresh} />
+              </div>
+              <div id="world-panel-rules" hidden={activeSection !== "rules"}>
+                <WorldRulesEditor projectId={projectId} blueprint={blueprint} onSaved={refresh} />
+              </div>
+              <div id="world-panel-entities" hidden={activeSection !== "entities"}>
+                <WorldEntitiesEditor projectId={projectId} blueprint={blueprint} onSaved={refresh} />
+              </div>
+              {isGameWebnovel(project) ? <>
+                <div id="world-panel-equipment" hidden={activeSection !== "equipment"}>
+                  <EquipmentCatalog projectId={projectId} blueprint={blueprint} onSaved={refresh} />
+                </div>
+                <div id="world-panel-monsters" hidden={activeSection !== "monsters"}>
+                  <MonsterBestiary projectId={projectId} blueprint={blueprint} onSaved={refresh} />
+                </div>
+              </> : null}
+              <div id="world-panel-records" hidden={activeSection !== "records"}>
           {orderedArtifacts.length > 0 ? (
             <section className="ws-card" aria-labelledby="world-build-progress-title">
               <div className="ws-section-head">
@@ -320,20 +363,13 @@ export default function WorldPage() {
               </div>
             </section>
           ) : null}
-          <WorldBackgroundEditor
-            projectId={projectId}
-            worldSummary={project.world_summary}
-            blueprint={blueprint}
-            onSaved={refresh}
-          />
-          <WorldRulesEditor projectId={projectId} blueprint={blueprint} onSaved={refresh} />
-          <WorldEntitiesEditor projectId={projectId} blueprint={blueprint} onSaved={refresh} />
-          {isGameWebnovel(project) ? (
-            <>
-              <EquipmentCatalog projectId={projectId} blueprint={blueprint} onSaved={refresh} />
-              <MonsterBestiary projectId={projectId} blueprint={blueprint} onSaved={refresh} />
-            </>
-          ) : null}
+                {orderedArtifacts.length === 0 ? <section className="ws-card">
+                  <h2 className="ws-card__title">世界观构建记录</h2>
+                  <p className="ws-card__hint">暂无构建记录。AI 补全完成的模块会显示在这里，你也可以直接手动编辑设定。</p>
+                </section> : null}
+              </div>
+            </div>
+          </div>
         </>
       ) : null}
     </div>

@@ -361,14 +361,19 @@ export function WorldRulesEditor({ projectId, blueprint, onSaved }: Props) {
       ) : null}
       {!hasStructuredPower && (hasLegacyPower || hasPowerDraft) ? <p className="ws-card__hint">力量体系需要补全</p> : null}
 
-      <div className="ws-form-grid">
+      <div className="world-rule-sections">
         {worldRuleEditorSections(blueprint).map((section) => (
-          <section
-            className={section.wide ? "ws-form-grid__wide" : undefined}
+          <details
+            open={section.id === "basic"}
+            className="world-rule-section"
             aria-labelledby={`${section.id}-world-rules-title`}
             key={section.id}
           >
-            <h3 id={`${section.id}-world-rules-title`}>{section.title}</h3>
+            <summary>
+              <h3 id={`${section.id}-world-rules-title`}>{section.title}</h3>
+              <span className="ws-card__hint">{section.fields.length} 项设定</span>
+            </summary>
+            <div className="world-rule-section-body">
             {section.fields.length > 1 ? (
               <div className="ws-form-grid">
                 {section.fields.map((field) => (
@@ -378,7 +383,8 @@ export function WorldRulesEditor({ projectId, blueprint, onSaved }: Props) {
             ) : section.fields.map((field) => (
               <div key={field.field}>{editor(field.field, field.label, field.buttonLabel)}</div>
             ))}
-          </section>
+            </div>
+          </details>
         ))}
       </div>
     </section>
