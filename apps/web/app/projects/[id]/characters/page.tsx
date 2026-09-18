@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
@@ -15,6 +15,7 @@ import {
   type ImportedRelationshipEdge,
 } from "../../../../lib/api";
 import { isGameWebnovel, mergeCharacters, stateRows, type DisplayCharacter } from "../../../../lib/worldDisplay";
+import { CharacterGroupSection, CharacterSummaryCard, type CharacterGroup, type CharacterWorkspaceCharacter } from "../../../../components/ws/CharacterWorkspaceCards";
 
 function characterCardBadge(state: string | undefined): string {
   if (state === "proposed") return "待出场卡";
@@ -24,8 +25,8 @@ function characterCardBadge(state: string | undefined): string {
 
 import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
 
-function cloneCharacter(character: DisplayCharacter): DisplayCharacter {
-  return JSON.parse(JSON.stringify(character)) as DisplayCharacter;
+function cloneCharacter(character: CharacterWorkspaceCharacter): CharacterWorkspaceCharacter {
+  return JSON.parse(JSON.stringify(character)) as CharacterWorkspaceCharacter;
 }
 
 function characterRoleLabel(role: string | undefined): string {
@@ -68,23 +69,71 @@ const PROFILE_STATUS_LABELS: Record<CharacterProfileStatus, string> = {
   ready: "已就绪",
 };
 
-const LEGACY_TAXONOMY: Record<string, { importance: CharacterImportance; narrativeFunction: CharacterNarrativeFunction }> = {
-  protagonist: { importance: "core", narrativeFunction: "protagonist" },
-  主角: { importance: "core", narrativeFunction: "protagonist" },
-  stage_antagonist: { importance: "major", narrativeFunction: "stage_antagonist" },
-  "stage antagonist": { importance: "major", narrativeFunction: "stage_antagonist" },
-  阶段反派: { importance: "major", narrativeFunction: "stage_antagonist" },
-  long_term_antagonist: { importance: "core", narrativeFunction: "long_term_antagonist" },
-  "long term antagonist": { importance: "core", narrativeFunction: "long_term_antagonist" },
-  长期反派: { importance: "core", narrativeFunction: "long_term_antagonist" },
-  supporting: { importance: "supporting", narrativeFunction: "other" },
-  配角: { importance: "supporting", narrativeFunction: "other" },
-  recurring: { importance: "supporting", narrativeFunction: "other" },
-  "recurring npc": { importance: "supporting", narrativeFunction: "other" },
+function taxonomyToken(value: unknown): string {
+  const token = String(value ?? "").trim().toLowerCase().replaceAll("-", "_").replaceAll(" ", "_");
+  const aliases: Record<string, string> = {
+    主角: "protagonist",
+    核心: "core",
+    核心角色: "core",
+    重要: "major",
+    重要角色: "major",
+    配角: "supporting",
+    次要: "minor",
+    次要角色: "minor",
+    盟友: "ally",
+    对手: "rival",
+    导师: "mentor",
+    感情线: "love_interest",
+    感情线角色: "love_interest",
+    阶段反派: "stage_antagonist",
+    长期反派: "long_term_antagonist",
+    资源联系人: "resource_contact",
+  };
+  return aliases[token] ?? token;
+}
+
+type WorkspaceImportanceGroup = CharacterImportance | "unknown";
+const WORKSPACE_IMPORTANCE_LABELS: Record<WorkspaceImportanceGroup, string> = {
+  core: "核心角色",
+  major: "重要角色",
+  supporting: "配角",
+  minor: "次要角色",
+  unknown: "其他角色",
 };
 
-function taxonomyToken(value: unknown): string {
-  return String(value ?? "").trim().toLowerCase().replaceAll("-", "_").replaceAll(" ", "_");
+const WORKSPACE_NARRATIVE_FUNCTION_TOKENS = new Set(Object.keys(NARRATIVE_FUNCTION_LABELS));
+
+function workspaceNarrativeFunctionOf(character: CharacterWorkspaceCharacter): CharacterNarrativeFunction {
+  const explicitRaw = String(character.narrative_function ?? "").trim();
+  if (explicitRaw) {
+    const explicit = taxonomyToken(explicitRaw);
+    return WORKSPACE_NARRATIVE_FUNCTION_TOKENS.has(explicit)
+      ? explicit as CharacterNarrativeFunction
+      : "other";
+  }
+  for (const legacyValue of [character.role, character.chapter_role, character.character_tier]) {
+    const legacy = taxonomyToken(legacyValue);
+    if (WORKSPACE_NARRATIVE_FUNCTION_TOKENS.has(legacy)) return legacy as CharacterNarrativeFunction;
+  }
+  return "other";
+}
+
+function workspaceIsProtagonist(character: CharacterWorkspaceCharacter): boolean {
+  return workspaceNarrativeFunctionOf(character) === "protagonist";
+}
+
+function workspaceImportanceGroupOf(character: CharacterWorkspaceCharacter): WorkspaceImportanceGroup {
+  const explicit = taxonomyToken(character.importance);
+  if (["core", "major", "supporting", "minor"].includes(explicit)) return explicit as CharacterImportance;
+  if (String(character.importance ?? "").trim()) return "unknown";
+  if (workspaceIsProtagonist(character)) return "core";
+  for (const legacyValue of [character.character_tier, character.role]) {
+    const legacy = taxonomyToken(legacyValue);
+    if (["core", "major", "supporting", "minor"].includes(legacy)) return legacy as CharacterImportance;
+    if (["stage_antagonist", "mentor", "love_interest"].includes(legacy)) return "major";
+    if (legacy === "long_term_antagonist") return "core";
+  }
+  return "unknown";
 }
 
 function characterTaxonomy(character: DisplayCharacter): {
@@ -92,14 +141,10 @@ function characterTaxonomy(character: DisplayCharacter): {
   narrativeFunction?: CharacterNarrativeFunction;
   status?: CharacterProfileStatus;
 } {
-  const legacyKey = taxonomyToken(character.character_tier || character.role).replaceAll("_", " ");
-  const legacy = LEGACY_TAXONOMY[legacyKey] ?? LEGACY_TAXONOMY[taxonomyToken(character.character_tier || character.role)];
-  const importance = IMPORTANCE_LABELS[character.importance as CharacterImportance]
-    ? character.importance
-    : legacy?.importance;
-  const narrativeFunction = NARRATIVE_FUNCTION_LABELS[character.narrative_function as CharacterNarrativeFunction]
-    ? character.narrative_function
-    : legacy?.narrativeFunction;
+  const workspaceCharacter = character as CharacterWorkspaceCharacter;
+  const importanceGroup = workspaceImportanceGroupOf(workspaceCharacter);
+  const importance = importanceGroup === "unknown" ? undefined : importanceGroup;
+  const narrativeFunction = workspaceNarrativeFunctionOf(workspaceCharacter);
   const status = character.profile_status === "stub" || character.profile_status === "ready"
     ? character.profile_status
     : undefined;
@@ -107,15 +152,27 @@ function characterTaxonomy(character: DisplayCharacter): {
 }
 
 function importanceLabel(value: CharacterImportance | undefined): string {
-  return value ? `${IMPORTANCE_LABELS[value] ?? value} · ${value}` : "未标注分类";
+  return value ? IMPORTANCE_LABELS[value] ?? "其他" : "未标注分类";
 }
 
 function narrativeFunctionLabel(value: CharacterNarrativeFunction | undefined): string {
-  return value ? `${NARRATIVE_FUNCTION_LABELS[value] ?? value} · ${value}` : "未标注功能";
+  return value ? NARRATIVE_FUNCTION_LABELS[value] ?? "其他" : "未标注功能";
 }
 
 function profileStatusLabel(value: CharacterProfileStatus | undefined): string {
-  return value ? `${PROFILE_STATUS_LABELS[value]} · ${value}` : "未标注状态";
+  return value ? PROFILE_STATUS_LABELS[value] ?? "待确认" : "未标注状态";
+}
+
+function matchesCharacterSearch(character: CharacterWorkspaceCharacter, query: string): boolean {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return true;
+  const identity = character.identity_profile ?? {};
+  return [character.name, identity.current_identity, identity.occupation]
+    .some((value) => String(value ?? "").toLocaleLowerCase().includes(needle));
+}
+
+function characterFilterLabel(value: CharacterNarrativeFunction): string {
+  return NARRATIVE_FUNCTION_LABELS[value] ?? "其他";
 }
 
 type StateNamespace = "current_state" | "real_state" | "game_state";
@@ -694,26 +751,46 @@ function CurrentStateSection({
 
 export default function CharactersPage() {
   const { project, story, error, encodedProjectId, projectId, refresh } = useProjectWorkspace();
-  const characters = mergeCharacters(project?.character_profiles, story?.characters);
+  const characters = mergeCharacters(project?.character_profiles, story?.characters) as CharacterWorkspaceCharacter[];
   const [characterFilter, setCharacterFilter] = useState<CharacterFilter>("all");
   const [narrativeFunctionFilter, setNarrativeFunctionFilter] = useState<NarrativeFunctionFilter>("all");
   const [editingName, setEditingName] = useState<string | null>(null);
-  const [draft, setDraft] = useState<DisplayCharacter | null>(null);
+  const [draft, setDraft] = useState<CharacterWorkspaceCharacter | null>(null);
   const [stateDrafts, setStateDrafts] = useState<Partial<Record<StateNamespace, string>>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [expandedNames, setExpandedNames] = useState<Set<string>>(new Set());
 
-  const visibleCharacters = characters.filter((character) => {
+  const visibleCharacters = useMemo(() => characters.filter((character) => {
     const taxonomy = characterTaxonomy(character);
     const matchesPrimary = characterFilter === "all"
-      || taxonomy.importance === characterFilter
+      || workspaceImportanceGroupOf(character) === characterFilter
       || taxonomy.status === characterFilter;
     const matchesFunction = narrativeFunctionFilter === "all"
-      || taxonomy.narrativeFunction === narrativeFunctionFilter;
-    return matchesPrimary && matchesFunction;
-  });
+      || workspaceNarrativeFunctionOf(character) === narrativeFunctionFilter;
+    return matchesCharacterSearch(character, searchQuery) && matchesPrimary && matchesFunction;
+  }), [characters, characterFilter, narrativeFunctionFilter, searchQuery]);
 
-  const beginEdit = (character: DisplayCharacter) => {
+  const characterGroups = useMemo<CharacterGroup[]>(() => {
+    const protagonist = visibleCharacters.filter(workspaceIsProtagonist);
+    const grouped: CharacterGroup[] = protagonist.length > 0
+      ? [{ key: "protagonist", title: "主角", characters: protagonist, protagonist: true }]
+      : [];
+    (["core", "major", "supporting", "minor", "unknown"] as WorkspaceImportanceGroup[]).forEach((key) => {
+      const groupCharacters = visibleCharacters.filter((character) => (
+        !workspaceIsProtagonist(character) && workspaceImportanceGroupOf(character) === key
+      ));
+      if (groupCharacters.length > 0) grouped.push({
+        key,
+        title: WORKSPACE_IMPORTANCE_LABELS[key],
+        characters: groupCharacters,
+      });
+    });
+    return grouped;
+  }, [visibleCharacters]);
+
+  const beginEdit = (character: CharacterWorkspaceCharacter) => {
     const gameStory = isGameWebnovel(project);
     setEditingName(character.name);
     setDraft(cloneCharacter(character));
@@ -776,7 +853,7 @@ export default function CharactersPage() {
     }
   };
 
-  const complete = async (character: DisplayCharacter) => {
+  const complete = async (character: CharacterWorkspaceCharacter) => {
     setBusy(character.name);
     setMessage(null);
     try {
@@ -806,119 +883,131 @@ export default function CharactersPage() {
         </div>
         <div className="ws-character-filters" aria-label="角色筛选">
           <label>
+            <span>搜索人物</span>
+            <input aria-label="搜索人物" type="search" placeholder="姓名、身份或职业" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} />
+          </label>
+          <label>
             <span>角色分类</span>
-            <select
-              aria-label="角色分类筛选"
-              value={characterFilter}
-              onChange={(event) => setCharacterFilter(event.target.value as CharacterFilter)}
-            >
-              <option value="all">全部</option>
-              <option value="core">核心角色 · core</option>
-              <option value="major">重要角色 · major</option>
-              <option value="supporting">配角 · supporting</option>
-              <option value="minor">次要角色 · minor</option>
-              <option value="stub">待补全 · stub</option>
-              <option value="ready">已就绪 · ready</option>
+            <select aria-label="角色分类筛选" value={characterFilter} onChange={(event) => setCharacterFilter(event.target.value as CharacterFilter)}>
+              <option value="all">全部分类</option>
+              {(Object.keys(IMPORTANCE_LABELS) as CharacterImportance[]).map((value) => <option key={value} value={value}>{IMPORTANCE_LABELS[value]}</option>)}
+              <option value="stub">待补全</option>
+              <option value="ready">已就绪</option>
             </select>
           </label>
           <label>
             <span>叙事功能</span>
-            <select
-              aria-label="叙事功能筛选"
-              value={narrativeFunctionFilter}
-              onChange={(event) => setNarrativeFunctionFilter(event.target.value as NarrativeFunctionFilter)}
-            >
+            <select aria-label="叙事功能筛选" value={narrativeFunctionFilter} onChange={(event) => setNarrativeFunctionFilter(event.target.value as NarrativeFunctionFilter)}>
               <option value="all">全部功能</option>
-              <option value="protagonist">主角 · protagonist</option>
-              <option value="stage_antagonist">阶段反派 · stage_antagonist</option>
-              <option value="long_term_antagonist">长期反派 · long_term_antagonist</option>
-              <option value="ally">盟友 · ally</option>
-              <option value="rival">竞争者 · rival</option>
-              <option value="mentor">导师 · mentor</option>
-              <option value="love_interest">感情线 · love_interest</option>
-              <option value="resource_contact">资源联系人 · resource_contact</option>
-              <option value="other">其他 · other</option>
+              {Array.from(new Set(characters.map(workspaceNarrativeFunctionOf))).sort().map((value) => <option key={value} value={value}>{characterFilterLabel(value)}</option>)}
             </select>
           </label>
           <p role="status">显示 {visibleCharacters.length} / {characters.length} 张角色卡</p>
         </div>
-        {visibleCharacters.length > 0 ? (
-          <div className="ws-character-list">
-            {visibleCharacters.map((character) => {
-              const gameStory = isGameWebnovel(project);
-              const isEditing = editingName === character.name && draft;
-              const shown = isEditing ? draft : character;
-              const taxonomy = characterTaxonomy(shown as DisplayCharacter);
-              const effectiveGameState = shown?.game_state ?? (shown?.game_panel ? { current: shown.game_panel } : undefined);
-              const showGameState = gameStory && Boolean(effectiveGameState);
-              const panel = showGameState && !shown?.game_state ? shown?.game_panel : undefined;
-              const displayedGameId = showGameState
-                ? effectiveGameState?.current?.game_id ?? shown?.game_id ?? panel?.game_id
-                : undefined;
-              const graphRelations = (project?.relationship_graph ?? []).filter(
-                (relation) => relation.source === shown?.name || relation.target === shown?.name,
-              );
-              const relationsText = relationshipSummary(shown?.name ?? "", graphRelations);
-              const genericState = currentStateLayer(shown?.current_state) ?? shown?.real_state;
-              const stateLayers = (gameStory ? [
-                ["real_state", shown?.real_state],
-                ["game_state", showGameState ? effectiveGameState : undefined],
-              ] : [
-                ["current_state", genericState],
-              ] as Array<[StateNamespace, CharacterStateLayer | undefined]>).filter((entry): entry is [StateNamespace, CharacterStateLayer] => Boolean(entry[1]));
+        {characterGroups.length > 0 ? (
+          characterGroups.map((group) => (
+            <CharacterGroupSection key={group.key} group={group}>
+              {group.characters.map((character) => {
+                const gameStory = isGameWebnovel(project);
+                const isEditing = editingName === character.name && draft;
+                const shown = isEditing ? draft : character;
+                const taxonomy = characterTaxonomy(shown as DisplayCharacter);
+                const isHero = group.key === "protagonist";
+                const showDetails = isHero || Boolean(isEditing) || expandedNames.has(character.name);
+                const effectiveGameState = shown?.game_state ?? (shown?.game_panel ? { current: shown.game_panel } : undefined);
+                const showGameState = gameStory && Boolean(effectiveGameState);
+                const panel = showGameState && !shown?.game_state ? shown?.game_panel : undefined;
+                const displayedGameId = showGameState
+                  ? effectiveGameState?.current?.game_id ?? shown?.game_id ?? panel?.game_id
+                  : undefined;
+                const graphRelations = (project?.relationship_graph ?? []).filter(
+                  (relation) => relation.source === shown?.name || relation.target === shown?.name,
+                );
+                const relationsText = relationshipSummary(shown?.name ?? "", graphRelations);
+                const genericState = currentStateLayer(shown?.current_state) ?? shown?.real_state;
+                const stateLayers = (gameStory ? [
+                  ["real_state", shown?.real_state],
+                  ["game_state", showGameState ? effectiveGameState : undefined],
+                ] : [
+                  ["current_state", genericState],
+                ] as Array<[StateNamespace, CharacterStateLayer | undefined]>).filter((entry): entry is [StateNamespace, CharacterStateLayer] => Boolean(entry[1]));
 
-              return (
-                <article className="ws-character-card" data-testid={`character-card-${characterFormKind(shown as DisplayCharacter)}`} key={character.name}>
-                  <div className="ws-character-card__head">
-                    <div>
-                      <h2>{shown?.name}</h2>
-                      <p>{[characterTemplateLabel(shown as DisplayCharacter), characterRoleLabel(shown?.role), displayedGameId].filter(Boolean).join(" / ")}</p>
-                      <div className="ws-character-taxonomy" aria-label="角色分类信息">
-                        <span className="ws-character-taxonomy__badge">{importanceLabel(taxonomy.importance)}</span>
-                        <span className="ws-character-taxonomy__badge">{narrativeFunctionLabel(taxonomy.narrativeFunction)}</span>
-                        <span className="ws-character-taxonomy__badge">{profileStatusLabel(taxonomy.status)}</span>
-                        {shown?.profile_completeness !== undefined && shown?.profile_completeness !== null ? (
-                          <span className="ws-character-taxonomy__badge">完成度 · {shown.profile_completeness}%</span>
-                        ) : null}
+                if (!showDetails) {
+                  const groupImportance = workspaceImportanceGroupOf(character);
+                  return <CharacterSummaryCard
+                    key={character.name}
+                    character={character}
+                    importanceLabel={WORKSPACE_IMPORTANCE_LABELS[groupImportance]}
+                    narrativeLabel={characterFilterLabel(workspaceNarrativeFunctionOf(character))}
+                    expanded={false}
+                    busy={busy === character.name}
+                    onToggle={() => setExpandedNames((current) => new Set(current).add(character.name))}
+                    onEdit={() => beginEdit(character)}
+                    onComplete={() => void complete(character)}
+                  />;
+                }
+
+                return (
+                  <article className={`ws-character-card${isHero ? " ws-character-card--hero" : ""}`} data-testid={`character-card-${characterFormKind(shown as DisplayCharacter)}`} key={character.name}>
+                    <div className="ws-character-card__head">
+                      <div>
+                        <h2>{shown?.name}</h2>
+                        <p>{[importanceLabel(taxonomy.importance), narrativeFunctionLabel(taxonomy.narrativeFunction), displayedGameId].filter(Boolean).join(" / ")}</p>
+                        <div className="ws-character-taxonomy" aria-label="角色分类信息">
+                          <span className="ws-character-taxonomy__badge">{importanceLabel(taxonomy.importance)}</span>
+                          <span className="ws-character-taxonomy__badge">{narrativeFunctionLabel(taxonomy.narrativeFunction)}</span>
+                          <span className="ws-character-taxonomy__badge">{profileStatusLabel(taxonomy.status)}</span>
+                          {shown?.profile_completeness !== undefined && shown?.profile_completeness !== null ? (
+                            <span className="ws-character-taxonomy__badge">完成度 {shown.profile_completeness}%</span>
+                          ) : null}
+                        </div>
+                      </div>
+                      <div className="ws-character-card__actions">
+                        <span>{characterCardBadge(shown?.lifecycle_state)}{panel?.updated_chapter ? ` · 第 ${panel.updated_chapter} 章更新` : ""}</span>
+                        {isEditing ? (
+                          <><button type="button" className="ws-button ws-button--primary" disabled={busy === character.name} onClick={save}>保存角色卡</button><button type="button" className="ws-button" disabled={busy === character.name} onClick={() => { setEditingName(null); setDraft(null); setStateDrafts({}); }}>取消</button></>
+                        ) : (
+                          <><button type="button" className="ws-button" onClick={() => beginEdit(character)} title="编辑人物侧写">编辑</button><button type="button" className="ws-button" disabled={busy === character.name} onClick={() => complete(character)} title="用本地规则补全空白侧写">补全基础侧写</button></>
+                        )}
                       </div>
                     </div>
-                    <div className="ws-character-card__actions">
-                      <span>{characterCardBadge(shown?.lifecycle_state)}{panel?.updated_chapter ? ` · 第 ${panel.updated_chapter} 章更新` : ""}</span>
-                      {isEditing ? (
-                        <><button type="button" className="ws-button ws-button--primary" disabled={busy === character.name} onClick={save}>保存角色卡</button><button type="button" className="ws-button" disabled={busy === character.name} onClick={() => { setEditingName(null); setDraft(null); setStateDrafts({}); }}>取消</button></>
-                      ) : (
-                        <><button type="button" className="ws-button" onClick={() => beginEdit(character)} title="编辑人物侧写">编辑</button><button type="button" className="ws-button" disabled={busy === character.name} onClick={() => complete(character)} title="用本地规则补全空白侧写">补全基础侧写</button></>
-                      )}
-                    </div>
-                  </div>
-                  <StableProfileSection
-                    character={character}
-                    relations={graphRelations}
-                    isEditing={Boolean(isEditing)}
-                    draft={isEditing ? draft : null}
-                    onChangeNested={(field, value) => draft && setDraft(updateNestedValue(draft, field, value))}
-                    onChangeTaxonomy={(field, value) => draft && setDraft({ ...draft, [field]: value })}
-                    onUpdateRelationField={() => {
-                      // Relationship graph is edited via the project API, not per-character.
-                      // For the workbench this is read-only.
-                    }}
-                    relationsText={relationsText}
-                  />
-                  <CurrentStateSection
-                    shown={shown}
-                    gameStory={gameStory}
-                    isEditing={Boolean(isEditing)}
-                    draft={isEditing ? draft : null}
-                    stateLayers={stateLayers}
-                    stateDrafts={stateDrafts}
-                    relations={graphRelations}
-                    onStateDraftChange={(namespace, value) => setStateDrafts((current) => ({ ...current, [namespace]: value }))}
-                    onChangeNested={(field, value) => draft && setDraft(updateNestedValue(draft, field, value))}
-                  />
-                </article>
-              );
-            })}
-          </div>
+                    {isHero ? <dl className="ws-character-hero-facts">
+                      {shown?.identity_profile?.current_identity ? <div><dt>当前身份</dt><dd>{shown.identity_profile.current_identity}</dd></div> : null}
+                      {shown?.story_drive?.immediate_goal ? <div><dt>当前目标</dt><dd>{shown.story_drive.immediate_goal}</dd></div> : null}
+                      {shown?.current_life_profile?.immediate_problem ? <div><dt>状态摘要</dt><dd>{shown.current_life_profile.immediate_problem}</dd></div> : null}
+                      {shown?.profile_status ? <div><dt>侧写状态</dt><dd>{profileStatusLabel(shown.profile_status as CharacterProfileStatus)}</dd></div> : null}
+                      {typeof shown?.profile_completeness === "number" ? <div><dt>侧写完整度</dt><dd>{Math.round(shown.profile_completeness <= 1 ? shown.profile_completeness * 100 : shown.profile_completeness)}%</dd></div> : null}
+                    </dl> : null}
+                    <StableProfileSection
+                      character={character}
+                      relations={graphRelations}
+                      isEditing={Boolean(isEditing)}
+                      draft={isEditing ? draft : null}
+                      onChangeNested={(field, value) => draft && setDraft(updateNestedValue(draft, field, value))}
+                      onChangeTaxonomy={(field, value) => draft && setDraft({ ...draft, [field]: value })}
+                      onUpdateRelationField={() => {
+                        // Relationship graph is edited via the project API, not per-character.
+                        // For the workbench this is read-only.
+                      }}
+                      relationsText={relationsText}
+                    />
+                    <CurrentStateSection
+                      shown={shown}
+                      gameStory={gameStory}
+                      isEditing={Boolean(isEditing)}
+                      draft={isEditing ? draft : null}
+                      stateLayers={stateLayers}
+                      stateDrafts={stateDrafts}
+                      relations={graphRelations}
+                      onStateDraftChange={(namespace, value) => setStateDrafts((current) => ({ ...current, [namespace]: value }))}
+                      onChangeNested={(field, value) => draft && setDraft(updateNestedValue(draft, field, value))}
+                    />
+                    {!isHero && !isEditing ? <button type="button" className="ws-character-summary-card__toggle" aria-expanded="true" onClick={() => setExpandedNames((current) => { const next = new Set(current); next.delete(character.name); return next; })}>收起详情</button> : null}
+                  </article>
+                );
+              })}
+            </CharacterGroupSection>
+          ))
         ) : (
           <p className="ws-card__hint">
             {characters.length > 0 ? "当前筛选没有匹配的角色卡。" : "暂无角色档案。"}
