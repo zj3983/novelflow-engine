@@ -934,6 +934,38 @@ def test_historical_replay_does_not_read_latest_project_context(tmp_path, monkey
     assert replayed["current_chapter"] == 2
 
 
+def test_historical_replay_does_not_import_future_latest_state_context(tmp_path):
+    store = _make_project(tmp_path)
+    for chapter in (1, 2):
+        store.confirm_candidate(_candidate(store, chapter).candidate_id)
+
+    expected = store.continuity_store.read_snapshot(2).state_after
+    store.continuity_store.mark_stale([1, 2])
+
+    latest_state = store.state()
+    latest_state["characters"] = [
+        *(latest_state.get("characters") or []),
+        {
+            "name": "未来污染角色",
+            "role": "NPC",
+            "character_type": "future-only",
+        },
+    ]
+    _write_json(tmp_path / ".webnovel" / "state.json", latest_state)
+
+    rebuilt = store._reconstruct_state_at_end(2, store.state())
+
+    assert rebuilt is not None
+    replayed, source_chapter = rebuilt
+    assert source_chapter == 0
+    assert slice_state_for_snapshot(replayed) == expected
+    assert all(
+        str(item.get("name") or "") != "未来污染角色"
+        for item in replayed.get("characters", [])
+        if isinstance(item, dict)
+    )
+
+
 def test_historical_replay_does_not_reapply_factresource_or_canon_hooks(
     tmp_path,
     monkeypatch,
@@ -1062,6 +1094,36 @@ def test_legacy_confirmed_candidate_extraction_is_replayed_in_memory_only(tmp_pa
     assert source_chapter == 0
     assert replayed["progression_ledger"]["protagonist"]["level"] == "Lv.13"
     assert chapter_path.read_bytes() == artifact_before_replay
+
+
+def test_legacy_replay_rejects_malformed_artifact_extraction_instead_of_fallback(tmp_path):
+    store = _make_project(tmp_path)
+    candidate = _candidate(store, 1, tag="旧候选结构化等级")
+    candidate.fact_resource_extraction = FactResourceExtraction(
+        chapter_number=1,
+        deltas=[
+            FactResourceDelta(
+                chapter=1,
+                category="level",
+                resource_key="level",
+                operation="SET",
+                before=1,
+                change=2,
+                after=2,
+                evidence="persisted candidate extraction",
+            )
+        ],
+    )
+    store.candidate_store.save(candidate)
+    store.confirm_candidate(candidate.candidate_id)
+
+    chapter_path = tmp_path / ".story-system" / "chapters" / "0001.json"
+    chapter_payload = json.loads(chapter_path.read_text(encoding="utf-8"))
+    chapter_payload["fact_resource_extraction"] = "corrupt"
+    _write_json(chapter_path, chapter_payload)
+    store.continuity_store.mark_stale([1])
+
+    assert store._reconstruct_state_at_end(1, store.state()) is None
 
 
 def test_legacy_replay_fails_safe_when_confirmed_candidate_identity_is_ambiguous(tmp_path):

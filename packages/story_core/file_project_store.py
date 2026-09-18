@@ -10077,6 +10077,24 @@ class FileProjectStore(
         SnapshotStore().write_json_atomic(target, payload)
         return target
 
+    def _historical_replay_seed_state(
+        self,
+        current_state: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Return a trusted Chapter-0 seed without importing latest runtime state."""
+
+        master = self._read_json(self.story_system_dir / "MASTER_SETTING.json", {}) or {}
+        master_state = master.get("state") if isinstance(master, dict) else None
+        if isinstance(master_state, dict) and int(master_state.get("current_chapter") or 0) == 0:
+            current_story_id = str(current_state.get("story_id") or "")
+            master_story_id = str(master_state.get("story_id") or "")
+            if current_story_id and master_story_id and current_story_id != master_story_id:
+                return None
+            return deepcopy(master_state)
+        if not self.chapter_numbers() and int(current_state.get("current_chapter") or 0) == 0:
+            return deepcopy(current_state)
+        return None
+
     def _trusted_initial_regeneration_state(
         self,
         current_state: dict[str, Any],
@@ -10085,18 +10103,21 @@ class FileProjectStore(
     ) -> dict[str, Any] | None:
         """Return a chapter-zero state only when its boundary is explicit."""
 
+        if isinstance(project_context, dict):
+            seed = self._historical_replay_seed_state(current_state)
+            if seed is None:
+                return None
+            return self._conservative_regeneration_state(
+                seed,
+                project_context=project_context,
+            )
+
         master = self._read_json(self.story_system_dir / "MASTER_SETTING.json", {}) or {}
         master_state = master.get("state") if isinstance(master, dict) else None
         if isinstance(master_state, dict) and int(master_state.get("current_chapter") or 0) == 0:
-            return self._conservative_regeneration_state(
-                current_state,
-                project_context=project_context,
-            )
+            return self._conservative_regeneration_state(current_state)
         if not self.chapter_numbers() and int(current_state.get("current_chapter") or 0) == 0:
-            return self._conservative_regeneration_state(
-                current_state,
-                project_context=project_context,
-            )
+            return self._conservative_regeneration_state(current_state)
         return None
 
     def _continuity_snapshot_state(
@@ -10111,8 +10132,14 @@ class FileProjectStore(
         state_after = getattr(snapshot, "state_after", None)
         if not isinstance(state_after, dict):
             return None
+        hydration_source = current_state
+        if isinstance(project_context, dict):
+            trusted_seed = self._historical_replay_seed_state(current_state)
+            if trusted_seed is None:
+                return None
+            hydration_source = trusted_seed
         hydrated = self._conservative_regeneration_state(
-            current_state,
+            hydration_source,
             project_context=project_context,
         )
         hydrated.update(deepcopy(state_after))
@@ -10230,16 +10257,19 @@ class FileProjectStore(
                 return None
 
         # Older confirmed chapter artifacts predate the persisted extraction
-        # fields.  When exactly one confirmed CandidateDraft owns the chapter,
-        # recover its already-persisted structured extraction in this in-memory
-        # replay payload only.  Never re-extract prose or rewrite the artifact.
-        if not isinstance(chapter.get("fact_resource_extraction"), dict):
+        # fields.  Only true absence is eligible for CandidateDraft fallback:
+        # a present-but-malformed extraction is damaged replay evidence and
+        # must fail closed instead of being silently replaced.
+        if "fact_resource_extraction" in chapter:
+            if not isinstance(chapter.get("fact_resource_extraction"), dict):
+                return None
+        else:
             if len(confirmed) > 1:
                 return None
-            elif confirmed_candidate is not None:
+            if confirmed_candidate is not None:
                 has_persisted_extraction, raw_extraction = (
                     self._persisted_candidate_fact_resource_extraction(
-                    confirmed_candidate
+                        confirmed_candidate
                     )
                 )
                 if has_persisted_extraction and raw_extraction is None:
@@ -10249,6 +10279,17 @@ class FileProjectStore(
                     chapter["fact_resource_candidate_id"] = str(
                         confirmed_candidate.candidate_id
                     )
+
+        persisted_fact_resource_candidate_id = chapter.get(
+            "fact_resource_candidate_id"
+        )
+        if (
+            persisted_fact_resource_candidate_id is not None
+            and confirmed_candidate is not None
+            and str(persisted_fact_resource_candidate_id)
+            != str(confirmed_candidate.candidate_id)
+        ):
+            return None
 
         snapshot_path = self.continuity_store.snapshot_path(chapter_number)
         if chapter_number not in stale_chapters and snapshot_path.exists():
@@ -10336,6 +10377,23 @@ class FileProjectStore(
                 return result.snapshot
         return None
 
+    def _historical_replay_project_id(
+        self,
+        current_state: dict[str, Any],
+    ) -> str:
+        """Resolve immutable project identity without consulting latest project.json."""
+
+        master = self._read_json(self.story_system_dir / "MASTER_SETTING.json", {}) or {}
+        master_project = master.get("project") if isinstance(master, dict) else None
+        if not isinstance(master_project, dict):
+            master_project = {}
+        return str(
+            master_project.get("project_id")
+            or master_project.get("active_story_id")
+            or current_state.get("story_id")
+            or self.root.name
+        )
+
     def _reconstruct_state_at_end(
         self,
         chapter_number: int,
@@ -10346,7 +10404,7 @@ class FileProjectStore(
         target = int(chapter_number)
         if target < 0:
             return None
-        project_id = str(current_state.get("story_id") or self.root.name)
+        project_id = self._historical_replay_project_id(current_state)
         if target == 0:
             baseline = self._trusted_initial_regeneration_state(
                 current_state,
