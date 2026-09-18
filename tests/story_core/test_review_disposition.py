@@ -68,8 +68,11 @@ def test_critical_adapter_fails_closed_for_unclassified_layered_issue():
     )
 
     assert result.status == "blocked"
-    assert [finding.blocking for finding in result.findings] == [False, True]
-    assert [finding.category for finding in result.findings] == ["prose", "hard"]
+    by_message = {finding.message: finding for finding in result.findings}
+    assert by_message["段首主语单调"].blocking is False
+    assert by_message["段首主语单调"].category == "prose"
+    assert by_message["漏分类关键问题"].blocking is True
+    assert by_message["漏分类关键问题"].category == "hard"
 
 
 def test_genre_failure_is_advisory_by_default():
