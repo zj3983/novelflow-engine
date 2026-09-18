@@ -10120,6 +10120,40 @@ class FileProjectStore(
             return self._conservative_regeneration_state(current_state)
         return None
 
+    @staticmethod
+    def _historical_replay_configuration_seed(
+        current_state: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Keep only non-temporal configuration needed to hydrate a snapshot."""
+
+        seed: dict[str, Any] = {
+            "story_id": str(current_state.get("story_id") or ""),
+            "outline": str(current_state.get("outline") or ""),
+            "genre": str(current_state.get("genre") or ""),
+            "style": str(current_state.get("style") or ""),
+            "current_chapter": 0,
+            "characters": [],
+            "world_facts": [],
+            "progression_ledger": {},
+            "timeline": [],
+            "foreshadowing": [],
+            "chapter_summaries": [],
+            "memory_index": [],
+            "arc_recaps": [],
+        }
+        for field in (
+            "genre_plugin_ids",
+            "author_constraints",
+            "enabled_skill_ids",
+            "enabled_skill_module_ids",
+            "novel_type",
+            "novel_type_id",
+            "novel_type_ids",
+        ):
+            if field in current_state:
+                seed[field] = deepcopy(current_state[field])
+        return seed
+
     def _continuity_snapshot_state(
         self,
         snapshot: Any,
@@ -10132,19 +10166,25 @@ class FileProjectStore(
         state_after = getattr(snapshot, "state_after", None)
         if not isinstance(state_after, dict):
             return None
-        hydration_source = current_state
+
         if isinstance(project_context, dict):
-            trusted_seed = self._historical_replay_seed_state(current_state)
-            if trusted_seed is None:
-                return None
-            hydration_source = trusted_seed
+            # The snapshot is the temporal authority.  Some legacy projects
+            # have no MASTER_SETTING.state, so hydrate only the immutable
+            # StoryState/configuration shell from the current file and never
+            # import current characters, ledgers, time, or other runtime data.
+            hydration_source = self._historical_replay_configuration_seed(
+                current_state
+            )
+        else:
+            hydration_source = current_state
+
         hydrated = self._conservative_regeneration_state(
             hydration_source,
             project_context=project_context,
         )
         hydrated.update(deepcopy(state_after))
         hydrated["current_chapter"] = int(getattr(snapshot, "chapter_number", 0) or 0)
-        usable = self._validated_runtime_state(hydrated, current_state)
+        usable = self._validated_runtime_state(hydrated, hydration_source)
         return dict(usable) if usable is not None else None
 
     def _continuity_snapshot_expectations(
