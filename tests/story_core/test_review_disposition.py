@@ -39,6 +39,39 @@ def test_critical_adapter_keeps_legacy_reports_blocking_without_classification()
     assert result.findings[0].blocking is True
 
 
+def test_critical_adapter_normalizes_structured_hard_classification():
+    message = "后台术语泄漏"
+    result = _adapt_critical_report(
+        {
+            "pass": False,
+            "issues": [{"message": message}],
+            "hard_issues": [{"message": message}],
+            "soft_issues": [],
+        }
+    )
+
+    assert result.status == "blocked"
+    assert len(result.findings) == 1
+    assert result.findings[0].message == message
+    assert result.findings[0].blocking is True
+    assert result.findings[0].category == "hard"
+
+
+def test_critical_adapter_fails_closed_for_unclassified_layered_issue():
+    result = _adapt_critical_report(
+        {
+            "pass": False,
+            "issues": ["段首主语单调", "漏分类关键问题"],
+            "hard_issues": [],
+            "soft_issues": ["段首主语单调"],
+        }
+    )
+
+    assert result.status == "blocked"
+    assert [finding.blocking for finding in result.findings] == [False, True]
+    assert [finding.category for finding in result.findings] == ["prose", "hard"]
+
+
 def test_genre_failure_is_advisory_by_default():
     result = _adapt_genre_report(
         {
