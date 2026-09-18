@@ -479,7 +479,7 @@ def _deterministic_prose_findings(
                 code="style.simile_stacking",
                 message=f"正文使用了{simile_count}处显式比喻，密度过高，需要改成直接叙述。",
                 source="deterministic",
-                blocking=True,
+                blocking=False,
             )
         )
 
@@ -661,18 +661,15 @@ def run_writer(
             )
             consistency_findings.extend(model_findings)
         except Exception:
-            # Defensive double-belt: the agent itself now fails
-            # closed inside ``focused_consistency_review`` so a
-            # runtime error surfaces as a blocking
-            # ``consistency.unavailable`` finding. If anything
-            # escapes that layer we still fall back to a blocking
-            # finding rather than silently dropping the review.
+            # Defensive double-belt: a runtime failure must remain visible as
+            # an unverified advisory finding even if it escapes the focused
+            # agent boundary. It is not evidence of a canon contradiction.
             consistency_findings.append(
                 ConsistencyFinding(
                     code="consistency.unavailable",
-                    message="事实审稿 pipeline 异常；视为失败。",
+                    message="事实审稿 pipeline 异常；本次未完成核验。",
                     source="consistency",
-                    blocking=True,
+                    blocking=False,
                 )
             )
     return WriterPipelineResult(

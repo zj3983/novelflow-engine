@@ -298,14 +298,18 @@ def review_chapter_body(
             revision_plan.append(item)
     _merge_legacy_review(plot_spine_review, scores=scores, issues=issues, revision_plan=revision_plan)
 
+    # ``pass`` is the legacy "completely clean" bit. Keep it false for
+    # advisory findings so old callers/tests can still distinguish a chapter
+    # with review notes from a clean chapter. The embedded review-result/v2 is
+    # authoritative for save/block decisions: only status=blocked is rejected.
     report = {
-        "pass": combined.status != "blocked",
+        "pass": combined.status == "passed",
         "issues": issues,
         "revision_plan": revision_plan,
         "scores": scores,
         "review_summary": {
             "core_passed": combined.status != "blocked",
-            "soft_passed": combined.status != "blocked",
+            "soft_passed": combined.status == "passed",
             "status": combined.status,
         },
         "active_genre_reviews": active_genre_reviews,
