@@ -4145,6 +4145,7 @@ class StoryOrchestrator:
         director_runtime: Any | None = None,
         writer_runtime: Any | None = None,
         fact_extractor: Any | None = None,
+        character_agent: Any | None = None,
     ):
         # The workbench path: route through the new modular
         # pipeline. The new Director → CanonService preflight →
