@@ -503,7 +503,7 @@ def plan_director_artifact(
     field directly, so the operator sees which runtime
     answered the director call.
     """
-    context = _ensure_director_context(
+    context = context or _ensure_director_context(
         project_root=project_root, chapter_number=chapter_number
     )
     if rewrite_guidance.strip():
