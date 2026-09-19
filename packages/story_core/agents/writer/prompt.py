@@ -128,7 +128,8 @@ def _relevant_character_names(request: WriterRequest) -> set[str]:
         role = str(card.get("role") or "").strip().casefold()
         tier = str(card.get("character_tier") or "").strip().casefold()
         if name and (
-            name in artifact_text
+            name in explicit_intent_names
+            or name in artifact_text
             or tier == "protagonist"
             or role in {"主角", "protagonist"}
         ):
