@@ -13,7 +13,7 @@ while actual established-fact contradictions may still block.
 
 from __future__ import annotations
 
-from dataclasses import InitVar, dataclass
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from ..contracts import DirectorArtifact
@@ -387,6 +387,7 @@ def _downgrade_non_factual(
     *,
     canon_snapshot: dict[str, Any] | None = None,
     canon_evidence: str | None = None,
+    require_canon_evidence: bool = False,
 ) -> bool:
     """Only established-fact contradictions may block confirmation.
 
@@ -419,7 +420,11 @@ def _downgrade_non_factual(
     # The focused model boundary is allowed to block only when it can point
     # back to the current chapter-bounded Canon projection. Keep deterministic
     # non-model gates backward compatible; their source names are explicit.
-    if normalized_source not in {"deterministic", "rewrite_guidance", "writer"}:
+    if require_canon_evidence and normalized_source not in {
+        "deterministic",
+        "rewrite_guidance",
+        "writer",
+    }:
         return _has_verified_canon_evidence(
             source=source,
             canon_evidence=canon_evidence,
@@ -443,21 +448,9 @@ class ConsistencyFinding:
     message: str
     source: str = "consistency"
     blocking: bool = True
-    canon_snapshot: InitVar[dict[str, Any] | None] = None
-    canon_evidence: InitVar[str | None] = None
 
-    def __post_init__(
-        self,
-        canon_snapshot: dict[str, Any] | None,
-        canon_evidence: str | None,
-    ) -> None:
-        self.blocking = _downgrade_non_factual(
-            self.code,
-            self.source,
-            self.blocking,
-            canon_snapshot=canon_snapshot,
-            canon_evidence=canon_evidence,
-        )
+    def __post_init__(self) -> None:
+        self.blocking = _downgrade_non_factual(self.code, self.source, self.blocking)
 
 
 class FocusedConsistencyAgent:
@@ -551,14 +544,23 @@ class FocusedConsistencyAgent:
                 if canon_evidence_raw is not None
                 else None
             )
+            # Canon evidence is a boundary for model output only. Deterministic
+            # contract gates are constructed outside this adapter and must keep
+            # their own hard/soft disposition (for example hook landing).
+            blocking = _downgrade_non_factual(
+                code,
+                source,
+                blocking,
+                canon_snapshot=canon_snapshot,
+                canon_evidence=canon_evidence,
+                require_canon_evidence=True,
+            )
             findings.append(
                 ConsistencyFinding(
                     code=code,
                     message=message,
                     source=source,
                     blocking=blocking,
-                    canon_snapshot=canon_snapshot,
-                    canon_evidence=canon_evidence,
                 )
             )
         return findings
