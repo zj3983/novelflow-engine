@@ -880,6 +880,95 @@ def test_orchestrator_runs_focused_consistency_review(tmp_path: Path):
     assert "canon_violation" in writing_review["issues"]
 
 
+def test_writer_consistency_uses_previous_chapter_canon_snapshot(tmp_path: Path):
+    from packages.story_core.continuity.snapshot import ChapterSnapshot
+    from packages.story_core.continuity.store import ContinuityStore
+
+    project_root = tmp_path
+    _seed_legacy_project(project_root, with_outline=False)
+
+    ContinuityStore(project_root).write_snapshot(
+        ChapterSnapshot(
+            chapter_number=1,
+            candidate_id="c1",
+            operation="generate",
+            confirmed_at="2026-09-19T00:00:00+00:00",
+            body_sha256="sha-c1",
+            body_chars=4000,
+            state_after={
+                "current_chapter": 1,
+                "characters": [
+                    {
+                        "name": "林昭",
+                        "role": "protagonist",
+                        "current_state": {
+                            "current": {"location": "山脚", "equipment": "旧木剑"}
+                        },
+                    }
+                ],
+                "world_facts": ["山门入夜后关闭"],
+                "continuity_facts": [
+                    {
+                        "subject": "林昭",
+                        "field": "装备",
+                        "value": "旧木剑",
+                        "chapter_number": 1,
+                        "source_sentence": "林昭把旧木剑系回腰间。",
+                    }
+                ],
+            },
+        )
+    )
+
+    registry = CanonRegistry()
+    registry.add_character(
+        name="林昭",
+        entity_id="char-lin",
+        lifecycle="active",
+        extensions={"location": "山脚"},
+    )
+    registry.add_character(
+        name="苏婉",
+        entity_id="char-su",
+        lifecycle="active",
+    )
+    registry.add_relationship(
+        subject_id="char-lin",
+        predicate="trusts",
+        object_id="char-su",
+        polarity="added",
+        chapter_number=1,
+        source_sentence="林昭把旧木剑交给苏婉保管过。",
+    )
+    registry.add_timeline_marker(
+        marker="第一夜",
+        chapter_number=1,
+        source_sentence="山门钟声响起。",
+    )
+
+    consistency_runtime = _StubConsistencyRuntime()
+    bundle = StoryOrchestrator(
+        use_modular_agents=True
+    ).generate_next_chapter_via_modular_pipeline(
+        project_root=project_root,
+        chapter_number=2,
+        director_runtime=_StubDirectorRuntime(),
+        writer_runtime=_StubWriterRuntime(),
+        consistency_runtime=consistency_runtime,
+        canon_registry=registry,
+    )
+
+    assert len(consistency_runtime.calls) == 1
+    prompt = consistency_runtime.calls[0].prompt
+    assert "Canon 审稿快照（截至第 1 章）" in prompt
+    assert "山门入夜后关闭" in prompt
+    assert "旧木剑" in prompt
+    assert "林昭把旧木剑交给苏婉保管过" in prompt
+    assert "山门钟声响起" in prompt
+    assert bundle.canon_review_snapshot["as_of_chapter"] == 1
+    assert bundle.canon_review_snapshot["state_source"] == "continuity_snapshot"
+
+
 def test_deterministic_prose_findings_report_dense_simile_stacking_as_advisory():
     body = "。".join(
         [
