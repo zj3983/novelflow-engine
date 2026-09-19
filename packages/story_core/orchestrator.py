@@ -3355,6 +3355,7 @@ class StoryOrchestrator:
             project_root=project_root,
             chapter_number=chapter_number,
             story=story,
+            character_agent=character_agent,
             director_runtime=director_runtime,
             writer_runtime=writer_runtime,
             fact_extractor=fact_extractor,
