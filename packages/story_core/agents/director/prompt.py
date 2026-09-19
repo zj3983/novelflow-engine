@@ -143,9 +143,43 @@ def _render_character_cards(context: DirectorContext) -> str:
     for card in context.character_cards:
         name = card.get("name", "未命名")
         role = card.get("role", "")
+        narrative_function = card.get("narrative_function", "")
         location = card.get("location", "")
         state = card.get("current_state", "")
-        lines.append(f"- {name}（{role or '?'}）· 位置：{location or '?'} · 状态：{state or '?'}")
+        header = (
+            f"- {name}（{role or '?'}"
+            + (f" / {narrative_function}" if narrative_function else "")
+            + f"）· 位置：{location or '?'} · 状态：{state or '?'}"
+        )
+        lines.append(header)
+        for label, key in (
+            ("驱动力", "story_drive"),
+            ("人格反应", "personality"),
+            ("表现方式", "performance"),
+            ("关系备注", "relationship_notes"),
+            ("关系状态", "relationships"),
+        ):
+            value = card.get(key)
+            if value not in (None, "", [], {}):
+                lines.append(
+                    f"  {label}：{json.dumps(value, ensure_ascii=False, separators=(',', ':'))}"
+                )
+    return "\n".join(lines)
+
+
+def _render_character_intents(context: DirectorContext) -> str:
+    if not context.character_intents:
+        return ""
+    lines = [
+        "## 人物当前意图（候选压力，不是必须逐条执行的命令）",
+        "这些意图代表人物自己想做什么。可以采用、延后、阻断或让它们互相冲突；不要为了利用所有提案强迫每个人出场或轮流发言。",
+    ]
+    for intent in context.character_intents:
+        if not isinstance(intent, dict):
+            continue
+        lines.append(
+            "- " + json.dumps(intent, ensure_ascii=False, separators=(",", ":"))
+        )
     return "\n".join(lines)
 
 
