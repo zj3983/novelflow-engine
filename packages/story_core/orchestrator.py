@@ -3281,6 +3281,7 @@ class StoryOrchestrator:
         project_root: Any,
         chapter_number: int,
         story: StoryState | None = None,
+        character_agent: Any | None = None,
         director_runtime: Any | None = None,
         writer_runtime: Any | None = None,
         fact_extractor: Any | None = None,
