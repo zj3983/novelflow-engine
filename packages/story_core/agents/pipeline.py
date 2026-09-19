@@ -877,7 +877,7 @@ def _resolved_stage_provider_model(stage: str) -> tuple[str, str]:
     except Exception:
         return "", ""
     try:
-        settings = resolve_stage_runtime(stage)
+        settings = resolve_stage_runtime("planner" if stage == "character" else stage)
     except Exception:
         return "", ""
     if settings is None:
