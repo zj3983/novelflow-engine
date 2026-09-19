@@ -1,345 +1,260 @@
-# Novel Autogrowth Engine
+# NovelFlow Engine
 
-## 中文简介
+[![CI](https://github.com/zj3983/novelflow-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/zj3983/novelflow-engine/actions)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+![Python](https://img.shields.io/badge/Python-%3E%3D3.11-blue)
+![Next.js](https://img.shields.io/badge/Next.js-14-black)
 
-NovelFlow Engine 是一个面向长篇小说持续创作的开源生成引擎。它围绕故事状态、记忆压缩、角色与世界观连续性、章节规划与生成建立可检查、可持续演进的创作流水线，并提供 Web 工作台用于生成章节和查看故事状态。
+**面向长篇小说持续创作的有状态 AI 生成引擎。**
 
-## English
-This project turns a novel outline into a continuously evolving chapter stream.
+NovelFlow Engine 不只生成“下一章文本”，而是把章节规划、角色与世界状态、连续性检查、记忆压缩、章节重生成和可检查的工作流产物放进同一条持续演进的创作流水线。
 
-The backend keeps story state, memory compression, and chapter continuity checks in Python. The web workbench lets you trigger chapter generation and inspect the evolving story bundle from the browser.
+> Stateful, continuously evolving long-form novel generation with inspectable planning, continuity and writing workflows.
 
-## 开源与贡献 / Open source & contributing
+[快速开始](#快速开始) · [核心能力](#核心能力) · [架构](#架构概览) · [项目状态](#项目状态) · [文档](#文档) · [贡献](#参与贡献)
 
-本项目源码采用 [Apache License 2.0](LICENSE) 开源。除非文件中另有说明，你可以在许可证允许的范围内使用、修改和分发本项目，包括商业用途；再分发时需要遵守 Apache-2.0 的许可和声明要求。
+---
 
-本仓库的许可证只覆盖仓库自身源码及文档。你接入的第三方大模型、API、云服务、数据集或其他外部依赖，仍需遵守对应服务商自己的许可、计费和使用条款。
+## 为什么做 NovelFlow
 
-欢迎提交 Issue 和 Pull Request。参与前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)、[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)；安全问题请按 [SECURITY.md](SECURITY.md) 私密报告，不要在公开 Issue 中披露可利用细节。
+普通的一次性文本生成很容易在长篇小说里出现角色设定漂移、世界规则遗忘、伏笔断裂、章节目标失焦等问题。
 
-## Local development
+NovelFlow 的目标是把“写小说”建模成一个**持续维护状态的长期过程**：
 
-Create local configuration:
+- 每一章都基于当前故事状态和明确的章节规划继续推进。
+- 角色、实体、世界状态和连续性信息可以被结构化保存和检查。
+- 生成过程拆成多个职责清晰的模块，而不是把所有上下文塞进一个 Prompt。
+- 重写旧章节时尽量从正确的历史快照恢复，而不是让后续内容反向污染旧章节。
+- 中间产物可以落盘查看，方便定位生成失败、连续性问题和 Agent 行为。
+
+## 核心能力
+
+| 能力 | 说明 |
+| --- | --- |
+| **长篇状态管理** | 保存故事、角色、世界、章节与连续性状态，让生成跨章节持续演进。 |
+| **模块化 Agent 流水线** | Director、Canon、Writer、Consistency、Fact Extractor 等模块分工协作。 |
+| **章节规划与滚动细纲** | 在缺少目标章节细纲时，可按滚动窗口补齐后续章节规划，并保护人工修改内容。 |
+| **Canon / 连续性约束** | 使用稳定实体注册表、章节快照和连续性 Delta 降低角色与设定漂移。 |
+| **章节重生成与回滚** | 重写历史章节时从对应快照恢复，并标记受影响的后续章节。 |
+| **可检查工作流** | Director、Writer、Fact Extractor 等阶段产物可持久化，失败时便于定位具体阶段。 |
+| **Web 创作工作台** | 在浏览器中创建项目、生成章节、查看状态和连续性数据。 |
+| **OpenAI-compatible 模型接入** | 通过可配置 endpoint / model 接入兼容 OpenAI API 形式的模型服务。 |
+| **SQLite 持久化** | 默认提供适合本地与单用户部署的 SQLite 存储。 |
+| **Docker Compose** | 可将 API、Web 与数据卷一起启动。 |
+
+## 架构概览
+
+```mermaid
+flowchart LR
+    UI[Web Workbench<br/>Next.js] --> API[FastAPI]
+    API --> O[StoryOrchestrator / StoryEngine]
+
+    O --> D[Director]
+    D --> C[Canon Preflight]
+    C --> W[Writer]
+    W --> Q[Focused Consistency]
+    Q --> F[Fact Extractor]
+
+    O --> CTX[Project Context]
+    O --> MEM[Story State / Memory]
+    F --> P[(Persistence)]
+    P --> SNAP[Chapter Snapshots]
+    P --> REG[Canon Registry]
+    P --> WF[Workflow Artifacts]
+```
+
+主要代码边界：
+
+| 路径 | 职责 |
+| --- | --- |
+| `packages/story_core/` | 小说状态、Agent、连续性、Canon、持久化和生成编排核心 |
+| `apps/api/` | FastAPI 接口与运行时配置 |
+| `apps/web/` | Next.js Web 创作工作台 |
+| `plugins/` | 插件相关能力 |
+| `docs/` | 架构、API、配置、部署和开发文档 |
+| `tests/` | Python 测试与生成链路验证 |
+
+## 快速开始
+
+### 1. 环境要求
+
+- Python **3.11+**
+- Node.js / npm
+- [uv](https://docs.astral.sh/uv/)
+- 一个 OpenAI-compatible 模型服务
+
+### 2. 获取代码并安装依赖
 
 ```bash
+git clone https://github.com/zj3983/novelflow-engine.git
+cd novelflow-engine
+
 cp .env.example .env.local
+uv sync --extra dev
+
+cd apps/web
+npm ci
+cd ../..
 ```
 
-API:
+Windows PowerShell 可以使用：
+
+```powershell
+Copy-Item .env.example .env.local
+```
+
+### 3. 配置模型
+
+在 `.env.local` 中填写你的模型服务配置，例如：
+
+```env
+OPENAI_BASE_URL=https://your-openai-compatible-endpoint/v1
+OPENAI_API_KEY=your-api-key
+NOVEL_LLM_PROVIDER=openai
+NOVEL_AUTOGROWTH_DEFAULT_MODEL=your-model
+NOVEL_AUTOGROWTH_FAST_MODEL=your-fast-model
+```
+
+不要把真实 API Key 提交到 Git。
+
+### 4. 启动 API
 
 ```bash
-uvicorn apps.api.main:app --reload --port 8000
+uv run uvicorn apps.api.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-Web:
+### 5. 启动 Web
+
+另开一个终端：
 
 ```bash
 cd apps/web
-npm install
 npm run dev
 ```
 
-Tests:
+打开：
+
+```text
+http://127.0.0.1:3000
+```
+
+API 默认地址：
+
+```text
+http://127.0.0.1:8000
+```
+
+### Docker Compose
+
+如果希望 API、Web 和 SQLite 数据卷一起启动：
 
 ```bash
-pytest -q
+docker compose up --build
+```
+
+## 生成链路
+
+当前模块化生成链路以可检查的阶段运行：
+
+```text
+章节目标
+   ↓
+Director
+   ↓
+CanonService preflight
+   ↓
+Writer
+   ↓
+FocusedConsistency
+   ↓
+FactExtractor
+   ↓
+候选章节 / 连续性状态 / 工作流产物
+```
+
+运行产物会写入项目的 `.story-system/`，其中包括 Director 结果、章节快照、Canon Registry、工作流记录、角色/实体卡和 Review 数据。
+
+历史项目的 `.webnovel/` 数据结构在迁移窗口内仍然可以被读取。详细迁移、重生成、Smoke 验收和 Rolling Outline 说明见 [开发与生成链路说明](docs/development-notes.md)。
+
+## 项目状态
+
+NovelFlow Engine 目前仍处于**快速开发阶段**，还没有承诺稳定的数据格式或稳定 API。
+
+当前重点包括：
+
+- 继续收敛模块化 Agent 生成链路。
+- 提升长篇小说中的人物个性、剧情推进、伏笔与连续性质量。
+- 完善插件化能力和 Agent 自动化框架。
+- 继续改善 Web 创作工作台的可用性。
+- 为未来更成熟的存储后端和部署方式保留演进空间。
+
+如果你准备把它用于重要项目，请先备份数据，并优先在测试项目上验证升级和迁移。
+
+## 测试
+
+Python：
+
+```bash
+uv run pytest -q
+```
+
+Web：
+
+```bash
 cd apps/web
-npx playwright test
+npm run build
+npm run test:e2e
 ```
 
-### Legacy world-context migration
+仓库使用 GitHub Actions 持续验证 Python 和 Web 代码。
 
-File projects created before the world-context split can be inspected and
-migrated without changing chapter prose:
+## 文档
 
-```bash
-python scripts/migrate_world_context.py data/exported-projects/<project-id> --dry-run
-python scripts/migrate_world_context.py data/exported-projects/<project-id> --apply
-```
+- [配置说明](docs/configuration.md)
+- [API Reference](docs/api.md)
+- [部署说明](docs/deployment.md)
+- [架构说明](docs/architecture.md)
+- [开发与生成链路说明](docs/development-notes.md)
+- [Agent 自动化框架](docs/agent-automation-framework.md)
+- [插件化 Roadmap](docs/pluginization-roadmap.md)
+- [Codex 插件架构](docs/codex-plugin-architecture.md)
 
-The migration keeps static settings in `world_blueprint`, writes the current
-state to `world_snapshot`, writes short sourced facts to `continuity_facts`,
-and backs up the original JSON files under
-`.story-system/world-context-backups/` before applying changes.
+## Roadmap
 
-## Configuration
+下面是当前公开开发方向，不代表固定发布时间：
 
-The API loads `.env` and `.env.local` without overriding real process
-environment variables. Runtime settings changed in the UI are persisted under
-`~/.novel-autogrowth-engine/runtime_config.json` by default.
+- [ ] 继续统一 legacy 与 modular 生成路径
+- [ ] 提升 Director / Writer / Consistency 协作质量
+- [ ] 完善长篇滚动规划与历史章节重生成体验
+- [ ] 扩展插件化 Agent / Craft Module 能力
+- [ ] 改善运行观测、失败诊断和工作流可视化
+- [ ] 为多用户部署准备更成熟的数据库后端
+- [ ] 补充稳定版本、升级指南与兼容性策略
 
-State is persisted with SQLite through `SQLiteStoryStore`; the default database
-path is `apps/api/data/stories.db`.
+欢迎通过 Issue 讨论优先级和具体设计。
 
-See `docs/configuration.md` for model, API key, database, CORS, and storage
-roadmap details. See `docs/api.md` for backend endpoints and
-`docs/deployment.md` for Docker/Compose deployment.
+## 参与贡献
 
-## Modular agent architecture
+欢迎 Bug 修复、测试、文档、性能优化、UI 改进和新的小说创作能力。
 
-The chapter-generation pipeline is split into explicit modules so each agent
-sees only the material it needs and every intermediate artifact is
-inspectable. The orchestrator stays the public entry point
-(`StoryOrchestrator` → `StoryEngine`), but the agents behind it live in
-their own packages with stable runtime boundaries and Pydantic contracts.
+提交前请阅读：
 
-### Module ownership
+- [CONTRIBUTING.md](CONTRIBUTING.md)
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- [SECURITY.md](SECURITY.md)
 
-| Package | Owns | Public surface |
-| --- | --- | --- |
-| `packages/story_core/context/` | Canonical project reader + role-specific views | `ProjectContextReader`, `build_director_context`, `build_writer_context` |
-| `packages/story_core/agents/` | Director, writer, fact-extractor, consistency agents | `DirectorAgent`, `WriterAgent`, `FactExtractor`, `FocusedConsistencyAgent`, `pipeline.run_modular_pipeline` |
-| `packages/story_core/canon/` | Stable entity registry, entity preflight, `ContinuityDelta` apply | `CanonRegistry`, `CanonService.apply_delta` |
-| `packages/story_core/continuity/` | Per-chapter snapshots, deterministic checks, the delta itself | `ChapterSnapshot`, `ContinuityStore`, `ContinuityDelta` |
-| `packages/story_core/craft_modules/` | Selective craft-module registry + selector | `CraftModuleSelector`, `select_craft_modules` |
-| `packages/story_core/persistence/` | Atomic file writes, candidate store, director store, workflow artifact store, project transaction | `ProjectTransaction` (context-manager), `WorkflowArtifactStore` |
+请不要在 Issue、PR 或日志中提交 API Key、Token、Cookie、真实用户小说内容或其他私人数据。
 
-The orchestrator's main flow now has two entry points:
+## 开源许可
 
-* `StoryOrchestrator(use_modular_agents=False)` — legacy path used by the
-  existing 4 000+ tests (`generate_next_chapter_bundle`). Kept until the
-  CLI / API layer is migrated.
-* `StoryOrchestrator(use_modular_agents=True)` — new
-  `generate_next_chapter_via_modular_pipeline(...)` that drives the
-  Director → CanonService preflight → Writer → FactExtractor pipeline
-  and persists per-stage workflow artifacts to
-  `.story-system/workflow/{job_id}/`. The CLI flips the flag in
-  production.
+NovelFlow Engine 源码和仓库文档采用 [Apache License 2.0](LICENSE)。
 
-### On-disk artifacts
+你可以在许可证允许的范围内使用、修改、分发和用于商业用途。第三方模型、API、云服务、数据集和其他外部依赖仍受各自许可证、服务条款和计费规则约束。
 
-The new agents read and write the canonical layout under
-`.story-system/`:
+---
 
-```
-.story-system/
-├── director/NNNN.json          # Director artifact per chapter
-├── continuity/
-│   ├── snapshots/NNNN.json     # Per-chapter regeneration base state
-│   └── stale.json              # Markers for chapters downstream of a regen
-├── canon/registry.json         # Stable-id entity registry
-├── workflow/<job_id>/          # One JSON per stage per run
-│   ├── director.json
-│   ├── writer.json
-│   └── fact-extractor.json
-├── craft-modules/              # Selective craft modules
-├── characters/                 # Per-character card JSON
-├── entities/                   # Per-entity card JSON
-├── chapters/NNNN.json          # Chapter metadata
-├── reviews/NNNN.json           # Per-chapter review JSON
-└── commits/                    # Confirm-commit log
-```
+### English summary
 
-The legacy `.webnovel/` shape (`outline.json`, `state.json`, `project.json`)
-is still read by the file-project store during the migration window; the
-two layouts co-exist.
+NovelFlow Engine is an open-source, stateful engine for continuously evolving long-form novel generation. It combines planning, story state, continuity, modular agents, inspectable workflow artifacts, regeneration, and a browser-based workbench in one development stack.
 
-### Migrating a legacy project
-
-Real projects on disk still ship data under `.webnovel/`. Bring one up to
-the modular layout with:
-
-```bash
-python -m scripts.migrate_modular_story_state --project /path/to/project
-# or
-python -m scripts.migrate_modular_story_state --all --projects-file projects.txt
-# preview only:
-python -m scripts.migrate_modular_story_state --project /path/to/project --dry-run
-```
-
-The script:
-
-* Creates a timestamped backup under
-  `.story-system/.migrate-backup-<stamp>/` before writing.
-* Fills in the canonical directories (`director/`,
-  `continuity/snapshots/`, `canon/`, `workflow/`, `craft-modules/`,
-  `characters/`, `entities/`) and a stub `MASTER_SETTING.json` if the
-  project only has `.webnovel/`.
-* Seeds a `canon/registry.json` from the legacy `state.json#characters`
-  list (the `game_id` becomes an alias).
-* Builds a per-chapter `ChapterSnapshot` from the legacy
-  `chapter_summaries` so a regeneration has a base state.
-* Builds a per-chapter director stub from the outline so the workbench
-  has a row to render even before the next chapter is generated.
-* Stamps `.story-system/state.json` with `modular_state_migrated_at`
-  and `modular_migration_schema` for idempotency.
-* Prints counts for migrated chapters, seeded entities, created
-  snapshots, and director artifacts. Warnings (e.g. duplicate character
-  display names) are surfaced so the user can resolve them in the
-  workbench — the script never silently picks between two confirmed
-  identities.
-
-The script is idempotent: re-running it on a project that already has the
-canonical artifacts is a no-op for `canon/registry.json`,
-`director/`, and `continuity/snapshots/`, and a refresh of the
-`state.json` migration marker.
-
-### Regenerating an earlier chapter
-
-When a user rewrites chapter N, the candidate confirmation marks
-chapters N+1, N+2, … as stale so the workbench can warn before
-regenerating them:
-
-```
-.story-system/continuity/stale.json
-{"chapters": [3, 4, 5, ...], "trigger_chapter": 2}
-```
-
-The downstream chapter *files* stay on disk; only the marker changes.
-The next regeneration reads the snapshot at
-`.story-system/continuity/snapshots/(N-1).json` as the base state
-instead of inferring from later chapter prose.
-
-### Inspecting a failed stage
-
-If a chapter run aborts mid-pipeline, the workbench's per-stage row
-shows the failure and the orchestrator rolls the on-disk state back to
-the pre-run snapshot. To inspect the per-stage artifacts directly:
-
-```bash
-ls .story-system/workflow/<job_id>/
-cat .story-system/workflow/<job_id>/director.json   # status, error, output_summary
-cat .story-system/workflow/<job_id>/writer.json
-cat .story-system/workflow/<job_id>/fact-extractor.json
-```
-
-The `error` field on each record names the failure reason; the
-`output_summary` is a one-line digest so a terminal `cat` is enough to
-see what the stage produced before the abort.
-
-### Smoke generation
-
-To exercise the modular pipeline end-to-end without a live model
-endpoint, drive the orchestrator with stub director / writer runtimes:
-
-```bash
-python -m scripts.smoke_modular_pipeline --copy .codex-run/<project> .codex-run/_smoke_target
-```
-
-The script copies the project, runs
-`generate_next_chapter_via_modular_pipeline` against the copy, and
-prints the per-stage workflow artifacts the workbench would render.
-It exits non-zero if any stage's artifact is missing on disk.
-
-### Production pipeline smoke (Round 7 acceptance)
-
-`scripts/smoke_production_pipeline.py` drives the production
-modular pipeline end-to-end against a disposable copy of a real
-project and asserts the four acceptance criteria the Round 7
-plan pinned:
-
-```bash
-python -m scripts.smoke_production_pipeline \
-    data/exported-projects/p-gou-webgame-restored
-```
-
-The script:
-
-1. Copies the source project to a temporary disposable
-   directory so the source is never written to.
-2. Hashes the source directory before and after the run —
-   the smoke fails if the source hash changes.
-3. Drives Director → Writer → FocusedConsistency → FactExtractor
-   end-to-end.
-4. Asserts the four acceptance criteria:
-   * director reads only the current book's outline / previous
-     chapter / foreshadowing / character state;
-   * director artifact has ≥ 2 causal scene beats;
-   * writer prompt contains the 4200-5500 target range and
-     the 3800-6000 hard range;
-   * writer context preserves the protagonist's equipment,
-     level, inventory, and quests.
-5. Runs the candidate through `_save_candidate_from_bundle` so
-   the candidate's `quality_report.ok` is checked against the
-   same length gate the confirmation flow will run.
-
-The smoke is the one-line acceptance check for the Round 7
-plan; the rest of the plan's acceptance lives in
-`tests/story_core/test_modular_*` and the production test
-suite (`pytest -q`).
-
-### Rolling-outline fill smoke (Round 8 acceptance)
-
-The Round 8 plan added a rolling chapter-outline fill: when
-the user clicks "生成下一章" and the target chapter has no
-outline, the system must generate a 5-chapter window of
-outlines before the body generation starts. The fill lives
-in a separate file (`.story-system/outline-generation/rolling_outline.json`)
-so the legacy `ProjectOutline` schema is not disturbed.
-
-The same smoke script exposes a `--mode rolling-fill` that
-exercises the fill on a disposable copy of the project:
-
-```bash
-python -m scripts.smoke_production_pipeline --mode rolling-fill \
-    data/exported-projects/p-gou-webgame-restored
-```
-
-The smoke asserts the Round 8 plan's acceptance criteria:
-
-1. The first call produces `kind="filled"` with a 5-chapter
-   window starting at the target chapter (the smoke uses
-   `state.current_chapter + 1` so the test mirrors the
-   production code path).
-2. A second call is a no-op (`kind="present"`, empty
-   `chapter_numbers`) — repeated invocations don't churn
-   the disk.
-3. A chapter the smoke marks with `source="manual"` keeps
-   its user-edited title across a subsequent fill (the
-   "已存在或人工修改的细纲不会被覆盖" rule).
-4. The source project's hash is byte-identical before and
-   after the run — the smoke never writes to the source.
-
-The rolling-fill smoke is the one-line acceptance check
-for the Round 8 plan; the unit tests in
-`tests/story_core/test_outline_rolling*.py` and
-`tests/story_core/test_rolling_outline_*.py` cover the
-planner / store / validation layers in isolation.
-
-### Rolling-outline flow (Round 8)
-
-```
-  生成下一章 click
-        │
-        ▼
-  generate_next_chapter(target_chapter)
-        │
-        ▼
-  ensure_rolling_outline(target_chapter)
-        │
-        ├─ plan_rolling_window → gap = missing chapter numbers
-        │
-        ├─ generator(n)        → fill 5 chapters (window=5)
-        │   stub today; real LLM swap later
-        │
-        ├─ RollingOutlineStore.apply_rolling_batch
-        │   ├─ validate_rolling_batch (whole batch or none)
-        │   ├─ skip chapters already on disk (legacy + rolling)
-        │   ├─ backup previous rolling_outline.json
-        │   └─ atomic write + fill log
-        │
-        └─ return RollingOutlineStatus(kind=filled|present)
-        │
-        ▼
-  body generation reads target chapter's outline
-        │
-        ▼
-  on success: writing_packet + candidate
-```
-
-Idempotency rules:
-
-* The store reads BOTH `.webnovel/outline.json` (legacy)
-  and `.story-system/outline-generation/rolling_outline.json`
-  (rolling) so chapters in either file count as "filled".
-* Chapters with `source="manual"` are skipped on every
-  fill — a user-edited chapter is never overwritten.
-* A failed validation (bad payload, wrong chapter number,
-  out-of-volume) aborts the whole batch; the on-disk
-  outline is byte-identical to the pre-call state.
-
-The `regenerate_chapter` path does NOT call
-`ensure_rolling_outline` — old-chapter rewrites use only
-the chapter's existing outline and the chapters leading
-UP to it, so a re-write of chapter 30 never reads the
-rolling outline for chapter 50.
+For setup, architecture and contribution details, follow the links above.
