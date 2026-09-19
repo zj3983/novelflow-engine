@@ -1237,7 +1237,10 @@ def run_modular_pipeline(
         project_root=project_root,
         chapter_number=chapter_number,
     )
+    character_intents: list[dict[str, Any]] = []
+    character_started: float | None = None
     if story is not None:
+        character_started = _time.monotonic()
         report_generation_progress(
             {
                 "message": "角色正在形成各自的本章意图",
