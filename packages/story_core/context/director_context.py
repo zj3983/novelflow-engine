@@ -227,7 +227,8 @@ def build_director_context(
                 continue
             if not isinstance(card, dict):
                 continue
-            if card.get("lifecycle") != "active":
+            lifecycle = card.get("lifecycle") or card.get("lifecycle_state") or "active"
+            if lifecycle != "active":
                 continue
             character_cards.append(_concise_character_card(card))
             active_entity_names.append(str(card.get("name") or ""))
