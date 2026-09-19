@@ -108,6 +108,7 @@ from packages.story_core.context.writer_context import (
     build_writer_context,
 )
 from packages.story_core.continuity.delta import ContinuityDelta
+from packages.story_core.models import StoryState
 from packages.story_core.skill_packs import resolve_enabled_skill_module_ids
 
 
