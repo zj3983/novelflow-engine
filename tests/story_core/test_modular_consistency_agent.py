@@ -66,6 +66,82 @@ def test_consistency_prompt_includes_relevant_character_state() -> None:
     assert "新手短剑" in prompt
 
 
+def test_consistency_prompt_renders_canon_snapshot_with_provenance() -> None:
+    prompt = build_consistency_prompt(
+        body="林照说自己从未见过苏婉。",
+        director_artifact=_artifact(),
+        active_facts=[],
+        character_states=[],
+        canon_snapshot={
+            "schema_version": "canon-review-snapshot/v1",
+            "as_of_chapter": 2,
+            "state_source": "continuity_snapshot",
+            "historical_rewrite": True,
+            "bounded_state_available": True,
+            "facts": [
+                {
+                    "subject": "林照",
+                    "field": "位置",
+                    "value": "山腰",
+                    "source": "continuity_snapshot:0002",
+                    "chapter_number": 2,
+                    "evidence": "林照在山腰停下。",
+                }
+            ],
+            "characters": [
+                {
+                    "name": "林照",
+                    "knowledge_boundary": ["知道苏婉持有旧令牌"],
+                    "current_state": {"current": {"location": "山腰"}},
+                }
+            ],
+            "relationships": [
+                {
+                    "subject_name": "林照",
+                    "predicate": "trusts",
+                    "object_name": "苏婉",
+                    "polarity": "added",
+                    "chapter_number": 2,
+                    "source_sentence": "林照把旧令牌交给苏婉查看。",
+                }
+            ],
+            "timeline": [
+                {
+                    "marker": "入夜",
+                    "chapter_number": 2,
+                    "source_sentence": "山门钟响三声。",
+                }
+            ],
+        },
+    )
+
+    assert "Canon 审稿快照（截至第 2 章）" in prompt
+    assert "continuity_snapshot:0002" in prompt
+    assert "林照在山腰停下" in prompt
+    assert "知道苏婉持有旧令牌" in prompt
+    assert "林照把旧令牌交给苏婉查看" in prompt
+    assert "山门钟响三声" in prompt
+    assert "blocking=true 只允许" in prompt
+
+
+def test_consistency_prompt_warns_when_historical_state_is_unavailable() -> None:
+    prompt = build_consistency_prompt(
+        body="正文",
+        director_artifact=_artifact(),
+        active_facts=[],
+        canon_snapshot={
+            "schema_version": "canon-review-snapshot/v1",
+            "as_of_chapter": 2,
+            "state_source": "unavailable",
+            "historical_rewrite": True,
+            "bounded_state_available": False,
+        },
+    )
+
+    assert "没有可用的章前状态快照" in prompt
+    assert "不得用当前项目状态倒推历史事实" in prompt
+
+
 def test_consistency_runtime_failure_is_visible_but_advisory() -> None:
     class BrokenRuntime:
         def complete(self, request: Any) -> Any:
