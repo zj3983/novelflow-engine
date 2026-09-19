@@ -163,6 +163,29 @@ def _compact_character_direction(card: dict[str, Any]) -> list[str]:
         rules = [str(item).strip() for item in decision_rules if str(item).strip()][:2]
         if rules:
             details.append("决定依据：" + "；".join(rules))
+
+    drive = card.get("story_drive")
+    if isinstance(drive, dict):
+        immediate_goal = str(drive.get("immediate_goal") or "").strip()
+        if immediate_goal:
+            details.append(f"当前追求：{immediate_goal[:120]}")
+
+    portrait = card.get("personality_portrait")
+    if isinstance(portrait, dict):
+        behavior = portrait.get("behavior") if isinstance(portrait.get("behavior"), dict) else {}
+        voice = portrait.get("voice") if isinstance(portrait.get("voice"), dict) else {}
+        pressure = str(behavior.get("pressure_mode") or "").strip()
+        conflict = str(behavior.get("conflict_response") or "").strip()
+        sentence_habit = str(voice.get("sentence_habit") or "").strip()
+        anger_style = str(voice.get("anger_style") or "").strip()
+        if pressure:
+            details.append(f"受压反应：{pressure[:100]}")
+        if conflict:
+            details.append(f"冲突反应：{conflict[:100]}")
+        if sentence_habit:
+            details.append(f"句式习惯：{sentence_habit[:100]}")
+        if anger_style:
+            details.append(f"生气时：{anger_style[:100]}")
     return details
 
 
