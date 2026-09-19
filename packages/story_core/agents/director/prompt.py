@@ -210,6 +210,9 @@ def build_director_prompt(
     characters = _render_character_cards(context)
     if characters:
         sections.append(characters)
+    character_intents = _render_character_intents(context)
+    if character_intents:
+        sections.append(character_intents)
     if context.rewrite_guidance.strip():
         sections.append(
             "## 本次写作指导（必须落实到场景计划）\n"
