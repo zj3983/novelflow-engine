@@ -3353,6 +3353,7 @@ class StoryOrchestrator:
         return run_modular_pipeline(
             project_root=project_root,
             chapter_number=chapter_number,
+            story=story,
             director_runtime=director_runtime,
             writer_runtime=writer_runtime,
             fact_extractor=fact_extractor,
