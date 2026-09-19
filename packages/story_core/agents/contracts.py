@@ -178,6 +178,7 @@ __all__ = [
     "DirectorArtifact",
     "EntityRequirement",
     "SceneBeat",
+    "SceneCharacterIntent",
     "WriterRequest",
     "WriterResult",
 ]
