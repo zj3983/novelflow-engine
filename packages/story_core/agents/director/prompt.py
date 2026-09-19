@@ -248,6 +248,7 @@ def build_director_prompt(
             "3. 顺序的场景节拍（scene_beats），每条至少包含 order/location/action/result，可按需要补 purpose/conflict/participants/character_intents/emotional_turn/relationship_shift/ending_pressure",
             "4. 因果关系（scene_beats 之间的 result 链）",
             "5. 让人物欲望发生碰撞：只为真正影响本场冲突的人填写 character_intents，不要求所有出场人物都有台词或动作",
+            "   character_intents 每项字段：name/want/target/emotion/move/speech_strategy/withhold/reaction/dramatic_function；action 仍保留为整场可公开执行动作的兼容摘要",
             "6. 信息边界：character_intents 中的 withhold、私人目标和秘密计划属于作者侧控制信息，不代表其他人物知道",
             "7. 收尾状态（ending_state）",
             "8. 章末钩子（hook）",
