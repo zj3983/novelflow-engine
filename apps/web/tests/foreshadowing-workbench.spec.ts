@@ -487,6 +487,8 @@ test("角色卡支持按分类状态和叙事功能筛选，并保存可编辑�
       hidden_matters: ["他曾亲自修改过第一版审计规则"],
     },
   });
+  await stageCard.getByRole("button", { name: "查看详情" }).click();
+  await longTermCard.getByRole("button", { name: "查看详情" }).click();
   await expect(stageCard.getByText("权限与当前压力", { exact: true })).toHaveCount(1);
   await expect(longTermCard.getByText("权限与幕后目标", { exact: true })).toHaveCount(1);
 });
