@@ -231,6 +231,8 @@ def test_director_renders_target_contract_compact_neighbors_and_previous_tail(
                     "title": "下一章",
                     "summary": "进入城中",
                     "core_conflict": "城门盘查",
+                    "hook": "下一章新 legacy hook",
+                    "ending_hook": "下一章旧 legacy ending hook",
                     "chapter_sop": {"opening_carry": "接住上一章通行令血字"},
                     "payoff_contract": {"need": "后续完整合同不应展开"},
                 },
@@ -255,6 +257,8 @@ def test_director_renders_target_contract_compact_neighbors_and_previous_tail(
     assert "章末钩子：上章 SOP 正式钩子" in prompt
     assert "上章顶层旧格式钩子" not in prompt
     assert "承接：接住上一章通行令血字" in prompt
+    assert "章末钩子：下一章新 legacy hook" in prompt
+    assert "下一章旧 legacy ending hook" not in prompt
     assert "上章实际收尾\n林照按住左肩喘息。" in prompt
     assert "后续完整合同不应展开" not in prompt
 
