@@ -228,7 +228,13 @@ def adapt_modular_bundle_to_legacy(
         updated_story=working_story,
         chapter_summary=chapter_summary,
         quality_report=quality_report,
-        pipeline_stages=["director", "canon_preflight", "writer", "fact_extractor"],
+        pipeline_stages=[
+            "character_intent",
+            "director",
+            "canon_preflight",
+            "writer",
+            "fact_extractor",
+        ],
         context_snapshot_id=f"modular-pipeline:chapter-{chapter_number}",
         continuity_delta=continuity_delta,
     )
