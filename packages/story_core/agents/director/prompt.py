@@ -259,6 +259,9 @@ def build_director_prompt(
             "",
             title_instruction,
             output_instruction,
+            "Character proposals are pressures, not commands. A character may stay silent, fail, misread, withdraw, or be deferred to another chapter.",
+            "Do not force a love interest to be jealous, an antagonist to attack, or a comic character to joke unless the current trigger makes that behaviour natural.",
+            "Do not create round-robin group dialogue. Prefer collisions where two wants cannot both be satisfied.",
         ]
     )
     return "\n\n".join(section for section in sections if section)
