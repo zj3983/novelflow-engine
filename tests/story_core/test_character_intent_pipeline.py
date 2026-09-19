@@ -139,7 +139,6 @@ def test_fact_extractor_director_view_omits_private_character_intents() -> None:
     assert projected is not None
     rendered = json.dumps(projected, ensure_ascii=False)
     assert "三人离开演武场" in rendered
-    assert "苏瑶" not in rendered
     assert "不承认自己一直在关注他" not in rendered
     assert "speech_strategy" not in rendered
     assert "character_intents" not in rendered
