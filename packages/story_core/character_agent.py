@@ -193,7 +193,7 @@ class OpenAICharacterProposalProvider(BaseOpenAIProvider):
             model=story.agent_settings.character_model or story.agent_settings.global_model or default_fast_model_name(),
             operation="character",
             temperature=float(story.agent_settings.temperature),
-            max_tokens=700,
+            max_tokens=min(2200, 500 + 280 * len(active_characters)),
             json_mode=True,
         )
         response = self.complete(request)
