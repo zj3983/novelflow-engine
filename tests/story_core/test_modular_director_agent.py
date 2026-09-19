@@ -202,6 +202,7 @@ def test_director_renders_target_contract_compact_neighbors_and_previous_tail(
                     "title": "上章",
                     "summary": "旧债未清",
                     "state_delta": "欠下人情",
+                    "chapter_sop": {"opening_carry": "接住上一章的债"},
                     "ending_hook": "有人在门外等候",
                 },
                 {
@@ -226,6 +227,7 @@ def test_director_renders_target_contract_compact_neighbors_and_previous_tail(
                     "title": "下一章",
                     "summary": "进入城中",
                     "core_conflict": "城门盘查",
+                    "chapter_sop": {"opening_carry": "接住上一章通行令血字"},
                     "payoff_contract": {"need": "后续完整合同不应展开"},
                 },
             ]
@@ -243,6 +245,8 @@ def test_director_renders_target_contract_compact_neighbors_and_previous_tail(
     assert "## 本章上游执行合同" in prompt
     assert "本章收益：拿到通行令" in prompt
     assert "禁止提前写：不要提前揭示幕后人" in prompt
+    assert "承接：接住上一章的债" in prompt
+    assert "承接：接住上一章通行令血字" in prompt
     assert "上章实际收尾\n林照按住左肩喘息。" in prompt
     assert "后续完整合同不应展开" not in prompt
 

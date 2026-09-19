@@ -159,14 +159,19 @@ def _render_nearby_outline(context: DirectorContext) -> str:
         if number == context.chapter_number:
             target_lines.append(line)
         else:
-            compact = []
-            for key, label in (
-                ("state_delta", "状态变化"),
-                ("opening_carry", "承接"),
-                ("ending_hook", "章末钩子"),
-                ("hook", "章末钩子"),
+            compact: list[str] = []
+            state_delta = _outline_text(entry.get("state_delta"))
+            opening_carry = _outline_text(entry.get("opening_carry"))
+            chapter_sop = entry.get("chapter_sop")
+            if isinstance(chapter_sop, dict):
+                opening_carry = _outline_text(chapter_sop.get("opening_carry")) or opening_carry
+            ending_hook = _outline_text(entry.get("ending_hook"))
+            hook = _outline_text(entry.get("hook"))
+            for label, value in (
+                ("状态变化", state_delta),
+                ("承接", opening_carry),
+                ("章末钩子", ending_hook or hook),
             ):
-                value = _outline_text(entry.get(key))
                 if value:
                     compact.append(f"{label}：{value}")
             if compact:
