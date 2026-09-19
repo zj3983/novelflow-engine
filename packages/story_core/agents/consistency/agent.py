@@ -69,10 +69,7 @@ def _extract_payload(response: Any) -> dict[str, Any]:
 
 
 def _current_character_state(card: dict[str, Any]) -> dict[str, Any]:
-    """Project only the *current* state of a character for the
-    consistency prompt. Mirrors ``writer/prompt.py`` so the model
-    sees the same canonical snapshot the writer did.
-    """
+    """Project only the current state of a character for the prompt."""
     state: dict[str, Any] = {}
     for namespace in ("current_state", "real_state", "game_state"):
         value = card.get(namespace)
@@ -83,12 +80,123 @@ def _current_character_state(card: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
+def _json_inline(value: Any) -> str:
+    import json
+
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+def _evidence_label(item: dict[str, Any], *, fallback: str) -> str:
+    source = str(item.get("source") or fallback).strip() or fallback
+    chapter = item.get("chapter_number")
+    evidence = str(item.get("evidence") or item.get("source_sentence") or "").strip()
+    parts = [source]
+    if chapter is not None:
+        parts.append(f"第{chapter}章")
+    if evidence:
+        parts.append(f"证据：{evidence}")
+    return " | ".join(parts)
+
+
+def _render_canon_snapshot(snapshot: dict[str, Any] | None) -> str:
+    if not isinstance(snapshot, dict) or not snapshot:
+        return ""
+
+    as_of = snapshot.get("as_of_chapter", "?")
+    lines = [
+        f"## Canon 审稿快照（截至第 {as_of} 章）",
+        (
+            f"- state_source={snapshot.get('state_source', 'unknown')}；"
+            f"historical_rewrite={bool(snapshot.get('historical_rewrite'))}；"
+            f"bounded_state_available={bool(snapshot.get('bounded_state_available'))}"
+        ),
+    ]
+    if snapshot.get("historical_rewrite") and not snapshot.get("bounded_state_available"):
+        lines.append(
+            "- 警告：目标是历史章节，但没有可用的章前状态快照。"
+            "不得用当前项目状态倒推历史事实；缺证据的项目一律视为未核验。"
+        )
+
+    facts = snapshot.get("facts") or []
+    if facts:
+        lines.append("### 已确认事实")
+        for fact in facts:
+            if not isinstance(fact, dict):
+                continue
+            subject = str(fact.get("subject") or "全局")
+            field = str(fact.get("field") or "fact")
+            label = _evidence_label(fact, fallback="canon.fact")
+            lines.append(
+                f"- [{label}] {subject} · {field}：{_json_inline(fact.get('value'))}"
+            )
+
+    rules = snapshot.get("world_rules") or []
+    if rules:
+        lines.append("### 世界规则")
+        for rule in rules:
+            lines.append(f"- [canon.world_rule] {rule}")
+
+    characters = snapshot.get("characters") or []
+    if characters:
+        lines.append("### 人物章前状态")
+        for card in characters:
+            if not isinstance(card, dict):
+                continue
+            lines.append(
+                f"- [canon.character] {card.get('name', '未命名')}：{_json_inline(card)}"
+            )
+
+    entities = snapshot.get("entities") or []
+    if entities:
+        lines.append("### Canon 实体")
+        for entity in entities:
+            if not isinstance(entity, dict):
+                continue
+            lines.append(
+                f"- [canon.entity:{entity.get('entity_id', '')}] "
+                f"{entity.get('kind', '')}/{entity.get('name', '')}："
+                f"{_json_inline(entity.get('attributes') or {})}"
+            )
+
+    relationships = snapshot.get("relationships") or []
+    if relationships:
+        lines.append("### 已确认关系")
+        for edge in relationships:
+            if not isinstance(edge, dict):
+                continue
+            label = _evidence_label(edge, fallback="canon.relationship")
+            lines.append(
+                f"- [{label}] {edge.get('subject_name', edge.get('subject_id', '?'))} "
+                f"--{edge.get('predicate', '?')}/{edge.get('polarity', '?')}--> "
+                f"{edge.get('object_name', edge.get('object_id', '?'))}"
+            )
+
+    timeline = snapshot.get("timeline") or []
+    if timeline:
+        lines.append("### 已确认时间线")
+        for marker in timeline:
+            if not isinstance(marker, dict):
+                continue
+            label = _evidence_label(marker, fallback="canon.timeline")
+            lines.append(f"- [{label}] {marker.get('marker', '')}")
+
+    foreshadowing = snapshot.get("foreshadowing") or []
+    if foreshadowing:
+        lines.append("### 伏笔状态")
+        for item in foreshadowing:
+            if isinstance(item, dict):
+                lines.append(f"- {_json_inline(item)}")
+
+    return "\n".join(lines)
+
+
 def build_consistency_prompt(
     body: str,
     director_artifact: DirectorArtifact,
     active_facts: list[dict[str, Any]],
     *,
     character_states: list[dict[str, Any]] | None = None,
+    canon_snapshot: dict[str, Any] | None = None,
 ) -> str:
     """Render the focused consistency prompt.
 
@@ -121,11 +229,14 @@ def build_consistency_prompt(
     character_state_section = (
         f"## 角色当前状态\n" + "\n".join(state_lines) if state_lines else ""
     )
+    canon_snapshot_section = _render_canon_snapshot(canon_snapshot)
     return (
         "你是小说事实一致性 agent。\n"
         "只判断正文是否与既定事实矛盾。导演计划用于理解本章意图，不是已经发生的事实。\n"
         "正文调整导演动作、过程、地点细节或收尾镜头，不算事实冲突；确需指出时使用 "
         "code=plan.deviation、blocking=false、source=director_plan。不要评价文笔、风格、对话自然度。\n"
+        "blocking=true 只允许用于与 Canon 审稿快照或其他明确既定事实的直接矛盾。"
+        "source 必须指向对应事实来源；缺少历史快照时不得用当前状态猜测旧章事实。\n"
         "如果出现矛盾,返回 code / message / blocking / source 四个字段的 JSON 列表。\n"
         "如果没有矛盾,返回空列表 []。\n\n"
         f"## 章节目标\n{director_artifact.chapter_goal}\n\n"
@@ -133,6 +244,7 @@ def build_consistency_prompt(
         f"## 收尾状态\n{director_artifact.ending_state}\n\n"
         f"## 既定事实\n{facts or '（无）'}\n\n"
         + (f"{character_state_section}\n\n" if character_state_section else "")
+        + (f"{canon_snapshot_section}\n\n" if canon_snapshot_section else "")
         + f"## 正文\n{body}\n\n"
         "只检查：人物身份、位置、职业、等级、属性、装备、库存、任务、已知信息和已确认时间线。"
         "不要评价文笔、节奏、对话、修辞或爽点。"
@@ -212,12 +324,14 @@ class FocusedConsistencyAgent:
         director_artifact: DirectorArtifact,
         active_facts: list[dict[str, Any]],
         character_states: list[dict[str, Any]] | None = None,
+        canon_snapshot: dict[str, Any] | None = None,
     ) -> list[ConsistencyFinding]:
         prompt = build_consistency_prompt(
             body,
             director_artifact,
             active_facts,
             character_states=character_states,
+            canon_snapshot=canon_snapshot,
         )
         request = _ModelRequest(
             prompt=prompt,
@@ -226,6 +340,10 @@ class FocusedConsistencyAgent:
                 "chapter_number": director_artifact.chapter_number,
                 "agent": "consistency",
                 "schema_version": director_artifact.schema_version,
+                "canon_snapshot_schema": str(
+                    (canon_snapshot or {}).get("schema_version") or ""
+                ),
+                "canon_as_of_chapter": (canon_snapshot or {}).get("as_of_chapter"),
             },
         )
         # Runtime/model availability is not a fact about the manuscript. Surface
@@ -292,6 +410,7 @@ def focused_consistency_review(
     active_facts: list[dict[str, Any]],
     runtime: ConsistencyRuntime,
     character_states: list[dict[str, Any]] | None = None,
+    canon_snapshot: dict[str, Any] | None = None,
 ) -> list[ConsistencyFinding]:
     """Convenience entry point for the orchestrator's confirmation path."""
     agent = FocusedConsistencyAgent(runtime=runtime)
@@ -300,6 +419,7 @@ def focused_consistency_review(
         director_artifact=director_artifact,
         active_facts=active_facts,
         character_states=character_states,
+        canon_snapshot=canon_snapshot,
     )
 
 
