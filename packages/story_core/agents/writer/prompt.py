@@ -30,9 +30,39 @@ def _render_director_artifact(request: WriterRequest) -> str:
         "",
         "## 开场状态",
         artifact.opening_state,
-        "",
-        "## 场景节拍",
     ]
+    contract = artifact.outline_contract
+    if contract is not None:
+        lines.extend(
+            [
+                "",
+                "## 上游章节执行合同（必须落实，不得擅自改写）",
+                f"开场承接：{contract.opening_carry or '（未提供）'}",
+                f"本章收益：{contract.gain or '（未提供）'}",
+                f"本章代价：{contract.cost or '（未提供）'}",
+                f"目标状态变化：{contract.state_delta or '（未提供）'}",
+                f"中段反馈：{contract.mid_feedback or '（未提供）'}",
+                f"计划转折：{contract.planned_turn or '（未提供）'}",
+                f"计划章末钩子：{contract.planned_hook or '（未提供）'}",
+            ]
+        )
+        if contract.payoff_contract:
+            lines.append(
+                "收益合同："
+                + "；".join(
+                    f"{key}={value}"
+                    for key, value in contract.payoff_contract.items()
+                )
+            )
+        if contract.must_not_write:
+            lines.append("禁止提前写：" + "；".join(contract.must_not_write))
+        lines.extend(
+            [
+                "合同规则：必须兑现收益与代价，落地目标状态变化；不得提前写入禁止事项；"
+                "章末必须让计划钩子在正文末段出现。",
+            ]
+        )
+    lines.extend(["", "## 场景节拍"])
     for beat in artifact.scene_beats:
         lines.append(
             f"- 顺序{beat.order} · 地点：{beat.location} · 动作：{beat.action} · 结果：{beat.result}"

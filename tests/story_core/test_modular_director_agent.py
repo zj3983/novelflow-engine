@@ -183,6 +183,70 @@ def test_director_preserves_planned_title_over_runtime_title(
     assert "满级魔龙" not in runtime.requests[0].prompt
 
 
+def test_director_renders_target_contract_compact_neighbors_and_previous_tail(
+    tmp_path: Path,
+) -> None:
+    runtime = _RecordingRuntime(
+        responses=[
+            _executable_director_payload(
+                hook="runtime 不得覆盖计划钩子",
+            )
+        ]
+    )
+    agent = DirectorAgent(runtime=runtime, project_root=tmp_path)
+    context = _context_with_outline(chapter_number=7).model_copy(
+        update={
+            "nearby_outline": [
+                {
+                    "number": 6,
+                    "title": "上章",
+                    "summary": "旧债未清",
+                    "state_delta": "欠下人情",
+                    "ending_hook": "有人在门外等候",
+                },
+                {
+                    "number": 7,
+                    "title": "目标章",
+                    "summary": "逼退来敌",
+                    "core_conflict": "妖林封路",
+                    "gain": "拿到通行令",
+                    "cost": "暴露行踪",
+                    "state_delta": "获得通行令",
+                    "hook": "通行令背面浮出血字",
+                    "chapter_sop": {
+                        "opening_carry": "接住上章门外脚步",
+                        "mid_feedback": "守门人认出旧印",
+                        "turn": "通行令并非免费",
+                    },
+                    "payoff_contract": {"need": "拿到通行令"},
+                    "must_not_write": ["不要提前揭示幕后人"],
+                },
+                {
+                    "number": 8,
+                    "title": "下一章",
+                    "summary": "进入城中",
+                    "core_conflict": "城门盘查",
+                    "payoff_contract": {"need": "后续完整合同不应展开"},
+                },
+            ]
+        }
+    )
+
+    artifact = agent.plan(context)
+
+    assert artifact.outline_contract is not None
+    assert artifact.outline_contract.gain == "拿到通行令"
+    assert artifact.outline_contract.cost == "暴露行踪"
+    assert artifact.outline_contract.planned_hook == "通行令背面浮出血字"
+    assert artifact.hook == "通行令背面浮出血字"
+    prompt = runtime.requests[0].prompt
+    assert "## 本章上游执行合同" in prompt
+    assert "本章收益：拿到通行令" in prompt
+    assert "禁止提前写：不要提前揭示幕后人" in prompt
+    assert "上章实际收尾\n林照按住左肩喘息。" in prompt
+    assert "后续完整合同不应展开" not in prompt
+
+
 def test_director_preserves_planned_title_whitespace_exactly(tmp_path: Path) -> None:
     planned_title = " \t管你是龙是虫，给我退回去！ \n"
     runtime = _RecordingRuntime(

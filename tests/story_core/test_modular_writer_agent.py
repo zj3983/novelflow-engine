@@ -28,6 +28,7 @@ import pytest
 from packages.story_core.agents.contracts import (
     DirectorArtifact,
     EntityRequirement,
+    OutlineExecutionContract,
     SceneBeat,
     WriterRequest,
     WriterResult,
@@ -485,6 +486,39 @@ def test_writer_agent_prompt_contains_director_artifact_and_context() -> None:
     assert "时间倒流不可逆" in prompt
     # Selected craft module content must make it into the prompt.
     assert "对话先回应" in prompt
+
+
+def test_writer_prompt_renders_outline_execution_contract() -> None:
+    runtime = _RecordingRuntime(responses=["正文"])
+    artifact = _director_artifact().model_copy(
+        update={
+            "outline_contract": OutlineExecutionContract(
+                chapter_number=7,
+                gain="拿到通行令",
+                cost="暴露行踪",
+                state_delta="获得通行令",
+                planned_hook="通行令背面浮出血字",
+                opening_carry="接住上章门外脚步",
+                mid_feedback="守门人认出旧印",
+                planned_turn="通行令并非免费",
+                payoff_contract={"need": "拿到通行令"},
+                must_not_write=["不要提前揭示幕后人"],
+            )
+        }
+    )
+
+    WriterAgent(runtime=runtime).run(
+        _writer_request(director_artifact=artifact)
+    )
+
+    prompt = runtime.requests[0].prompt
+    assert "## 上游章节执行合同" in prompt
+    assert "开场承接：接住上章门外脚步" in prompt
+    assert "本章收益：拿到通行令" in prompt
+    assert "本章代价：暴露行踪" in prompt
+    assert "目标状态变化：获得通行令" in prompt
+    assert "计划章末钩子：通行令背面浮出血字" in prompt
+    assert "禁止提前写：不要提前揭示幕后人" in prompt
 
 
 def test_writer_agent_runtime_receives_final_plan_without_title_strategy() -> None:

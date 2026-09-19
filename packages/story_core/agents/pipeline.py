@@ -88,6 +88,7 @@ from packages.story_core.chapter_length_policy import (
     acceptance_chars,
     target_chars,
 )
+from packages.story_core.chapter_hook import parse_chapter_end_hook, review_chapter_hook
 from packages.story_core.generation_progress import report_generation_progress
 from packages.story_core.context.director_context import (
     DirectorContext,
@@ -606,6 +607,25 @@ def run_writer(
                 blocking=False,
             )
         )
+    outline_contract = director_artifact.outline_contract
+    if outline_contract is not None and outline_contract.planned_hook:
+        hook_review = review_chapter_hook(
+            result.body,
+            parse_chapter_end_hook(director_artifact.hook),
+            None,
+        )
+        if hook_review.get("scores", {}).get("hook_landed") == 5:
+            consistency_findings.append(
+                ConsistencyFinding(
+                    code="chapter.hook_not_landed",
+                    message=(
+                        "正文末段没有落地上游章节合同要求的章末钩子："
+                        f"{outline_contract.planned_hook}"
+                    ),
+                    source="hook",
+                    blocking=True,
+                )
+            )
     body_chars = len("".join(result.body.split()))
     if body_chars < int(
         request.acceptance_chars.get("min", CHAPTER_HARD_MIN_CHARS)

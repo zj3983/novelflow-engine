@@ -329,6 +329,10 @@ def test_rolling_validation_and_outline_adaptation_preserve_chapter_contracts() 
     assert validated["chapter_sop"] == CHAPTER_CONTRACT["chapter_sop"]
     assert adapted["payoff_contract"] == CHAPTER_CONTRACT["payoff_contract"]
     assert adapted["chapter_sop"] == CHAPTER_CONTRACT["chapter_sop"]
+    assert adapted["gain"] == "升级到 Lv.3"
+    assert adapted["cost"] == "灰狼毒腺 8 份"
+    assert adapted["state_delta"] == "level=Lv.3"
+    assert adapted["ending_hook"] == "流霜打断狼王冲锋"
 
 
 def test_rolling_validation_remains_compatible_without_chapter_sop() -> None:

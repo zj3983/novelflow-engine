@@ -7,7 +7,11 @@ never reaches into the agent's internals.
 """
 
 from .agent import DirectorAgent
-from .prompt import build_director_prompt, parse_director_response
+from .prompt import (
+    build_director_prompt,
+    build_outline_execution_contract,
+    parse_director_response,
+)
 from .runtime import DirectorRuntime, GatewayDirectorRuntime
 
 __all__ = [
@@ -15,5 +19,6 @@ __all__ = [
     "DirectorRuntime",
     "GatewayDirectorRuntime",
     "build_director_prompt",
+    "build_outline_execution_contract",
     "parse_director_response",
 ]
