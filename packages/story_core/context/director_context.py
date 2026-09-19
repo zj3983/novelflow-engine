@@ -129,6 +129,7 @@ class DirectorContext(BaseModel):
     continuity_ledger: list[dict[str, Any]] = Field(default_factory=list)
     foreshadowing: list[dict[str, Any]] = Field(default_factory=list)
     character_cards: list[dict[str, Any]] = Field(default_factory=list)
+    character_intents: list[dict[str, Any]] = Field(default_factory=list)
     inventory: list[dict[str, Any]] = Field(default_factory=list)
     active_entity_names: list[str] = Field(default_factory=list)
     rewrite_guidance: str = ""
