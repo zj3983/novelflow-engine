@@ -152,14 +152,16 @@ def _render_character_cards(context: DirectorContext) -> str:
             + f"）· 位置：{location or '?'} · 状态：{state or '?'}"
         )
         lines.append(header)
-        for label, key in (
-            ("驱动力", "story_drive"),
-            ("人格反应", "personality"),
-            ("表现方式", "performance"),
-            ("关系备注", "relationship_notes"),
-            ("关系状态", "relationships"),
+        for label, key, fallback_key in (
+            ("驱动力", "story_drive", ""),
+            ("人格反应", "personality", "personality_portrait"),
+            ("表现方式", "performance", "performance_profile"),
+            ("关系备注", "relationship_notes", ""),
+            ("关系状态", "relationships", ""),
         ):
             value = card.get(key)
+            if value in (None, "", [], {}) and fallback_key:
+                value = card.get(fallback_key)
             if value not in (None, "", [], {}):
                 lines.append(
                     f"  {label}：{json.dumps(value, ensure_ascii=False, separators=(',', ':'))}"
