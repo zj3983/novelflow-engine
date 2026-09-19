@@ -114,18 +114,20 @@ def record_character_intent_stage(
     started_monotonic = (
         started_monotonic if started_monotonic is not None else time.monotonic()
     )
-    reads: list[dict[str, Any]] = []
-    if context is not None:
-        for card in context.character_cards or []:
-            if isinstance(card, dict) and str(card.get("name") or "").strip():
-                reads.append(
-                    {"kind": "character", "id": str(card.get("name") or "").strip()}
-                )
     selected = [
         str(item.get("name") or "").strip()
         for item in intents
         if isinstance(item, dict) and str(item.get("name") or "").strip()
     ]
+    selected_set = set(selected)
+    reads: list[dict[str, Any]] = []
+    if context is not None:
+        for card in context.character_cards or []:
+            if not isinstance(card, dict):
+                continue
+            name = str(card.get("name") or "").strip()
+            if name and name in selected_set:
+                reads.append({"kind": "character", "id": name})
     preview = "; ".join(
         f"{str(item.get('name') or '').strip()}:{_truncate(str(item.get('goal') or ''), limit=32)}"
         for item in intents[:4]
