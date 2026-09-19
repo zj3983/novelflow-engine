@@ -107,6 +107,9 @@ def _bounded_state(
     if as_of_chapter <= 0:
         return {}, "chapter_start", 0
 
+    if as_of_chapter in set(store.get_stale_chapters()):
+        return {}, "stale", as_of_chapter
+
     snapshot = store.read_snapshot(as_of_chapter)
     if snapshot is not None and isinstance(snapshot.state_after, dict):
         state = deepcopy(snapshot.state_after)
@@ -361,13 +364,16 @@ def _bounded_relationships(
     registry: Any,
     *,
     as_of_chapter: int,
-) -> tuple[list[dict[str, Any]], int, set[str]]:
+    stale_chapters: set[int],
+    resolve_names: bool,
+) -> tuple[list[dict[str, Any]], int, int, set[str]]:
     try:
         raw = list(registry.relationships())
     except Exception:
         raw = []
     result: list[dict[str, Any]] = []
     filtered_future = 0
+    filtered_stale = 0
     safe_ids: set[str] = set()
     for edge in raw:
         if not isinstance(edge, dict):
@@ -376,6 +382,9 @@ def _bounded_relationships(
         if chapter is not None and chapter > as_of_chapter:
             filtered_future += 1
             continue
+        if chapter is not None and chapter in stale_chapters:
+            filtered_stale += 1
+            continue
         subject_id = str(edge.get("subject_id") or "")
         object_id = str(edge.get("object_id") or "")
         if subject_id:
@@ -383,23 +392,33 @@ def _bounded_relationships(
         if object_id:
             safe_ids.add(object_id)
         item = deepcopy(edge)
-        item["subject_name"] = _resolve_entity_name(registry, subject_id)
-        item["object_name"] = _resolve_entity_name(registry, object_id)
+        item["subject_name"] = (
+            _resolve_entity_name(registry, subject_id)
+            if resolve_names
+            else subject_id
+        )
+        item["object_name"] = (
+            _resolve_entity_name(registry, object_id)
+            if resolve_names
+            else object_id
+        )
         result.append(item)
-    return result, filtered_future, safe_ids
+    return result, filtered_future, filtered_stale, safe_ids
 
 
 def _bounded_timeline(
     registry: Any,
     *,
     as_of_chapter: int,
-) -> tuple[list[dict[str, Any]], int]:
+    stale_chapters: set[int],
+) -> tuple[list[dict[str, Any]], int, int]:
     try:
         raw = list(registry.timeline())
     except Exception:
         raw = []
     result: list[dict[str, Any]] = []
     filtered_future = 0
+    filtered_stale = 0
     for marker in raw:
         if not isinstance(marker, dict):
             continue
@@ -407,14 +426,18 @@ def _bounded_timeline(
         if chapter is not None and chapter > as_of_chapter:
             filtered_future += 1
             continue
+        if chapter is not None and chapter in stale_chapters:
+            filtered_stale += 1
+            continue
         result.append(deepcopy(marker))
-    return result, filtered_future
+    return result, filtered_future, filtered_stale
 
 
 def _bounded_registry_foreshadowing(
     registry: Any,
     *,
     as_of_chapter: int,
+    stale_chapters: set[int],
 ) -> list[dict[str, Any]]:
     try:
         raw = list(registry.foreshadowing())
@@ -426,6 +449,8 @@ def _bounded_registry_foreshadowing(
             continue
         chapter = _int_chapter(item.get("chapter_number"))
         if chapter is not None and chapter > as_of_chapter:
+            continue
+        if chapter is not None and chapter in stale_chapters:
             continue
         result.append(deepcopy(item))
     return result
@@ -454,6 +479,7 @@ def build_canon_review_snapshot(
     as_of = max(target - 1, 0)
     store = ContinuityStore(root)
     snapshots = store.list_snapshots()
+    stale_chapters = set(store.get_stale_chapters())
     latest_snapshot = max((item.chapter_number for item in snapshots), default=0)
     current_chapter = max(latest_snapshot, _project_current_chapter(root))
     historical = current_chapter > as_of
@@ -464,6 +490,7 @@ def build_canon_review_snapshot(
         store=store,
     )
     bounded_available = bool(state) or as_of == 0
+    unsafe_live_state = historical or state_source == "stale"
 
     source_ref = (
         f"{state_source}:{source_chapter:04d}"
@@ -485,7 +512,7 @@ def build_canon_review_snapshot(
         world_facts = _state_world_facts(
             state, as_of_chapter=as_of, source_ref=source_ref
         )
-    elif historical:
+    elif unsafe_live_state:
         characters = []
         facts = []
         world_facts = []
@@ -502,7 +529,7 @@ def build_canon_review_snapshot(
         )
         world_facts = []
 
-    if not historical:
+    if not unsafe_live_state:
         facts = _dedupe_dicts(
             [
                 *facts,
@@ -514,29 +541,40 @@ def build_canon_review_snapshot(
             ]
         )
 
-    relationships, filtered_relationships, safe_entity_ids = _bounded_relationships(
-        registry, as_of_chapter=as_of
+    (
+        relationships,
+        filtered_relationships,
+        filtered_stale_relationships,
+        _safe_entity_ids,
+    ) = _bounded_relationships(
+        registry,
+        as_of_chapter=as_of,
+        stale_chapters=stale_chapters,
+        resolve_names=not unsafe_live_state,
     )
-    timeline, filtered_timeline = _bounded_timeline(
-        registry, as_of_chapter=as_of
+    timeline, filtered_timeline, filtered_stale_timeline = _bounded_timeline(
+        registry,
+        as_of_chapter=as_of,
+        stale_chapters=stale_chapters,
     )
 
     entities: list[dict[str, Any]] = []
-    try:
-        registry_entities = list(registry.list_all())
-    except Exception:
-        registry_entities = []
-    for entity in registry_entities:
-        projected = _entity_projection(
-            entity,
-            historical=historical,
-            as_of_chapter=as_of,
-            safe_historical_ids=safe_entity_ids,
-        )
-        if projected is not None:
-            entities.append(projected)
+    if not unsafe_live_state:
+        try:
+            registry_entities = list(registry.list_all())
+        except Exception:
+            registry_entities = []
+        for entity in registry_entities:
+            projected = _entity_projection(
+                entity,
+                historical=False,
+                as_of_chapter=as_of,
+                safe_historical_ids=set(),
+            )
+            if projected is not None:
+                entities.append(projected)
 
-    if not historical:
+    if not unsafe_live_state:
         known = {
             (str(item.get("kind") or ""), str(item.get("name") or ""))
             for item in entities
@@ -577,7 +615,7 @@ def build_canon_review_snapshot(
         for item in world_rules
         if str(item or "").strip()
     ]
-    if historical:
+    if unsafe_live_state:
         bounded_world_rules = []
 
     state_foreshadowing = state.get("foreshadowing") if isinstance(state, dict) else None
@@ -586,9 +624,11 @@ def build_canon_review_snapshot(
     else:
         foreshadowing = (
             []
-            if historical
+            if unsafe_live_state
             else _bounded_registry_foreshadowing(
-                registry, as_of_chapter=as_of
+                registry,
+                as_of_chapter=as_of,
+                stale_chapters=stale_chapters,
             )
         )
 
@@ -599,6 +639,7 @@ def build_canon_review_snapshot(
         "state_source": state_source,
         "state_source_chapter": source_chapter,
         "historical_rewrite": historical,
+        "stale_base_state": state_source == "stale",
         "bounded_state_available": bounded_available,
         "facts": _dedupe_dicts([*facts, *world_facts]),
         "world_rules": list(dict.fromkeys(bounded_world_rules)),
@@ -610,8 +651,10 @@ def build_canon_review_snapshot(
         "diagnostics": {
             "latest_confirmed_chapter": current_chapter,
             "filtered_future_relationships": filtered_relationships,
+            "filtered_stale_relationships": filtered_stale_relationships,
             "filtered_future_timeline": filtered_timeline,
-            "historical_live_state_omitted": bool(historical),
+            "filtered_stale_timeline": filtered_stale_timeline,
+            "unsafe_live_state_omitted": bool(unsafe_live_state),
         },
     }
 
