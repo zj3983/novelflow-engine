@@ -287,6 +287,21 @@ def parse_director_response(payload: Any) -> DirectorArtifact:
                 location=str(beat.get("location") or ""),
                 action=str(beat.get("action") or ""),
                 result=str(beat.get("result") or ""),
+                purpose=str(beat.get("purpose") or ""),
+                conflict=str(beat.get("conflict") or ""),
+                participants=[
+                    str(item).strip()
+                    for item in (beat.get("participants") or [])
+                    if str(item).strip()
+                ],
+                character_intents=[
+                    item
+                    for item in (beat.get("character_intents") or [])
+                    if isinstance(item, dict) and str(item.get("name") or "").strip()
+                ],
+                emotional_turn=str(beat.get("emotional_turn") or ""),
+                relationship_shift=str(beat.get("relationship_shift") or ""),
+                ending_pressure=str(beat.get("ending_pressure") or ""),
             )
         )
     requirements_in = payload.get("entity_requirements") or []
