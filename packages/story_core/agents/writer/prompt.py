@@ -93,8 +93,32 @@ def _relevant_character_names(request: WriterRequest) -> set[str]:
         artifact.ending_state,
         artifact.hook,
     ]
+    explicit_intent_names: set[str] = set()
     for beat in artifact.scene_beats:
-        text_parts.extend((beat.location, beat.action, beat.result))
+        text_parts.extend(
+            (
+                beat.location,
+                beat.action,
+                beat.result,
+                beat.purpose,
+                beat.conflict,
+                beat.emotional_turn,
+                beat.relationship_shift,
+                beat.ending_pressure,
+            )
+        )
+        text_parts.extend(beat.participants)
+        for intent in beat.character_intents:
+            explicit_intent_names.add(str(intent.name or "").strip())
+            text_parts.extend(
+                (
+                    intent.name,
+                    intent.target,
+                    intent.want,
+                    intent.move,
+                    intent.speech_strategy,
+                )
+            )
     text_parts.extend(item.name for item in artifact.entity_requirements)
     artifact_text = "\n".join(text_parts)
 
