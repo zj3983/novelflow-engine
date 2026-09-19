@@ -82,6 +82,7 @@ from packages.story_core.agents.consistency import (
 # ``packages.story_core.canon`` — the canon package itself loads
 # ``agents.contracts`` (via ``entity_designer``), and
 # ``agents/__init__.py`` eagerly re-exports this pipeline module.
+from packages.story_core.character_agent import CharacterAgent
 from packages.story_core.chapter_length_policy import (
     CHAPTER_HARD_MAX_CHARS,
     CHAPTER_HARD_MIN_CHARS,
@@ -107,6 +108,7 @@ from packages.story_core.context.writer_context import (
     build_writer_context,
 )
 from packages.story_core.continuity.delta import ContinuityDelta
+from packages.story_core.models import StoryState
 from packages.story_core.skill_packs import resolve_enabled_skill_module_ids
 
 
@@ -207,6 +209,101 @@ def _ensure_director_context(
             ),
         }
     )
+
+
+def _chapter_cast_names(
+    story: StoryState,
+    context: DirectorContext,
+    chapter_number: int,
+) -> list[str]:
+    """Return a bounded cast seed without forcing every role into the chapter."""
+
+    ordered: list[str] = []
+
+    def add(value: Any) -> None:
+        name = str(value or "").strip()
+        if name and name not in ordered:
+            ordered.append(name)
+
+    outline_context = story.outline_context if isinstance(story.outline_context, dict) else {}
+    chapter = outline_context.get("chapter") if isinstance(outline_context.get("chapter"), dict) else {}
+    try:
+        planned_number = int(chapter.get("chapter_number") or 0)
+    except (TypeError, ValueError):
+        planned_number = 0
+    if planned_number == chapter_number:
+        for name in chapter.get("cast") or []:
+            add(name)
+
+    target_entry: dict[str, Any] = {}
+    for entry in context.nearby_outline:
+        if not isinstance(entry, dict):
+            continue
+        number = entry.get("number")
+        if number == chapter_number:
+            target_entry = entry
+            for name in entry.get("cast") or []:
+                add(name)
+            break
+
+    for character in story.characters:
+        if (
+            str(character.narrative_function or "") == "protagonist"
+            or str(character.role or "").strip().lower() in {"protagonist", "主角"}
+        ):
+            add(character.name)
+            break
+
+    target_text = " ".join(
+        str(target_entry.get(key) or "")
+        for key in ("title", "summary", "goal", "obstacle", "action", "turn", "payoff", "ending_hook")
+    )
+    target_text += " " + context.previous_chapter_tail
+    for character in story.characters:
+        if character.name and character.name in target_text:
+            add(character.name)
+
+    return ordered[:6]
+
+
+def _character_intents_for_context(
+    story: StoryState,
+    context: DirectorContext,
+    chapter_number: int,
+    *,
+    agent: CharacterAgent | None = None,
+) -> list[dict[str, Any]]:
+    """Run one bounded character-intent pass for the director.
+
+    Failure is advisory: the director can still plan from the existing
+    character cards when the character runtime is unavailable.
+    """
+
+    cast_names = _chapter_cast_names(story, context, chapter_number)
+    by_name = {
+        character.name: character
+        for character in story.characters
+        if character.name
+        and not character.frozen
+        and character.lifecycle_state == "active"
+    }
+    selected = [by_name[name] for name in cast_names if name in by_name]
+    if not selected:
+        selected = [
+            character
+            for character in story.characters
+            if not character.frozen and character.lifecycle_state == "active"
+        ][:4]
+    if not selected:
+        return []
+
+    selected_story = story.model_copy(update={"characters": selected}, deep=True)
+    planner = agent or CharacterAgent()
+    try:
+        proposals = planner.propose_all(selected_story)
+    except Exception:
+        proposals = planner.rule_provider.propose_all(selected_story)
+    return [proposal.model_dump(mode="json") for proposal in proposals[:6]]
 
 
 def _ensure_writer_context(
@@ -387,6 +484,7 @@ def plan_director_artifact(
     chapter_number: int,
     runtime: DirectorRuntime | None = None,
     rewrite_guidance: str = "",
+    context: DirectorContext | None = None,
 ) -> DirectorPipelineResult:
     """Run the new director pipeline for ``chapter_number``.
 
@@ -405,7 +503,7 @@ def plan_director_artifact(
     field directly, so the operator sees which runtime
     answered the director call.
     """
-    context = _ensure_director_context(
+    context = context or _ensure_director_context(
         project_root=project_root, chapter_number=chapter_number
     )
     if rewrite_guidance.strip():
@@ -779,7 +877,7 @@ def _resolved_stage_provider_model(stage: str) -> tuple[str, str]:
     except Exception:
         return "", ""
     try:
-        settings = resolve_stage_runtime(stage)
+        settings = resolve_stage_runtime("planner" if stage == "character" else stage)
     except Exception:
         return "", ""
     if settings is None:
@@ -1084,6 +1182,8 @@ def run_modular_pipeline(
     *,
     project_root: Any,
     chapter_number: int,
+    story: StoryState | None = None,
+    character_agent: CharacterAgent | None = None,
     director_runtime: DirectorRuntime | None = None,
     writer_runtime: WriterRuntime | None = None,
     fact_extractor: FactExtractor | None = None,
@@ -1127,10 +1227,53 @@ def run_modular_pipeline(
     import time as _time
 
     from .pipeline_artifacts import (
+        record_character_intent_stage,
         record_director_stage,
         record_fact_extractor_stage,
         record_writer_stage,
     )
+
+    director_context = _ensure_director_context(
+        project_root=project_root,
+        chapter_number=chapter_number,
+    )
+    character_intents: list[dict[str, Any]] = []
+    character_started: float | None = None
+    if story is not None:
+        character_started = _time.monotonic()
+        report_generation_progress(
+            {
+                "message": "角色正在形成各自的本章意图",
+                "stage": "character_intent",
+                "source": "modular-pipeline",
+                "artifact": {
+                    "reason": "stage_started",
+                    "inputs": {"chapter_number": chapter_number},
+                    "used_modules": ["chapter_cast", "character_cards", "relationships"],
+                },
+            }
+        )
+        character_intents = _character_intents_for_context(
+            story,
+            director_context,
+            chapter_number,
+            agent=character_agent,
+        )
+        director_context = director_context.model_copy(
+            update={"character_intents": character_intents}
+        )
+        report_generation_progress(
+            {
+                "message": "角色意图已生成",
+                "status": "done",
+                "stage": "character_intent",
+                "source": "modular-pipeline",
+                "artifact": {
+                    "reason": "stage_completed",
+                    "outputs": {"proposals": len(character_intents)},
+                },
+            }
+        )
 
     report_generation_progress(
         {
@@ -1150,6 +1293,7 @@ def run_modular_pipeline(
         chapter_number=chapter_number,
         runtime=director_runtime,
         rewrite_guidance=rewrite_guidance,
+        context=director_context,
     )
     report_generation_progress(
         {
@@ -1291,6 +1435,17 @@ def run_modular_pipeline(
         # gateway itself reads them internally.
         director_provider, director_model = _resolved_stage_provider_model("director")
         writer_provider, writer_model = _resolved_stage_provider_model("writer")
+        if story is not None and character_started is not None:
+            character_provider, character_model = _resolved_stage_provider_model("character")
+            record_character_intent_stage(
+                store=workflow_store,
+                job_id=effective_job_id,
+                intents=character_intents,
+                context=director_result.context,
+                started_monotonic=character_started,
+                provider=character_provider,
+                model=character_model,
+            )
         record_director_stage(
             store=workflow_store,
             job_id=effective_job_id,

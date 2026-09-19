@@ -21,20 +21,44 @@ from packages.story_core.chapter_length_policy import (
 # --- Director ----------------------------------------------------------------
 
 
+class SceneCharacterIntent(BaseModel):
+    """Private planning direction for one character inside a scene.
+
+    The writer uses these values to shape behaviour and subtext.  They are
+    not public dialogue and must not be treated as confirmed canon merely
+    because they appear in the director artifact.
+    """
+
+    name: str
+    want: str = ""
+    target: str = ""
+    emotion: str = ""
+    move: str = ""
+    speech_strategy: str = ""
+    withhold: str = ""
+    reaction: str = ""
+    dramatic_function: str = ""
+
+
 class SceneBeat(BaseModel):
     """One ordered scene beat inside a director artifact.
 
-    ``result`` is required because every beat must change the
-    world state, not merely observe it. The consistency agent uses
-    this to verify that the writer's draft produced the promised
-    result, and the fact extractor uses it to anchor proposed
-    deltas.
+    The legacy action/result pair remains required for backwards
+    compatibility.  Optional scene-contract fields carry the richer conflict
+    and character-intent layer used by the modular writer.
     """
 
     order: int
     location: str
     action: str
     result: str
+    purpose: str = ""
+    conflict: str = ""
+    participants: list[str] = Field(default_factory=list)
+    character_intents: list[SceneCharacterIntent] = Field(default_factory=list)
+    emotional_turn: str = ""
+    relationship_shift: str = ""
+    ending_pressure: str = ""
 
 
 class EntityRequirement(BaseModel):
@@ -154,6 +178,7 @@ __all__ = [
     "DirectorArtifact",
     "EntityRequirement",
     "SceneBeat",
+    "SceneCharacterIntent",
     "WriterRequest",
     "WriterResult",
 ]

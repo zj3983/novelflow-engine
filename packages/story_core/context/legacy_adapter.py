@@ -119,6 +119,14 @@ def legacy_outline_view(system_root: Path) -> dict[str, Any] | None:
                 "goal": goal,
                 "obstacle": obstacle,
                 "action": action,
+                "turn": str(entry.get("turn") or ""),
+                "payoff": str(entry.get("payoff") or ""),
+                "ending_hook": str(entry.get("ending_hook") or ""),
+                "cast": [
+                    str(name).strip()
+                    for name in (entry.get("cast") or [])
+                    if str(name).strip()
+                ],
             }
         )
     return {

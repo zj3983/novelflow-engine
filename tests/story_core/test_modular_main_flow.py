@@ -370,7 +370,7 @@ def test_modular_main_flow_writes_workflow_artifacts_for_workbench(tmp_path: Pat
     """The workbench reads the per-stage workflow artifacts the main flow writes.
 
     A workbench that watches ``.story-system/workflow/<job>/``
-    sees the director / writer / fact-extractor records
+    sees the character-intent / director / writer / fact-extractor records
     because the new main flow constructs the same
     :class:`ModularChapterBundle` that the dedicated
     :mod:`tests.story_core.test_modular_pipeline_e2e` test
@@ -406,4 +406,9 @@ def test_modular_main_flow_writes_workflow_artifacts_for_workbench(tmp_path: Pat
     assert job_dirs, "the main flow must write per-stage workflow artifacts"
     job_dir = job_dirs[0]
     stage_files = sorted(path.name for path in job_dir.glob("*.json"))
-    assert stage_files == ["director.json", "fact-extractor.json", "writer.json"]
+    assert stage_files == [
+        "character-intent.json",
+        "director.json",
+        "fact-extractor.json",
+        "writer.json",
+    ]

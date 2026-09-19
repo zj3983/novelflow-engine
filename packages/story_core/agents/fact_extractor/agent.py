@@ -655,6 +655,44 @@ def _validate_references(
 
 # --- Model-backed pass ---------------------------------------------------------
 
+
+def _fact_extractor_director_view(artifact: Any) -> dict[str, Any] | None:
+    """Project only public/executable director facts into model extraction.
+
+    Private character wants, withheld information, speech strategies, and
+    dramatic functions are planning controls.  They must never become canon
+    merely because the fact extractor can see the director artifact.
+    """
+
+    if artifact is None:
+        return None
+    beats = []
+    for beat in getattr(artifact, "scene_beats", None) or []:
+        beats.append(
+            {
+                "order": int(getattr(beat, "order", 0) or 0),
+                "location": str(getattr(beat, "location", "") or ""),
+                "action": str(getattr(beat, "action", "") or ""),
+                "result": str(getattr(beat, "result", "") or ""),
+            }
+        )
+    requirements = []
+    for requirement in getattr(artifact, "entity_requirements", None) or []:
+        requirements.append(
+            {
+                "kind": str(getattr(requirement, "kind", "") or ""),
+                "name": str(getattr(requirement, "name", "") or ""),
+                "notes": str(getattr(requirement, "notes", "") or ""),
+            }
+        )
+    return {
+        "chapter_number": int(getattr(artifact, "chapter_number", 0) or 0),
+        "chapter_goal": str(getattr(artifact, "chapter_goal", "") or ""),
+        "scene_beats": beats,
+        "ending_state": str(getattr(artifact, "ending_state", "") or ""),
+        "entity_requirements": requirements,
+    }
+
 def _safe_model_extract(
     context: FactExtractorContext,
     runtime: FactExtractorRuntime | None,
@@ -672,7 +710,7 @@ def _safe_model_extract(
                 "stage": "fact_extractor",
                 "chapter_number": context.chapter_number,
                 "body": context.body,
-                "director_artifact": context.director_artifact,
+                "director_artifact": _fact_extractor_director_view(context.director_artifact),
                 "canon_view": context.canon_view,
             }
         )
