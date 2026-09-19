@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from packages.story_core.agents.contracts import DirectorArtifact, WriterRequest
-from packages.story_core.agents.director.prompt import parse_director_response
+from packages.story_core.agents.director.prompt import build_director_prompt, parse_director_response
 from packages.story_core.agents.fact_extractor.agent import _fact_extractor_director_view
-from packages.story_core.agents.pipeline import _chapter_cast_names
+from packages.story_core.agents.pipeline import (
+    _chapter_cast_names,
+    _character_intents_for_context,
+)
 from packages.story_core.agents.writer.prompt import build_writer_prompt
 from packages.story_core.context.director_context import DirectorContext
 from packages.story_core.context.legacy_adapter import legacy_outline_view
-from packages.story_core.models import CharacterState, StoryState
+from packages.story_core.context.writer_context import WriterContext
+from packages.story_core.models import CharacterProposal, CharacterState, StoryState
+from packages.story_core.modular_bundle_adapter import adapt_modular_bundle_to_legacy
 
 
 def _rich_artifact() -> DirectorArtifact:
@@ -217,3 +223,156 @@ def test_relevant_cast_prefers_explicit_chapter_cast_and_adds_protagonist() -> N
 
     assert names[:3] == ["苏瑶", "王胖子", "林渊"]
     assert "赵天衡" not in names
+
+
+
+class _RecordingCharacterAgent:
+    def __init__(self) -> None:
+        self.seen_names: list[str] = []
+
+    def propose_all(self, story: StoryState) -> list[CharacterProposal]:
+        self.seen_names = [character.name for character in story.characters]
+        return [
+            CharacterProposal(
+                name=character.name,
+                goal=f"{character.name}自己的目标",
+                emotion="active",
+                action=f"{character.name}采取自己的行动",
+                target="林渊" if character.name != "林渊" else "",
+                speech_strategy="按自己的说话方式试探",
+                withhold="不把全部想法说出口",
+                dramatic_function="relationship_pressure",
+                priority=5,
+            )
+            for character in story.characters
+        ]
+
+
+def test_character_intent_stage_only_runs_selected_cast() -> None:
+    story = StoryState(
+        story_id="s-intent-stage",
+        outline="宗门比试之后。",
+        genre="玄幻",
+        style="自然口语",
+        current_chapter=2,
+        outline_context={
+            "chapter": {
+                "chapter_number": 3,
+                "cast": ["苏瑶", "王胖子"],
+                "goal": "处理赛后关系",
+            }
+        },
+        characters=[
+            CharacterState(name="林渊", role="protagonist"),
+            CharacterState(name="苏瑶", role="女主"),
+            CharacterState(name="王胖子", role="盟友"),
+            CharacterState(name="赵天衡", role="stage_antagonist"),
+        ],
+    )
+    context = DirectorContext(
+        chapter_number=3,
+        volume={"chapter_range": [1, 20]},
+        book_outline_summary="",
+        nearby_outline=[
+            {"number": 3, "goal": "处理赛后关系", "cast": ["苏瑶", "王胖子"]}
+        ],
+        character_cards=[],
+    )
+    agent = _RecordingCharacterAgent()
+
+    intents = _character_intents_for_context(
+        story,
+        context,
+        3,
+        agent=agent,  # type: ignore[arg-type]
+    )
+
+    assert agent.seen_names == ["苏瑶", "王胖子", "林渊"]
+    assert [item["name"] for item in intents] == ["苏瑶", "王胖子", "林渊"]
+    assert intents[0]["withhold"] == "不把全部想法说出口"
+
+
+def test_director_prompt_receives_character_intents_as_optional_pressure() -> None:
+    context = DirectorContext(
+        chapter_number=3,
+        volume={"chapter_range": [1, 20]},
+        book_outline_summary="",
+        nearby_outline=[
+            {
+                "number": 3,
+                "title": "比试之后",
+                "summary": "林渊赢下比试，各方反应不同。",
+                "cast": ["林渊", "苏瑶", "王胖子"],
+            }
+        ],
+        character_cards=[
+            {
+                "name": "苏瑶",
+                "role": "女主",
+                "narrative_function": "love_interest",
+                "story_drive": {"immediate_goal": "确认林渊伤势"},
+            }
+        ],
+        character_intents=[
+            {
+                "name": "苏瑶",
+                "goal": "确认林渊有没有受伤",
+                "target": "林渊",
+                "action": "借检查伤势靠近",
+                "withhold": "不承认一直在关注他",
+                "priority": 7,
+            }
+        ],
+    )
+
+    prompt = build_director_prompt(context)
+
+    assert "人物当前意图（候选压力" in prompt
+    assert "确认林渊有没有受伤" in prompt
+    assert "可以采用、延后、阻断或让它们互相冲突" in prompt
+    assert "不要求所有出场人物都有台词或动作" in prompt
+
+
+def test_modular_bundle_adapter_preserves_character_intent_lifecycle() -> None:
+    artifact = _rich_artifact()
+    story = StoryState(
+        story_id="s-adapter-intents",
+        outline="赛后关系变化。",
+        genre="玄幻",
+        style="自然口语",
+        current_chapter=2,
+        characters=[
+            CharacterState(name="林渊", role="protagonist"),
+            CharacterState(name="苏瑶", role="女主"),
+            CharacterState(name="王胖子", role="盟友"),
+        ],
+    )
+    writer_context = WriterContext(
+        chapter_number=3,
+        director_artifact=artifact,
+        character_cards=[
+            {"name": "林渊", "role": "protagonist"},
+            {"name": "苏瑶", "role": "女主"},
+            {"name": "王胖子", "role": "盟友"},
+        ],
+    )
+    modular = SimpleNamespace(
+        director_artifact=artifact,
+        body="林渊走出演武场，苏瑶跟了上来，王胖子在旁边笑了一句。",
+        consistency_findings=[],
+        continuity_delta=None,
+        writer_context=writer_context,
+        canon_preflight={},
+    )
+
+    bundle = adapt_modular_bundle_to_legacy(
+        story=story,
+        modular_bundle=modular,
+        chapter_number=3,
+    )
+
+    suyao = next(move for move in bundle.character_moves if move["name"] == "苏瑶")
+    assert suyao["withhold"] == "不承认自己一直在关注他"
+    assert bundle.scene_cards[0]["character_intents"][0]["name"] == "苏瑶"
+    assert bundle.scene_cards[0]["relationship_shift"] == "两人距离略微拉近"
+    assert bundle.pipeline_stages[0] == "character_intent"
