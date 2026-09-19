@@ -1812,6 +1812,96 @@ fieldset.ws-outline-grid {
   font-size: 12px;
 }
 
+.ws-character-filters input {
+  min-height: 34px;
+  border: 1px solid var(--ws-line);
+  border-radius: 6px;
+  padding: 6px 9px;
+  background: var(--ws-surface);
+  color: var(--ws-ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+.ws-character-group + .ws-character-group {
+  margin-top: 24px;
+}
+
+.ws-character-group__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.ws-character-group__head h3 {
+  margin: 0;
+  color: var(--ws-ink);
+  font-size: 17px;
+}
+
+.ws-character-group__head span {
+  color: var(--ws-ink-muted);
+  font-size: 13px;
+}
+
+.ws-character-group__list {
+  display: grid;
+  gap: 10px;
+}
+
+.ws-character-group__list:not(.ws-character-group__list--hero) {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.ws-character-summary-card {
+  padding: 13px;
+}
+
+.ws-character-summary-card__facts,
+.ws-character-hero-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0 0;
+}
+
+.ws-character-summary-card__facts div,
+.ws-character-hero-facts div {
+  min-width: 0;
+}
+
+.ws-character-summary-card__facts dt,
+.ws-character-hero-facts dt {
+  color: var(--ws-ink-muted);
+  font-size: 12px;
+}
+
+.ws-character-summary-card__facts dd,
+.ws-character-hero-facts dd {
+  margin: 3px 0 0;
+  color: var(--ws-ink);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.ws-character-summary-card__toggle {
+  margin-top: 12px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--ws-link, #1769aa);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+}
+
+.ws-character-card--hero {
+  border-color: var(--ws-ink-muted);
+  padding: 18px;
+}
+
 .ws-character-card,
 .ws-reaction-item,
 .ws-rule-item {
@@ -2247,6 +2337,12 @@ fieldset.ws-outline-grid {
 }
 
 @media (max-width: 760px) {
+  .ws-character-group__list:not(.ws-character-group__list--hero),
+  .ws-character-summary-card__facts,
+  .ws-character-hero-facts {
+    grid-template-columns: 1fr;
+  }
+
   .ws-character-filters > p {
     width: 100%;
     margin: 0;
