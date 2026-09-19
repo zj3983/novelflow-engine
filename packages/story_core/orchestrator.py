@@ -4184,6 +4184,7 @@ class StoryOrchestrator:
         writer_runtime: Any | None = None,
         fact_extractor: Any | None = None,
         consistency_runtime: Any | None = None,
+        character_agent: Any | None = None,
     ) -> Any:
         """Produce a legacy ``ChapterBundle`` from the modular pipeline.
 
