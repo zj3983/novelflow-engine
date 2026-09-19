@@ -340,6 +340,7 @@ def record_fact_extractor_stage(
 
 
 __all__ = [
+    "record_character_intent_stage",
     "record_director_stage",
     "record_writer_stage",
     "record_fact_extractor_stage",
