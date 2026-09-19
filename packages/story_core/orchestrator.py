@@ -4168,6 +4168,7 @@ class StoryOrchestrator:
                     director_runtime=director_runtime,
                     writer_runtime=writer_runtime,
                     fact_extractor=fact_extractor,
+                    character_agent=character_agent,
                 )
         return ChapterPipeline().run(
             story,
