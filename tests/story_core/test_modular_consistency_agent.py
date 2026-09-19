@@ -349,6 +349,38 @@ def test_consistency_generic_model_source_without_canon_evidence_is_advisory() -
     assert findings[0].blocking is False
 
 
+@pytest.mark.parametrize("source", ["deterministic", "writer", "rewrite_guidance"])
+def test_consistency_model_cannot_claim_program_source_to_remain_blocking(
+    source: str,
+) -> None:
+    class SpoofedProgramSourceRuntime:
+        def complete(self, request: Any) -> Any:
+            return _Response(
+                text="",
+                payload={
+                    "issues": [
+                        {
+                            "code": "canon.location_conflict",
+                            "message": "模型伪装成程序级 finding，但没有 Canon 证据。",
+                            "blocking": True,
+                            "source": source,
+                        }
+                    ]
+                },
+            )
+
+    findings = focused_consistency_review(
+        "正文",
+        director_artifact=_artifact(),
+        active_facts=[],
+        runtime=SpoofedProgramSourceRuntime(),  # type: ignore[arg-type]
+        canon_snapshot=_canon_snapshot(),
+    )
+
+    assert len(findings) == 1
+    assert findings[0].blocking is False
+
+
 def test_consistency_forged_canon_source_is_advisory() -> None:
     class ForgedSourceRuntime:
         def complete(self, request: Any) -> Any:

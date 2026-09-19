@@ -417,14 +417,10 @@ def _downgrade_non_factual(
     }:
         return False
 
-    # The focused model boundary is allowed to block only when it can point
-    # back to the current chapter-bounded Canon projection. Keep deterministic
-    # non-model gates backward compatible; their source names are explicit.
-    if require_canon_evidence and normalized_source not in {
-        "deterministic",
-        "rewrite_guidance",
-        "writer",
-    }:
+    # The focused model boundary never trusts the model-provided source name.
+    # Program-level hard gates are constructed outside this adapter and do not
+    # set require_canon_evidence, so they retain their own disposition.
+    if require_canon_evidence:
         return _has_verified_canon_evidence(
             source=source,
             canon_evidence=canon_evidence,
