@@ -94,6 +94,7 @@ class StoryEngine:
             ("director_runtime", director_runtime),
             ("writer_runtime", writer_runtime),
             ("fact_extractor", fact_extractor),
+            ("character_agent", character_agent),
         ):
             if key in sig.parameters:
                 kwargs[key] = value
