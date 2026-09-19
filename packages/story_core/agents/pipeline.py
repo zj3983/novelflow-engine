@@ -1435,6 +1435,17 @@ def run_modular_pipeline(
         # gateway itself reads them internally.
         director_provider, director_model = _resolved_stage_provider_model("director")
         writer_provider, writer_model = _resolved_stage_provider_model("writer")
+        if story is not None and character_started is not None:
+            character_provider, character_model = _resolved_stage_provider_model("character")
+            record_character_intent_stage(
+                store=workflow_store,
+                job_id=effective_job_id,
+                intents=character_intents,
+                context=director_result.context,
+                started_monotonic=character_started,
+                provider=character_provider,
+                model=character_model,
+            )
         record_director_stage(
             store=workflow_store,
             job_id=effective_job_id,
