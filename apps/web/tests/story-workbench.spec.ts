@@ -1363,9 +1363,10 @@ test("xianxia world page hides the game monster panel", async ({ page }) => {
 
   await page.goto(`/projects/${fixture.encodedId}/world`);
 
-  await expect(page.locator('section[aria-labelledby="basic-world-rules-title"]')).toBeVisible();
-  await expect(page.locator('section[aria-labelledby="quest-world-rules-title"]')).toHaveCount(0);
-  await expect(page.locator('section[aria-labelledby="reality-world-rules-title"]')).toHaveCount(0);
+  await page.getByRole("navigation", { name: "世界观分类" }).getByRole("button", { name: /世界规则/ }).click();
+  await expect(page.locator('details[aria-labelledby="basic-world-rules-title"]')).toBeVisible();
+  await expect(page.locator('details[aria-labelledby="quest-world-rules-title"]')).toHaveCount(0);
+  await expect(page.locator('details[aria-labelledby="reality-world-rules-title"]')).toHaveCount(0);
   await expect(page.locator('section[aria-labelledby="monster-bestiary-title"]')).toHaveCount(0);
 });
 
@@ -4003,13 +4004,15 @@ test("project world constraints persist after refresh", async ({ page }) => {
   const { encodedId } = await routeCurrentFileProject(page, "constraint-persistence");
   await page.goto(`/projects/${encodedId}/world`);
 
-  const constraints = page.locator('section[aria-labelledby="constraints-world-rules-title"] textarea').first();
+  await page.getByRole("navigation", { name: "世界观分类" }).getByRole("button", { name: /世界规则/ }).click();
+  await page.locator('details[aria-labelledby="constraints-world-rules-title"] summary').click();
+  const constraints = page.locator('details[aria-labelledby="constraints-world-rules-title"] textarea').first();
   await constraints.fill("规则一\n规则二");
   await page.getByRole("button", { name: "保存世界硬约束", exact: true }).click();
   await expect(constraints).toHaveValue("规则一\n规则二");
   await page.reload();
 
-  await expect(page.locator('section[aria-labelledby="constraints-world-rules-title"] textarea').first()).toHaveValue("规则一\n规则二");
+  await expect(page.locator('details[aria-labelledby="constraints-world-rules-title"] textarea').first()).toHaveValue("规则一\n规则二");
 });
 
 test("角色卡状态显示和编辑保存遵循网游插件", async ({ page }) => {
@@ -4247,6 +4250,7 @@ test("世界观页面显示并编辑怪物图鉴", async ({ page }) => {
   });
 
   await page.goto("/projects/file%3Amonster-fixture/world");
+  await page.getByRole("navigation", { name: "世界观分类" }).getByRole("button", { name: /怪物图鉴/ }).click();
   await expect(page.getByRole("heading", { name: "怪物图鉴" })).toBeVisible();
   await expect(page.getByText("灰狼", { exact: true })).toBeVisible();
   await expect(page.getByText("野兽 · 普通 · Lv.3", { exact: true })).toBeVisible();
@@ -4295,6 +4299,7 @@ test("世界观页面筛选并编辑装备图鉴", async ({ page }) => {
   });
 
   await page.goto("/projects/file%3Aequipment-fixture/world");
+  await page.getByRole("navigation", { name: "世界观分类" }).getByRole("button", { name: /装备图鉴/ }).click();
   const catalog = page.getByLabel("装备图鉴");
   await expect(catalog.getByRole("heading", { name: "装备图鉴" })).toBeVisible();
   await expect(catalog.getByText("暮色裁决", { exact: true })).toBeVisible();
@@ -4415,6 +4420,7 @@ test("世界观展示结构化力量体系的完整章节、六职业与分支",
     power_system_spec: structuredPowerSystemSpec,
   });
   await page.goto("/projects/file%3Astructured-power/world");
+  await page.getByRole("navigation", { name: "世界观分类" }).getByRole("button", { name: /世界规则/ }).click();
 
   const structured = page.getByLabel("结构化力量体系");
   await expect(structured).toBeVisible();
@@ -4430,6 +4436,7 @@ test("世界观展示结构化力量体系的完整章节、六职业与分支",
   }
   await expect(page.getByText("力量体系需要补全", { exact: true })).toHaveCount(0);
   await expect(page.locator("p, li, dd, dt").filter({ hasText: "旧版力量摘要不得重复显示" })).toHaveCount(0);
+  await page.locator('details[aria-labelledby="progression-world-rules-title"] summary').click();
   await expect(page.getByLabel("等级、职业与技能")).toHaveValue("旧版力量摘要不得重复显示");
   await expect(structured.locator(".ws-card")).toHaveCount(0);
   await expect(structured.getByText("<script>不可执行</script>", { exact: true })).toBeVisible();
@@ -4442,6 +4449,7 @@ test("网游世界观显示统一职业转职树", async ({ page }) => {
     power_system_spec: gameClassAdvancementSpec,
   });
   await page.goto("/projects/file%3Agame-class-tree/world");
+  await page.getByRole("navigation", { name: "世界观分类" }).getByRole("button", { name: /世界规则/ }).click();
 
   const tree = page.getByLabel("职业转职树");
   await expect(tree.getByRole("heading", { name: "职业转职树" })).toBeVisible();
@@ -4459,6 +4467,7 @@ test("网游职业树缺少统一节点时标记为需要补全", async ({ page 
     power_system_spec: structuredPowerSystemSpec,
   });
   await page.goto("/projects/file%3Aincomplete-game-class-tree/world");
+  await page.getByRole("navigation", { name: "世界观分类" }).getByRole("button", { name: /世界规则/ }).click();
 
   await expect(page.getByLabel("结构化力量体系")).toHaveCount(0);
   await expect(page.getByText("力量体系需要补全", { exact: true })).toBeVisible();
@@ -4479,6 +4488,7 @@ test("世界观展示启用的自由属性分配规则", async ({ page }) => {
     },
   });
   await page.goto("/projects/file%3Aattribute-allocation/world");
+  await page.getByRole("navigation", { name: "世界观分类" }).getByRole("button", { name: /世界规则/ }).click();
 
   const section = page.getByLabel("结构化力量体系").getByRole("heading", { name: "属性分配", exact: true }).locator("..");
   await expect(section).toBeVisible();
@@ -4513,6 +4523,7 @@ test("世界观忽略残缺或越界的自由属性分配规则", async ({ page 
       },
     });
     await page.goto(`/projects/file%3Ainvalid-attribute-${id}/world`);
+  await page.getByRole("navigation", { name: "世界观分类" }).getByRole("button", { name: /世界规则/ }).click();
     await expect(page.getByLabel("结构化力量体系").getByRole("heading", { name: "属性分配", exact: true })).toHaveCount(0);
   }
 });
@@ -4520,21 +4531,25 @@ test("世界观忽略残缺或越界的自由属性分配规则", async ({ page 
 test("世界观仅在旧力量摘要存在时提示需要补全", async ({ page }) => {
   await mockWorldPowerPage(page, "legacy-power", { power_system: ["旧版力量规则"] });
   await page.goto("/projects/file%3Alegacy-power/world");
+  await page.getByRole("navigation", { name: "世界观分类" }).getByRole("button", { name: /世界规则/ }).click();
   await expect(page.getByText("力量体系需要补全", { exact: true })).toBeVisible();
 
   await mockWorldPowerPage(page, "empty-power", {});
   await page.goto("/projects/file%3Aempty-power/world");
+  await page.getByRole("navigation", { name: "世界观分类" }).getByRole("button", { name: /世界规则/ }).click();
   await expect(page.getByText("力量体系需要补全", { exact: true })).toHaveCount(0);
 });
 
 test("世界观安全忽略数组和标量力量体系规格", async ({ page }) => {
   await mockWorldPowerPage(page, "array-power", { power_system_spec: [{ name: "错误数组" }] });
   await page.goto("/projects/file%3Aarray-power/world");
+  await page.getByRole("navigation", { name: "世界观分类" }).getByRole("button", { name: /世界规则/ }).click();
   await expect(page.getByRole("heading", { name: "世界规则" })).toBeVisible();
   await expect(page.getByLabel("结构化力量体系")).toHaveCount(0);
 
   await mockWorldPowerPage(page, "scalar-power", { power_system_spec: "错误标量" });
   await page.goto("/projects/file%3Ascalar-power/world");
+  await page.getByRole("navigation", { name: "世界观分类" }).getByRole("button", { name: /世界规则/ }).click();
   await expect(page.getByRole("heading", { name: "世界规则" })).toBeVisible();
   await expect(page.getByLabel("结构化力量体系")).toHaveCount(0);
 });
@@ -4542,6 +4557,7 @@ test("世界观安全忽略数组和标量力量体系规格", async ({ page }) 
 test("世界观将残缺力量体系规格标记为需要补全", async ({ page }) => {
   await mockWorldPowerPage(page, "incomplete-power", { power_system_spec: { name: "临时体系" } });
   await page.goto("/projects/file%3Aincomplete-power/world");
+  await page.getByRole("navigation", { name: "世界观分类" }).getByRole("button", { name: /世界规则/ }).click();
 
   await expect(page.getByLabel("结构化力量体系")).toHaveCount(0);
   await expect(page.getByText("力量体系需要补全", { exact: true })).toBeVisible();
@@ -4554,6 +4570,7 @@ test("世界观将残缺力量体系规格标记为需要补全", async ({ page 
     },
   });
   await page.goto("/projects/file%3Amalformed-power/world");
+  await page.getByRole("navigation", { name: "世界观分类" }).getByRole("button", { name: /世界规则/ }).click();
   await expect(page.getByLabel("结构化力量体系")).toHaveCount(0);
   await expect(page.getByText("力量体系需要补全", { exact: true })).toBeVisible();
 });
@@ -4562,6 +4579,7 @@ test("结构化力量体系在 360px 宽度内换行且无横向溢出", async (
   await page.setViewportSize({ width: 360, height: 800 });
   await mockWorldPowerPage(page, "mobile-power", { power_system_spec: structuredPowerSystemSpec });
   await page.goto("/projects/file%3Amobile-power/world");
+  await page.getByRole("navigation", { name: "世界观分类" }).getByRole("button", { name: /世界规则/ }).click();
 
   const structured = page.getByLabel("结构化力量体系");
   await expect(structured).toBeVisible();
@@ -4572,7 +4590,7 @@ test("结构化力量体系在 360px 宽度内换行且无横向溢出", async (
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
-test("世界观真实路由常驻展示完整编辑区并在刷新时保留草稿", async ({ page }) => {
+test("世界观真实路由分类展示编辑区并在刷新时保留草稿", async ({ page }) => {
   let savedPayload: { world_summary?: string; world_blueprint?: Record<string, unknown> } = {};
   let projectGetCount = 0;
   let completedProjectGetCount = 0;
@@ -4618,8 +4636,14 @@ test("世界观真实路由常驻展示完整编辑区并在刷新时保留草�
   await page.setViewportSize({ width: 901, height: 900 });
   await page.goto("/projects/file%3Aworld-page-fixture/world");
 
-  for (const heading of ["世界背景", "世界规则", "地点", "阵营", "怪物图鉴"]) {
+  const switchCategory = (name: string) => page.getByRole("navigation", { name: "世界观分类" }).getByRole("button", { name: new RegExp(name) }).click();
+  for (const heading of ["世界背景", "世界规则", "地点与阵营", "怪物图鉴"]) {
+    await switchCategory(heading);
     await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
+  }
+  await switchCategory("世界规则");
+  for (const id of ["progression", "economy", "quest"]) {
+    await page.locator(`details[aria-labelledby="${id}-world-rules-title"] summary`).click();
   }
   const orderedSections = page.locator([
     "#world-background-title",
@@ -4650,8 +4674,8 @@ test("世界观真实路由常驻展示完整编辑区并在刷新时保留草�
     await expect(page.getByRole("button", { name: buttonName, exact: true })).toBeVisible();
   }
 
-  const progressionSection = page.locator('section[aria-labelledby="progression-world-rules-title"]');
-  await expect(progressionSection).toHaveClass(/ws-form-grid__wide/);
+  const progressionSection = page.locator('details[aria-labelledby="progression-world-rules-title"]');
+  await expect(progressionSection).toHaveAttribute("open", "");
   const progressionTextareas = progressionSection.locator("textarea");
   await expect(progressionTextareas).toHaveCount(2);
   const desktopWidths = await progressionTextareas.evaluateAll((elements) =>
@@ -4673,8 +4697,9 @@ test("世界观真实路由常驻展示完整编辑区并在刷新时保留草�
 
   const summary = page.getByLabel("项目摘要");
   const unsavedRule = page.locator("label.ws-search").filter({ hasText: "基础规则" }).locator("textarea").first();
-  await summary.fill("保存后的项目摘要");
   await unsavedRule.fill("尚未保存的规则草稿");
+  await switchCategory("世界背景");
+  await summary.fill("保存后的项目摘要");
   await page.getByRole("button", { name: "保存世界背景" }).click();
   await expect.poll(() => savedPayload.world_summary).toBe("保存后的项目摘要");
   await page.waitForTimeout(100);
@@ -4753,6 +4778,7 @@ test("世界观并发保存使用局部蓝图且跨编辑器更新互不覆盖",
   });
 
   await page.goto("/projects/file%3Aworld-concurrent-fixture/world");
+  await page.getByRole("navigation", { name: "世界观分类" }).getByRole("button", { name: /世界规则/ }).click();
   await expect.poll(async () => page.locator("body").innerText()).toContain("世界规则");
   const ruleEditor = page.locator("label.ws-search").filter({ hasText: "基础规则" }).locator("textarea").first();
   await ruleEditor.fill("并发新规则");
@@ -4765,6 +4791,7 @@ test("世界观并发保存使用局部蓝图且跨编辑器更新互不覆盖",
   await expect.poll(() => refreshPending).toBe(true);
   await expect(page.locator('section[aria-labelledby="world-rules-title"]').getByRole("status").filter({ hasText: "保存成功" })).toBeVisible();
 
+  await page.getByRole("navigation", { name: "世界观分类" }).getByRole("button", { name: /世界背景/ }).click();
   await page.getByLabel("世界前提").fill("并发新前提");
   await page.getByRole("button", { name: "保存世界背景" }).click();
   await expect.poll(() => backgroundPutStarted).toBe(true);
@@ -4774,6 +4801,7 @@ test("世界观并发保存使用局部蓝图且跨编辑器更新互不覆盖",
   await expect.poll(() => project.world_blueprint.premise).toBe("并发新前提");
   await expect(page.locator('section[aria-labelledby="world-background-title"]').getByRole("status").filter({ hasText: "保存成功" })).toBeVisible();
 
+  await page.getByRole("navigation", { name: "世界观分类" }).getByRole("button", { name: /地点与阵营/ }).click();
   const locations = page.locator('section[aria-labelledby="world-locations-title"]');
   await locations.getByLabel("名称").fill("并发新港");
   await locations.getByRole("button", { name: "保存地点" }).click();
@@ -4784,9 +4812,11 @@ test("世界观并发保存使用局部蓝图且跨编辑器更新互不覆盖",
   });
 
   failWrites = true;
+  await page.getByRole("navigation", { name: "世界观分类" }).getByRole("button", { name: /世界背景/ }).click();
   await page.getByLabel("世界前提").fill("失败背景");
   await page.getByRole("button", { name: "保存世界背景" }).click();
   await expect(page.locator('section[aria-labelledby="world-background-title"]').getByRole("alert").filter({ hasText: "保存失败" })).toBeVisible();
+  await page.getByRole("navigation", { name: "世界观分类" }).getByRole("button", { name: /世界规则/ }).click();
   await ruleEditor.fill("失败规则");
   await page.getByRole("button", { name: "保存基础规则" }).click();
   await expect(page.locator('section[aria-labelledby="world-rules-title"]').getByRole("alert").filter({ hasText: "保存失败" })).toBeVisible();
