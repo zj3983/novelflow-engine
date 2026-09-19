@@ -1289,6 +1289,7 @@ def run_modular_pipeline(
         chapter_number=chapter_number,
         runtime=director_runtime,
         rewrite_guidance=rewrite_guidance,
+        context=director_context,
     )
     report_generation_progress(
         {
