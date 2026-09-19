@@ -13,7 +13,7 @@ while actual established-fact contradictions may still block.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 from typing import Any, Protocol
 
 from ..contracts import DirectorArtifact
@@ -86,6 +86,122 @@ def _json_inline(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 
 
+_GENERIC_CANON_SOURCES = {
+    "",
+    "canon",
+    "canonical",
+    "canon.fact",
+    "canon.character",
+    "canon.entity",
+    "canon.relationship",
+    "canon.timeline",
+    "canon.world_rule",
+    "canon.foreshadowing",
+    "consistency",
+    "fact",
+    "facts",
+}
+
+
+def _evidence_token(value: Any) -> str:
+    """Normalize a source/evidence token for exact snapshot matching."""
+    if isinstance(value, str):
+        return " ".join(value.split()).strip().casefold()
+    if value is None or isinstance(value, (dict, list, tuple, set)):
+        return ""
+    return str(value).strip().casefold()
+
+
+def _snapshot_evidence(
+    snapshot: dict[str, Any] | None,
+) -> tuple[set[str], set[str]]:
+    """Return exact source and evidence tokens exposed by a review snapshot.
+
+    This intentionally reads only the plain snapshot projection. It does not
+    inspect the live registry, director beats, caller-supplied character cards,
+    or the finding message itself.
+    """
+    if not isinstance(snapshot, dict) or not snapshot:
+        return set(), set()
+
+    if snapshot.get("historical_rewrite") and not bool(
+        snapshot.get("bounded_state_available")
+    ):
+        # A degraded historical snapshot is deliberately not evidence.
+        return set(), set()
+
+    sources: set[str] = set()
+    evidence: set[str] = set()
+
+    def add_item(collection: str, index: int, item: Any) -> None:
+        if not isinstance(item, dict):
+            return
+        sources.add(f"canon.{collection}:{index}".casefold())
+        source = _evidence_token(item.get("source"))
+        if source and source not in _GENERIC_CANON_SOURCES:
+            sources.add(source)
+        for key in (
+            "evidence",
+            "source_sentence",
+            "value",
+            "fact",
+            "text",
+            "summary",
+            "message",
+            "marker",
+        ):
+            token = _evidence_token(item.get(key))
+            if token:
+                evidence.add(token)
+
+    for collection in ("facts", "relationships", "timeline", "foreshadowing"):
+        for index, item in enumerate(snapshot.get(collection) or []):
+            add_item(collection.rstrip("s"), index, item)
+
+    for index, rule in enumerate(snapshot.get("world_rules") or []):
+        sources.add(f"canon.world_rule:{index}".casefold())
+        token = _evidence_token(rule)
+        if token:
+            evidence.add(token)
+
+    for index, card in enumerate(snapshot.get("characters") or []):
+        if not isinstance(card, dict):
+            continue
+        name = _evidence_token(card.get("name"))
+        if name:
+            sources.add(f"canon.character:{name}")
+        add_item("character", index, card)
+
+    for index, entity in enumerate(snapshot.get("entities") or []):
+        if not isinstance(entity, dict):
+            continue
+        entity_id = _evidence_token(entity.get("entity_id"))
+        if entity_id:
+            sources.add(f"canon.entity:{entity_id}")
+        add_item("entity", index, entity)
+
+    return sources, evidence
+
+
+def _has_verified_canon_evidence(
+    *,
+    source: str,
+    canon_evidence: str | None,
+    canon_snapshot: dict[str, Any] | None,
+) -> bool:
+    sources, evidence = _snapshot_evidence(canon_snapshot)
+    if not sources and not evidence:
+        return False
+    source_token = _evidence_token(source)
+    evidence_token = _evidence_token(canon_evidence)
+    return (
+        source_token in sources
+        or source_token in evidence
+        or evidence_token in sources
+        or evidence_token in evidence
+    )
+
+
 def _evidence_label(item: dict[str, Any], *, fallback: str) -> str:
     source = str(item.get("source") or fallback).strip() or fallback
     chapter = item.get("chapter_number")
@@ -120,12 +236,12 @@ def _render_canon_snapshot(snapshot: dict[str, Any] | None) -> str:
     facts = snapshot.get("facts") or []
     if facts:
         lines.append("### 已确认事实")
-        for fact in facts:
+        for index, fact in enumerate(facts):
             if not isinstance(fact, dict):
                 continue
             subject = str(fact.get("subject") or "全局")
             field = str(fact.get("field") or "fact")
-            label = _evidence_label(fact, fallback="canon.fact")
+            label = _evidence_label(fact, fallback=f"canon.fact:{index}")
             lines.append(
                 f"- [{label}] {subject} · {field}：{_json_inline(fact.get('value'))}"
             )
@@ -133,8 +249,8 @@ def _render_canon_snapshot(snapshot: dict[str, Any] | None) -> str:
     rules = snapshot.get("world_rules") or []
     if rules:
         lines.append("### 世界规则")
-        for rule in rules:
-            lines.append(f"- [canon.world_rule] {rule}")
+        for index, rule in enumerate(rules):
+            lines.append(f"- [canon.world_rule:{index}] {rule}")
 
     characters = snapshot.get("characters") or []
     if characters:
@@ -143,7 +259,8 @@ def _render_canon_snapshot(snapshot: dict[str, Any] | None) -> str:
             if not isinstance(card, dict):
                 continue
             lines.append(
-                f"- [canon.character] {card.get('name', '未命名')}：{_json_inline(card)}"
+                f"- [canon.character:{card.get('name', '未命名')}] "
+                f"{card.get('name', '未命名')}：{_json_inline(card)}"
             )
 
     entities = snapshot.get("entities") or []
@@ -161,10 +278,10 @@ def _render_canon_snapshot(snapshot: dict[str, Any] | None) -> str:
     relationships = snapshot.get("relationships") or []
     if relationships:
         lines.append("### 已确认关系")
-        for edge in relationships:
+        for index, edge in enumerate(relationships):
             if not isinstance(edge, dict):
                 continue
-            label = _evidence_label(edge, fallback="canon.relationship")
+            label = _evidence_label(edge, fallback=f"canon.relationship:{index}")
             lines.append(
                 f"- [{label}] {edge.get('subject_name', edge.get('subject_id', '?'))} "
                 f"--{edge.get('predicate', '?')}/{edge.get('polarity', '?')}--> "
@@ -174,18 +291,19 @@ def _render_canon_snapshot(snapshot: dict[str, Any] | None) -> str:
     timeline = snapshot.get("timeline") or []
     if timeline:
         lines.append("### 已确认时间线")
-        for marker in timeline:
+        for index, marker in enumerate(timeline):
             if not isinstance(marker, dict):
                 continue
-            label = _evidence_label(marker, fallback="canon.timeline")
+            label = _evidence_label(marker, fallback=f"canon.timeline:{index}")
             lines.append(f"- [{label}] {marker.get('marker', '')}")
 
     foreshadowing = snapshot.get("foreshadowing") or []
     if foreshadowing:
         lines.append("### 伏笔状态")
-        for item in foreshadowing:
+        for index, item in enumerate(foreshadowing):
             if isinstance(item, dict):
-                lines.append(f"- {_json_inline(item)}")
+                label = _evidence_label(item, fallback=f"canon.foreshadowing:{index}")
+                lines.append(f"- [{label}] {_json_inline(item)}")
 
     return "\n".join(lines)
 
@@ -235,9 +353,11 @@ def build_consistency_prompt(
         "只判断正文是否与既定事实矛盾。导演计划用于理解本章意图，不是已经发生的事实。\n"
         "正文调整导演动作、过程、地点细节或收尾镜头，不算事实冲突；确需指出时使用 "
         "code=plan.deviation、blocking=false、source=director_plan。不要评价文笔、风格、对话自然度。\n"
-        "blocking=true 只允许用于与 Canon 审稿快照或其他明确既定事实的直接矛盾。"
-        "source 必须指向对应事实来源；缺少历史快照时不得用当前状态猜测旧章事实。\n"
-        "如果出现矛盾,返回 code / message / blocking / source 四个字段的 JSON 列表。\n"
+        "blocking=true 只允许用于与 Canon 审稿快照中可核验事实的直接矛盾。"
+        "source 必须指向快照中存在的具体来源；也可用 evidence 原样引用快照证据。"
+        "缺少历史快照时不得用当前状态猜测旧章事实；无法精确对应时必须 blocking=false。\n"
+        "如果出现矛盾,返回 code / message / blocking / source 四个字段的 JSON 列表，"
+        "必要时附带 evidence 字段。\n"
         "如果没有矛盾,返回空列表 []。\n\n"
         f"## 章节目标\n{director_artifact.chapter_goal}\n\n"
         f"## 场景节拍\n{beats}\n\n"
@@ -260,7 +380,14 @@ _STYLE_CODES: set[str] = {
 }
 
 
-def _downgrade_non_factual(code: str, source: str, blocking: bool) -> bool:
+def _downgrade_non_factual(
+    code: str,
+    source: str,
+    blocking: bool,
+    *,
+    canon_snapshot: dict[str, Any] | None = None,
+    canon_evidence: str | None = None,
+) -> bool:
     """Only established-fact contradictions may block confirmation.
 
     The director artifact is an executable writing plan, not committed canon.
@@ -288,6 +415,16 @@ def _downgrade_non_factual(code: str, source: str, blocking: bool) -> bool:
         "director_plan",
     }:
         return False
+
+    # The focused model boundary is allowed to block only when it can point
+    # back to the current chapter-bounded Canon projection. Keep deterministic
+    # non-model gates backward compatible; their source names are explicit.
+    if normalized_source not in {"deterministic", "rewrite_guidance", "writer"}:
+        return _has_verified_canon_evidence(
+            source=source,
+            canon_evidence=canon_evidence,
+            canon_snapshot=canon_snapshot,
+        )
     return blocking
 
 
@@ -306,9 +443,21 @@ class ConsistencyFinding:
     message: str
     source: str = "consistency"
     blocking: bool = True
+    canon_snapshot: InitVar[dict[str, Any] | None] = None
+    canon_evidence: InitVar[str | None] = None
 
-    def __post_init__(self) -> None:
-        self.blocking = _downgrade_non_factual(self.code, self.source, self.blocking)
+    def __post_init__(
+        self,
+        canon_snapshot: dict[str, Any] | None,
+        canon_evidence: str | None,
+    ) -> None:
+        self.blocking = _downgrade_non_factual(
+            self.code,
+            self.source,
+            self.blocking,
+            canon_snapshot=canon_snapshot,
+            canon_evidence=canon_evidence,
+        )
 
 
 class FocusedConsistencyAgent:
@@ -392,12 +541,24 @@ class FocusedConsistencyAgent:
             blocking_raw = issue.get("blocking")
             blocking = bool(blocking_raw) if blocking_raw is not None else True
             source = str(issue.get("source") or "consistency")
+            canon_evidence_raw = (
+                issue.get("canon_evidence")
+                or issue.get("evidence")
+                or issue.get("source_sentence")
+            )
+            canon_evidence = (
+                str(canon_evidence_raw).strip()
+                if canon_evidence_raw is not None
+                else None
+            )
             findings.append(
                 ConsistencyFinding(
                     code=code,
                     message=message,
                     source=source,
                     blocking=blocking,
+                    canon_snapshot=canon_snapshot,
+                    canon_evidence=canon_evidence,
                 )
             )
         return findings

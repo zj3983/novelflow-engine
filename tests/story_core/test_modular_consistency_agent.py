@@ -55,6 +55,31 @@ def _artifact() -> DirectorArtifact:
     )
 
 
+def _canon_snapshot(*, historical: bool = True, available: bool = True) -> dict[str, Any]:
+    return {
+        "schema_version": "canon-review-snapshot/v1",
+        "as_of_chapter": 1,
+        "state_source": "continuity_snapshot",
+        "historical_rewrite": historical,
+        "bounded_state_available": available,
+        "facts": [
+            {
+                "subject": "林照",
+                "field": "装备",
+                "value": "旧木剑",
+                "source": "continuity_snapshot:0001",
+                "chapter_number": 1,
+                "evidence": "林照把旧木剑系回腰间。",
+            }
+        ],
+        "characters": [{"name": "林照"}],
+        "entities": [],
+        "relationships": [],
+        "timeline": [],
+        "world_rules": [],
+    }
+
+
 def test_consistency_prompt_includes_relevant_character_state() -> None:
     prompt = build_consistency_prompt(
         body="夜烬握紧新手短剑。",
@@ -235,7 +260,11 @@ def test_consistency_accepts_fenced_json_issue_list() -> None:
     assert [finding.code for finding in findings] == ["state.conflict"]
 
 
-def test_consistency_style_finding_is_advisory_not_blocking() -> None:
+@pytest.mark.parametrize(
+    "code",
+    ["style.report_voice", "dialogue.unnatural", "exposition.too_dense"],
+)
+def test_consistency_style_family_is_advisory_not_blocking(code: str) -> None:
     class StyleRuntime:
         def complete(self, request: Any) -> Any:
             return _Response(
@@ -243,7 +272,7 @@ def test_consistency_style_finding_is_advisory_not_blocking() -> None:
                 payload={
                     "issues": [
                         {
-                            "code": "style.report_voice",
+                            "code": code,
                             "message": "文风偏报告体。",
                             "blocking": True,
                             "source": "consistency",
@@ -259,7 +288,7 @@ def test_consistency_style_finding_is_advisory_not_blocking() -> None:
         runtime=StyleRuntime(),  # type: ignore[arg-type]
     )
     assert len(findings) == 1
-    assert findings[0].code == "style.report_voice"
+    assert findings[0].code == code
     assert findings[0].blocking is False
 
 
@@ -273,7 +302,7 @@ def test_consistency_factual_finding_defaults_to_blocking() -> None:
                         {
                             "code": "equipment.contradiction",
                             "message": "正文提到新手法杖但角色当前是夜烬短剑。",
-                            "source": "consistency",
+                            "source": "continuity_snapshot:0001",
                         }
                     ]
                 },
@@ -284,10 +313,133 @@ def test_consistency_factual_finding_defaults_to_blocking() -> None:
         director_artifact=_artifact(),
         active_facts=[],
         runtime=FactualRuntime(),  # type: ignore[arg-type]
+        canon_snapshot=_canon_snapshot(),
     )
     assert len(findings) == 1
     assert findings[0].code == "equipment.contradiction"
     assert findings[0].blocking is True
+
+
+def test_consistency_generic_model_source_without_canon_evidence_is_advisory() -> None:
+    class UnverifiedRuntime:
+        def complete(self, request: Any) -> Any:
+            return _Response(
+                text="",
+                payload={
+                    "issues": [
+                        {
+                            "code": "equipment.contradiction",
+                            "message": "正文提到新手法杖。",
+                            "blocking": True,
+                            "source": "consistency",
+                        }
+                    ]
+                },
+            )
+
+    findings = focused_consistency_review(
+        "正文",
+        director_artifact=_artifact(),
+        active_facts=[],
+        runtime=UnverifiedRuntime(),  # type: ignore[arg-type]
+        canon_snapshot=_canon_snapshot(),
+    )
+
+    assert len(findings) == 1
+    assert findings[0].blocking is False
+
+
+def test_consistency_forged_canon_source_is_advisory() -> None:
+    class ForgedSourceRuntime:
+        def complete(self, request: Any) -> Any:
+            return _Response(
+                text="",
+                payload={
+                    "issues": [
+                        {
+                            "code": "equipment.contradiction",
+                            "message": "正文提到不存在于快照的装备。",
+                            "blocking": True,
+                            "source": "canon.fact:999",
+                        }
+                    ]
+                },
+            )
+
+    findings = focused_consistency_review(
+        "正文",
+        director_artifact=_artifact(),
+        active_facts=[],
+        runtime=ForgedSourceRuntime(),  # type: ignore[arg-type]
+        canon_snapshot=_canon_snapshot(),
+    )
+
+    assert len(findings) == 1
+    assert findings[0].blocking is False
+
+
+def test_consistency_explicit_snapshot_evidence_keeps_blocking() -> None:
+    class EvidenceRuntime:
+        def complete(self, request: Any) -> Any:
+            return _Response(
+                text="",
+                payload={
+                    "issues": [
+                        {
+                            "code": "equipment.contradiction",
+                            "message": "正文提到新手法杖但 Canon 记录为旧木剑。",
+                            "blocking": True,
+                            "source": "consistency",
+                            "evidence": "林照把旧木剑系回腰间。",
+                        }
+                    ]
+                },
+            )
+
+    findings = focused_consistency_review(
+        "正文",
+        director_artifact=_artifact(),
+        active_facts=[],
+        runtime=EvidenceRuntime(),  # type: ignore[arg-type]
+        canon_snapshot=_canon_snapshot(),
+    )
+
+    assert len(findings) == 1
+    assert findings[0].blocking is True
+
+
+def test_consistency_unavailable_historical_snapshot_cannot_make_model_finding_blocking() -> None:
+    class HistoricalRuntime:
+        def complete(self, request: Any) -> Any:
+            return _Response(
+                text="",
+                payload={
+                    "issues": [
+                        {
+                            "code": "canon.location_conflict",
+                            "message": "模型声称历史章节与当前状态冲突。",
+                            "blocking": True,
+                            "source": "canon.character:林照",
+                        }
+                    ]
+                },
+            )
+
+    snapshot = _canon_snapshot(historical=True, available=False)
+    snapshot["facts"] = []
+    snapshot["characters"] = []
+    snapshot["diagnostics"] = {"unsafe_live_state_omitted": True}
+
+    findings = focused_consistency_review(
+        "正文",
+        director_artifact=_artifact(),
+        active_facts=[],
+        runtime=HistoricalRuntime(),  # type: ignore[arg-type]
+        canon_snapshot=snapshot,
+    )
+
+    assert len(findings) == 1
+    assert findings[0].blocking is False
 
 
 def test_consistency_director_execution_deviation_is_advisory() -> None:

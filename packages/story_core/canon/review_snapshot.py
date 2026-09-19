@@ -557,6 +557,12 @@ def build_canon_review_snapshot(
         as_of_chapter=as_of,
         stale_chapters=stale_chapters,
     )
+    if historical and state_source not in {"continuity_snapshot", "chapter_updated_story"}:
+        # Relationships and timeline markers are also live registry state. A
+        # historical review without a trusted bounded base must not expose
+        # them as evidence merely because their chapter number looks old.
+        relationships = []
+        timeline = []
 
     entities: list[dict[str, Any]] = []
     if not unsafe_live_state:
