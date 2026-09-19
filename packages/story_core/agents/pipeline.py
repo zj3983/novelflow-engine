@@ -130,6 +130,7 @@ class WriterPipelineResult:
     context: WriterContext
     director_artifact: DirectorArtifact
     canon_preflight: dict[str, Any] = field(default_factory=dict)
+    canon_review_snapshot: dict[str, Any] = field(default_factory=dict)
     consistency_findings: list[dict[str, Any]] = field(default_factory=list)
     trace_id: str = ""
 
@@ -152,6 +153,7 @@ class ModularChapterBundle:
     body: str
     writer_context: WriterContext
     canon_preflight: dict[str, Any] = field(default_factory=dict)
+    canon_review_snapshot: dict[str, Any] = field(default_factory=dict)
     writer_trace_id: str = ""
     consistency_findings: list[dict[str, Any]] = field(default_factory=list)
     continuity_delta: ContinuityDelta | None = None
@@ -564,6 +566,24 @@ def run_writer(
             update={"rewrite_guidance": rewrite_guidance.strip()}
         )
     canon = _ensure_canon_service(canon_registry, project_root)
+
+    # Build the factual-review boundary before entity preflight.  Prepared
+    # entities are writer-only proposals for this chapter and must not become
+    # "established facts" merely because the director requested them.
+    from packages.story_core.canon.review_snapshot import (
+        build_canon_review_snapshot,
+    )
+
+    canon_review_snapshot = build_canon_review_snapshot(
+        project_root=project_root,
+        chapter_number=chapter_number,
+        registry=canon.registry,
+        continuity_facts=list(context.continuity_facts or []),
+        character_cards=list(context.character_cards or []),
+        entity_cards=list(context.entity_cards or []),
+        world_rules=list(context.world_rules or []),
+    )
+
     preflight, prepared_entities = _preflight_entities(canon, director_artifact)
     context = _add_prepared_entities_to_context(context, prepared_entities)
     runtime = runtime or _default_writer_runtime(project_root)
@@ -655,9 +675,12 @@ def run_writer(
             model_findings = focused_consistency_review(
                 result.body,
                 director_artifact=director_artifact,
-                active_facts=list(context.continuity_facts or []),
+                active_facts=list(canon_review_snapshot.get("facts") or []),
                 runtime=consistency_runtime,
-                character_states=list(context.character_cards or []),
+                character_states=list(
+                    canon_review_snapshot.get("characters") or []
+                ),
+                canon_snapshot=canon_review_snapshot,
             )
             consistency_findings.extend(model_findings)
         except Exception:
@@ -677,6 +700,7 @@ def run_writer(
         context=context,
         director_artifact=director_artifact,
         canon_preflight=preflight,
+        canon_review_snapshot=dict(canon_review_snapshot),
         consistency_findings=[
             {
                 "code": finding.code,
@@ -1337,6 +1361,7 @@ def run_modular_pipeline(
         body=writer_result.body,
         writer_context=writer_result.context,
         canon_preflight=dict(writer_result.canon_preflight or {}),
+        canon_review_snapshot=dict(writer_result.canon_review_snapshot or {}),
         writer_trace_id=writer_result.trace_id,
         consistency_findings=list(writer_result.consistency_findings or []),
         continuity_delta=delta,
