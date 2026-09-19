@@ -24,28 +24,51 @@ def adapt_modular_bundle_to_legacy(
     scene_beats = list(director_artifact.scene_beats or [])
     character_moves = [
         {
-            "name": str(requirement.name or "主角"),
-            "importance": int(requirement.importance or 5),
-            "action": "在 scene beat 中执行导演计划",
-            "kind": str(requirement.kind or "character"),
+            "name": str(intent.name or ""),
+            "goal": str(intent.want or ""),
+            "target": str(intent.target or ""),
+            "emotion": str(intent.emotion or ""),
+            "action": str(intent.move or ""),
+            "speech_strategy": str(intent.speech_strategy or ""),
+            "withhold": str(intent.withhold or ""),
+            "reaction": str(intent.reaction or ""),
+            "dramatic_function": str(intent.dramatic_function or ""),
+            "scene_order": int(beat.order or 0),
+            "importance": 5,
+            "kind": "character",
         }
-        for requirement in (director_artifact.entity_requirements or [])
+        for beat in scene_beats
+        for intent in (beat.character_intents or [])
+        if str(intent.name or "").strip()
     ]
-    if not character_moves and scene_beats:
+    if not character_moves:
         character_moves = [
             {
-                "name": str(beat.location or "主角"),
-                "importance": 5,
-                "action": str(beat.action or ""),
+                "name": str(requirement.name or ""),
+                "importance": int(requirement.importance or 5),
+                "action": "按导演场景计划参与本章",
                 "kind": "character",
             }
-            for beat in scene_beats
+            for requirement in (director_artifact.entity_requirements or [])
+            if str(requirement.kind or "") == "character"
+            and str(requirement.name or "").strip()
         ]
     scene_cards = [
         {
+            "scene_id": f"director-{chapter_number}-{int(beat.order or 0)}",
             "location": str(beat.location or ""),
+            "purpose": str(beat.purpose or ""),
+            "conflict": str(beat.conflict or ""),
+            "participants": list(beat.participants or []),
+            "character_intents": [
+                intent.model_dump(mode="json")
+                for intent in (beat.character_intents or [])
+            ],
             "action": str(beat.action or ""),
             "result": str(beat.result or ""),
+            "emotional_turn": str(beat.emotional_turn or ""),
+            "relationship_shift": str(beat.relationship_shift or ""),
+            "ending_pressure": str(beat.ending_pressure or ""),
             "order": int(beat.order or 0),
         }
         for beat in scene_beats
