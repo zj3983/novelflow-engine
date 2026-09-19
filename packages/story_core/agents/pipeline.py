@@ -82,6 +82,7 @@ from packages.story_core.agents.consistency import (
 # ``packages.story_core.canon`` — the canon package itself loads
 # ``agents.contracts`` (via ``entity_designer``), and
 # ``agents/__init__.py`` eagerly re-exports this pipeline module.
+from packages.story_core.character_agent import CharacterAgent
 from packages.story_core.chapter_length_policy import (
     CHAPTER_HARD_MAX_CHARS,
     CHAPTER_HARD_MIN_CHARS,
