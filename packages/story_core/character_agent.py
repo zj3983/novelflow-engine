@@ -219,6 +219,13 @@ class OpenAICharacterProposalProvider(BaseOpenAIProvider):
                     emotion=str(item.get("emotion", "neutral")).strip() or "neutral",
                     action=str(item.get("action", "")).strip(),
                     priority=int(item.get("priority", 0) or 0),
+                    target=str(item.get("target", "")).strip(),
+                    trigger=str(item.get("trigger", "")).strip(),
+                    activation_reason=str(item.get("activation_reason", "")).strip(),
+                    speech_strategy=str(item.get("speech_strategy", "")).strip(),
+                    withhold=str(item.get("withhold", "")).strip(),
+                    blocked_reaction=str(item.get("blocked_reaction", "")).strip(),
+                    dramatic_function=str(item.get("dramatic_function", "")).strip(),
                     new_character_candidates=[
                         str(candidate).strip()
                         for candidate in item.get("new_character_candidates", [])
