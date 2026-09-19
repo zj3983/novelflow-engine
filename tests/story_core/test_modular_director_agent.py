@@ -202,8 +202,11 @@ def test_director_renders_target_contract_compact_neighbors_and_previous_tail(
                     "title": "上章",
                     "summary": "旧债未清",
                     "state_delta": "欠下人情",
-                    "chapter_sop": {"opening_carry": "接住上一章的债"},
-                    "ending_hook": "有人在门外等候",
+                    "chapter_sop": {
+                        "opening_carry": "接住上一章的债",
+                        "ending_hook": "上章 SOP 正式钩子",
+                    },
+                    "ending_hook": "上章顶层旧格式钩子",
                 },
                 {
                     "number": 7,
@@ -213,11 +216,12 @@ def test_director_renders_target_contract_compact_neighbors_and_previous_tail(
                     "gain": "拿到通行令",
                     "cost": "暴露行踪",
                     "state_delta": "获得通行令",
-                    "hook": "通行令背面浮出血字",
+                    "hook": "顶层旧格式钩子",
                     "chapter_sop": {
                         "opening_carry": "接住上章门外脚步",
                         "mid_feedback": "守门人认出旧印",
                         "turn": "通行令并非免费",
+                        "ending_hook": "SOP正式钩子：通行令背面浮出血字",
                     },
                     "payoff_contract": {"need": "拿到通行令"},
                     "must_not_write": ["不要提前揭示幕后人"],
@@ -239,13 +243,17 @@ def test_director_renders_target_contract_compact_neighbors_and_previous_tail(
     assert artifact.outline_contract is not None
     assert artifact.outline_contract.gain == "拿到通行令"
     assert artifact.outline_contract.cost == "暴露行踪"
-    assert artifact.outline_contract.planned_hook == "通行令背面浮出血字"
-    assert artifact.hook == "通行令背面浮出血字"
+    assert artifact.outline_contract.planned_hook == "SOP正式钩子：通行令背面浮出血字"
+    assert artifact.hook == "SOP正式钩子：通行令背面浮出血字"
     prompt = runtime.requests[0].prompt
     assert "## 本章上游执行合同" in prompt
     assert "本章收益：拿到通行令" in prompt
+    assert "计划章末钩子：SOP正式钩子：通行令背面浮出血字" in prompt
+    assert "顶层旧格式钩子" not in prompt
     assert "禁止提前写：不要提前揭示幕后人" in prompt
     assert "承接：接住上一章的债" in prompt
+    assert "章末钩子：上章 SOP 正式钩子" in prompt
+    assert "上章顶层旧格式钩子" not in prompt
     assert "承接：接住上一章通行令血字" in prompt
     assert "上章实际收尾\n林照按住左肩喘息。" in prompt
     assert "后续完整合同不应展开" not in prompt

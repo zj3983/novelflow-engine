@@ -113,7 +113,10 @@ def build_outline_execution_contract(
         gain=_outline_text(selected.get("gain")) or _outline_text(selected.get("payoff")),
         cost=_outline_text(selected.get("cost")) or _outline_text(selected.get("turn")),
         state_delta=_outline_text(selected.get("state_delta")),
-        planned_hook=_outline_text(selected.get("hook"))
+        # ``chapter_sop.ending_hook`` is the formal chapter-contract field.
+        # Top-level values remain legacy fallbacks for older rolling outlines.
+        planned_hook=_outline_text(chapter_sop.get("ending_hook"))
+        or _outline_text(selected.get("hook"))
         or _outline_text(selected.get("ending_hook")),
         opening_carry=_outline_text(chapter_sop.get("opening_carry")),
         mid_feedback=_outline_text(chapter_sop.get("mid_feedback")),
@@ -165,7 +168,10 @@ def _render_nearby_outline(context: DirectorContext) -> str:
             chapter_sop = entry.get("chapter_sop")
             if isinstance(chapter_sop, dict):
                 opening_carry = _outline_text(chapter_sop.get("opening_carry")) or opening_carry
-            ending_hook = _outline_text(entry.get("ending_hook"))
+            chapter_sop_ending_hook = ""
+            if isinstance(chapter_sop, dict):
+                chapter_sop_ending_hook = _outline_text(chapter_sop.get("ending_hook"))
+            ending_hook = chapter_sop_ending_hook or _outline_text(entry.get("ending_hook"))
             hook = _outline_text(entry.get("hook"))
             for label, value in (
                 ("状态变化", state_delta),

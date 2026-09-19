@@ -611,7 +611,7 @@ def run_writer(
     if outline_contract is not None and outline_contract.planned_hook:
         hook_review = review_chapter_hook(
             result.body,
-            parse_chapter_end_hook(director_artifact.hook),
+            parse_chapter_end_hook(outline_contract.planned_hook),
             None,
         )
         if hook_review.get("scores", {}).get("hook_landed") == 5:

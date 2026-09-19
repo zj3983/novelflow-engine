@@ -405,6 +405,37 @@ def test_run_writer_accepts_planned_hook_when_it_lands_in_final_quarter(
     )
 
 
+def test_run_writer_checks_contract_hook_when_artifact_hook_differs(
+    tmp_path: Path,
+) -> None:
+    _seed_legacy_project(tmp_path, with_outline=False)
+    artifact = _hook_artifact().model_copy(
+        update={
+            "hook": "旧的 artifact 收尾",
+            "outline_contract": OutlineExecutionContract(
+                chapter_number=1,
+                planned_hook="真正必须落地的合同终点",
+            ),
+        }
+    )
+    body = "林昭提灯上山，" * 900 + "旧的 artifact 收尾已经完成。"
+    result = run_writer(
+        project_root=tmp_path,
+        chapter_number=1,
+        director_artifact=artifact,
+        runtime=_StubWriterRuntime(body=body),
+        consistency_runtime=_EmptyConsistencyRuntime(),
+    )
+
+    hook_findings = [
+        finding
+        for finding in result.consistency_findings
+        if finding["code"] == "chapter.hook_not_landed"
+    ]
+    assert hook_findings
+    assert hook_findings[0]["blocking"] is True
+
+
 def test_director_context_falls_back_to_legacy_when_story_system_is_partial(
     tmp_path: Path,
 ):
