@@ -184,9 +184,10 @@ class OpenAICharacterProposalProvider(BaseOpenAIProvider):
         request = ModelRequest(
             prompt=prompt,
             system_prompt=(
-                "You are a character action planner for an evolving Chinese novel project. "
+                "You are a character-intent planner for an evolving Chinese novel. "
                 "Return JSON only with a top-level object containing a proposals array. "
-                "Each proposal must include name, goal, emotion, action, priority, and new_character_candidates."
+                "Each proposal describes what that character independently wants to do now; "
+                "it is pressure on the director, not a command that must appear in the chapter."
             ),
             provider=settings.provider,
             model=story.agent_settings.character_model or story.agent_settings.global_model or default_fast_model_name(),
