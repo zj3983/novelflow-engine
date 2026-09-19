@@ -11,6 +11,7 @@ state, hook, and entity requirements.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from ..contracts import DirectorArtifact, EntityRequirement, SceneBeat
