@@ -4215,6 +4215,7 @@ class StoryOrchestrator:
             writer_runtime=writer_runtime,
             fact_extractor=fact_extractor,
             consistency_runtime=consistency_runtime,
+            character_agent=character_agent,
             rewrite_guidance=rewrite_guidance,
         )
         from packages.story_core.modular_bundle_adapter import (
