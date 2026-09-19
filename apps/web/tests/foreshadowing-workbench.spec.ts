@@ -421,8 +421,8 @@ test("角色卡支持按分类状态和叙事功能筛选，并保存可编辑�
   await expect(protagonistTaxonomy.getByText("主角", { exact: true })).toBeVisible();
   await expect(cards.filter({ has: page.getByRole("heading", { name: "赵衡", exact: true }) })).toContainText("重要角色 · 阶段反派");
   await expect(cards.filter({ has: page.getByRole("heading", { name: "顾闻舟", exact: true }) })).toContainText("核心角色 · 长期反派");
-  await expect(cards.filter({ has: page.getByRole("heading", { name: "赵衡", exact: true }) }).getByText(/阶段反派待补全卡/)).toBeVisible();
-  await expect(cards.filter({ has: page.getByRole("heading", { name: "顾闻舟", exact: true }) }).getByText(/长期反派完整模板/)).toBeVisible();
+  await expect(cards.filter({ has: page.getByRole("heading", { name: "赵衡", exact: true }) })).toContainText("待补全 · 完整度 42%");
+  await expect(cards.filter({ has: page.getByRole("heading", { name: "顾闻舟", exact: true }) })).toContainText("已就绪 · 完整度 92%");
   await expect(cards.filter({ has: page.getByRole("heading", { name: "旧卡", exact: true }) }).getByText("配角 · 其他", { exact: true })).toBeVisible();
   await expect(cards.filter({ has: page.getByRole("heading", { name: "赵衡", exact: true }) }).locator(".ws-character-card__head > div:first-child > p").filter({ hasText: "重要配角卡" })).toHaveCount(0);
   await page.getByLabel("角色分类筛选").selectOption("stub");
