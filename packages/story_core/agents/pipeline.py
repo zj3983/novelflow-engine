@@ -1232,6 +1232,45 @@ def run_modular_pipeline(
         record_writer_stage,
     )
 
+    director_context = _ensure_director_context(
+        project_root=project_root,
+        chapter_number=chapter_number,
+    )
+    if story is not None:
+        report_generation_progress(
+            {
+                "message": "角色正在形成各自的本章意图",
+                "stage": "character_intent",
+                "source": "modular-pipeline",
+                "artifact": {
+                    "reason": "stage_started",
+                    "inputs": {"chapter_number": chapter_number},
+                    "used_modules": ["chapter_cast", "character_cards", "relationships"],
+                },
+            }
+        )
+        character_intents = _character_intents_for_context(
+            story,
+            director_context,
+            chapter_number,
+            agent=character_agent,
+        )
+        director_context = director_context.model_copy(
+            update={"character_intents": character_intents}
+        )
+        report_generation_progress(
+            {
+                "message": "角色意图已生成",
+                "status": "done",
+                "stage": "character_intent",
+                "source": "modular-pipeline",
+                "artifact": {
+                    "reason": "stage_completed",
+                    "outputs": {"proposals": len(character_intents)},
+                },
+            }
+        )
+
     report_generation_progress(
         {
             "message": "导演正在读取大纲、连续性和角色卡",
