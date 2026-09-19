@@ -1,8 +1,21 @@
 # Novel Autogrowth Engine
 
+## 中文简介
+
+NovelFlow Engine 是一个面向长篇小说持续创作的开源生成引擎。它围绕故事状态、记忆压缩、角色与世界观连续性、章节规划与生成建立可检查、可持续演进的创作流水线，并提供 Web 工作台用于生成章节和查看故事状态。
+
+## English
 This project turns a novel outline into a continuously evolving chapter stream.
 
 The backend keeps story state, memory compression, and chapter continuity checks in Python. The web workbench lets you trigger chapter generation and inspect the evolving story bundle from the browser.
+
+## 开源与贡献 / Open source & contributing
+
+本项目源码采用 [Apache License 2.0](LICENSE) 开源。除非文件中另有说明，你可以在许可证允许的范围内使用、修改和分发本项目，包括商业用途；再分发时需要遵守 Apache-2.0 的许可和声明要求。
+
+本仓库的许可证只覆盖仓库自身源码及文档。你接入的第三方大模型、API、云服务、数据集或其他外部依赖，仍需遵守对应服务商自己的许可、计费和使用条款。
+
+欢迎提交 Issue 和 Pull Request。参与前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)、[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)；安全问题请按 [SECURITY.md](SECURITY.md) 私密报告，不要在公开 Issue 中披露可利用细节。
 
 ## Local development
 
