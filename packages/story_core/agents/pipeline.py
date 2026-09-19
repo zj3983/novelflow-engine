@@ -484,6 +484,7 @@ def plan_director_artifact(
     chapter_number: int,
     runtime: DirectorRuntime | None = None,
     rewrite_guidance: str = "",
+    context: DirectorContext | None = None,
 ) -> DirectorPipelineResult:
     """Run the new director pipeline for ``chapter_number``.
 
