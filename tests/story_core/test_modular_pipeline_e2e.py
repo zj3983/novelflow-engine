@@ -33,10 +33,12 @@ from packages.story_core.agents.pipeline import (
     _ensure_canon_service,
     _ensure_writer_context,
     _preflight_entities,
+    run_writer,
 )
 from packages.story_core.agents.contracts import (
     DirectorArtifact,
     EntityRequirement,
+    OutlineExecutionContract,
     SceneBeat,
 )
 from packages.story_core.canon.registry import CanonRegistry
@@ -328,6 +330,79 @@ class _StubConsistencyRuntime:
                 }
             ]
         }
+
+
+class _EmptyConsistencyRuntime:
+    def complete(self, request: Any) -> list[Any]:
+        return []
+
+
+def _hook_artifact() -> DirectorArtifact:
+    return DirectorArtifact(
+        chapter_number=1,
+        chapter_goal="拿到通行令",
+        opening_state="林昭在妖林门口",
+        scene_beats=[
+            SceneBeat(
+                order=1,
+                location="妖林",
+                action="林昭逼退守门人",
+                result="守门人交出通行令",
+            ),
+            SceneBeat(
+                order=2,
+                location="妖林门口",
+                action="林昭查看通行令",
+                result="通行令背面浮出血字",
+            ),
+        ],
+        ending_state="林昭拿到通行令",
+        hook="通行令背面浮出血字",
+        outline_contract=OutlineExecutionContract(
+            chapter_number=1,
+            planned_hook="通行令背面浮出血字",
+        ),
+    )
+
+
+def test_run_writer_hard_fails_when_planned_hook_does_not_land(
+    tmp_path: Path,
+) -> None:
+    _seed_legacy_project(tmp_path, with_outline=False)
+    result = run_writer(
+        project_root=tmp_path,
+        chapter_number=1,
+        director_artifact=_hook_artifact(),
+        runtime=_StubWriterRuntime(body="林昭提灯上山，" * 900),
+        consistency_runtime=_EmptyConsistencyRuntime(),
+    )
+
+    hook_findings = [
+        finding
+        for finding in result.consistency_findings
+        if finding["code"] == "chapter.hook_not_landed"
+    ]
+    assert hook_findings
+    assert hook_findings[0]["blocking"] is True
+
+
+def test_run_writer_accepts_planned_hook_when_it_lands_in_final_quarter(
+    tmp_path: Path,
+) -> None:
+    _seed_legacy_project(tmp_path, with_outline=False)
+    body = "林昭提灯上山，" * 900 + "通行令背面浮出血字。"
+    result = run_writer(
+        project_root=tmp_path,
+        chapter_number=1,
+        director_artifact=_hook_artifact(),
+        runtime=_StubWriterRuntime(body=body),
+        consistency_runtime=_EmptyConsistencyRuntime(),
+    )
+
+    assert not any(
+        finding["code"] == "chapter.hook_not_landed"
+        for finding in result.consistency_findings
+    )
 
 
 def test_director_context_falls_back_to_legacy_when_story_system_is_partial(
