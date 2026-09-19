@@ -75,6 +75,7 @@ class StoryEngine:
         director_runtime: Any | None = None,
         writer_runtime: Any | None = None,
         fact_extractor: Any | None = None,
+        character_agent: Any | None = None,
     ) -> ChapterBundle:
         # The engine stores the ``project_root`` itself when
         # ``use_modular_agents=True``; the call site does not
