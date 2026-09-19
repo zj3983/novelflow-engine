@@ -215,12 +215,26 @@ class ArcRecap(BaseModel):
 
 
 class CharacterProposal(BaseModel):
+    """One character's current pressure on the chapter plan.
+
+    These values are planning signals, not confirmed story facts.  The
+    director may adopt, defer, collide, or suppress a proposal rather than
+    executing every field literally.
+    """
+
     name: str
     goal: str
     emotion: str = "neutral"
     action: str = ""
     priority: int = 0
     new_character_candidates: list[str] = Field(default_factory=list)
+    target: str = ""
+    trigger: str = ""
+    activation_reason: str = ""
+    speech_strategy: str = ""
+    withhold: str = ""
+    blocked_reaction: str = ""
+    dramatic_function: str = ""
 
 
 class DirectorDecision(BaseModel):
