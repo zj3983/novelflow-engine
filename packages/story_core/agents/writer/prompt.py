@@ -37,6 +37,30 @@ def _render_director_artifact(request: WriterRequest) -> str:
         lines.append(
             f"- 顺序{beat.order} · 地点：{beat.location} · 动作：{beat.action} · 结果：{beat.result}"
         )
+        if beat.purpose:
+            lines.append(f"  场景目的：{beat.purpose}")
+        if beat.conflict:
+            lines.append(f"  冲突：{beat.conflict}")
+        if beat.participants:
+            lines.append(f"  参与人物：{'、'.join(beat.participants)}")
+        for intent in beat.character_intents:
+            parts = [
+                f"{intent.name}想要：{intent.want}" if intent.want else intent.name,
+                f"对象：{intent.target}" if intent.target else "",
+                f"情绪：{intent.emotion}" if intent.emotion else "",
+                f"行动：{intent.move}" if intent.move else "",
+                f"说话策略：{intent.speech_strategy}" if intent.speech_strategy else "",
+                f"不说出口：{intent.withhold}" if intent.withhold else "",
+                f"受阻后：{intent.reaction}" if intent.reaction else "",
+                f"戏剧功能：{intent.dramatic_function}" if intent.dramatic_function else "",
+            ]
+            lines.append("  人物意图：" + "；".join(part for part in parts if part))
+        if beat.emotional_turn:
+            lines.append(f"  情绪转折：{beat.emotional_turn}")
+        if beat.relationship_shift:
+            lines.append(f"  关系变化：{beat.relationship_shift}")
+        if beat.ending_pressure:
+            lines.append(f"  收尾压力：{beat.ending_pressure}")
     lines.extend(["", "## 收尾状态", artifact.ending_state])
     if artifact.hook:
         lines.extend(["", "## 章末钩子", artifact.hook])
@@ -276,7 +300,9 @@ def build_writer_prompt(request: WriterRequest) -> str:
         "",
         "## 成稿要求\n"
         "- 直接写人物在场景中的行动、观察和交流，不要用报告口吻复述剧情。\n"
-        "- 对话要接住对方的话并表达完整意思；不要把正常口语压成并列词组或故作高深的短句。\n"
+        "- 对话服从人物当下目的和关系，不要求每个人完整陈述逻辑；可以打断、沉默、回避、反问、故意误解、答非所问、转移话题或用动作回应。需要讲清事实时再自然说完整。\n"
+        "- 禁止为了体现群像而让出场人物依次发表观点；没有当前意图的人可以沉默、旁观或只产生动作反应。\n"
+        "- character_intents 是作者侧写作控制，不是角色公开说出的事实；尤其不要把 want/withhold 直接改写成解释性旁白，让动作、停顿、措辞和选择把它表现出来。\n"
         "- 描写只保留会影响人物判断、情绪或后续行动的细节；整章只在必要处保留一两处比喻，其余直接写动作和结果。\n"
         "- 文书、面板或记录最多摘三行，只保留会改变人物判断的字段；不照抄完整经过、后台字段和处理说明。\n"
         "- 除非本章明确要求恐怖细节，不细写暴露的器官、体液或尸体状态，用人物反应和现场后果呈现危险。\n"
