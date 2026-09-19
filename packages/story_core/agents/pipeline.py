@@ -211,6 +211,101 @@ def _ensure_director_context(
     )
 
 
+def _chapter_cast_names(
+    story: StoryState,
+    context: DirectorContext,
+    chapter_number: int,
+) -> list[str]:
+    """Return a bounded cast seed without forcing every role into the chapter."""
+
+    ordered: list[str] = []
+
+    def add(value: Any) -> None:
+        name = str(value or "").strip()
+        if name and name not in ordered:
+            ordered.append(name)
+
+    outline_context = story.outline_context if isinstance(story.outline_context, dict) else {}
+    chapter = outline_context.get("chapter") if isinstance(outline_context.get("chapter"), dict) else {}
+    try:
+        planned_number = int(chapter.get("chapter_number") or 0)
+    except (TypeError, ValueError):
+        planned_number = 0
+    if planned_number == chapter_number:
+        for name in chapter.get("cast") or []:
+            add(name)
+
+    target_entry: dict[str, Any] = {}
+    for entry in context.nearby_outline:
+        if not isinstance(entry, dict):
+            continue
+        number = entry.get("number")
+        if number == chapter_number:
+            target_entry = entry
+            for name in entry.get("cast") or []:
+                add(name)
+            break
+
+    for character in story.characters:
+        if (
+            str(character.narrative_function or "") == "protagonist"
+            or str(character.role or "").strip().lower() in {"protagonist", "主角"}
+        ):
+            add(character.name)
+            break
+
+    target_text = " ".join(
+        str(target_entry.get(key) or "")
+        for key in ("title", "summary", "goal", "obstacle", "action", "turn", "payoff", "ending_hook")
+    )
+    target_text += " " + context.previous_chapter_tail
+    for character in story.characters:
+        if character.name and character.name in target_text:
+            add(character.name)
+
+    return ordered[:6]
+
+
+def _character_intents_for_context(
+    story: StoryState,
+    context: DirectorContext,
+    chapter_number: int,
+    *,
+    agent: CharacterAgent | None = None,
+) -> list[dict[str, Any]]:
+    """Run one bounded character-intent pass for the director.
+
+    Failure is advisory: the director can still plan from the existing
+    character cards when the character runtime is unavailable.
+    """
+
+    cast_names = _chapter_cast_names(story, context, chapter_number)
+    by_name = {
+        character.name: character
+        for character in story.characters
+        if character.name
+        and not character.frozen
+        and character.lifecycle_state == "active"
+    }
+    selected = [by_name[name] for name in cast_names if name in by_name]
+    if not selected:
+        selected = [
+            character
+            for character in story.characters
+            if not character.frozen and character.lifecycle_state == "active"
+        ][:4]
+    if not selected:
+        return []
+
+    selected_story = story.model_copy(update={"characters": selected}, deep=True)
+    planner = agent or CharacterAgent()
+    try:
+        proposals = planner.propose_all(selected_story)
+    except Exception:
+        proposals = planner.rule_provider.propose_all(selected_story)
+    return [proposal.model_dump(mode="json") for proposal in proposals[:6]]
+
+
 def _ensure_writer_context(
     *,
     project_root: Any,
