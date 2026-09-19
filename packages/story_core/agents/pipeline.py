@@ -1182,6 +1182,8 @@ def run_modular_pipeline(
     *,
     project_root: Any,
     chapter_number: int,
+    story: StoryState | None = None,
+    character_agent: CharacterAgent | None = None,
     director_runtime: DirectorRuntime | None = None,
     writer_runtime: WriterRuntime | None = None,
     fact_extractor: FactExtractor | None = None,
