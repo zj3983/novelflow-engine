@@ -557,6 +557,44 @@ class ChapterQualityError(ValueError):
         self.operation = operation
 
 
+def _explicit_blocking_findings(quality_report: Any) -> list[dict[str, Any]]:
+    """Read structured hard findings without reclassifying legacy issue text."""
+    if not isinstance(quality_report, dict):
+        return []
+    findings: list[dict[str, Any]] = []
+    writing_review = quality_report.get("writing_review")
+    if isinstance(writing_review, dict):
+        for item in writing_review.get("blocking") or []:
+            if isinstance(item, dict):
+                if item.get("blocking") is False or item.get("severity") == "advisory":
+                    continue
+                findings.append(item)
+            elif isinstance(item, str) and item.strip():
+                findings.append({"code": item})
+    review_result = quality_report.get("review_result")
+    if isinstance(review_result, dict) and review_result.get("schema_version") == "review-result/v2":
+        for item in review_result.get("issues") or []:
+            if isinstance(item, dict) and item.get("blocking") is True:
+                findings.append(item)
+        if review_result.get("status") == "blocked" and not findings:
+            findings.append({"code": "review_result.blocked"})
+    return findings
+
+
+def _assert_explicit_quality_blocking(quality_report: Any, *, operation: str) -> None:
+    if operation not in {"generate", "regenerate"}:
+        return
+    findings = _explicit_blocking_findings(quality_report)
+    if not findings:
+        return
+    details = [str(item.get("code") or item.get("message") or "blocking_finding") for item in findings[:6]]
+    raise ChapterQualityError(
+        f"{operation}_quality_failed:{'; '.join(details)}",
+        quality_report=quality_report,
+        operation=operation,
+    )
+
+
 def _assert_auto_chapter_quality(
     quality_report: dict[str, Any],
     *,
@@ -564,6 +602,7 @@ def _assert_auto_chapter_quality(
 ) -> None:
     if operation not in {"generate", "regenerate"}:
         return
+    _assert_explicit_quality_blocking(quality_report, operation=operation)
     if operation == "regenerate" and bool(quality_report.get("regeneration_degraded")):
         return
     if not isinstance(quality_report, dict) or quality_report.get("ok") is not False:
@@ -7018,6 +7057,7 @@ class FileProjectStore(
             assertion_report["writing_review"] = review["writing_review"]
 
         try:
+            _assert_explicit_quality_blocking(assertion_report, operation=operation)
             if accept_quality_warnings:
                 assertion_report["manual_quality_override"] = True
                 if isinstance(quality_report, dict):
@@ -7331,6 +7371,8 @@ class FileProjectStore(
             raise ValueError("candidate_submission_payload_missing")
         payload["body"] = candidate.body
         payload["chapter_title"] = candidate.chapter_title or payload.get("chapter_title")
+        _assert_explicit_quality_blocking(candidate.quality_report, operation=candidate.operation)
+        _assert_explicit_quality_blocking(payload.get("quality_report"), operation=candidate.operation)
 
         # The confirmation is the single atomic boundary the user
         # can trust. The body runs the legacy ``persist_bundle``
