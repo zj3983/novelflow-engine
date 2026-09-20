@@ -108,6 +108,7 @@ def record_character_intent_stage(
     started_monotonic: float | None = None,
     provider: str = "",
     model: str = "",
+    result_source: str = "",
 ) -> Path:
     """Record the bounded pre-director character-intent planning pass."""
 
@@ -146,6 +147,7 @@ def record_character_intent_stage(
         selected_module_ids=[],
         provider=provider,
         model=model,
+        result_source=result_source,
         output_summary=summary,
         error="",
     )

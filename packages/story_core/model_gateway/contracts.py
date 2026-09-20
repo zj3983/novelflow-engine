@@ -44,6 +44,7 @@ class ModelResponse:
     usage: Mapping[str, Any] = field(default_factory=dict)
     error: str = ""
     raw: Any = None
+    temperature_omitted: bool = False
 
     @classmethod
     def success(

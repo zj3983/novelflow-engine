@@ -237,7 +237,7 @@ def test_character_agent_uses_injected_llm_provider_when_assisted_mode_is_enable
     assert proposals[0].action == "presses the lead harder than the rules allow"
 
 
-def test_character_agent_falls_back_to_global_default_model_when_character_model_is_blank(monkeypatch):
+def test_character_agent_uses_planner_binding_when_character_model_is_blank(monkeypatch):
     captured = {}
 
     def fake_runtime_settings(agent_name=None):
@@ -267,6 +267,15 @@ def test_character_agent_falls_back_to_global_default_model_when_character_model
         "packages.story_core.agent_base.resolve_openai_runtime_settings",
         fake_runtime_settings,
     )
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "packages.story_core.agents._runtime_common._resolve_stage_settings",
+        lambda stage: SimpleNamespace(
+            provider_id="custom_openai", model="planner-model",
+            protocol="openai_compatible", temperature=0.7,
+        ),
+    )
     gateway = RecordingStageGateway()
 
     story = StoryState(
@@ -292,5 +301,6 @@ def test_character_agent_falls_back_to_global_default_model_when_character_model
         llm_provider=OpenAICharacterProposalProvider(model_gateway=gateway)
     ).propose_all(story)
 
-    assert gateway.calls[0][1].model == "gpt-global"
+    assert gateway.calls[0][0] == "planner"
+    assert gateway.calls[0][1].model == "planner-model"
     assert proposals[0].name == "Lin Yue"

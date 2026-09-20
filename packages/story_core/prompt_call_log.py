@@ -161,6 +161,7 @@ class PromptCallLog:
         elapsed_seconds: float | None = None,
         output: str = "",
         error: str = "",
+        temperature_omitted: bool = False,
     ) -> dict[str, Any]:
         payload = self.get(call_id)
         payload.update(
@@ -176,6 +177,8 @@ class PromptCallLog:
                 "error": str(error),
             }
         )
+        if temperature_omitted:
+            payload["temperature"] = None
         _atomic_write(self._detail_path(call_id), payload)
         self._append_event(payload)
         return payload

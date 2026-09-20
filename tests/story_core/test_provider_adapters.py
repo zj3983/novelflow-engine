@@ -93,9 +93,90 @@ def test_openai_compatible_request_and_response_use_standard_chat_shape():
         {"role": "user", "content": "Write it"},
     ]
     assert call["payload"]["response_format"] == {"type": "json_object"}
+    assert call["payload"]["temperature"] == 0.4
+    assert len(transport.calls) == 1
     assert "parameters" not in call["payload"]
     assert call["config"].timeout == 19
     assert response.ok and response.text == "chapter" and response.request_id == "req-1"
+
+
+def test_openai_compatible_retries_once_without_temperature_only_on_explicit_rejection():
+    class Transport:
+        def __init__(self):
+            self.payloads = []
+
+        def __call__(self, *, url, payload, headers, config):
+            self.payloads.append(dict(payload))
+            if len(self.payloads) == 1:
+                raise urllib.error.HTTPError(
+                    url, 400, "Bad Request", {},
+                    io.BytesIO(json.dumps({"error": {"message": "invalid temperature: only 1 is allowed for this model", "type": "invalid_request_error"}}).encode()),
+                )
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+    transport = Transport()
+    response = OpenAICompatibleAdapter(base_url="https://api.example/v1", api_key="secret", transport=transport).complete(request(json_mode=True))
+    assert response.ok and response.temperature_omitted
+    assert len(transport.payloads) == 2
+    assert transport.payloads[0]["temperature"] == 0.4
+    assert transport.payloads[1] == {k: v for k, v in transport.payloads[0].items() if k != "temperature"}
+
+
+def test_openai_compatible_temperature_compatibility_retry_is_bounded_to_two_calls():
+    # A fresh response body is needed on each call to simulate a rejecting server.
+    calls = []
+
+    def reject(*, url, payload, headers, config):
+        calls.append(dict(payload))
+        raise urllib.error.HTTPError(
+            url, 400, "Bad Request", {},
+            io.BytesIO(json.dumps({"error": {"message": "temperature not supported"}}).encode()),
+        )
+
+    response = OpenAICompatibleAdapter(base_url="https://api.example/v1", api_key="secret", transport=reject).complete(request())
+    assert not response.ok and response.temperature_omitted
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("status,message", [
+    (400, "invalid request"), (400, "temperature out of range"),
+    (401, "temperature not supported"), (403, "temperature not supported"),
+    (404, "temperature not supported"), (429, "temperature not supported"),
+    (500, "temperature not supported"),
+])
+def test_openai_compatible_does_not_retry_unrelated_errors(status, message):
+    calls = []
+
+    def transport(*, url, payload, headers, config):
+        calls.append(payload)
+        raise urllib.error.HTTPError(url, status, "error", {}, io.BytesIO(json.dumps({"error": {"message": message}}).encode()))
+
+    response = OpenAICompatibleAdapter(base_url="https://api.example/v1", api_key="secret", transport=transport).complete(request())
+    assert not response.ok
+    assert len(calls) == 1
+
+
+def test_openai_compatible_does_not_retry_timeout_as_temperature_failure():
+    transport = RecordingTransport(TimeoutError("timed out"))
+    response = OpenAICompatibleAdapter(base_url="https://api.example/v1", api_key="secret", transport=transport).complete(request())
+    assert not response.ok and response.error == "request_timed_out"
+    assert len(transport.calls) == 1
+
+
+def test_openai_compatible_respects_explicit_compatibility_opt_out():
+    calls = []
+
+    def reject(*, url, payload, headers, config):
+        calls.append(dict(payload))
+        raise urllib.error.HTTPError(
+            url, 400, "Bad Request", {},
+            io.BytesIO(json.dumps({"error": {"message": "temperature not supported"}}).encode()),
+        )
+
+    response = OpenAICompatibleAdapter(base_url="https://api.example/v1", api_key="secret", transport=reject).complete(
+        request(metadata={"allow_compatibility_fallback": False})
+    )
+    assert not response.ok and len(calls) == 1
 
 
 def test_default_http_transport_retries_and_keeps_timeout_and_size_limit(monkeypatch):

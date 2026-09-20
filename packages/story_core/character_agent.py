@@ -11,7 +11,7 @@ from packages.story_core.agent_base import (
     compact_list,
     compact_text,
 )
-from packages.story_core.model_gateway import ModelRequest
+from packages.story_core.model_gateway import ModelRequest, ModelResponse, normalize_model_error
 from packages.story_core.models import CharacterProposal, CharacterState, StoryState, default_fast_model_name
 
 
@@ -269,6 +269,18 @@ class RuleBasedCharacterProposalProvider:
 class OpenAICharacterProposalProvider(BaseOpenAIProvider):
     runtime_key = "character"
 
+    def complete(self, request: ModelRequest) -> ModelResponse:
+        from packages.story_core.agents._runtime_common import call_with_logging
+
+        response, _provider, _model, _protocol = call_with_logging(
+            gateway=self.model_gateway, stage="planner", request=request
+        )
+        if response.ok:
+            self._clear_last_error()
+        else:
+            self._set_last_error(normalize_model_error(response))
+        return response
+
     def propose_all(self, story: StoryState) -> list[CharacterProposal]:
         settings = self._runtime_settings()
         active_characters = [
@@ -280,6 +292,11 @@ class OpenAICharacterProposalProvider(BaseOpenAIProvider):
             return []
 
         prompt = self._build_prompt(story, active_characters)
+        chapter_context = (story.outline_context or {}).get("chapter", {})
+        try:
+            chapter_number = int(chapter_context.get("chapter_number") or story.current_chapter + 1)
+        except (AttributeError, TypeError, ValueError):
+            chapter_number = story.current_chapter + 1
         request = ModelRequest(
             prompt=prompt,
             system_prompt=(
@@ -294,6 +311,7 @@ class OpenAICharacterProposalProvider(BaseOpenAIProvider):
             temperature=float(story.agent_settings.temperature),
             max_tokens=min(2200, 500 + 280 * len(active_characters)),
             json_mode=True,
+            metadata={"chapter_number": chapter_number},
         )
         response = self.complete(request)
         parsed = _parse_json_text(response.text) if response.ok else None
@@ -447,19 +465,25 @@ class CharacterAgent:
     ) -> None:
         self.rule_provider = rule_provider or RuleBasedCharacterProposalProvider()
         self.llm_provider = llm_provider or OpenAICharacterProposalProvider()
+        self.last_result_source = "empty"
 
     def propose(self, story: StoryState, character: CharacterState) -> CharacterProposal:
         return self.rule_provider.propose(story, character)
 
     def propose_all(self, story: StoryState) -> list[CharacterProposal]:
+        self.last_result_source = "empty"
         if story.agent_settings.mode == "LLM-assisted":
             try:
                 llm_proposals = self.llm_provider.propose_all(story)
             except Exception:
                 llm_proposals = []
             if llm_proposals:
+                self.last_result_source = "llm"
                 return llm_proposals
         try:
-            return self.rule_provider.propose_all(story)
+            proposals = self.rule_provider.propose_all(story)
+            if proposals:
+                self.last_result_source = "rule_fallback"
+            return proposals
         except Exception:
             return []

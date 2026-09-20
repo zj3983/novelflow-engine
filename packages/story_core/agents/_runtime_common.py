@@ -1,6 +1,6 @@
 """Shared helpers for the modular agent runtimes.
 
-The three gateway-backed runtimes (``GatewayDirectorRuntime``,
+The gateway-backed runtimes (``GatewayDirectorRuntime``,
 ``GatewayWriterRuntime``, ``GatewayConsistencyRuntime``) used
 to each re-implement the same lightweight-request
 translation, the same stage-settings lookup, and the same
@@ -136,33 +136,33 @@ def translate_request(request: Any, *, stage: str) -> ModelRequest:
     """Translate a lightweight request into a real
     :class:`ModelRequest` addressed at ``stage``.
 
-    The agent never sees the gateway's full
-    :class:`ModelRequest` contract — the only fields it sets
-    are ``prompt`` / ``stage`` / ``metadata``. The gateway,
-    however, needs ``provider`` / ``model`` / ``operation`` /
-    ``temperature`` populated or :func:`dataclasses.replace`
-    inside ``RuntimeModelGateway.complete_resolved`` raises
-    ``TypeError``. Without this translation every modular
-    call would silently fail.
+    Most modular agents send only ``prompt`` / ``stage`` /
+    ``metadata``; Character sends a complete ``ModelRequest``.
+    The gateway needs provider/model/operation fields populated
+    for both forms.
 
-    If the caller already passed a real :class:`ModelRequest`
-    (tests sometimes do) we fill any missing field from the
-    stage settings and use the rest verbatim.
+    A complete :class:`ModelRequest` retains its prompt contract;
+    stage settings remain authoritative for provider and model.
     """
     settings = _resolve_stage_settings(stage)
     provider, model, _protocol, temperature = _settings_provider_model(settings)
     if isinstance(request, ModelRequest):
         return ModelRequest(
             prompt=request.prompt,
-            provider=request.provider or provider,
-            model=request.model or model,
+            provider=provider or request.provider,
+            model=model or request.model,
             operation=request.operation or stage,
+            system_prompt=request.system_prompt,
+            messages=request.messages,
             temperature=(
                 request.temperature
                 if request.temperature is not None
                 else temperature
             ),
             metadata=dict(request.metadata or {}),
+            max_tokens=request.max_tokens,
+            json_mode=request.json_mode,
+            timeout_seconds=request.timeout_seconds,
         )
     prompt, metadata = _request_prompt_and_metadata(request)
     operation = _resolve_operation(metadata, stage)
@@ -262,6 +262,7 @@ def call_with_logging(
         stage=stage,
         agent=model_request.operation or stage,
         user_prompt=model_request.prompt or "",
+        system_prompt=model_request.system_prompt,
         provider=model_request.provider,
         protocol=protocol,
         model=model_request.model,
@@ -299,6 +300,7 @@ def call_with_logging(
         model=model_request.model,
         output=text,
         error=error,
+        temperature_omitted=bool(getattr(response, "temperature_omitted", False)),
     )
     return response, model_request.provider, model_request.model, protocol
 
