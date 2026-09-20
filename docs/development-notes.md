@@ -374,4 +374,3 @@ The `regenerate_chapter` path does NOT call
 the chapter's existing outline and the chapters leading
 UP to it, so a re-write of chapter 30 never reads the
 rolling outline for chapter 50.
-
