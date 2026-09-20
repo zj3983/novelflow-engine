@@ -220,7 +220,7 @@ def test_actual_canon_conflict_remains_blocking():
                     {
                         "code": "canon.location_conflict",
                         "message": "角色已离开现场却无返场过程直接出现。",
-                        "source": "canon",
+                        "source": "continuity_snapshot:0006",
                         "blocking": True,
                     }
                 ]
@@ -230,6 +230,20 @@ def test_actual_canon_conflict_remains_blocking():
         body="角色突然再次出现在现场。",
         director_artifact=_director_artifact(),
         active_facts=[{"subject": "角色", "field": "location", "value": "已离开"}],
+        canon_snapshot={
+            "schema_version": "canon-review-snapshot/v1",
+            "as_of_chapter": 6,
+            "historical_rewrite": True,
+            "bounded_state_available": True,
+            "facts": [
+                {
+                    "subject": "角色",
+                    "field": "location",
+                    "value": "已离开",
+                    "source": "continuity_snapshot:0006",
+                }
+            ],
+        },
     )
 
     assert len(findings) == 1

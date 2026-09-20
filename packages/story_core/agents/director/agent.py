@@ -31,6 +31,7 @@ from ...context.contracts import ArtifactRead, ContextTrace
 from ...persistence.director_store import DirectorStore
 from .prompt import (
     build_director_prompt,
+    build_outline_execution_contract,
     outline_chapter_number,
     parse_director_response,
     planned_chapter_title,
@@ -203,8 +204,17 @@ class DirectorAgent:
                     raise
         if artifact is None:  # pragma: no cover - defensive loop invariant
             raise last_error or RuntimeError("director_unavailable")
+        outline_contract = build_outline_execution_contract(context)
+        artifact_updates: dict[str, Any] = {
+            "outline_contract": outline_contract,
+        }
         if planned_title:
-            artifact = artifact.model_copy(update={"chapter_title": planned_title})
+            artifact_updates["chapter_title"] = planned_title
+        if outline_contract is not None and outline_contract.planned_hook:
+            # The hook is an executable boundary, not a free runtime rewrite
+            # of the upstream chapter contract.
+            artifact_updates["hook"] = outline_contract.planned_hook
+        artifact = artifact.model_copy(update=artifact_updates)
         self._store.save(
             chapter_number=context.chapter_number,
             payload={

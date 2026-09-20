@@ -99,6 +99,59 @@ def _read_first_existing(
     return {"path": "", "sha256": ""}
 
 
+def record_character_intent_stage(
+    *,
+    store: WorkflowArtifactStore,
+    job_id: str,
+    intents: list[dict[str, Any]],
+    context: DirectorContext | None = None,
+    started_monotonic: float | None = None,
+    provider: str = "",
+    model: str = "",
+) -> Path:
+    """Record the bounded pre-director character-intent planning pass."""
+
+    started_monotonic = (
+        started_monotonic if started_monotonic is not None else time.monotonic()
+    )
+    selected = [
+        str(item.get("name") or "").strip()
+        for item in intents
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    ]
+    selected_set = set(selected)
+    reads: list[dict[str, Any]] = []
+    if context is not None:
+        for card in context.character_cards or []:
+            if not isinstance(card, dict):
+                continue
+            name = str(card.get("name") or "").strip()
+            if name and name in selected_set:
+                reads.append({"kind": "character", "id": name})
+    preview = "; ".join(
+        f"{str(item.get('name') or '').strip()}:{_truncate(str(item.get('goal') or ''), limit=32)}"
+        for item in intents[:4]
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    )
+    summary = f"proposals={len(intents)}"
+    if preview:
+        summary += f" {preview}"
+    record = StageArtifactRecord(
+        stage_id="character-intent",
+        agent_id="CharacterAgent",
+        status="done",
+        elapsed_ms=_stage_elapsed_ms(started_monotonic),
+        reads=reads,
+        selected_entity_ids=selected,
+        selected_module_ids=[],
+        provider=provider,
+        model=model,
+        output_summary=summary,
+        error="",
+    )
+    return store.write_stage(job_id, record)
+
+
 def record_director_stage(
     *,
     store: WorkflowArtifactStore,
@@ -289,6 +342,7 @@ def record_fact_extractor_stage(
 
 
 __all__ = [
+    "record_character_intent_stage",
     "record_director_stage",
     "record_writer_stage",
     "record_fact_extractor_stage",

@@ -235,7 +235,7 @@ def test_focused_consistency_agent_surfaces_factual_contradiction() -> None:
                         "code": "continuity.location",
                         "message": "主角从宗门出发，章节末却在驿站。",
                         "blocking": True,
-                        "source": "consistency",
+                        "source": "continuity_snapshot:0004",
                     }
                 ]
             }
@@ -264,6 +264,20 @@ def test_focused_consistency_agent_surfaces_factual_contradiction() -> None:
         director_artifact=artifact,
         active_facts=[],
         runtime=runtime,
+        canon_snapshot={
+            "schema_version": "canon-review-snapshot/v1",
+            "as_of_chapter": 4,
+            "historical_rewrite": True,
+            "bounded_state_available": True,
+            "facts": [
+                {
+                    "subject": "主角",
+                    "field": "location",
+                    "value": "宗门",
+                    "source": "continuity_snapshot:0004",
+                }
+            ],
+        },
     )
     assert any(f.blocking for f in findings)
     assert any(f.code == "continuity.location" for f in findings)
