@@ -3,9 +3,21 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from packages.story_core.agents.contracts import DirectorArtifact, WriterRequest
-from packages.story_core.agents.director.prompt import build_director_prompt, parse_director_response
+from packages.story_core.agents.contracts import (
+    DirectorArtifact,
+    OutlineExecutionContract,
+    SceneCharacterIntent,
+    WriterRequest,
+)
+from packages.story_core.agents.director.agent import DirectorAgent
+from packages.story_core.agents.director.prompt import (
+    build_director_prompt,
+    parse_director_response,
+)
 from packages.story_core.agents.fact_extractor.agent import _fact_extractor_director_view
+from packages.story_core.canon.registry import CanonRegistry
+from packages.story_core.canon.review_snapshot import build_canon_review_snapshot
+from packages.story_core.character_agent import OpenAICharacterProposalProvider
 from packages.story_core.agents.pipeline import (
     _chapter_cast_names,
     _character_intents_for_context,
@@ -139,6 +151,46 @@ def test_writer_prompt_treats_character_intents_as_private_control() -> None:
     assert "禁止为了体现群像而让出场人物依次发表观点" in prompt
 
 
+def test_writer_receives_contract_and_pipeline_character_intent_with_explicit_priority() -> None:
+    artifact = _rich_artifact().model_copy(
+        update={
+            "outline_contract": OutlineExecutionContract(
+                chapter_number=3,
+                core_conflict="林渊必须在赵家封锁前拿到通行令",
+                gain="拿到通行令",
+                cost="暴露一次真实实力",
+                state_delta="从被动躲避变成带令离场",
+                planned_hook="通行令背面浮出血字",
+                must_not_write=["不得提前揭开赵家幕后身份"],
+            )
+        }
+    )
+    request = WriterRequest(
+        chapter_number=3,
+        director_artifact=artifact,
+        previous_tail="上章末尾，林渊听见山门方向传来三声钟响。",
+        character_intents=[
+            SceneCharacterIntent(
+                name="苏瑶",
+                want="确认林渊有没有受伤",
+                target="林渊",
+                move="借检查伤势靠近",
+                withhold="不承认自己一直在关注他",
+                reaction="被拒绝后装作只是顺路",
+            )
+        ],
+    )
+
+    prompt = build_writer_prompt(request)
+
+    assert "核心冲突：林渊必须在赵家封锁前拿到通行令" in prompt
+    assert "本章收益：拿到通行令" in prompt
+    assert "上章末尾\n上章末尾，林渊听见山门方向传来三声钟响。" in prompt
+    assert "苏瑶想要：确认林渊有没有受伤" in prompt
+    assert "优先级：上游章节执行合同 > 导演公开场景计划 > 私人人物意图" in prompt
+    assert "不得改写收益、代价、状态变化、禁止事项或章末钩子" in prompt
+
+
 def test_fact_extractor_director_view_omits_private_character_intents() -> None:
     projected = _fact_extractor_director_view(_rich_artifact())
 
@@ -148,6 +200,27 @@ def test_fact_extractor_director_view_omits_private_character_intents() -> None:
     assert "不承认自己一直在关注他" not in rendered
     assert "speech_strategy" not in rendered
     assert "character_intents" not in rendered
+
+
+def test_canon_review_snapshot_does_not_project_private_character_intent(tmp_path) -> None:
+    snapshot = build_canon_review_snapshot(
+        project_root=tmp_path,
+        chapter_number=1,
+        registry=CanonRegistry(),
+        character_cards=[
+            {
+                "name": "苏瑶",
+                "role": "女主",
+                "private_intent": "这是作者侧秘密，不应成为事实",
+                "story_drive": {"immediate_goal": "确认林渊伤势"},
+            }
+        ],
+    )
+
+    assert "这是作者侧秘密，不应成为事实" not in json.dumps(
+        snapshot, ensure_ascii=False
+    )
+    assert snapshot["characters"][0]["name"] == "苏瑶"
 
 
 def test_legacy_outline_view_preserves_cast(tmp_path) -> None:
@@ -229,9 +302,16 @@ def test_relevant_cast_prefers_explicit_chapter_cast_and_adds_protagonist() -> N
 class _RecordingCharacterAgent:
     def __init__(self) -> None:
         self.seen_names: list[str] = []
+        self.seen_chapter: dict = {}
 
     def propose_all(self, story: StoryState) -> list[CharacterProposal]:
         self.seen_names = [character.name for character in story.characters]
+        raw_chapter = (
+            story.outline_context.get("chapter")
+            if isinstance(story.outline_context, dict)
+            else {}
+        )
+        self.seen_chapter = dict(raw_chapter) if isinstance(raw_chapter, dict) else {}
         return [
             CharacterProposal(
                 name=character.name,
@@ -274,7 +354,19 @@ def test_character_intent_stage_only_runs_selected_cast() -> None:
         volume={"chapter_range": [1, 20]},
         book_outline_summary="",
         nearby_outline=[
-            {"number": 3, "goal": "处理赛后关系", "cast": ["苏瑶", "王胖子"]}
+            {
+                "number": 3,
+                "goal": "处理赛后关系",
+                "core_conflict": "赵家封锁前处理赛后关系",
+                "gain": "拿到通行令",
+                "cost": "暴露真实实力",
+                "state_delta": "从场内转为带令离场",
+                "hook": "赵家开始调查",
+                "chapter_sop": {"opening_carry": "比试刚结束"},
+                "payoff_contract": {"required": "关系发生变化"},
+                "must_not_write": ["不得揭开赵家幕后身份"],
+                "cast": ["苏瑶", "王胖子"],
+            }
         ],
         character_cards=[],
     )
@@ -290,6 +382,113 @@ def test_character_intent_stage_only_runs_selected_cast() -> None:
     assert agent.seen_names == ["苏瑶", "王胖子", "林渊"]
     assert [item["name"] for item in intents] == ["苏瑶", "王胖子", "林渊"]
     assert intents[0]["withhold"] == "不把全部想法说出口"
+    assert agent.seen_chapter["core_conflict"] == "赵家封锁前处理赛后关系"
+    assert agent.seen_chapter["gain"] == "拿到通行令"
+    assert agent.seen_chapter["cost"] == "暴露真实实力"
+    assert agent.seen_chapter["state_delta"] == "从场内转为带令离场"
+    assert agent.seen_chapter["planned_hook"] == "赵家开始调查"
+    assert agent.seen_chapter["chapter_sop"] == {"opening_carry": "比试刚结束"}
+    assert agent.seen_chapter["payoff_contract"] == {"required": "关系发生变化"}
+    assert agent.seen_chapter["must_not_write"] == ["不得揭开赵家幕后身份"]
+
+
+def test_character_intent_stage_does_not_fall_back_to_all_active_characters() -> None:
+    story = StoryState(
+        story_id="s-intent-no-cast",
+        outline="一章没有明确出场角色。",
+        genre="玄幻",
+        style="自然口语",
+        current_chapter=2,
+        characters=[
+            CharacterState(name="甲", role="supporting"),
+            CharacterState(name="乙", role="supporting"),
+        ],
+    )
+    context = DirectorContext(
+        chapter_number=3,
+        volume={"chapter_range": [1, 20]},
+        book_outline_summary="",
+        nearby_outline=[{"number": 3, "goal": "推进主线", "cast": []}],
+        character_cards=[],
+    )
+    agent = _RecordingCharacterAgent()
+
+    assert _character_intents_for_context(story, context, 3, agent=agent) == []
+    assert agent.seen_names == []
+
+
+class _FailingCharacterAgent:
+    def __init__(self) -> None:
+        self.rule_provider = _RecordingCharacterAgent()
+
+    def propose_all(self, _story: StoryState) -> list[CharacterProposal]:
+        raise RuntimeError("character agent unavailable")
+
+
+def test_character_intent_failure_uses_bounded_rule_fallback() -> None:
+    story = StoryState(
+        story_id="s-intent-fallback",
+        outline="赛后关系变化。",
+        genre="玄幻",
+        style="自然口语",
+        current_chapter=2,
+        outline_context={"chapter": {"chapter_number": 3, "cast": ["苏瑶"]}},
+        characters=[
+            CharacterState(name="林渊", role="protagonist"),
+            CharacterState(name="苏瑶", role="女主"),
+            CharacterState(name="赵天衡", role="stage_antagonist"),
+        ],
+    )
+    context = DirectorContext(
+        chapter_number=3,
+        volume={"chapter_range": [1, 20]},
+        book_outline_summary="",
+        nearby_outline=[{"number": 3, "cast": ["苏瑶"]}],
+        character_cards=[],
+    )
+    agent = _FailingCharacterAgent()
+
+    intents = _character_intents_for_context(story, context, 3, agent=agent)  # type: ignore[arg-type]
+
+    assert agent.rule_provider.seen_names == ["苏瑶", "林渊"]
+    assert {item["name"] for item in intents} == {"苏瑶", "林渊"}
+    assert "赵天衡" not in {item["name"] for item in intents}
+
+
+def test_character_provider_prompt_contains_full_execution_contract() -> None:
+    story = StoryState(
+        story_id="s-intent-prompt-contract",
+        outline="拿到通行令并留下钩子。",
+        genre="玄幻",
+        style="自然口语",
+        current_chapter=2,
+        outline_context={
+            "chapter": {
+                "chapter_number": 3,
+                "core_conflict": "赵家封锁前拿到通行令",
+                "gain": "拿到通行令",
+                "cost": "暴露实力",
+                "state_delta": "从被动转为带令离场",
+                "planned_hook": "令牌背面浮出血字",
+                "opening_carry": "上章钟声未停",
+                "chapter_sop": {"opening_carry": "上章钟声未停"},
+                "payoff_contract": {"required": "通行令到手"},
+                "must_not_write": ["不得揭开幕后人"],
+                "cast": ["林渊"],
+            }
+        },
+        characters=[CharacterState(name="林渊", role="protagonist")],
+    )
+
+    prompt = OpenAICharacterProposalProvider()._build_prompt(story, story.characters)
+
+    assert "赵家封锁前拿到通行令" in prompt
+    assert "拿到通行令" in prompt
+    assert "暴露实力" in prompt
+    assert "从被动转为带令离场" in prompt
+    assert "令牌背面浮出血字" in prompt
+    assert "不得揭开幕后人" in prompt
+    assert "Character proposals must stay inside the current chapter execution contract." in prompt
 
 
 def test_director_prompt_receives_character_intents_as_optional_pressure() -> None:
@@ -331,6 +530,74 @@ def test_director_prompt_receives_character_intents_as_optional_pressure() -> No
     assert "确认林渊有没有受伤" in prompt
     assert "可以采用、延后、阻断或让它们互相冲突" in prompt
     assert "不要求所有出场人物都有台词或动作" in prompt
+    assert "OutlineExecutionContract > Character Intent > Director staging" in prompt
+    assert "Character Intent 是候选压力，不是 required event" in prompt
+
+
+class _ConflictingDirectorRuntime:
+    def complete(self, _request):
+        return {
+            "chapter_number": 3,
+            "chapter_title": "伪造标题",
+            "chapter_goal": "放弃通行令",
+            "opening_state": "林渊在山门前",
+            "scene_beats": [
+                {
+                    "order": 1,
+                    "location": "山门",
+                    "action": "林渊试图通过",
+                    "result": "守门人交出通行令",
+                },
+                {
+                    "order": 2,
+                    "location": "山门外",
+                    "action": "林渊查看令牌",
+                    "result": "令牌背面浮出血字",
+                },
+            ],
+            "ending_state": "林渊拿到通行令",
+            "hook": "人物意图提出的伪造钩子",
+        }
+
+
+def test_director_keeps_program_contract_and_planned_hook_over_character_pressure(
+    tmp_path,
+) -> None:
+    context = DirectorContext(
+        chapter_number=3,
+        volume={"chapter_range": [1, 20]},
+        book_outline_summary="",
+        nearby_outline=[
+            {
+                "number": 3,
+                "core_conflict": "赵家封锁前拿到通行令",
+                "gain": "拿到通行令",
+                "cost": "暴露实力",
+                "state_delta": "从被动转为带令离场",
+                "hook": "令牌背面浮出血字",
+                "must_not_write": ["不得揭开幕后人"],
+            }
+        ],
+        character_intents=[
+            {
+                "name": "林渊",
+                "goal": "放弃通行令",
+                "action": "转身离开",
+            }
+        ],
+    )
+
+    artifact = DirectorAgent(
+        runtime=_ConflictingDirectorRuntime(),
+        project_root=tmp_path,
+    ).plan(context)
+
+    assert artifact.outline_contract is not None
+    assert artifact.outline_contract.gain == "拿到通行令"
+    assert artifact.outline_contract.state_delta == "从被动转为带令离场"
+    assert artifact.outline_contract.planned_hook == "令牌背面浮出血字"
+    assert artifact.hook == artifact.outline_contract.planned_hook
+    assert artifact.schema_version == "director-artifact/v1"
 
 
 def test_modular_bundle_adapter_preserves_character_intent_lifecycle() -> None:

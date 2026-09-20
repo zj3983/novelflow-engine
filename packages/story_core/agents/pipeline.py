@@ -52,10 +52,12 @@ from typing import Any
 from packages.story_core.agents.contracts import (
     DirectorArtifact,
     EntityRequirement,
+    SceneCharacterIntent,
     WriterRequest,
     WriterResult,
 )
 from packages.story_core.agents.director.agent import DirectorAgent
+from packages.story_core.agents.director.prompt import build_outline_execution_contract
 from packages.story_core.agents.director.runtime import (
     DirectorRuntime,
     GatewayDirectorRuntime,
@@ -242,7 +244,10 @@ def _chapter_cast_names(
     for entry in context.nearby_outline:
         if not isinstance(entry, dict):
             continue
-        number = entry.get("number")
+        try:
+            number = int(entry.get("number") or entry.get("chapter_number") or 0)
+        except (TypeError, ValueError):
+            number = 0
         if number == chapter_number:
             target_entry = entry
             for name in entry.get("cast") or []:
@@ -259,8 +264,27 @@ def _chapter_cast_names(
 
     target_text = " ".join(
         str(target_entry.get(key) or "")
-        for key in ("title", "summary", "goal", "obstacle", "action", "turn", "payoff", "ending_hook")
+        for key in (
+            "title",
+            "summary",
+            "goal",
+            "obstacle",
+            "action",
+            "turn",
+            "payoff",
+            "ending_hook",
+            "core_conflict",
+            "gain",
+            "cost",
+            "state_delta",
+            "planned_hook",
+            "hook",
+            "opening_carry",
+        )
     )
+    chapter_sop = target_entry.get("chapter_sop")
+    if isinstance(chapter_sop, dict):
+        target_text += " " + " ".join(str(value or "") for value in chapter_sop.values())
     target_text += " " + context.previous_chapter_tail
     for character in story.characters:
         if character.name and character.name in target_text:
@@ -292,21 +316,55 @@ def _character_intents_for_context(
     }
     selected = [by_name[name] for name in cast_names if name in by_name]
     if not selected:
-        selected = [
-            character
-            for character in story.characters
-            if not character.frozen and character.lifecycle_state == "active"
-        ][:4]
-    if not selected:
         return []
 
     selected_story = story.model_copy(update={"characters": selected}, deep=True)
+    # Give the character stage the same program-built contract the Director
+    # will receive.  This keeps intent inside the current chapter boundary and
+    # avoids making the character model infer a second plot plan from old
+    # goal/obstacle fields.
+    execution_contract = build_outline_execution_contract(context)
+    if execution_contract is not None:
+        outline_context = dict(selected_story.outline_context or {})
+        chapter_context = dict(
+            outline_context.get("chapter")
+            if isinstance(outline_context.get("chapter"), dict)
+            else {}
+        )
+        chapter_context.update(execution_contract.model_dump(mode="json"))
+        chapter_context["execution_contract"] = execution_contract.model_dump(
+            mode="json"
+        )
+        for entry in context.nearby_outline:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                entry_number = int(entry.get("number") or entry.get("chapter_number") or 0)
+            except (TypeError, ValueError):
+                entry_number = 0
+            if entry_number == chapter_number:
+                if isinstance(entry.get("chapter_sop"), dict):
+                    chapter_context["chapter_sop"] = deepcopy(entry["chapter_sop"])
+                break
+        chapter_context["cast"] = list(cast_names)
+        outline_context["chapter"] = chapter_context
+        selected_story = selected_story.model_copy(
+            update={"outline_context": outline_context}, deep=True
+        )
     planner = agent or CharacterAgent()
     try:
         proposals = planner.propose_all(selected_story)
     except Exception:
         proposals = planner.rule_provider.propose_all(selected_story)
-    return [proposal.model_dump(mode="json") for proposal in proposals[:6]]
+    selected_names = {character.name for character in selected}
+    # A provider may return malformed or out-of-scope names.  The modular
+    # boundary keeps only the bounded cast; a character stage failure remains
+    # advisory and cannot introduce a new actor or executable plot event.
+    return [
+        proposal.model_dump(mode="json")
+        for proposal in proposals
+        if proposal.name in selected_names
+    ][:6]
 
 
 def _ensure_writer_context(
@@ -640,6 +698,7 @@ def run_writer(
     runtime: WriterRuntime | None = None,
     consistency_runtime: ConsistencyRuntime | None = None,
     rewrite_guidance: str = "",
+    character_intents: list[SceneCharacterIntent] | None = None,
 ) -> WriterPipelineResult:
     """Run the new writer pipeline for ``chapter_number``.
 
@@ -687,7 +746,9 @@ def run_writer(
     context = _add_prepared_entities_to_context(context, prepared_entities)
     runtime = runtime or _default_writer_runtime(project_root)
     request = _build_writer_request(
-        context=context, director_artifact=director_artifact
+        context=context,
+        director_artifact=director_artifact,
+        character_intents=character_intents,
     )
     agent = WriterAgent(runtime=runtime)
     result = agent.run(request)
@@ -1190,6 +1251,7 @@ def _build_writer_request(
     *,
     context: WriterContext,
     director_artifact: DirectorArtifact,
+    character_intents: list[SceneCharacterIntent] | None = None,
 ) -> WriterRequest:
     """Project a ``WriterContext`` into the canonical ``WriterRequest``."""
     return WriterRequest(
@@ -1206,6 +1268,7 @@ def _build_writer_request(
         repair_length=False,
         previous_tail=context.previous_tail,
         continuity_facts=list(context.continuity_facts),
+        character_intents=list(character_intents or []),
         character_cards=list(context.character_cards),
         entity_cards=list(context.entity_cards),
         world_rules=list(context.world_rules),
@@ -1381,6 +1444,23 @@ def run_modular_pipeline(
         runtime=writer_runtime,
         consistency_runtime=consistency_runtime,
         rewrite_guidance=rewrite_guidance,
+        character_intents=[
+            SceneCharacterIntent(
+                name=str(item.get("name") or "").strip(),
+                want=str(item.get("goal") or item.get("want") or "").strip(),
+                target=str(item.get("target") or "").strip(),
+                emotion=str(item.get("emotion") or "").strip(),
+                move=str(item.get("action") or item.get("move") or "").strip(),
+                speech_strategy=str(item.get("speech_strategy") or "").strip(),
+                withhold=str(item.get("withhold") or "").strip(),
+                reaction=str(
+                    item.get("blocked_reaction") or item.get("reaction") or ""
+                ).strip(),
+                dramatic_function=str(item.get("dramatic_function") or "").strip(),
+            )
+            for item in character_intents
+            if str(item.get("name") or "").strip()
+        ],
     )
     report_generation_progress(
         {

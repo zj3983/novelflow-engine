@@ -37,6 +37,7 @@ def _render_director_artifact(request: WriterRequest) -> str:
             [
                 "",
                 "## 上游章节执行合同（必须落实，不得擅自改写）",
+                f"核心冲突：{contract.core_conflict or '（未提供）'}",
                 f"开场承接：{contract.opening_carry or '（未提供）'}",
                 f"本章收益：{contract.gain or '（未提供）'}",
                 f"本章代价：{contract.cost or '（未提供）'}",
@@ -117,6 +118,30 @@ def _render_previous_handoff(request: WriterRequest) -> str:
         )
         sections.append(f"## 连续性事实\n{facts}")
     return "\n".join(sections)
+
+
+def _render_character_intents(request: WriterRequest) -> str:
+    if not request.character_intents:
+        return ""
+    lines = [
+        "## 人物意图（私有表演压力，不是新剧情合同）",
+        "优先级：上游章节执行合同 > 导演公开场景计划 > 私人人物意图。",
+        "人物意图只能控制行动、台词、停顿、潜台词和受阻后的反应；不得改写收益、代价、状态变化、禁止事项或章末钩子。",
+        "不要把私有目标、withhold 或 dramatic_function 直接写成解释性旁白或角色自述；用行为、措辞和选择表现出来。",
+    ]
+    for intent in request.character_intents:
+        parts = [
+            f"{intent.name}想要：{intent.want}" if intent.want else intent.name,
+            f"对象：{intent.target}" if intent.target else "",
+            f"情绪：{intent.emotion}" if intent.emotion else "",
+            f"行动：{intent.move}" if intent.move else "",
+            f"说话策略：{intent.speech_strategy}" if intent.speech_strategy else "",
+            f"不说出口：{intent.withhold}" if intent.withhold else "",
+            f"受阻后：{intent.reaction}" if intent.reaction else "",
+            f"戏剧功能：{intent.dramatic_function}" if intent.dramatic_function else "",
+        ]
+        lines.append("- " + "；".join(part for part in parts if part))
+    return "\n".join(lines)
 
 
 def _current_character_state(card: dict[str, Any]) -> dict[str, Any]:
@@ -355,6 +380,9 @@ def build_writer_prompt(request: WriterRequest) -> str:
     handoff = _render_previous_handoff(request)
     if handoff:
         sections.append(handoff)
+    character_intents = _render_character_intents(request)
+    if character_intents:
+        sections.append(character_intents)
     characters = _render_character_cards(request)
     if characters:
         sections.append(characters)

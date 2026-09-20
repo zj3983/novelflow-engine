@@ -248,7 +248,28 @@ class OpenAICharacterProposalProvider(BaseOpenAIProvider):
             if isinstance(raw_chapter, dict):
                 chapter_context = {
                     key: raw_chapter.get(key)
-                    for key in ("chapter_number", "title", "goal", "obstacle", "action", "turn", "payoff", "ending_hook", "cast")
+                    for key in (
+                        "chapter_number",
+                        "title",
+                        "goal",
+                        "obstacle",
+                        "action",
+                        "turn",
+                        "payoff",
+                        "ending_hook",
+                        "cast",
+                        "core_conflict",
+                        "gain",
+                        "cost",
+                        "state_delta",
+                        "planned_hook",
+                        "hook",
+                        "opening_carry",
+                        "chapter_sop",
+                        "payoff_contract",
+                        "must_not_write",
+                        "execution_contract",
+                    )
                     if raw_chapter.get(key) not in (None, "", [], {})
                 }
 
@@ -294,12 +315,17 @@ class OpenAICharacterProposalProvider(BaseOpenAIProvider):
                 f"Style: {story.style}",
                 f"Author constraints: {json.dumps(compact_list(_constraint_texts(story), max_items=4, item_chars=90), ensure_ascii=False)}",
                 f"Current chapter: {story.current_chapter + 1}",
-                f"Chapter plan: {json.dumps(chapter_context, ensure_ascii=False)}",
+                "Chapter execution contract (highest authority): "
+                + json.dumps(chapter_context, ensure_ascii=False),
                 f"Latest chapter summary: {current_summary}",
                 "Candidate characters:",
                 *character_lines,
                 "",
-                "For each candidate, decide what this person independently wants to do in the current chapter situation.",
+                "Character proposals must stay inside the current chapter execution contract.",
+                "The contract decides the chapter core conflict, gain, cost, state transition, payoff, forbidden changes, and planned hook.",
+                "Character intent only decides how a person pressures, resists, hesitates, misunderstands, speaks, stays silent, or reacts inside that contract.",
+                "Do not replace the chapter goal, promised gain/cost/state transition, forbidden changes, or planned hook with a character preference.",
+                "For each candidate, decide what this person independently wants to do in the current contracted chapter situation.",
                 "Ground the proposal in personal interest, relationship pressure, personality, current emotion, and what this character actually knows.",
                 "Secrets/private knowledge may influence only their own decision; never assume other characters know them.",
                 "A character may observe, wait, withdraw, stay silent, or receive a low priority when there is no strong trigger.",

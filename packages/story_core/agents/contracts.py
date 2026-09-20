@@ -174,6 +174,10 @@ class WriterRequest(BaseModel):
     repair_length: bool = False
     previous_tail: str = ""
     continuity_facts: list[Any] = Field(default_factory=list)
+    # Character proposals are private performance pressure.  They are kept
+    # separate from the director artifact so the writer can use them without
+    # mistaking them for another executable chapter plan.
+    character_intents: list[SceneCharacterIntent] = Field(default_factory=list)
     character_cards: list[dict] = Field(default_factory=list)
     entity_cards: list[dict] = Field(default_factory=list)
     world_rules: list[Any] = Field(default_factory=list)
