@@ -45,6 +45,7 @@ their own packages with stable runtime boundaries and Pydantic contracts.
 | Package | Owns | Public surface |
 | --- | --- | --- |
 | `packages/story_core/context/` | Canonical project reader + role-specific views | `ProjectContextReader`, `build_director_context`, `build_writer_context` |
+| `packages/story_core/character_agent.py` | Bounded character-intent proposals and rule fallback | `CharacterAgent`, `RuleBasedCharacterProposalProvider` |
 | `packages/story_core/agents/` | Director, writer, fact-extractor, consistency agents | `DirectorAgent`, `WriterAgent`, `FactExtractor`, `FocusedConsistencyAgent`, `pipeline.run_modular_pipeline` |
 | `packages/story_core/canon/` | Stable entity registry, entity preflight, `ContinuityDelta` apply | `CanonRegistry`, `CanonService.apply_delta` |
 | `packages/story_core/continuity/` | Per-chapter snapshots, deterministic checks, the delta itself | `ChapterSnapshot`, `ContinuityStore`, `ContinuityDelta` |
@@ -58,10 +59,82 @@ The orchestrator's main flow now has two entry points:
   CLI / API layer is migrated.
 * `StoryOrchestrator(use_modular_agents=True)` — new
   `generate_next_chapter_via_modular_pipeline(...)` that drives the
-  Director → CanonService preflight → Writer → FactExtractor pipeline
-  and persists per-stage workflow artifacts to
-  `.story-system/workflow/{job_id}/`. The CLI flips the flag in
-  production.
+  production modular flow:
+
+  ```text
+  OutlineExecutionContract
+      → bounded relevant cast
+      → Character Intent
+      → Director
+      → Canon Preflight
+      → Writer
+      → Consistency / Review
+      → FactExtractor
+  ```
+
+  The CLI flips the flag in production. The execution contract is built from
+  the target chapter outline and preserves the core conflict, gain, cost,
+  state delta, planned hook, opening carry, payoff contract and
+  `must_not_write` constraints. Director staging must satisfy that contract;
+  it is not allowed to replace the contract with a new chapter plan.
+
+  Character Intent is a bounded candidate-pressure pass: it answers what a
+  selected character may want, try, avoid or withhold in the current chapter.
+  It is not a second plot planner and it is not canon. A character may
+  investigate, protect, test a relationship, resist, hesitate, stay silent,
+  fail or do nothing when the current stimulus is weak. The Director may
+  adopt, defer, collide or reject those pressures. Only the Director's final
+  scene-level intents are sent to Writer; raw Character proposals never go
+  directly to Writer.
+
+  Character Intent failure is advisory. If the model provider and its rule
+  fallback both fail, the stage yields no proposals and Director continues
+  from the existing bounded context. Per-stage workflow artifacts are
+  persisted to `.story-system/workflow/{job_id}/`.
+
+### OutlineExecutionContract and chapter boundaries
+
+`OutlineExecutionContract` is the program-built bridge between the rolling
+outline and Director/Writer. It carries the chapter's `core_conflict`,
+`gain`, `cost`, `state_delta`, `planned_hook`, `opening_carry`,
+`payoff_contract`, and `must_not_write` values (plus the related turn and
+mid-feedback fields). These are execution constraints, not optional prompt
+decoration: the Director may stage how the contract becomes a scene, but the
+Director → Writer handoff must not compress the contract until its required
+gain, cost, state transition, and hook disappear.
+
+`planned_hook` belongs to the chapter contract. Writer may express it in
+different prose, but must preserve its substance. The candidate pipeline
+checks the end of the body deterministically; a missing hook produces
+`chapter.hook_not_landed`, a blocking finding rather than an advisory style
+note.
+
+### Chapter-bounded Canon Review Snapshot
+
+Factual review uses `canon-review-snapshot/v1`, a read-only view of the
+confirmed state available before the target chapter. For a historical rewrite
+the builder prefers the previous chapter's continuity snapshot or saved
+`updated_story`; it does not blindly read the live registry, where later
+chapters may already have introduced facts. If a bounded base is unavailable,
+the historical review does not silently treat current live state as evidence.
+
+Model-backed factual findings must be grounded in Canon evidence before they
+can be treated as blocking contradictions. Expression-oriented findings such
+as style, dialogue, exposition, or an unavailable advisory review remain
+visible to the workbench but do not become factual Canon merely because a
+model mentioned them.
+
+### Previous-chapter handoff
+
+The modular context keeps two different handoff values:
+
+* `previous_chapter_summary` answers what happened in the previous chapter.
+* `previous_chapter_tail` is the actual prose ending from which the next
+  chapter should continue.
+
+Director and Writer receive the actual tail when constructing the opening
+handoff, rather than relying on a summary to recreate the last position,
+gesture, or unfinished sentence.
 
 ### On-disk artifacts
 
@@ -76,6 +149,7 @@ The new agents read and write the canonical layout under
 │   └── stale.json              # Markers for chapters downstream of a regen
 ├── canon/registry.json         # Stable-id entity registry
 ├── workflow/<job_id>/          # One JSON per stage per run
+│   ├── character-intent.json   # Bounded CharacterAgent proposals
 │   ├── director.json
 │   ├── writer.json
 │   └── fact-extractor.json
@@ -262,7 +336,7 @@ planner / store / validation layers in isolation.
   generate_next_chapter(target_chapter)
         │
         ▼
-  ensure_rolling_outline(target_chapter)
+  ensure_rolling_outline(target_chapter, window=5)
         │
         ├─ plan_rolling_window → gap = missing chapter numbers
         │

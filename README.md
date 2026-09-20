@@ -32,11 +32,11 @@ NovelFlow 的目标是把“写小说”建模成一个**持续维护状态的�
 | 能力 | 说明 |
 | --- | --- |
 | **长篇状态管理** | 保存故事、角色、世界、章节与连续性状态，让生成跨章节持续演进。 |
-| **模块化 Agent 流水线** | Director、Canon、Writer、Consistency、Fact Extractor 等模块分工协作。 |
+| **章节合同与模块化 Agent** | 以 `OutlineExecutionContract` 固定章节要求，再由 Character Intent、Director、Canon Preflight、Writer、Review 和 Fact Extractor 分工协作。 |
 | **章节规划与滚动细纲** | 在缺少目标章节细纲时，可按滚动窗口补齐后续章节规划，并保护人工修改内容。 |
-| **Canon / 连续性约束** | 使用稳定实体注册表、章节快照和连续性 Delta 降低角色与设定漂移。 |
+| **Canon / 连续性约束** | 使用稳定实体注册表、chapter-bounded Canon Review Snapshot 和连续性 Delta 降低角色与设定漂移。 |
 | **章节重生成与回滚** | 重写历史章节时从对应快照恢复，并标记受影响的后续章节。 |
-| **可检查工作流** | Director、Writer、Fact Extractor 等阶段产物可持久化，失败时便于定位具体阶段。 |
+| **可检查工作流** | Character Intent、Director、Writer、Fact Extractor 等阶段产物可持久化，失败时便于定位具体阶段。 |
 | **Web 创作工作台** | 在浏览器中创建项目、生成章节、查看状态和连续性数据。 |
 | **OpenAI-compatible 模型接入** | 通过可配置 endpoint / model 接入兼容 OpenAI API 形式的模型服务。 |
 | **SQLite 持久化** | 默认提供适合本地与单用户部署的 SQLite 存储。 |
@@ -45,23 +45,28 @@ NovelFlow 的目标是把“写小说”建模成一个**持续维护状态的�
 ## 架构概览
 
 ```mermaid
-flowchart LR
+flowchart TD
     UI[Web Workbench<br/>Next.js] --> API[FastAPI]
     API --> O[StoryOrchestrator / StoryEngine]
 
-    O --> D[Director]
-    D --> C[Canon Preflight]
+    O --> CONTRACT[OutlineExecutionContract<br/>chapter outline]
+    CONTRACT --> CAST[Relevant Cast]
+    CAST --> INTENT[Character Intent<br/>candidate pressures]
+    INTENT --> D[Director<br/>final scene-level intents]
+    D --> C[Canon Preflight<br/>bounded review snapshot]
     C --> W[Writer]
-    W --> Q[Focused Consistency]
-    Q --> F[Fact Extractor]
+    W --> R[Consistency / Review]
+    R --> F[Fact Extractor]
 
-    O --> CTX[Project Context]
-    O --> MEM[Story State / Memory]
+    O --> STATE[Story State / Memory]
     F --> P[(Persistence)]
     P --> SNAP[Chapter Snapshots]
     P --> REG[Canon Registry]
     P --> WF[Workflow Artifacts]
 ```
+
+章节生成的控制优先级是：`OutlineExecutionContract > Character Intent > Director staging > Writer performance`。
+细纲合同决定本章必须发生的冲突、收益、代价、状态变化和章末钩子；Character Intent 只提供人物自己的局部压力，不是第二套剧情规划器。Director 编排并筛选这些压力，但不能改写上游合同；Writer 只消费 Director 最终保留的 scene-level character intents，raw Character proposals 不会直接进入 Writer。
 
 主要代码边界：
 
@@ -157,22 +162,38 @@ docker compose up --build
 当前模块化生成链路以可检查的阶段运行：
 
 ```text
-章节目标
+章节细纲
+   ↓
+OutlineExecutionContract
+   ↓
+Relevant Cast / Character Intent
    ↓
 Director
    ↓
-CanonService preflight
+Canon Preflight
    ↓
 Writer
    ↓
-FocusedConsistency
+Consistency / Review
    ↓
-FactExtractor
+Fact Extractor
    ↓
 候选章节 / 连续性状态 / 工作流产物
 ```
 
-运行产物会写入项目的 `.story-system/`，其中包括 Director 结果、章节快照、Canon Registry、工作流记录、角色/实体卡和 Review 数据。
+`OutlineExecutionContract` 会保留本章的 core conflict、gain、cost、state delta、planned hook、opening carry、payoff contract 和 must-not-write，避免细纲要求在 Director → Writer 链路中被压缩丢失。Character Intent 可以调查、保护、试探、抵抗、犹豫、沉默，或在低刺激时不行动，但不能替换合同的收益、代价、状态转移或 planned hook。
+
+Canon Preflight 使用目标章节之前的 `canon-review-snapshot/v1` 有界状态进行事实 Review，避免历史重写被未来状态污染。正文末段没有落地合同要求的 planned hook 时，会触发确定性的 `chapter.hook_not_landed` blocking gate；Writer 可以改变表达方式，但不能改变钩子实质。
+
+运行产物会写入项目的 `.story-system/`，其中包括章节快照、Canon Registry、角色/实体卡、Review 数据和模块化 workflow artifacts：
+
+```text
+.story-system/workflow/<job_id>/
+├── character-intent.json
+├── director.json
+├── writer.json
+└── fact-extractor.json
+```
 
 历史项目的 `.webnovel/` 数据结构在迁移窗口内仍然可以被读取。详细迁移、重生成、Smoke 验收和 Rolling Outline 说明见 [开发与生成链路说明](docs/development-notes.md)。
 
