@@ -54,17 +54,17 @@ flowchart TD
     CAST --> INTENT[Character Intent<br/>candidate pressures]
     INTENT --> D[Director<br/>final scene-level intents]
     D --> S[Canon Review Snapshot<br/>chapter-bounded evidence]
-    S --> P[Canon Entity Preflight<br/>chapter-local entities]
-    P --> W[Writer]
+    S --> PREFLIGHT[Canon Entity Preflight<br/>chapter-local entities]
+    PREFLIGHT --> W[Writer]
     S --> R[Consistency / Factual Review]
     W --> R
     R --> F[Fact Extractor]
 
     O --> STATE[Story State / Memory]
-    F --> P[(Persistence)]
-    P --> SNAP[Chapter Snapshots]
-    P --> REG[Canon Registry]
-    P --> WF[Workflow Artifacts]
+    F --> STORE[(Persistence)]
+    STORE --> SNAP[Chapter Snapshots]
+    STORE --> REG[Canon Registry]
+    STORE --> WF[Workflow Artifacts]
 ```
 
 章节生成的控制优先级是：`OutlineExecutionContract > Character Intent > Director staging > Writer performance`。
