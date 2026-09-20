@@ -174,9 +174,9 @@ class WriterRequest(BaseModel):
     repair_length: bool = False
     previous_tail: str = ""
     continuity_facts: list[Any] = Field(default_factory=list)
-    # Character proposals are private performance pressure.  They are kept
-    # separate from the director artifact so the writer can use them without
-    # mistaking them for another executable chapter plan.
+    # Kept for compatibility with older direct WriterRequest callers. The
+    # modular production path deliberately leaves this empty: Writer reads
+    # final scene-level intents from ``director_artifact.scene_beats`` only.
     character_intents: list[SceneCharacterIntent] = Field(default_factory=list)
     character_cards: list[dict] = Field(default_factory=list)
     entity_cards: list[dict] = Field(default_factory=list)

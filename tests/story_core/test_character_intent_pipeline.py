@@ -6,7 +6,6 @@ from types import SimpleNamespace
 from packages.story_core.agents.contracts import (
     DirectorArtifact,
     OutlineExecutionContract,
-    SceneCharacterIntent,
     WriterRequest,
 )
 from packages.story_core.agents.director.agent import DirectorAgent
@@ -19,6 +18,7 @@ from packages.story_core.canon.registry import CanonRegistry
 from packages.story_core.canon.review_snapshot import build_canon_review_snapshot
 from packages.story_core.character_agent import OpenAICharacterProposalProvider
 from packages.story_core.agents.pipeline import (
+    _build_writer_request,
     _chapter_cast_names,
     _character_intents_for_context,
 )
@@ -169,16 +169,6 @@ def test_writer_receives_contract_and_pipeline_character_intent_with_explicit_pr
         chapter_number=3,
         director_artifact=artifact,
         previous_tail="上章末尾，林渊听见山门方向传来三声钟响。",
-        character_intents=[
-            SceneCharacterIntent(
-                name="苏瑶",
-                want="确认林渊有没有受伤",
-                target="林渊",
-                move="借检查伤势靠近",
-                withhold="不承认自己一直在关注他",
-                reaction="被拒绝后装作只是顺路",
-            )
-        ],
     )
 
     prompt = build_writer_prompt(request)
@@ -187,8 +177,92 @@ def test_writer_receives_contract_and_pipeline_character_intent_with_explicit_pr
     assert "本章收益：拿到通行令" in prompt
     assert "上章末尾\n上章末尾，林渊听见山门方向传来三声钟响。" in prompt
     assert "苏瑶想要：确认林渊有没有受伤" in prompt
-    assert "优先级：上游章节执行合同 > 导演公开场景计划 > 私人人物意图" in prompt
+    assert "优先级：上游章节执行合同 > 导演公开场景计划 > Director 最终 scene-level character intents" in prompt
     assert "不得改写收益、代价、状态变化、禁止事项或章末钩子" in prompt
+
+
+def test_writer_ignores_compatibility_character_intents_and_uses_director_beats_only() -> None:
+    artifact = _rich_artifact()
+    request = WriterRequest(
+        chapter_number=3,
+        director_artifact=artifact,
+        # This field remains accepted for old direct callers, but must not
+        # become another production prompt source.
+        character_intents=[
+            {
+                "name": "苏瑶",
+                "want": "苏瑶追出去质问林渊",
+                "move": "苏瑶追出去质问林渊",
+            }
+        ],
+    )
+
+    prompt = build_writer_prompt(request)
+
+    assert "苏瑶想要：确认林渊有没有受伤" in prompt
+    assert "苏瑶追出去质问林渊" not in prompt
+
+
+def test_production_writer_request_leaves_compatibility_intents_empty() -> None:
+    artifact = _rich_artifact()
+    request = _build_writer_request(
+        context=WriterContext(chapter_number=3, director_artifact=artifact),
+        director_artifact=artifact,
+    )
+
+    assert request.character_intents == []
+    assert "苏瑶想要：确认林渊有没有受伤" in build_writer_prompt(request)
+
+
+def test_writer_sees_director_rewritten_intent_but_not_raw_proposal() -> None:
+    artifact = parse_director_response(
+        {
+            "chapter_number": 3,
+            "chapter_goal": "处理通行令与关系压力",
+            "opening_state": "林渊在山门前",
+            "scene_beats": [
+                {
+                    "order": 1,
+                    "location": "山门",
+                    "action": "苏瑶检查林渊伤势",
+                    "result": "她没有公开追问秘密",
+                    "character_intents": [
+                        {
+                            "name": "苏瑶",
+                            "want": "只确认林渊是否受伤",
+                            "move": "只问伤势，不公开追问秘密",
+                            "withhold": "不提自己真正担心的事",
+                        }
+                    ],
+                },
+                {
+                    "order": 2,
+                    "location": "山门外",
+                    "action": "林渊带令离场",
+                    "result": "通行令背面留下异常痕迹",
+                },
+            ],
+            "ending_state": "林渊带令离场",
+        }
+    )
+
+    prompt = build_writer_prompt(
+        WriterRequest(
+            chapter_number=3,
+            director_artifact=artifact,
+            character_intents=[
+                {
+                    "name": "苏瑶",
+                    "want": "苏瑶当众质问林渊",
+                    "move": "苏瑶当众质问林渊",
+                }
+            ],
+        )
+    )
+
+    assert "苏瑶想要：只确认林渊是否受伤" in prompt
+    assert "只问伤势，不公开追问秘密" in prompt
+    assert "苏瑶当众质问林渊" not in prompt
 
 
 def test_fact_extractor_director_view_omits_private_character_intents() -> None:

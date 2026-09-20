@@ -61,6 +61,8 @@ def _render_director_artifact(request: WriterRequest) -> str:
             [
                 "合同规则：必须兑现收益与代价，落地目标状态变化；不得提前写入禁止事项；"
                 "章末必须让计划钩子在正文末段出现。",
+                "下方人物意图只包括 Director 最终保留或改写的 scene-level intents；"
+                "不要从其他角色提案补回已删除、延后、阻断或被要求保持沉默的行为。",
             ]
         )
     lines.extend(["", "## 场景节拍"])
@@ -118,30 +120,6 @@ def _render_previous_handoff(request: WriterRequest) -> str:
         )
         sections.append(f"## 连续性事实\n{facts}")
     return "\n".join(sections)
-
-
-def _render_character_intents(request: WriterRequest) -> str:
-    if not request.character_intents:
-        return ""
-    lines = [
-        "## 人物意图（私有表演压力，不是新剧情合同）",
-        "优先级：上游章节执行合同 > 导演公开场景计划 > 私人人物意图。",
-        "人物意图只能控制行动、台词、停顿、潜台词和受阻后的反应；不得改写收益、代价、状态变化、禁止事项或章末钩子。",
-        "不要把私有目标、withhold 或 dramatic_function 直接写成解释性旁白或角色自述；用行为、措辞和选择表现出来。",
-    ]
-    for intent in request.character_intents:
-        parts = [
-            f"{intent.name}想要：{intent.want}" if intent.want else intent.name,
-            f"对象：{intent.target}" if intent.target else "",
-            f"情绪：{intent.emotion}" if intent.emotion else "",
-            f"行动：{intent.move}" if intent.move else "",
-            f"说话策略：{intent.speech_strategy}" if intent.speech_strategy else "",
-            f"不说出口：{intent.withhold}" if intent.withhold else "",
-            f"受阻后：{intent.reaction}" if intent.reaction else "",
-            f"戏剧功能：{intent.dramatic_function}" if intent.dramatic_function else "",
-        ]
-        lines.append("- " + "；".join(part for part in parts if part))
-    return "\n".join(lines)
 
 
 def _current_character_state(card: dict[str, Any]) -> dict[str, Any]:
@@ -358,6 +336,8 @@ def build_writer_prompt(request: WriterRequest) -> str:
         "- 对话服从人物当下目的和关系，不要求每个人完整陈述逻辑；可以打断、沉默、回避、反问、故意误解、答非所问、转移话题或用动作回应。需要讲清事实时再自然说完整。\n"
         "- 禁止为了体现群像而让出场人物依次发表观点；没有当前意图的人可以沉默、旁观或只产生动作反应。\n"
         "- character_intents 是作者侧写作控制，不是角色公开说出的事实；尤其不要把 want/withhold 直接改写成解释性旁白，让动作、停顿、措辞和选择把它表现出来。\n"
+        "- 优先级：上游章节执行合同 > 导演公开场景计划 > Director 最终 scene-level character intents；只执行场景节拍中最终保留或改写的人物意图。\n"
+        "- Director 最终人物意图只能控制行动、台词、停顿、潜台词和受阻后的反应；不得改写收益、代价、状态变化、禁止事项或章末钩子。\n"
         "- 描写只保留会影响人物判断、情绪或后续行动的细节；整章只在必要处保留一两处比喻，其余直接写动作和结果。\n"
         "- 文书、面板或记录最多摘三行，只保留会改变人物判断的字段；不照抄完整经过、后台字段和处理说明。\n"
         "- 除非本章明确要求恐怖细节，不细写暴露的器官、体液或尸体状态，用人物反应和现场后果呈现危险。\n"
@@ -380,9 +360,6 @@ def build_writer_prompt(request: WriterRequest) -> str:
     handoff = _render_previous_handoff(request)
     if handoff:
         sections.append(handoff)
-    character_intents = _render_character_intents(request)
-    if character_intents:
-        sections.append(character_intents)
     characters = _render_character_cards(request)
     if characters:
         sections.append(characters)

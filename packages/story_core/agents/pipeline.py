@@ -713,6 +713,11 @@ def run_writer(
     The orchestrator still runs its own review / revision flow
     after this pipeline returns, so the pipeline never
     overwrites the bounded review contract.
+
+    ``character_intents`` remains an accepted compatibility argument for
+    older direct callers.  The modular production path leaves it unset, and
+    this argument is intentionally ignored: Writer consumes only the final
+    scene-level intents in ``director_artifact.scene_beats``.
     """
     context = _ensure_writer_context(
         project_root=project_root,
@@ -748,7 +753,6 @@ def run_writer(
     request = _build_writer_request(
         context=context,
         director_artifact=director_artifact,
-        character_intents=character_intents,
     )
     agent = WriterAgent(runtime=runtime)
     result = agent.run(request)
@@ -1253,7 +1257,12 @@ def _build_writer_request(
     director_artifact: DirectorArtifact,
     character_intents: list[SceneCharacterIntent] | None = None,
 ) -> WriterRequest:
-    """Project a ``WriterContext`` into the canonical ``WriterRequest``."""
+    """Project a context into ``WriterRequest`` without bypassing Director.
+
+    ``character_intents`` is retained for old callers but deliberately not
+    copied into the request.  Final scene-level intents are rendered from the
+    Director artifact instead.
+    """
     return WriterRequest(
         chapter_number=context.chapter_number,
         director_artifact=director_artifact,
@@ -1268,7 +1277,6 @@ def _build_writer_request(
         repair_length=False,
         previous_tail=context.previous_tail,
         continuity_facts=list(context.continuity_facts),
-        character_intents=list(character_intents or []),
         character_cards=list(context.character_cards),
         entity_cards=list(context.entity_cards),
         world_rules=list(context.world_rules),
@@ -1444,23 +1452,6 @@ def run_modular_pipeline(
         runtime=writer_runtime,
         consistency_runtime=consistency_runtime,
         rewrite_guidance=rewrite_guidance,
-        character_intents=[
-            SceneCharacterIntent(
-                name=str(item.get("name") or "").strip(),
-                want=str(item.get("goal") or item.get("want") or "").strip(),
-                target=str(item.get("target") or "").strip(),
-                emotion=str(item.get("emotion") or "").strip(),
-                move=str(item.get("action") or item.get("move") or "").strip(),
-                speech_strategy=str(item.get("speech_strategy") or "").strip(),
-                withhold=str(item.get("withhold") or "").strip(),
-                reaction=str(
-                    item.get("blocked_reaction") or item.get("reaction") or ""
-                ).strip(),
-                dramatic_function=str(item.get("dramatic_function") or "").strip(),
-            )
-            for item in character_intents
-            if str(item.get("name") or "").strip()
-        ],
     )
     report_generation_progress(
         {
