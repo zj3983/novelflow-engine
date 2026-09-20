@@ -41,11 +41,50 @@ def _goal_topic(goal: str) -> str:
 
 def _goal_action(goal: str) -> str:
     goal_text = goal.lower()
+    if any(word in goal_text for word in ("伤", "伤势", "状态")):
+        subject = goal
+        for prefix in ("确认", "检查", "查看"):
+            if subject.startswith(prefix):
+                subject = subject[len(prefix) :].strip()
+                break
+        return f"先确认{subject or goal}，再决定是否进一步介入"
+    if any(word in goal_text for word in ("气氛", "关系", "态度", "反应")):
+        return "观察相关人的反应，找机会试探关系变化"
+    if any(
+        word in goal_text
+        for word in (
+            "查",
+            "找",
+            "揭",
+            "追",
+            "弄清",
+            "确认",
+            "调查",
+            "原因",
+            "动机",
+            "来源",
+            "实力",
+            "线索",
+            "expose",
+            "find",
+            "accuse",
+            "hunt",
+        )
+    ):
+        subject = goal
+        for prefix in ("查清", "查找", "调查", "弄清", "确认", "找出", "揭开"):
+            if subject.startswith(prefix):
+                subject = subject[len(prefix) :].strip()
+                break
+        return f"围绕{subject or goal}主动搜集线索"
     if any(word in goal_text for word in ("protect", "save", "guard", "help", "守", "保", "护", "救")):
-        return f"一边护住脆弱的真相，一边尝试{goal}"
-    if any(word in goal_text for word in ("expose", "find", "accuse", "hunt", "查", "找", "揭", "追", "弄清", "确认")):
-        return f"抢在对手合围之前，强行推进{goal}"
-    return f"谨慎推进{goal}，同时不让自己失去筹码"
+        subject = goal
+        for prefix in ("守住", "保护", "保住", "护住", "救下"):
+            if subject.startswith(prefix):
+                subject = subject[len(prefix) :].strip()
+                break
+        return f"先守住{subject or goal}，再根据当前反馈决定下一步"
+    return f"观察与{goal}相关的反馈，再决定是否介入"
 
 
 def _emotion_drive(emotion: str) -> int:
@@ -160,7 +199,6 @@ class RuleBasedCharacterProposalProvider:
             if character.goals
             else character.story_drive.immediate_goal
             or character.current_life_profile.immediate_problem
-            or character.core_motivation
         )
         goal = explicit_goal or "暂不行动，先观察局势"
         emotion = character.current_emotion or "controlled"

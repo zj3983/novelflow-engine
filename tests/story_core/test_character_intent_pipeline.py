@@ -743,6 +743,28 @@ def test_rule_based_character_proposal_can_stay_inactive_without_stimulus() -> N
     assert proposal.priority == 0
 
 
+def test_long_term_core_motivation_alone_does_not_activate_rule_intent() -> None:
+    story = StoryState(
+        story_id="s-intent-long-term-only",
+        outline="本章没有触及这个角色的长期动机。",
+        genre="玄幻",
+        style="自然中文",
+        characters=[
+            CharacterState(
+                name="旁观者",
+                role="supporting",
+                core_motivation="保护家人",
+            )
+        ],
+    )
+
+    proposal = RuleBasedCharacterProposalProvider().propose_all(story)[0]
+
+    assert proposal.goal == "暂不行动，先观察局势"
+    assert proposal.action == ""
+    assert proposal.priority == 0
+
+
 def test_rule_based_character_proposals_keep_personality_pressure_distinct() -> None:
     story = StoryState(
         story_id="s-intent-personality",
@@ -794,6 +816,15 @@ def test_rule_based_character_proposals_keep_personality_pressure_distinct() -> 
     assert proposals["苏瑶"].emotion == "介意"
     assert proposals["王胖子"].action != proposals["苏瑶"].action
     assert proposals["赵天衡"].priority > proposals["王胖子"].priority
+    assert "先确认" in proposals["苏瑶"].action
+    assert "观察" in proposals["王胖子"].action
+    assert "试探" in proposals["王胖子"].action
+    assert "搜集线索" in proposals["赵天衡"].action
+    assert "施压" not in proposals["王胖子"].action
+    for proposal in proposals.values():
+        assert "对手合围" not in proposal.action
+        assert "脆弱的真相" not in proposal.action
+        assert "强行推进" not in proposal.action
 
 
 def test_character_intent_stage_survives_both_provider_failures() -> None:
