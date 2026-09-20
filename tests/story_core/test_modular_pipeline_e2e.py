@@ -33,10 +33,12 @@ from packages.story_core.agents.pipeline import (
     _ensure_canon_service,
     _ensure_writer_context,
     _preflight_entities,
+    run_writer,
 )
 from packages.story_core.agents.contracts import (
     DirectorArtifact,
     EntityRequirement,
+    OutlineExecutionContract,
     SceneBeat,
 )
 from packages.story_core.canon.registry import CanonRegistry
@@ -328,6 +330,79 @@ class _StubConsistencyRuntime:
                 }
             ]
         }
+
+
+class _EmptyConsistencyRuntime:
+    def complete(self, request: Any) -> list[Any]:
+        return []
+
+
+def _hook_artifact() -> DirectorArtifact:
+    return DirectorArtifact(
+        chapter_number=1,
+        chapter_goal="拿到通行令",
+        opening_state="林昭在妖林门口",
+        scene_beats=[
+            SceneBeat(
+                order=1,
+                location="妖林",
+                action="林昭逼退守门人",
+                result="守门人交出通行令",
+            ),
+            SceneBeat(
+                order=2,
+                location="妖林门口",
+                action="林昭查看通行令",
+                result="通行令背面浮出血字",
+            ),
+        ],
+        ending_state="林昭拿到通行令",
+        hook="通行令背面浮出血字",
+        outline_contract=OutlineExecutionContract(
+            chapter_number=1,
+            planned_hook="通行令背面浮出血字",
+        ),
+    )
+
+
+def test_run_writer_hard_fails_when_planned_hook_does_not_land(
+    tmp_path: Path,
+) -> None:
+    _seed_legacy_project(tmp_path, with_outline=False)
+    result = run_writer(
+        project_root=tmp_path,
+        chapter_number=1,
+        director_artifact=_hook_artifact(),
+        runtime=_StubWriterRuntime(body="林昭提灯上山，" * 900),
+        consistency_runtime=_EmptyConsistencyRuntime(),
+    )
+
+    hook_findings = [
+        finding
+        for finding in result.consistency_findings
+        if finding["code"] == "chapter.hook_not_landed"
+    ]
+    assert hook_findings
+    assert hook_findings[0]["blocking"] is True
+
+
+def test_run_writer_accepts_planned_hook_when_it_lands_in_final_quarter(
+    tmp_path: Path,
+) -> None:
+    _seed_legacy_project(tmp_path, with_outline=False)
+    body = "林昭提灯上山，" * 900 + "通行令背面浮出血字。"
+    result = run_writer(
+        project_root=tmp_path,
+        chapter_number=1,
+        director_artifact=_hook_artifact(),
+        runtime=_StubWriterRuntime(body=body),
+        consistency_runtime=_EmptyConsistencyRuntime(),
+    )
+
+    assert not any(
+        finding["code"] == "chapter.hook_not_landed"
+        for finding in result.consistency_findings
+    )
 
 
 def test_director_context_falls_back_to_legacy_when_story_system_is_partial(
@@ -835,9 +910,7 @@ def test_orchestrator_writes_per_stage_artifacts_to_workflow_store(tmp_path: Pat
 
 
 def test_orchestrator_runs_focused_consistency_review(tmp_path: Path):
-    """The writer stage must run the focused consistency review
-    and surface the findings on the bundle, not hard-code pass=True.
-    """
+    """An unverified historical model finding stays visible but advisory."""
     project_root = tmp_path
     _seed_legacy_project(project_root, with_outline=False)
 
@@ -857,17 +930,18 @@ def test_orchestrator_runs_focused_consistency_review(tmp_path: Path):
         consistency_runtime=consistency_runtime,
     )
 
-    # The consistency runtime was hit exactly once during the
-    # writer stage and the blocking finding came through.
+    # The consistency runtime was hit exactly once during the writer stage.
+    # This project has already advanced but has no bounded chapter-0 state,
+    # so the model cannot manufacture a blocking Canon finding.
     assert len(consistency_runtime.calls) == 1
     assert isinstance(bundle, ModularChapterBundle)
     assert len(bundle.consistency_findings) == 1
     finding = bundle.consistency_findings[0]
     assert finding["code"] == "canon_violation"
-    assert finding["blocking"] is True
+    assert finding["blocking"] is False
 
-    # The bundle's writing_review reflects the real finding
-    # (pass=False) instead of the old hard-coded True.
+    # The bundle's writing_review reflects the advisory disposition instead of
+    # turning an unavailable historical base into a hard failure.
     legacy_bundle = orchestrator._generate_next_chapter_bundle_via_modular_agents(
         _make_stub_story_state(current_chapter=0),
         project_root=project_root,
@@ -876,8 +950,97 @@ def test_orchestrator_runs_focused_consistency_review(tmp_path: Path):
         consistency_runtime=consistency_runtime,
     )
     writing_review = legacy_bundle.quality_report["writing_review"]
-    assert writing_review["pass"] is False
-    assert "canon_violation" in writing_review["issues"]
+    assert writing_review["pass"] is True
+    assert "canon_violation" not in writing_review["issues"]
+
+
+def test_writer_consistency_uses_previous_chapter_canon_snapshot(tmp_path: Path):
+    from packages.story_core.continuity.snapshot import ChapterSnapshot
+    from packages.story_core.continuity.store import ContinuityStore
+
+    project_root = tmp_path
+    _seed_legacy_project(project_root, with_outline=False)
+
+    ContinuityStore(project_root).write_snapshot(
+        ChapterSnapshot(
+            chapter_number=1,
+            candidate_id="c1",
+            operation="generate",
+            confirmed_at="2026-09-19T00:00:00+00:00",
+            body_sha256="sha-c1",
+            body_chars=4000,
+            state_after={
+                "current_chapter": 1,
+                "characters": [
+                    {
+                        "name": "林昭",
+                        "role": "protagonist",
+                        "current_state": {
+                            "current": {"location": "山脚", "equipment": "旧木剑"}
+                        },
+                    }
+                ],
+                "world_facts": ["山门入夜后关闭"],
+                "continuity_facts": [
+                    {
+                        "subject": "林昭",
+                        "field": "装备",
+                        "value": "旧木剑",
+                        "chapter_number": 1,
+                        "source_sentence": "林昭把旧木剑系回腰间。",
+                    }
+                ],
+            },
+        )
+    )
+
+    registry = CanonRegistry()
+    registry.add_character(
+        name="林昭",
+        entity_id="char-lin",
+        lifecycle="active",
+        extensions={"location": "山脚"},
+    )
+    registry.add_character(
+        name="苏婉",
+        entity_id="char-su",
+        lifecycle="active",
+    )
+    registry.add_relationship(
+        subject_id="char-lin",
+        predicate="trusts",
+        object_id="char-su",
+        polarity="added",
+        chapter_number=1,
+        source_sentence="林昭把旧木剑交给苏婉保管过。",
+    )
+    registry.add_timeline_marker(
+        marker="第一夜",
+        chapter_number=1,
+        source_sentence="山门钟声响起。",
+    )
+
+    consistency_runtime = _StubConsistencyRuntime()
+    bundle = StoryOrchestrator(
+        use_modular_agents=True
+    ).generate_next_chapter_via_modular_pipeline(
+        project_root=project_root,
+        chapter_number=2,
+        director_runtime=_StubDirectorRuntime(),
+        writer_runtime=_StubWriterRuntime(),
+        consistency_runtime=consistency_runtime,
+        canon_registry=registry,
+    )
+
+    assert len(consistency_runtime.calls) == 1
+    prompt = consistency_runtime.calls[0].prompt
+    assert "Canon 审稿快照（截至第 1 章）" in prompt
+    assert "山门入夜后关闭" in prompt
+    assert "旧木剑" in prompt
+    assert "林昭把旧木剑交给苏婉保管过" in prompt
+    assert "山门钟声响起" in prompt
+    assert bundle.canon_review_snapshot["as_of_chapter"] == 1
+    assert bundle.canon_review_snapshot["state_source"] == "continuity_snapshot"
 
 
 def test_deterministic_prose_findings_report_dense_simile_stacking_as_advisory():

@@ -88,6 +88,29 @@ class EntityRequirement(BaseModel):
     notes: str = ""
 
 
+class OutlineExecutionContract(BaseModel):
+    """Program-built execution contract distilled from the chapter outline.
+
+    This is deliberately optional on :class:`DirectorArtifact`: older
+    persisted artifacts and legacy projects can still cross the boundary
+    without inventing outline data.  The runtime must never be trusted to
+    author this contract; the Director boundary builds it from the typed
+    context instead.
+    """
+
+    chapter_number: int
+    core_conflict: str = ""
+    gain: str = ""
+    cost: str = ""
+    state_delta: str = ""
+    planned_hook: str = ""
+    opening_carry: str = ""
+    mid_feedback: str = ""
+    planned_turn: str = ""
+    payoff_contract: dict[str, str] = Field(default_factory=dict)
+    must_not_write: list[str] = Field(default_factory=list)
+
+
 class DirectorArtifact(BaseModel):
     """The director's structured chapter plan.
 
@@ -112,6 +135,7 @@ class DirectorArtifact(BaseModel):
     ending_state: str
     hook: str = ""
     entity_requirements: list[EntityRequirement] = Field(default_factory=list)
+    outline_contract: OutlineExecutionContract | None = None
 
 
 # --- Writer ------------------------------------------------------------------
@@ -177,6 +201,7 @@ class WriterResult(BaseModel):
 __all__ = [
     "DirectorArtifact",
     "EntityRequirement",
+    "OutlineExecutionContract",
     "SceneBeat",
     "SceneCharacterIntent",
     "WriterRequest",

@@ -1,0 +1,59 @@
+name: Bug report / Bug 报告
+description: 报告可以稳定复现的问题
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请勿粘贴 API Key、Token、Cookie、私人小说内容或其他敏感数据。
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题描述
+      description: 实际发生了什么？
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 请提供最小、稳定的复现步骤。
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: 版本或 Commit
+      description: 分支、tag 或 commit SHA。
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境
+      description: 操作系统、Python/Node 版本、部署方式等。
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志
+      description: 请先移除密钥、路径中的私人信息和用户内容。
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索现有 Issue，没有找到相同问题。
+          required: true
+        - label: 我确认这里没有包含密钥、Token、Cookie 或私人数据。
+          required: true

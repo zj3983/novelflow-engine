@@ -171,6 +171,31 @@ def adapt_modular_bundle_to_legacy(
                 else None
             ),
             "canon_preflight": dict(modular_bundle.canon_preflight or {}),
+            "canon_review_snapshot": {
+                "schema_version": str(
+                    (getattr(modular_bundle, "canon_review_snapshot", {}) or {}).get(
+                        "schema_version", ""
+                    )
+                ),
+                "as_of_chapter": (
+                    getattr(modular_bundle, "canon_review_snapshot", {}) or {}
+                ).get("as_of_chapter"),
+                "state_source": str(
+                    (getattr(modular_bundle, "canon_review_snapshot", {}) or {}).get(
+                        "state_source", ""
+                    )
+                ),
+                "historical_rewrite": bool(
+                    (getattr(modular_bundle, "canon_review_snapshot", {}) or {}).get(
+                        "historical_rewrite", False
+                    )
+                ),
+                "bounded_state_available": bool(
+                    (getattr(modular_bundle, "canon_review_snapshot", {}) or {}).get(
+                        "bounded_state_available", False
+                    )
+                ),
+            },
         },
     }
     scene_results = [

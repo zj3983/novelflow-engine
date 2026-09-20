@@ -14,7 +14,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ..contracts import DirectorArtifact, EntityRequirement, SceneBeat
+from ..contracts import (
+    DirectorArtifact,
+    EntityRequirement,
+    OutlineExecutionContract,
+    SceneBeat,
+)
 from ...context.director_context import DirectorContext
 
 
@@ -62,6 +67,63 @@ def planned_chapter_title(context: DirectorContext) -> str:
     return selected
 
 
+def _outline_text(value: Any) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _outline_text_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+
+def _outline_text_map(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(key): item.strip()
+        for key, item in value.items()
+        if isinstance(key, str) and isinstance(item, str) and item.strip()
+    }
+
+
+def build_outline_execution_contract(
+    context: DirectorContext,
+) -> OutlineExecutionContract | None:
+    """Build the target chapter's contract from the trusted outline view.
+
+    The last valid target entry wins, matching the title-lock behavior.  The
+    runtime response is intentionally not involved: missing fields simply
+    remain empty for old outlines.
+    """
+
+    selected: dict[str, Any] | None = None
+    for entry in context.nearby_outline:
+        if isinstance(entry, dict) and outline_chapter_number(entry) == context.chapter_number:
+            selected = entry
+    if selected is None:
+        return None
+
+    chapter_sop = selected.get("chapter_sop")
+    if not isinstance(chapter_sop, dict):
+        chapter_sop = {}
+    return OutlineExecutionContract(
+        chapter_number=context.chapter_number,
+        core_conflict=_outline_text(selected.get("core_conflict"))
+        or _outline_text(selected.get("obstacle")),
+        gain=_outline_text(selected.get("gain")) or _outline_text(selected.get("payoff")),
+        cost=_outline_text(selected.get("cost")) or _outline_text(selected.get("turn")),
+        state_delta=_outline_text(selected.get("state_delta")),
+        planned_hook=_outline_text(selected.get("hook"))
+        or _outline_text(selected.get("ending_hook")),
+        opening_carry=_outline_text(chapter_sop.get("opening_carry")),
+        mid_feedback=_outline_text(chapter_sop.get("mid_feedback")),
+        planned_turn=_outline_text(chapter_sop.get("turn")),
+        payoff_contract=_outline_text_map(selected.get("payoff_contract")),
+        must_not_write=_outline_text_list(selected.get("must_not_write")),
+    )
+
+
 def _render_volume(context: DirectorContext) -> str:
     if not context.volume:
         return ""
@@ -85,10 +147,10 @@ def _render_nearby_outline(context: DirectorContext) -> str:
         if number is None:
             continue
         title = _outline_chapter_title(entry)
-        summary = entry.get("summary", "")
-        goal = entry.get("goal", "")
-        obstacle = entry.get("obstacle", "")
-        action = entry.get("action", "")
+        summary = _outline_text(entry.get("summary"))
+        goal = _outline_text(entry.get("goal"))
+        obstacle = _outline_text(entry.get("obstacle"))
+        action = _outline_text(entry.get("action"))
         line = f"- 第{number}章 {title}：{summary}"
         detail = " · ".join(
             part for part in (goal, obstacle, action) if isinstance(part, str) and part.strip()
@@ -98,24 +160,76 @@ def _render_nearby_outline(context: DirectorContext) -> str:
         if number == context.chapter_number:
             target_lines.append(line)
         else:
+            compact: list[str] = []
+            state_delta = _outline_text(entry.get("state_delta"))
+            opening_carry = _outline_text(entry.get("opening_carry"))
+            chapter_sop = entry.get("chapter_sop")
+            if isinstance(chapter_sop, dict):
+                opening_carry = _outline_text(chapter_sop.get("opening_carry")) or opening_carry
+            ending_hook = _outline_text(entry.get("ending_hook"))
+            hook = _outline_text(entry.get("hook"))
+            for label, value in (
+                ("状态变化", state_delta),
+                ("承接", opening_carry),
+                ("章末钩子", ending_hook or hook),
+            ):
+                if value:
+                    compact.append(f"{label}：{value}")
+            if compact:
+                line += "｜" + "；".join(compact)
             boundary_lines.append(line)
     sections: list[str] = []
     if target_lines:
-        sections.append(
-            "## 本章细纲（正文内容必须展开为可执行场景计划，不得整段照抄）\n"
-            + "\n".join(target_lines)
-        )
+        target_contract = build_outline_execution_contract(context)
+        target_section = [
+            "## 本章细纲（正文内容必须展开为可执行场景计划，不得整段照抄）",
+            *target_lines,
+        ]
+        if target_contract is not None:
+            target_section.extend(
+                [
+                    "",
+                    "## 本章上游执行合同（以此约束 Director 与 Writer）",
+                    f"核心冲突：{target_contract.core_conflict or '（未提供）'}",
+                    f"本章收益：{target_contract.gain or '（未提供）'}",
+                    f"本章代价：{target_contract.cost or '（未提供）'}",
+                    f"目标状态变化：{target_contract.state_delta or '（未提供）'}",
+                    f"开场承接：{target_contract.opening_carry or '（未提供）'}",
+                    f"中段反馈：{target_contract.mid_feedback or '（未提供）'}",
+                    f"计划转折：{target_contract.planned_turn or '（未提供）'}",
+                    f"计划章末钩子：{target_contract.planned_hook or '（未提供）'}",
+                ]
+            )
+            if target_contract.payoff_contract:
+                target_section.append(
+                    "收益合同："
+                    + "；".join(
+                        f"{key}={value}"
+                        for key, value in target_contract.payoff_contract.items()
+                    )
+                )
+            if target_contract.must_not_write:
+                target_section.append(
+                    "禁止提前写：" + "；".join(target_contract.must_not_write)
+                )
+        sections.append("\n".join(target_section))
     if boundary_lines:
         sections.append("## 相邻章节边界\n" + "\n".join(boundary_lines))
     return "\n".join(sections)
 
 
 def _render_previous_handoff(context: DirectorContext) -> str:
-    if not context.previous_chapter_summary and not context.continuity_ledger:
+    if (
+        not context.previous_chapter_summary
+        and not context.previous_chapter_tail
+        and not context.continuity_ledger
+    ):
         return ""
     sections: list[str] = []
     if context.previous_chapter_summary:
         sections.append(f"## 上章总结\n{context.previous_chapter_summary}")
+    if context.previous_chapter_tail:
+        sections.append(f"## 上章实际收尾\n{context.previous_chapter_tail}")
     if context.continuity_ledger:
         facts = "\n".join(
             f"- {fact.get('subject', '?')} · {fact.get('field', '?')}：{fact.get('value', '?')}"
@@ -349,6 +463,7 @@ def parse_director_response(payload: Any) -> DirectorArtifact:
 
 
 __all__ = [
+    "build_outline_execution_contract",
     "build_director_prompt",
     "outline_chapter_number",
     "parse_director_response",
