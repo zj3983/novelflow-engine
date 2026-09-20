@@ -41,9 +41,9 @@ def _goal_topic(goal: str) -> str:
 
 def _goal_action(goal: str) -> str:
     goal_text = goal.lower()
-    if any(word in goal_text for word in ("protect", "save", "guard", "help")):
+    if any(word in goal_text for word in ("protect", "save", "guard", "help", "守", "保", "护", "救")):
         return f"一边护住脆弱的真相，一边尝试{goal}"
-    if any(word in goal_text for word in ("expose", "find", "accuse", "hunt")):
+    if any(word in goal_text for word in ("expose", "find", "accuse", "hunt", "查", "找", "揭", "追", "弄清", "确认")):
         return f"抢在对手合围之前，强行推进{goal}"
     return f"谨慎推进{goal}，同时不让自己失去筹码"
 
@@ -63,13 +63,28 @@ def _role_drive(role: str) -> int:
 
 def _goal_drive(goal: str) -> int:
     goal_text = goal.lower()
-    if any(word in goal_text for word in ("seize", "block", "corner", "force")):
+    if any(word in goal_text for word in ("seize", "block", "corner", "force", "夺", "阻", "逼", "压", "抢", "设局")):
         return 4
-    if any(word in goal_text for word in ("find", "expose", "accuse", "hunt")):
+    if any(word in goal_text for word in ("find", "expose", "accuse", "hunt", "查", "找", "揭", "追", "弄清", "确认")):
         return 3
-    if any(word in goal_text for word in ("protect", "hide", "stabilize", "guard", "save", "help")):
+    if any(word in goal_text for word in ("protect", "hide", "stabilize", "guard", "save", "help", "守", "保", "藏", "稳", "护", "救")):
         return 2
     return 1
+
+
+def _relationship_drive(character: CharacterState) -> int:
+    """Let current tension/trust break ties without activating role labels."""
+    tension = max(
+        (float(relationship.tension) for relationship in character.relationships.values()),
+        default=0.0,
+    )
+    trust = max(
+        (float(relationship.trust) for relationship in character.relationships.values()),
+        default=0.0,
+    )
+    return (2 if tension >= 0.75 else 1 if tension >= 0.5 else 0) + (
+        1 if trust >= 0.75 and tension < 0.5 else 0
+    )
 
 
 def _latest_summary_boost(story: StoryState, character_name: str, goal: str) -> int:
@@ -140,19 +155,65 @@ class CharacterProposalProvider(Protocol):
 
 class RuleBasedCharacterProposalProvider:
     def propose(self, story: StoryState, character: CharacterState) -> CharacterProposal:
-        goal = character.goals[0] if character.goals else "hold the line"
+        explicit_goal = (
+            character.goals[0]
+            if character.goals
+            else character.story_drive.immediate_goal
+            or character.current_life_profile.immediate_problem
+            or character.core_motivation
+        )
+        goal = explicit_goal or "暂不行动，先观察局势"
         emotion = character.current_emotion or "controlled"
+        current_state = character.current_state
+        if isinstance(current_state, dict):
+            current_state = (
+                current_state.get("current")
+                if isinstance(current_state.get("current"), dict)
+                else current_state
+            )
+        trigger = (
+            str(current_state.get("summary") or "")
+            if isinstance(current_state, dict)
+            else ""
+        )
+        relationship_values = sorted(
+            character.relationships.values(),
+            key=lambda relationship: (relationship.tension, relationship.trust),
+            reverse=True,
+        )
+        target = next(
+            (
+                relationship.target
+                for relationship in relationship_values
+                if relationship.target.strip()
+            ),
+            "",
+        )
         return CharacterProposal(
             name=character.name,
             goal=goal,
             emotion=emotion,
-            action=_goal_action(goal),
+            action=_goal_action(goal) if explicit_goal else "",
+            target=target,
+            trigger=trigger,
+            speech_strategy=character.performance_profile.speech_style
+            or "先观察，再用符合自身利益的方式试探或推进",
+            withhold=character.performance_profile.reveal_limits[0]
+            if character.performance_profile.reveal_limits
+            else "不主动暴露会削弱自身筹码的信息",
+            blocked_reaction=character.personality_portrait.behavior.conflict_response
+            or "行动受阻后暂缓、转向或保留下一步筹码",
+            dramatic_function=character.story_function or character.chapter_role,
             priority=(
-                _goal_drive(goal)
-                + _emotion_drive(emotion)
-                + _role_drive(character.role)
-                + _latest_summary_boost(story, character.name, goal)
-                + _latest_thread_boost(story, character.name)
+                (
+                    _goal_drive(goal)
+                    + _role_drive(character.role)
+                    + _relationship_drive(character)
+                    + _latest_summary_boost(story, character.name, goal)
+                    + _latest_thread_boost(story, character.name)
+                )
+                if explicit_goal
+                else _emotion_drive(emotion) + _latest_thread_boost(story, character.name)
             ),
             new_character_candidates=_new_character_candidates(character),
         )
@@ -215,7 +276,7 @@ class OpenAICharacterProposalProvider(BaseOpenAIProvider):
             proposals.append(
                 CharacterProposal(
                     name=name,
-                    goal=str(item.get("goal", "")).strip() or "hold the line",
+                    goal=str(item.get("goal", "")).strip() or "暂不行动，先观察局势",
                     emotion=str(item.get("emotion", "neutral")).strip() or "neutral",
                     action=str(item.get("action", "")).strip(),
                     priority=int(item.get("priority", 0) or 0),
@@ -354,7 +415,13 @@ class CharacterAgent:
 
     def propose_all(self, story: StoryState) -> list[CharacterProposal]:
         if story.agent_settings.mode == "LLM-assisted":
-            llm_proposals = self.llm_provider.propose_all(story)
+            try:
+                llm_proposals = self.llm_provider.propose_all(story)
+            except Exception:
+                llm_proposals = []
             if llm_proposals:
                 return llm_proposals
-        return self.rule_provider.propose_all(story)
+        try:
+            return self.rule_provider.propose_all(story)
+        except Exception:
+            return []

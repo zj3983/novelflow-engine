@@ -16,7 +16,10 @@ from packages.story_core.agents.director.prompt import (
 from packages.story_core.agents.fact_extractor.agent import _fact_extractor_director_view
 from packages.story_core.canon.registry import CanonRegistry
 from packages.story_core.canon.review_snapshot import build_canon_review_snapshot
-from packages.story_core.character_agent import OpenAICharacterProposalProvider
+from packages.story_core.character_agent import (
+    OpenAICharacterProposalProvider,
+    RuleBasedCharacterProposalProvider,
+)
 from packages.story_core.agents.pipeline import (
     _build_writer_request,
     _chapter_cast_names,
@@ -26,7 +29,12 @@ from packages.story_core.agents.writer.prompt import build_writer_prompt
 from packages.story_core.context.director_context import DirectorContext
 from packages.story_core.context.legacy_adapter import legacy_outline_view
 from packages.story_core.context.writer_context import WriterContext
-from packages.story_core.models import CharacterProposal, CharacterState, StoryState
+from packages.story_core.models import (
+    CharacterProposal,
+    CharacterRelationship,
+    CharacterState,
+    StoryState,
+)
 from packages.story_core.modular_bundle_adapter import adapt_modular_bundle_to_legacy
 
 
@@ -717,3 +725,109 @@ def test_modular_bundle_adapter_preserves_character_intent_lifecycle() -> None:
     assert bundle.scene_cards[0]["character_intents"][0]["name"] == "苏瑶"
     assert bundle.scene_cards[0]["relationship_shift"] == "两人距离略微拉近"
     assert bundle.pipeline_stages[0] == "character_intent"
+
+
+def test_rule_based_character_proposal_can_stay_inactive_without_stimulus() -> None:
+    story = StoryState(
+        story_id="s-intent-noop",
+        outline="本章没有触及路人的利益。",
+        genre="玄幻",
+        style="自然中文",
+        characters=[CharacterState(name="路人甲", role="supporting")],
+    )
+
+    proposal = RuleBasedCharacterProposalProvider().propose_all(story)[0]
+
+    assert proposal.goal == "暂不行动，先观察局势"
+    assert proposal.action == ""
+    assert proposal.priority == 0
+
+
+def test_rule_based_character_proposals_keep_personality_pressure_distinct() -> None:
+    story = StoryState(
+        story_id="s-intent-personality",
+        outline="林渊赢下宗门比试。",
+        genre="玄幻",
+        style="自然中文",
+        characters=[
+            CharacterState(
+                name="林渊",
+                role="protagonist",
+                goals=["守住胜利并查清赵家动机"],
+            ),
+            CharacterState(
+                name="苏瑶",
+                role="love_interest",
+                goals=["确认林渊伤势"],
+                current_emotion="介意",
+                relationships={
+                    "lin": CharacterRelationship(target="林渊", tension=0.8)
+                },
+            ),
+            CharacterState(
+                name="王胖子",
+                role="ally",
+                goals=["弄清两人气氛"],
+                relationships={
+                    "lin": CharacterRelationship(target="林渊", trust=0.8)
+                },
+            ),
+            CharacterState(
+                name="赵天衡",
+                role="stage_antagonist",
+                goals=["查清林渊实力提升的原因"],
+                relationships={
+                    "lin": CharacterRelationship(target="林渊", tension=0.9)
+                },
+            ),
+        ],
+    )
+
+    proposals = {
+        proposal.name: proposal
+        for proposal in RuleBasedCharacterProposalProvider().propose_all(story)
+    }
+
+    assert proposals["苏瑶"].target == "林渊"
+    assert proposals["王胖子"].target == "林渊"
+    assert proposals["赵天衡"].target == "林渊"
+    assert proposals["苏瑶"].emotion == "介意"
+    assert proposals["王胖子"].action != proposals["苏瑶"].action
+    assert proposals["赵天衡"].priority > proposals["王胖子"].priority
+
+
+def test_character_intent_stage_survives_both_provider_failures() -> None:
+    class BrokenRuleProvider:
+        def propose_all(self, _story: StoryState) -> list[CharacterProposal]:
+            raise RuntimeError("rule fallback unavailable")
+
+    class BrokenCharacterAgent:
+        rule_provider = BrokenRuleProvider()
+
+        def propose_all(self, _story: StoryState) -> list[CharacterProposal]:
+            raise RuntimeError("llm provider unavailable")
+
+    story = StoryState(
+        story_id="s-intent-double-failure",
+        outline="本章继续推进。",
+        genre="玄幻",
+        style="自然中文",
+        outline_context={"chapter": {"chapter_number": 1, "cast": ["林渊"]}},
+        characters=[CharacterState(name="林渊", role="protagonist")],
+    )
+    context = DirectorContext(
+        chapter_number=1,
+        volume={},
+        book_outline_summary="",
+        nearby_outline=[{"number": 1, "cast": ["林渊"]}],
+    )
+
+    assert (
+        _character_intents_for_context(
+            story,
+            context,
+            1,
+            agent=BrokenCharacterAgent(),  # type: ignore[arg-type]
+        )
+        == []
+    )
