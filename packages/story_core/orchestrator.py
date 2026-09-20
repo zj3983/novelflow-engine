@@ -3280,6 +3280,8 @@ class StoryOrchestrator:
         *,
         project_root: Any,
         chapter_number: int,
+        story: StoryState | None = None,
+        character_agent: Any | None = None,
         director_runtime: Any | None = None,
         writer_runtime: Any | None = None,
         fact_extractor: Any | None = None,
@@ -3352,6 +3354,8 @@ class StoryOrchestrator:
         return run_modular_pipeline(
             project_root=project_root,
             chapter_number=chapter_number,
+            story=story,
+            character_agent=character_agent,
             director_runtime=director_runtime,
             writer_runtime=writer_runtime,
             fact_extractor=fact_extractor,
@@ -4143,6 +4147,7 @@ class StoryOrchestrator:
         director_runtime: Any | None = None,
         writer_runtime: Any | None = None,
         fact_extractor: Any | None = None,
+        character_agent: Any | None = None,
     ):
         # The workbench path: route through the new modular
         # pipeline. The new Director → CanonService preflight →
@@ -4165,6 +4170,7 @@ class StoryOrchestrator:
                     director_runtime=director_runtime,
                     writer_runtime=writer_runtime,
                     fact_extractor=fact_extractor,
+                    character_agent=character_agent,
                 )
         return ChapterPipeline().run(
             story,
@@ -4180,6 +4186,7 @@ class StoryOrchestrator:
         writer_runtime: Any | None = None,
         fact_extractor: Any | None = None,
         consistency_runtime: Any | None = None,
+        character_agent: Any | None = None,
     ) -> Any:
         """Produce a legacy ``ChapterBundle`` from the modular pipeline.
 
@@ -4205,10 +4212,12 @@ class StoryOrchestrator:
         bundle = self.generate_next_chapter_via_modular_pipeline(
             project_root=project_root,
             chapter_number=chapter_number,
+            story=story,
             director_runtime=director_runtime,
             writer_runtime=writer_runtime,
             fact_extractor=fact_extractor,
             consistency_runtime=consistency_runtime,
+            character_agent=character_agent,
             rewrite_guidance=rewrite_guidance,
         )
         from packages.story_core.modular_bundle_adapter import (

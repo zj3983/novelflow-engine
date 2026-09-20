@@ -26,18 +26,85 @@ from .project_reader import ProjectContextReader
 
 
 def _concise_character_card(card: dict[str, Any]) -> dict[str, Any]:
+    """Project a bounded decision-oriented card for the director."""
+
+    drive = card.get("story_drive") if isinstance(card.get("story_drive"), dict) else {}
+    portrait = (
+        card.get("personality_portrait")
+        if isinstance(card.get("personality_portrait"), dict)
+        else {}
+    )
+    psychology = portrait.get("psychology") if isinstance(portrait.get("psychology"), dict) else {}
+    behavior = portrait.get("behavior") if isinstance(portrait.get("behavior"), dict) else {}
+    performance = (
+        card.get("performance_profile")
+        if isinstance(card.get("performance_profile"), dict)
+        else {}
+    )
+    relationship_notes = [
+        {
+            key: note.get(key)
+            for key in (
+                "target",
+                "relation_type",
+                "current_attitude",
+                "shared_interest_or_conflict",
+            )
+            if note.get(key) not in (None, "", [], {})
+        }
+        for note in (card.get("relationship_notes") or [])[:3]
+        if isinstance(note, dict)
+    ]
+    relationships = []
+    raw_relationships = card.get("relationships")
+    if isinstance(raw_relationships, dict):
+        for target, relation in list(raw_relationships.items())[:3]:
+            if not isinstance(relation, dict):
+                continue
+            relationships.append(
+                {
+                    "target": str(relation.get("target") or target),
+                    "trust": relation.get("trust", 0),
+                    "tension": relation.get("tension", 0),
+                    "bond": str(relation.get("bond") or "")[:80],
+                }
+            )
     return {
-        key: card.get(key)
-        for key in (
-            "id",
-            "name",
-            "role",
-            "location",
-            "current_state",
-            "lifecycle",
-            "summary",
-        )
-        if key in card
+        "id": card.get("id"),
+        "name": card.get("name"),
+        "role": card.get("role"),
+        "narrative_function": card.get("narrative_function"),
+        "location": card.get("location"),
+        "current_state": card.get("current_state"),
+        "lifecycle": card.get("lifecycle") or card.get("lifecycle_state"),
+        "summary": card.get("summary"),
+        "story_drive": {
+            key: str(drive.get(key) or "")[:140]
+            for key in ("immediate_goal", "motivation", "main_conflict_reason")
+            if str(drive.get(key) or "").strip()
+        },
+        "personality": {
+            "desire": str(psychology.get("desire") or "")[:100],
+            "fear": str(psychology.get("fear") or "")[:100],
+            "pressure_mode": str(behavior.get("pressure_mode") or "")[:100],
+            "conflict_response": str(behavior.get("conflict_response") or "")[:100],
+        },
+        "performance": {
+            "speech_style": str(performance.get("speech_style") or "")[:100],
+            "action_style": str(performance.get("action_style") or "")[:100],
+            "decision_rules": [
+                str(item)[:100]
+                for item in (performance.get("decision_rules") or [])[:2]
+                if str(item).strip()
+            ],
+            "reveal_limits": [
+                str(item)[:100]
+                for item in (performance.get("reveal_limits") or [])[:2]
+                if str(item).strip()
+            ],
+        },
+        "relationship_notes": relationship_notes,
+        "relationships": relationships,
     }
 
 
@@ -62,6 +129,7 @@ class DirectorContext(BaseModel):
     continuity_ledger: list[dict[str, Any]] = Field(default_factory=list)
     foreshadowing: list[dict[str, Any]] = Field(default_factory=list)
     character_cards: list[dict[str, Any]] = Field(default_factory=list)
+    character_intents: list[dict[str, Any]] = Field(default_factory=list)
     inventory: list[dict[str, Any]] = Field(default_factory=list)
     active_entity_names: list[str] = Field(default_factory=list)
     rewrite_guidance: str = ""
@@ -159,7 +227,8 @@ def build_director_context(
                 continue
             if not isinstance(card, dict):
                 continue
-            if card.get("lifecycle") != "active":
+            lifecycle = card.get("lifecycle") or card.get("lifecycle_state") or "active"
+            if lifecycle != "active":
                 continue
             character_cards.append(_concise_character_card(card))
             active_entity_names.append(str(card.get("name") or ""))

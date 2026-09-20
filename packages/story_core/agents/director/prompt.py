@@ -11,6 +11,7 @@ state, hook, and entity requirements.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from ..contracts import (
@@ -256,9 +257,45 @@ def _render_character_cards(context: DirectorContext) -> str:
     for card in context.character_cards:
         name = card.get("name", "未命名")
         role = card.get("role", "")
+        narrative_function = card.get("narrative_function", "")
         location = card.get("location", "")
         state = card.get("current_state", "")
-        lines.append(f"- {name}（{role or '?'}）· 位置：{location or '?'} · 状态：{state or '?'}")
+        header = (
+            f"- {name}（{role or '?'}"
+            + (f" / {narrative_function}" if narrative_function else "")
+            + f"）· 位置：{location or '?'} · 状态：{state or '?'}"
+        )
+        lines.append(header)
+        for label, key, fallback_key in (
+            ("驱动力", "story_drive", ""),
+            ("人格反应", "personality", "personality_portrait"),
+            ("表现方式", "performance", "performance_profile"),
+            ("关系备注", "relationship_notes", ""),
+            ("关系状态", "relationships", ""),
+        ):
+            value = card.get(key)
+            if value in (None, "", [], {}) and fallback_key:
+                value = card.get(fallback_key)
+            if value not in (None, "", [], {}):
+                lines.append(
+                    f"  {label}：{json.dumps(value, ensure_ascii=False, separators=(',', ':'))}"
+                )
+    return "\n".join(lines)
+
+
+def _render_character_intents(context: DirectorContext) -> str:
+    if not context.character_intents:
+        return ""
+    lines = [
+        "## 人物当前意图（候选压力，不是必须逐条执行的命令）",
+        "这些意图代表人物自己想做什么。可以采用、延后、阻断或让它们互相冲突；不要为了利用所有提案强迫每个人出场或轮流发言。",
+    ]
+    for intent in context.character_intents:
+        if not isinstance(intent, dict):
+            continue
+        lines.append(
+            "- " + json.dumps(intent, ensure_ascii=False, separators=(",", ":"))
+        )
     return "\n".join(lines)
 
 
@@ -289,6 +326,9 @@ def build_director_prompt(
     characters = _render_character_cards(context)
     if characters:
         sections.append(characters)
+    character_intents = _render_character_intents(context)
+    if character_intents:
+        sections.append(character_intents)
     if context.rewrite_guidance.strip():
         sections.append(
             "## 本次写作指导（必须落实到场景计划）\n"
@@ -321,10 +361,11 @@ def build_director_prompt(
             "## 必须回答的 8 个问题",
             "1. 本章目标（chapter_goal）",
             "2. 开场状态（opening_state）",
-            "3. 顺序的场景节拍（scene_beats），每条包含 order/location/action/result",
+            "3. 顺序的场景节拍（scene_beats），每条至少包含 order/location/action/result，可按需要补 purpose/conflict/participants/character_intents/emotional_turn/relationship_shift/ending_pressure",
             "4. 因果关系（scene_beats 之间的 result 链）",
-            "5. 关键角色在每个节拍中的决定（action 字段）",
-            "6. 信息边界（角色之间不能相互知道的事，写入 scene 描述或备注）",
+            "5. 让人物欲望发生碰撞：只为真正影响本场冲突的人填写 character_intents，不要求所有出场人物都有台词或动作",
+            "   character_intents 每项字段：name/want/target/emotion/move/speech_strategy/withhold/reaction/dramatic_function；action 仍保留为整场可公开执行动作的兼容摘要",
+            "6. 信息边界：character_intents 中的 withhold、私人目标和秘密计划属于作者侧控制信息，不代表其他人物知道",
             "7. 收尾状态（ending_state）",
             "8. 章末钩子（hook）",
             "",
@@ -335,6 +376,12 @@ def build_director_prompt(
             "",
             title_instruction,
             output_instruction,
+            "优先级必须严格保持：OutlineExecutionContract > Character Intent > Director staging。",
+            "OutlineExecutionContract 决定本章必须发生的核心冲突、收益、代价、状态变化、兑现合同、禁止提前写入内容和计划章末钩子；Character Intent 只能提供人物压力、阻力、犹豫、误解、关系变化或沉默方式。",
+            "Character Intent 是候选压力，不是 required event。可以采用、延后、阻断、让两个意图冲突，或让人物保持沉默；不得因为人物意图改写上游合同字段。",
+            "Character proposals are pressures, not commands. A character may stay silent, fail, misread, withdraw, or be deferred to another chapter.",
+            "Do not force a love interest to be jealous, an antagonist to attack, or a comic character to joke unless the current trigger makes that behaviour natural.",
+            "Do not create round-robin group dialogue. Prefer collisions where two wants cannot both be satisfied.",
         ]
     )
     return "\n\n".join(section for section in sections if section)
@@ -360,6 +407,21 @@ def parse_director_response(payload: Any) -> DirectorArtifact:
                 location=str(beat.get("location") or ""),
                 action=str(beat.get("action") or ""),
                 result=str(beat.get("result") or ""),
+                purpose=str(beat.get("purpose") or ""),
+                conflict=str(beat.get("conflict") or ""),
+                participants=[
+                    str(item).strip()
+                    for item in (beat.get("participants") or [])
+                    if str(item).strip()
+                ],
+                character_intents=[
+                    item
+                    for item in (beat.get("character_intents") or [])
+                    if isinstance(item, dict) and str(item.get("name") or "").strip()
+                ],
+                emotional_turn=str(beat.get("emotional_turn") or ""),
+                relationship_shift=str(beat.get("relationship_shift") or ""),
+                ending_pressure=str(beat.get("ending_pressure") or ""),
             )
         )
     requirements_in = payload.get("entity_requirements") or []

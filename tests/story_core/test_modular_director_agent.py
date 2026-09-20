@@ -171,7 +171,15 @@ def test_director_preserves_planned_title_over_runtime_title(
     assert artifact.chapter_title == "管你是龙是虫，给我退回去！"
     assert artifact.chapter_goal == payload["chapter_goal"]
     assert artifact.opening_state == payload["opening_state"]
-    assert [beat.model_dump() for beat in artifact.scene_beats] == payload["scene_beats"]
+    assert [
+        {
+            "order": beat.order,
+            "location": beat.location,
+            "action": beat.action,
+            "result": beat.result,
+        }
+        for beat in artifact.scene_beats
+    ] == payload["scene_beats"]
     assert artifact.ending_state == payload["ending_state"]
     assert artifact.hook == payload["hook"]
     assert [item.name for item in artifact.entity_requirements] == ["妖林"]
