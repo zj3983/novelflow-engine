@@ -18,7 +18,7 @@ import pytest
 
 from packages.story_core.candidate_draft import CandidateDraft
 from packages.story_core.engine import StoryState
-from packages.story_core.file_project_store import FileProjectStore
+from packages.story_core.file_project_store import ChapterQualityError, FileProjectStore
 from packages.story_core.generation_progress import generation_progress
 
 
@@ -54,6 +54,152 @@ def _seed_candidate(
         candidate.operation = operation
         store.candidate_store.save(candidate)
     return candidate
+
+
+@pytest.mark.parametrize(
+    ("code", "source"),
+    [
+        ("fact.contradiction", "canon.entity:item-123"),
+        ("contract.state_delta_violated", "outline_execution_contract"),
+        ("chapter.hook_not_landed", "hook"),
+    ],
+)
+@pytest.mark.parametrize("accept_quality_warnings", [False, True])
+def test_confirm_rejects_explicit_blocking_and_keeps_next_chapter_unstarted(
+    tmp_path, code, source, accept_quality_warnings
+):
+    store = FileProjectStore(tmp_path)
+    candidate = _seed_candidate(
+        store, chapter_number=1, title="第一章", body=_long_body("确认门禁")
+    )
+    report = {
+        "ok": False,
+        "issues": ["writing_review"],
+        "writing_review": {
+            "pass": False,
+            "issues": [code],
+            "blocking": [
+                {"code": code, "message": "与已确认事实冲突", "source": source},
+                *(
+                    [{"code": code, "message": "另一条已确认事实冲突", "source": "continuity_snapshot:0004"}]
+                    if code == "fact.contradiction" else []
+                ),
+            ],
+            "source": "modular_pipeline",
+        },
+        "simplified_review": {"has_hard_errors": False, "needs_revision": False},
+    }
+    candidate.quality_report = report
+    candidate.submission_payload["quality_report"] = dict(report)
+    store.candidate_store.save(candidate)
+
+    with pytest.raises(ChapterQualityError, match="generate_quality_failed"):
+        store.confirm_candidate(
+            candidate.candidate_id,
+            accept_quality_warnings=accept_quality_warnings,
+        )
+
+    assert store.candidate_store.get(candidate.candidate_id).status == "pending"
+    assert store.chapter_numbers() == []
+    assert int(store.state().get("current_chapter") or 0) == 0
+    assert int(store._generation_state(store.state()).get("current_chapter") or 0) + 1 == 1
+
+
+@pytest.mark.parametrize("report_location", ["candidate", "submission_payload"])
+def test_confirm_checks_both_candidate_and_submission_blocking_reports(
+    tmp_path, report_location
+):
+    store = FileProjectStore(tmp_path)
+    candidate = _seed_candidate(
+        store, chapter_number=1, title="第一章", body=_long_body("双份报告")
+    )
+    report = {
+        "ok": False,
+        "writing_review": {
+            "pass": False,
+            "blocking": [{"code": "fact.contradiction", "source": "canon.entity:item-123"}],
+        },
+    }
+    if report_location == "candidate":
+        candidate.quality_report = report
+    else:
+        candidate.submission_payload["quality_report"] = report
+    store.candidate_store.save(candidate)
+
+    with pytest.raises(ChapterQualityError, match="generate_quality_failed"):
+        store.confirm_candidate(candidate.candidate_id)
+    assert store.candidate_store.get(candidate.candidate_id).status == "pending"
+    assert store.chapter_numbers() == []
+
+
+def test_confirm_allows_soft_advisory_with_failed_legacy_pass(tmp_path):
+    store = FileProjectStore(tmp_path)
+    candidate = _seed_candidate(
+        store, chapter_number=1, title="第一章", body=_long_body("文风建议")
+    )
+    report = {
+        "ok": False,
+        "issues": ["writing_review"],
+        "writing_review": {
+            "pass": False,
+            "issues": ["对话不够自然，说明过多。"],
+            "blocking": [],
+            "warnings": [
+                {"code": "style.report_voice", "message": "报告腔", "blocking": False},
+                {"code": "dialogue.flat", "message": "对话平直", "blocking": False},
+                {"code": "exposition.heavy", "message": "说明过多", "blocking": False},
+            ],
+        },
+        "simplified_review": {"has_hard_errors": False, "needs_revision": True},
+    }
+    candidate.quality_report = report
+    candidate.submission_payload["quality_report"] = dict(report)
+    store.candidate_store.save(candidate)
+
+    confirmed = store.confirm_candidate(candidate.candidate_id)
+    assert confirmed["candidate"]["status"] == "confirmed"
+    assert store.chapter_numbers() == [1]
+
+
+def test_direct_persistence_rejects_explicit_blocking_even_with_warning_override(tmp_path):
+    store = FileProjectStore(tmp_path)
+    candidate = _seed_candidate(
+        store, chapter_number=1, title="第一章", body=_long_body("直接保存")
+    )
+    payload = dict(candidate.submission_payload)
+    payload["quality_report"] = {
+        "ok": True,
+        "writing_review": {
+            "pass": True,
+            "blocking": [{"code": "fact.contradiction", "source": "canon.entity:item-123"}],
+        },
+    }
+
+    with pytest.raises(ChapterQualityError, match="generate_quality_failed"):
+        store.persist_bundle(payload, accept_quality_warnings=True)
+    assert store.chapter_numbers() == []
+    assert int(store.state().get("current_chapter") or 0) == 0
+
+
+def test_confirm_rejects_v2_blocked_review_even_when_legacy_ok_is_true(tmp_path):
+    store = FileProjectStore(tmp_path)
+    candidate = _seed_candidate(
+        store, chapter_number=1, title="第一章", body=_long_body("新版审稿")
+    )
+    candidate.quality_report = {
+        "ok": True,
+        "review_result": {
+            "schema_version": "review-result/v2",
+            "status": "blocked",
+            "issues": [{"code": "fact.contradiction", "blocking": True}],
+        },
+    }
+    store.candidate_store.save(candidate)
+
+    with pytest.raises(ChapterQualityError, match="generate_quality_failed"):
+        store.confirm_candidate(candidate.candidate_id)
+    assert store.candidate_store.get(candidate.candidate_id).status == "pending"
+    assert store.chapter_numbers() == []
 
 
 # The file-project length gate accepts 4200-5500 target characters.
