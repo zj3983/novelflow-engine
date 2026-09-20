@@ -355,7 +355,10 @@ def _character_intents_for_context(
     try:
         proposals = planner.propose_all(selected_story)
     except Exception:
-        proposals = planner.rule_provider.propose_all(selected_story)
+        try:
+            proposals = planner.rule_provider.propose_all(selected_story)
+        except Exception:
+            proposals = []
     selected_names = {character.name for character in selected}
     # A provider may return malformed or out-of-scope names.  The modular
     # boundary keeps only the bounded cast; a character stage failure remains

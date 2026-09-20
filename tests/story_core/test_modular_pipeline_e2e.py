@@ -287,7 +287,10 @@ class _StubWriterRuntime:
     # ``3800`` character hard gate. Tests that need a short body
     # (to exercise the deterministic length finding) pass
     # their own ``body`` argument.
-    DEFAULT_BODY = "天色已晚，" + ("林昭提灯上山，" * 800)
+    # Keep the synthetic body above the production length gate without making
+    # one punctuation-free sentence that forces repeated long-span scans in
+    # deterministic fact extraction.
+    DEFAULT_BODY = "天色已晚，" + ("林昭提灯上山。" * 800)
 
     def __init__(self, body: str | None = None) -> None:
         self.body = body if body is not None else self.DEFAULT_BODY
