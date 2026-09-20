@@ -32,7 +32,7 @@ NovelFlow 的目标是把“写小说”建模成一个**持续维护状态的�
 | 能力 | 说明 |
 | --- | --- |
 | **长篇状态管理** | 保存故事、角色、世界、章节与连续性状态，让生成跨章节持续演进。 |
-| **章节合同与模块化 Agent** | 以 `OutlineExecutionContract` 固定章节要求，再由 Character Intent、Director、Canon Preflight、Writer、Review 和 Fact Extractor 分工协作。 |
+| **章节合同与模块化 Agent** | 以 `OutlineExecutionContract` 固定章节要求，再由 Character Intent、Director、Canon Review Snapshot、Canon Entity Preflight、Writer、Review 和 Fact Extractor 分工协作。 |
 | **章节规划与滚动细纲** | 在缺少目标章节细纲时，可按滚动窗口补齐后续章节规划，并保护人工修改内容。 |
 | **Canon / 连续性约束** | 使用稳定实体注册表、chapter-bounded Canon Review Snapshot 和连续性 Delta 降低角色与设定漂移。 |
 | **章节重生成与回滚** | 重写历史章节时从对应快照恢复，并标记受影响的后续章节。 |
@@ -53,9 +53,11 @@ flowchart TD
     CONTRACT --> CAST[Relevant Cast]
     CAST --> INTENT[Character Intent<br/>candidate pressures]
     INTENT --> D[Director<br/>final scene-level intents]
-    D --> C[Canon Preflight<br/>bounded review snapshot]
-    C --> W[Writer]
-    W --> R[Consistency / Review]
+    D --> S[Canon Review Snapshot<br/>chapter-bounded evidence]
+    S --> P[Canon Entity Preflight<br/>chapter-local entities]
+    P --> W[Writer]
+    S --> R[Consistency / Factual Review]
+    W --> R
     R --> F[Fact Extractor]
 
     O --> STATE[Story State / Memory]
@@ -170,11 +172,13 @@ Relevant Cast / Character Intent
    ↓
 Director
    ↓
-Canon Preflight
+Canon Review Snapshot
+   ↓
+Canon Entity Preflight
    ↓
 Writer
    ↓
-Consistency / Review
+Consistency / Factual Review
    ↓
 Fact Extractor
    ↓
@@ -183,7 +187,7 @@ Fact Extractor
 
 `OutlineExecutionContract` 会保留本章的 core conflict、gain、cost、state delta、planned hook、opening carry、payoff contract 和 must-not-write，避免细纲要求在 Director → Writer 链路中被压缩丢失。Character Intent 可以调查、保护、试探、抵抗、犹豫、沉默，或在低刺激时不行动，但不能替换合同的收益、代价、状态转移或 planned hook。
 
-Canon Preflight 使用目标章节之前的 `canon-review-snapshot/v1` 有界状态进行事实 Review，避免历史重写被未来状态污染。正文末段没有落地合同要求的 planned hook 时，会触发确定性的 `chapter.hook_not_landed` blocking gate；Writer 可以改变表达方式，但不能改变钩子实质。
+`canon-review-snapshot/v1` 是 Writer pipeline 在 Canon Entity Preflight 之前构建的只读、chapter-bounded factual review evidence，供后续 Consistency / Factual Review 使用，以避免历史重写被未来状态污染。Canon Entity Preflight 只处理 Director 要求的实体，为 Writer 准备 chapter-local entities；prepared entities 不会因为 preflight 就成为 established Canon facts。正文末段没有落地合同要求的 planned hook 时，会触发确定性的 `chapter.hook_not_landed` blocking gate；Writer 可以改变表达方式，但不能改变钩子实质。
 
 运行产物会写入项目的 `.story-system/`，其中包括章节快照、Canon Registry、角色/实体卡、Review 数据和模块化 workflow artifacts：
 

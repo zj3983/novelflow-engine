@@ -66,9 +66,10 @@ The orchestrator's main flow now has two entry points:
       → bounded relevant cast
       → Character Intent
       → Director
-      → Canon Preflight
+      → Canon Review Snapshot (chapter-bounded factual evidence)
+      → Canon Entity Preflight (chapter-local entities)
       → Writer
-      → Consistency / Review
+      → Consistency / Factual Review (reads the snapshot)
       → FactExtractor
   ```
 
@@ -112,7 +113,12 @@ note.
 ### Chapter-bounded Canon Review Snapshot
 
 Factual review uses `canon-review-snapshot/v1`, a read-only view of the
-confirmed state available before the target chapter. For a historical rewrite
+confirmed state available before the target chapter. The Writer pipeline builds
+this snapshot before Canon Entity Preflight. Preflight is a separate step: it
+handles the entities requested by Director and prepares chapter-local entities
+for Writer; prepared entities do not become established Canon facts merely
+because preflight ran. Consistency / Factual Review later reads the snapshot as
+evidence. For a historical rewrite
 the builder prefers the previous chapter's continuity snapshot or saved
 `updated_story`; it does not blindly read the live registry, where later
 chapters may already have introduced facts. If a bounded base is unavailable,
@@ -229,6 +235,7 @@ the pre-run snapshot. To inspect the per-stage artifacts directly:
 
 ```bash
 ls .story-system/workflow/<job_id>/
+cat .story-system/workflow/<job_id>/character-intent.json
 cat .story-system/workflow/<job_id>/director.json   # status, error, output_summary
 cat .story-system/workflow/<job_id>/writer.json
 cat .story-system/workflow/<job_id>/fact-extractor.json
@@ -277,7 +284,7 @@ The script:
      chapter / foreshadowing / character state;
    * director artifact has ≥ 2 causal scene beats;
    * writer prompt contains the 4200-5500 target range and
-     the 3800-6000 hard range;
+     the 3800-5700 hard range;
    * writer context preserves the protagonist's equipment,
      level, inventory, and quests.
 5. Runs the candidate through `_save_candidate_from_bundle` so
