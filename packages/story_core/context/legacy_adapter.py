@@ -111,6 +111,7 @@ def legacy_outline_view(system_root: Path) -> dict[str, Any] | None:
         # legacy project does not carry an explicit summary, so
         # compose one from the available fields.
         summary = " · ".join(part for part in (title, goal, obstacle, action) if part)
+        must_not_write = entry.get("must_not_write")
         chapters.append(
             {
                 "number": number,
@@ -122,6 +123,26 @@ def legacy_outline_view(system_root: Path) -> dict[str, Any] | None:
                 "turn": str(entry.get("turn") or ""),
                 "payoff": str(entry.get("payoff") or ""),
                 "ending_hook": str(entry.get("ending_hook") or ""),
+                "core_conflict": str(entry.get("core_conflict") or ""),
+                "gain": str(entry.get("gain") or ""),
+                "cost": str(entry.get("cost") or ""),
+                "state_delta": str(entry.get("state_delta") or ""),
+                "hook": str(entry.get("hook") or ""),
+                "chapter_sop": (
+                    dict(entry["chapter_sop"])
+                    if isinstance(entry.get("chapter_sop"), dict)
+                    else {}
+                ),
+                "payoff_contract": (
+                    dict(entry["payoff_contract"])
+                    if isinstance(entry.get("payoff_contract"), dict)
+                    else {}
+                ),
+                "must_not_write": [
+                    item.strip()
+                    for item in (must_not_write if isinstance(must_not_write, list) else [])
+                    if isinstance(item, str) and item.strip()
+                ],
                 "cast": [
                     str(name).strip()
                     for name in (entry.get("cast") or [])

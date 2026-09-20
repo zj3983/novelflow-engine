@@ -40,7 +40,10 @@ from packages.story_core.agents.contracts import (
     EntityRequirement,
     OutlineExecutionContract,
     SceneBeat,
+    WriterRequest,
 )
+from packages.story_core.agents.director import DirectorAgent
+from packages.story_core.agents.writer.prompt import _render_director_artifact
 from packages.story_core.canon.registry import CanonRegistry
 from packages.story_core.continuity.delta import ContinuityDelta
 from packages.story_core.context.writer_context import WriterContext
@@ -439,6 +442,45 @@ def test_director_context_falls_back_to_legacy_when_story_system_is_partial(
     assert context.continuity_ledger == [
         {"subject": "", "field": "fact", "value": "主角仍是一级。"}
     ]
+
+
+def test_legacy_outline_prohibitions_reach_director_contract_and_writer(tmp_path: Path) -> None:
+    _seed_legacy_project(tmp_path, with_outline=True)
+    outline_path = tmp_path / ".webnovel" / "outline.json"
+    outline = json.loads(outline_path.read_text(encoding="utf-8"))
+    outline["chapters"][0].update(
+        {
+            "core_conflict": "暴雨封山",
+            "gain": "拿到通行证",
+            "cost": "暴露身份",
+            "state_delta": "主角已持证",
+            "hook": "通行证背面有血字",
+            "chapter_sop": {"opening_carry": "接住上章雨夜"},
+            "payoff_contract": {"required": "拿到通行证"},
+            "must_not_write": ["不得提前揭开幕后人"],
+        }
+    )
+    _write_json(outline_path, outline)
+    (tmp_path / ".story-system" / "workflow").mkdir(parents=True)
+
+    context = _ensure_director_context(project_root=tmp_path, chapter_number=1)
+    runtime = _StubDirectorRuntime()
+    artifact = DirectorAgent(runtime=runtime, project_root=tmp_path).plan(context)
+
+    assert artifact.outline_contract is not None
+    assert artifact.outline_contract.must_not_write == ["不得提前揭开幕后人"]
+    assert artifact.outline_contract.core_conflict == "暴雨封山"
+    assert artifact.outline_contract.gain == "拿到通行证"
+    assert artifact.outline_contract.cost == "暴露身份"
+    assert artifact.outline_contract.state_delta == "主角已持证"
+    assert artifact.outline_contract.opening_carry == "接住上章雨夜"
+    assert artifact.outline_contract.payoff_contract == {"required": "拿到通行证"}
+    assert artifact.hook == "通行证背面有血字"
+    assert "禁止提前写：不得提前揭开幕后人" in runtime.calls[0].prompt
+    writer_view = _render_director_artifact(
+        WriterRequest(chapter_number=1, director_artifact=artifact)
+    )
+    assert "禁止提前写：不得提前揭开幕后人" in writer_view
 
 
 def test_writer_context_falls_back_to_legacy_when_story_system_is_partial(
