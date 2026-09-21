@@ -1680,6 +1680,38 @@ class FileProjectStore(
     def _replace_json_transaction(self, payloads: dict[Path, Any]) -> None:
         self.snapshot_store.replace_json_transaction(payloads)
 
+    # Build Graph persistence is deliberately separate from the legacy
+    # world-build artifacts.  The service owns all mutations and reuses this
+    # store's project root/lock; these helpers only expose the serializable
+    # inspection surface to callers that already work through FileProjectStore.
+    def build_graph_store(self):
+        from packages.story_core.build_graph.store import BuildGraphStore
+
+        return BuildGraphStore(self.root, snapshot_store=self.snapshot_store)
+
+    def build_graph_state(self) -> dict[str, Any] | None:
+        state = self.build_graph_store().read_state()
+        return state.to_dict() if state is not None else None
+
+    def build_artifact(self, task_id: str, revision: int | None = None) -> dict[str, Any] | None:
+        artifact = self.build_graph_store().read_artifact(task_id, revision)
+        return artifact.to_dict() if artifact is not None else None
+
+    def build_artifact_history(self, task_id: str) -> list[dict[str, Any]]:
+        return [
+            artifact.to_dict()
+            for artifact in self.build_graph_store().artifact_history(task_id)
+        ]
+
+    def build_graph_service(self, definition, *, validators=None):
+        from packages.story_core.build_graph.service import BuildGraphService
+
+        return BuildGraphService(
+            definition,
+            store=self.build_graph_store(),
+            validators=validators,
+        )
+
     @property
     def cover_base_path(self) -> Path:
         return self.webnovel_dir / "assets" / "cover-base.png"
