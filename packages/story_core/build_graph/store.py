@@ -98,6 +98,15 @@ class BuildGraphStore:
         with project_update_lock(self.root):
             existing = self.read_state()
             if existing is not None:
+                if existing.schema_version != BUILD_GRAPH_STATE_SCHEMA:
+                    raise BuildDefinitionError(
+                        "build_graph_state_schema_unsupported",
+                        "persisted Build Graph state schema is not supported",
+                        details={
+                            "persisted_schema_version": existing.schema_version,
+                            "expected_schema_version": BUILD_GRAPH_STATE_SCHEMA,
+                        },
+                    )
                 expected = set(definition.tasks_by_id)
                 actual = set(existing.tasks)
                 if existing.graph_id != definition.graph_id or actual != expected:
@@ -111,6 +120,15 @@ class BuildGraphStore:
                             "unknown_tasks": sorted(actual - expected),
                         },
                     )
+                if existing.definition_fingerprint != definition.definition_fingerprint:
+                    raise BuildDefinitionError(
+                        "build_graph_definition_mismatch",
+                        "persisted Build Graph definition does not match the code definition",
+                        details={
+                            "persisted_fingerprint": existing.definition_fingerprint,
+                            "expected_fingerprint": definition.definition_fingerprint,
+                        },
+                    )
                 return existing
             task_states = {}
             for task_id in definition.ordered_task_ids:
@@ -122,6 +140,7 @@ class BuildGraphStore:
                 graph_revision=0,
                 tasks=task_states,
                 runs={},
+                definition_fingerprint=definition.definition_fingerprint,
             )
             self.persist(state)
             return state

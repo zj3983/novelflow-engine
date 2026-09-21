@@ -470,3 +470,115 @@ def test_file_project_store_exposes_separate_build_graph_persistence(tmp_path: P
 def test_contract_diagnostics_round_trip():
     diagnostic = BuildDiagnostic("example.code", "a.b[1]", "message", "warning")
     assert BuildDiagnostic.from_dict(diagnostic.to_dict()) == diagnostic
+
+
+def test_same_task_ids_but_changed_dependencies_reject_existing_state(tmp_path: Path):
+    original = BuildGraphDefinition(
+        graph_id="definition-compat",
+        tasks=(_task("a"), _task("b")),
+    )
+    changed = BuildGraphDefinition(
+        graph_id="definition-compat",
+        tasks=(_task("a"), _task("b", dependencies=("a",))),
+    )
+    BuildGraphService(original, store=BuildGraphStore(tmp_path))
+
+    with pytest.raises(BuildDefinitionError) as error:
+        BuildGraphService(changed, store=BuildGraphStore(tmp_path))
+
+    assert error.value.code == "build_graph_definition_mismatch"
+
+
+def test_same_task_ids_but_changed_ownership_reject_existing_state(tmp_path: Path):
+    original = BuildGraphDefinition(
+        graph_id="ownership-compat",
+        tasks=(_task("root", owns=("domain.root",)),),
+    )
+    changed = BuildGraphDefinition(
+        graph_id="ownership-compat",
+        tasks=(_task("root", owns=("domain.root.changed",)),),
+    )
+    BuildGraphService(original, store=BuildGraphStore(tmp_path))
+
+    with pytest.raises(BuildDefinitionError) as error:
+        BuildGraphService(changed, store=BuildGraphStore(tmp_path))
+
+    assert error.value.code == "build_graph_definition_mismatch"
+
+
+def test_changed_review_and_readiness_semantics_reject_existing_state(tmp_path: Path):
+    original = BuildGraphDefinition(
+        graph_id="policy-compat",
+        tasks=(_task("root", required=False, review_policy="auto"),),
+    )
+    changed = BuildGraphDefinition(
+        graph_id="policy-compat",
+        tasks=(_task("root", required=True, review_policy="review"),),
+    )
+    BuildGraphService(original, store=BuildGraphStore(tmp_path))
+
+    with pytest.raises(BuildDefinitionError) as error:
+        BuildGraphService(changed, store=BuildGraphStore(tmp_path))
+
+    assert error.value.code == "build_graph_definition_mismatch"
+
+
+def test_unsupported_persisted_graph_state_schema_is_rejected(tmp_path: Path):
+    definition = BuildGraphDefinition(
+        graph_id="schema-compat",
+        tasks=(_task("root"),),
+    )
+    store = BuildGraphStore(tmp_path)
+    BuildGraphService(definition, store=store)
+    raw = store.snapshot_store.read_json(store.state_path, {})
+    raw["schema_version"] = "build-graph-state/v999"
+    store.snapshot_store.write_json_atomic(store.state_path, raw)
+
+    with pytest.raises(BuildDefinitionError) as error:
+        BuildGraphService(definition, store=store)
+
+    assert error.value.code == "build_graph_state_schema_unsupported"
+
+
+def test_human_edit_atomically_supersedes_active_run_in_manifest_and_run_file(tmp_path: Path):
+    service = _service(tmp_path)
+    run = service.start_run("foundation")
+
+    result = service.edit_artifact(
+        "foundation",
+        {"edited": True},
+        expected_revision=None,
+        requested_writes=("domain.foundation",),
+    )
+
+    manifest = service.inspect_graph()
+    manifest_run = manifest.runs[run.run_id]
+    persisted_run = service.store.read_run(run.run_id)
+    assert result.artifact.revision == 1
+    assert manifest_run.status == "conflict"
+    assert persisted_run.status == "conflict"
+    assert service.inspect_task("foundation").active_run_id is None
+
+
+def test_stale_run_cannot_turn_into_validation_failure_via_fail_run(tmp_path: Path):
+    service = _service(tmp_path)
+    _commit(service, "foundation")
+    run = service.start_run("world_rules")
+    service.edit_artifact(
+        "foundation",
+        {"task": "foundation", "revision": 2},
+        expected_revision=1,
+        requested_writes=("domain.foundation",),
+    )
+
+    with pytest.raises(BuildRunConflict) as error:
+        service.fail_run(
+            run.run_id,
+            [BuildDiagnostic("stale.failure", "domain.world_rules", "old run failed")],
+        )
+
+    assert error.value.code == "build_run_conflict"
+    assert service.inspect_graph().runs[run.run_id].status == "conflict"
+    assert service.store.read_run(run.run_id).status == "conflict"
+    assert service.inspect_task("world_rules").status == "stale"
+    assert service.inspect_task("world_rules").validation_status != "failed"

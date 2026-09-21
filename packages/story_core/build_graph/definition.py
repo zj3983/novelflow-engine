@@ -9,6 +9,8 @@ human editor, an AI run, or a deterministic repair.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
+import json
 import re
 from typing import Any, Iterable, Mapping
 
@@ -184,6 +186,23 @@ class BuildTaskDefinition:
             "required_for_readiness": self.required_for_readiness,
         }
 
+    def semantic_dict(self) -> dict[str, Any]:
+        """Return only fields whose changes alter execution semantics."""
+
+        return {
+            "task_id": self.task_id,
+            "dependencies": sorted(self.dependencies),
+            "reads": sorted(self.reads),
+            "owns": sorted(self.owns),
+            "forbidden_writes": sorted(self.forbidden_writes),
+            "validator_id": self.validator_id,
+            "model_stage": self.model_stage,
+            "context_policy": self.context_policy,
+            "output_budget": self.output_budget,
+            "review_policy": self.review_policy,
+            "required_for_readiness": self.required_for_readiness,
+        }
+
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "BuildTaskDefinition":
         return cls(
@@ -317,6 +336,25 @@ class BuildGraphDefinition:
             "graph_id": self.graph_id,
             "tasks": [self.tasks_by_id[item].to_dict() for item in self.ordered_task_ids],
         }
+
+    @property
+    def definition_fingerprint(self) -> str:
+        semantic_definition = {
+            "schema_version": self.schema_version,
+            "graph_id": self.graph_id,
+            "tasks": [
+                self.tasks_by_id[task_id].semantic_dict()
+                for task_id in self.ordered_task_ids
+            ],
+        }
+        canonical = json.dumps(
+            semantic_definition,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "BuildGraphDefinition":

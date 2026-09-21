@@ -23,7 +23,6 @@ from .contracts import (
     BuildTaskState,
     BuildTaskStateError,
     BuildValidationResult,
-    utc_now_iso,
 )
 from .definition import BuildGraphDefinition, BuildTaskDefinition, validate_task_id
 from .store import BuildGraphStore
@@ -61,15 +60,7 @@ class BuildGraphService:
     # Read and state helpers
     # ------------------------------------------------------------------
     def _read_state(self) -> BuildGraphState:
-        state = self.store.read_state()
-        if state is None:
-            return self.store.initialize(self.definition)
-        if state.graph_id != self.definition.graph_id:
-            raise BuildTaskStateError(
-                "build_graph_state_mismatch",
-                "persisted graph state belongs to another graph definition",
-            )
-        return state
+        return self.store.initialize(self.definition)
 
     def _task(self, task_id: str) -> BuildTaskDefinition:
         safe_task_id = validate_task_id(task_id)
@@ -95,6 +86,7 @@ class BuildGraphService:
             graph_revision=state.graph_revision + 1,
             tasks=dict(tasks if tasks is not None else state.tasks),
             runs=dict(runs if runs is not None else state.runs),
+            definition_fingerprint=state.definition_fingerprint,
         )
 
     def _dependency_revisions(
@@ -213,19 +205,22 @@ class BuildGraphService:
         *,
         code: str = "build_run_superseded",
         message: str = "an active run was superseded by a newer edit",
-    ) -> None:
+    ) -> BuildRun | None:
         active_run_id = tasks[task_id].active_run_id
         if not active_run_id:
-            return
+            return None
         run = runs.get(active_run_id)
+        conflicted_run: BuildRun | None = None
         if run and run.status == "running":
-            runs[active_run_id] = replace(
+            conflicted_run = replace(
                 run,
                 status="conflict",
                 finished_at=self.clock(),
                 diagnostics=(BuildDiagnostic(code, f"tasks.{task_id}", message),),
             )
+            runs[active_run_id] = conflicted_run
         self._set_task(tasks, task_id, active_run_id=None)
+        return conflicted_run
 
     def _validate(
         self,
@@ -346,6 +341,28 @@ class BuildGraphService:
             details={"run_id": run.run_id, "task_id": run.task_id},
         )
 
+    def _assert_run_current_locked(
+        self,
+        state: BuildGraphState,
+        run: BuildRun,
+    ) -> dict[str, int]:
+        """Verify that an async run still owns its original input snapshot."""
+
+        task = self._task(run.task_id)
+        current = state.tasks[task.task_id]
+        if current.active_run_id != run.run_id:
+            self._run_conflict_locked(state, run, message="active run ownership no longer matches")
+        try:
+            dependency_revisions = self._dependency_revisions(state, task)
+        except BuildTaskStateError as exc:
+            self._run_conflict_locked(state, run, message=str(exc))
+            raise AssertionError("unreachable")
+        if current.current_artifact_revision != run.base_artifact_revision:
+            self._run_conflict_locked(state, run, message="task artifact revision changed during the run")
+        if dependency_revisions != dict(run.dependency_revisions):
+            self._run_conflict_locked(state, run, message="dependency revision changed during the run")
+        return dependency_revisions
+
     def _commit_candidate_locked(
         self,
         state: BuildGraphState,
@@ -360,6 +377,7 @@ class BuildGraphService:
         prompt_call_id: str | None,
         parent_revision: int | None,
         run_id: str | None = None,
+        additional_runs: Iterable[BuildRun] = (),
     ) -> BuildCommitResult:
         if source not in ARTIFACT_SOURCES:
             raise BuildTaskStateError("build_artifact_source_invalid", "unsupported artifact source")
@@ -376,6 +394,7 @@ class BuildGraphService:
         disposition = disposition_for(validation, task.review_policy)
         tasks = dict(state.tasks)
         runs = dict(state.runs)
+        additional_run_records = tuple(additional_runs)
         if disposition == "FAIL":
             self._set_task(
                 tasks,
@@ -396,7 +415,13 @@ class BuildGraphService:
                 )
                 runs[run_id] = finished_run
             next_state = self._replace_state(state, tasks=tasks, runs=runs)
-            self.store.persist(next_state, runs=(finished_run,) if finished_run else ())
+            run_records = {
+                item.run_id: item
+                for item in additional_run_records
+            }
+            if finished_run is not None:
+                run_records[finished_run.run_id] = finished_run
+            self.store.persist(next_state, runs=tuple(run_records.values()))
             return BuildCommitResult(
                 artifact=None,
                 validation=committed_validation,
@@ -438,8 +463,13 @@ class BuildGraphService:
         self._mark_descendants_stale(tasks, task.task_id)
         self._refresh_unmaterialized_tasks(tasks)
         next_state = self._replace_state(state, tasks=tasks, runs=runs)
-        run_records = tuple(runs[run_id] for run_id in (run_id,) if run_id in runs)
-        self.store.persist(next_state, artifacts=(artifact,), runs=run_records)
+        run_records = {
+            item.run_id: item
+            for item in additional_run_records
+        }
+        if run_id and run_id in runs:
+            run_records[run_id] = runs[run_id]
+        self.store.persist(next_state, artifacts=(artifact,), runs=tuple(run_records.values()))
         return BuildCommitResult(
             artifact=artifact,
             validation=artifact.validation,
@@ -495,18 +525,7 @@ class BuildGraphService:
             if run is None or run.status != "running":
                 raise BuildRunConflict("build_run_conflict", "run is not active", details={"run_id": str(run_id)})
             task = self._task(run.task_id)
-            current = state.tasks[task.task_id]
-            if current.active_run_id != run.run_id:
-                self._run_conflict_locked(state, run, message="active run ownership no longer matches")
-            try:
-                dependency_revisions = self._dependency_revisions(state, task)
-            except BuildTaskStateError as exc:
-                self._run_conflict_locked(state, run, message=str(exc))
-                raise AssertionError("unreachable")
-            if current.current_artifact_revision != run.base_artifact_revision:
-                self._run_conflict_locked(state, run, message="task artifact revision changed during the run")
-            if dependency_revisions != dict(run.dependency_revisions):
-                self._run_conflict_locked(state, run, message="dependency revision changed during the run")
+            self._assert_run_current_locked(state, run)
             return self._commit_candidate_locked(
                 state,
                 task,
@@ -526,15 +545,16 @@ class BuildGraphService:
         run_id: str,
         diagnostics: Iterable[BuildDiagnostic | Mapping[str, Any]],
     ) -> BuildRun:
-        parsed = tuple(
-            item if isinstance(item, BuildDiagnostic) else BuildDiagnostic.from_dict(item)
-            for item in diagnostics
-        )
         with project_update_lock(self.store.root):
             state = self._read_state()
             run = state.runs.get(str(run_id))
             if run is None or run.status != "running":
                 raise BuildRunConflict("build_run_conflict", "run is not active", details={"run_id": str(run_id)})
+            self._assert_run_current_locked(state, run)
+            parsed = tuple(
+                item if isinstance(item, BuildDiagnostic) else BuildDiagnostic.from_dict(item)
+                for item in diagnostics
+            )
             tasks = dict(state.tasks)
             runs = dict(state.runs)
             runs[run.run_id] = replace(run, status="failed", finished_at=self.clock(), diagnostics=parsed)
@@ -565,13 +585,14 @@ class BuildGraphService:
             self._assert_expected_revision(task.task_id, current.current_artifact_revision, expected_revision)
             tasks = dict(state.tasks)
             runs = dict(state.runs)
-            self._mark_active_run_conflict(tasks, runs, task.task_id)
+            conflicted_run = self._mark_active_run_conflict(tasks, runs, task.task_id)
             superseded_state = BuildGraphState(
                 schema_version=state.schema_version,
                 graph_id=state.graph_id,
                 graph_revision=state.graph_revision,
                 tasks=tasks,
                 runs=runs,
+                definition_fingerprint=state.definition_fingerprint,
             )
             return self._commit_candidate_locked(
                 superseded_state,
@@ -584,6 +605,7 @@ class BuildGraphService:
                 model=None,
                 prompt_call_id=None,
                 parent_revision=current.current_artifact_revision,
+                additional_runs=(conflicted_run,) if conflicted_run else (),
             )
 
     def revalidate_current(self, task_id: str) -> BuildCommitResult:

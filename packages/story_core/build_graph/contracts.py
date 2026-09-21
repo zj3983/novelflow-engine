@@ -432,12 +432,14 @@ class BuildGraphState:
     graph_revision: int
     tasks: Mapping[str, BuildTaskState]
     runs: Mapping[str, BuildRun] = field(default_factory=dict)
+    definition_fingerprint: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
             "graph_id": self.graph_id,
             "graph_revision": self.graph_revision,
+            "definition_fingerprint": self.definition_fingerprint,
             "tasks": {
                 key: self.tasks[key].to_dict() for key in sorted(self.tasks)
             },
@@ -464,6 +466,7 @@ class BuildGraphState:
             graph_revision=int(value.get("graph_revision") or 0),
             tasks=tasks,
             runs=runs,
+            definition_fingerprint=str(value.get("definition_fingerprint") or ""),
         )
 
 
