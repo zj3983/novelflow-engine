@@ -20,6 +20,7 @@ from packages.story_core.http_retry import (
     read_bounded_response_bytes,
 )
 
+from .capabilities import CapabilityObservation, ModelIdentity
 from .contracts import ModelRequest, ModelResponse
 
 
@@ -37,6 +38,7 @@ def _read_sse_json_stream(response: Any, max_response_bytes: int | None) -> dict
 
     parts: list[str] = []
     response_id = ""
+    resolved_model = ""
     usage: dict[str, Any] = {}
     read = 0
     for raw_line in response:
@@ -55,6 +57,8 @@ def _read_sse_json_stream(response: Any, max_response_bytes: int | None) -> dict
             continue
         if not response_id:
             response_id = str(chunk.get("id") or "")
+        if not resolved_model:
+            resolved_model = str(chunk.get("model") or "").strip()
         if isinstance(chunk.get("usage"), dict):
             usage = chunk["usage"]
         for choice in chunk.get("choices") or []:
@@ -65,6 +69,7 @@ def _read_sse_json_stream(response: Any, max_response_bytes: int | None) -> dict
                 parts.append(str(delta["content"]))
     return {
         "id": response_id,
+        "model": resolved_model,
         "choices": [{"message": {"content": "".join(parts)}}],
         "usage": usage,
     }
@@ -255,10 +260,49 @@ def _rejects_temperature(exc: urllib.error.HTTPError) -> bool:
 
 
 class OpenAICompatibleAdapter(_Adapter):
-    def __init__(self, *, base_url: str, api_key: str, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        capability_observer: Callable[[CapabilityObservation], None] | None = None,
+        protocol: str = "openai_compatible",
+        **kwargs: Any,
+    ) -> None:
         super().__init__(**kwargs)
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        self.capability_observer = capability_observer
+        self.protocol = protocol
+
+    def _observe_temperature_rejection(
+        self,
+        request: ModelRequest,
+        raw: Mapping[str, Any],
+    ) -> None:
+        if self.capability_observer is None:
+            return
+        resolved_model = str(raw.get("model") or "").strip() or None
+        observation = CapabilityObservation(
+            identity=ModelIdentity(
+                provider_id=request.provider,
+                protocol=self.protocol,
+                normalized_base_url=self.base_url,
+                requested_model=request.model,
+                resolved_model=resolved_model,
+            ),
+            capability="temperature",
+            state="unsupported",
+            observed_at=None,
+            confidence=1.0,
+            note="provider_rejected_temperature_and_fallback_succeeded",
+        )
+        try:
+            self.capability_observer(observation)
+        except Exception:
+            # Capability persistence is advisory and must never turn a
+            # successful model completion into a failed generation.
+            return
 
     def complete(self, request: ModelRequest) -> ModelResponse:
         payload: dict[str, Any] = {
@@ -307,6 +351,8 @@ class OpenAICompatibleAdapter(_Adapter):
             text = _content_text(choice["message"]["content"])
             if not text:
                 raise ValueError("empty_content")
+            if temperature_omitted:
+                self._observe_temperature_rejection(request, raw)
             return replace(
                 ModelResponse.success(
                     request,

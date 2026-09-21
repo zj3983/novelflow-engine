@@ -13,6 +13,7 @@ from packages.story_core.model_gateway.provider_adapters import (
     CodexCLIAdapter,
     GeminiAdapter,
     OpenAICompatibleAdapter,
+    _read_sse_json_stream,
 )
 from packages.story_core.model_gateway.runtime_gateway import RuntimeModelGateway
 from packages.story_core.runtime_config import StageRuntimeSettings
@@ -60,6 +61,22 @@ def request(**overrides):
     }
     values.update(overrides)
     return ModelRequest(**values)
+
+
+def test_sse_aggregation_preserves_resolved_model_and_content():
+    chunks = [
+        b'data: {"id":"req-1","model":"backend-b","choices":[{"delta":{"content":"a"}}]}\n',
+        b'data: {"choices":[{"delta":{"content":"b"}}]}\n',
+        b'data: {"usage":{"total_tokens":2}}\n',
+        b"data: [DONE]\n",
+    ]
+
+    result = _read_sse_json_stream(chunks, max_response_bytes=4096)
+
+    assert result["id"] == "req-1"
+    assert result["model"] == "backend-b"
+    assert result["choices"][0]["message"]["content"] == "ab"
+    assert result["usage"] == {"total_tokens": 2}
 
 
 def test_provider_adapter_preserves_response_too_large_error_code() -> None:

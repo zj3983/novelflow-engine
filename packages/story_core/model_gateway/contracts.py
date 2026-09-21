@@ -45,6 +45,7 @@ class ModelResponse:
     error: str = ""
     raw: Any = None
     temperature_omitted: bool = False
+    resolved_model: str = ""
 
     @classmethod
     def success(
@@ -65,6 +66,9 @@ class ModelResponse:
             request_id=request_id,
             usage=dict(usage or {}),
             raw=raw,
+            resolved_model=(
+                str(raw.get("model") or "") if isinstance(raw, dict) else ""
+            ),
         )
 
     @classmethod
