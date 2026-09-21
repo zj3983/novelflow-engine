@@ -58,6 +58,39 @@ def _nonempty(value: Any) -> bool:
     return value not in (None, "", [], {})
 
 
+def _persisted_world_root_payload(
+    project: NovelProject,
+    *,
+    store: Any | None = None,
+) -> dict[str, Any]:
+    """Read persisted author/root inputs without consulting Build Graph state."""
+
+    blueprint = project.world_blueprint if isinstance(project.world_blueprint, Mapping) else {}
+    story_core: Mapping[str, Any] = {}
+    if store is not None and hasattr(store, "story_core_context"):
+        try:
+            candidate = store.story_core_context("world")
+            if isinstance(candidate, Mapping):
+                story_core = candidate
+        except Exception:
+            story_core = {}
+    if not story_core and isinstance(project.story_core_context, Mapping):
+        story_core = project.story_core_context
+
+    genre_ids = normalize_novel_type_ids(blueprint.get("genre_plugin_ids"))
+    explicit_source_premise = blueprint.get("source_premise") or blueprint.get("imported_premise")
+    return {
+        "title": str(project.title or "").strip(),
+        "seed_outline": str(project.seed_outline or "").strip(),
+        "source_premise": str(explicit_source_premise or "").strip(),
+        "story_core": deepcopy(dict(story_core)),
+        "author_constraints": list(project.author_constraints or [])[:16],
+        "current_focus": str(project.current_focus or "").strip(),
+        "genre_plugin_ids": genre_ids,
+        "novel_type_id": genre_ids[0] if genre_ids else "generic_webnovel",
+    }
+
+
 def canonical_world_input(
     project: NovelProject,
     *,
@@ -88,21 +121,9 @@ def world_input_revision_payload(
     maintaining a second field list.
     """
 
+    payload = _persisted_world_root_payload(project, store=store)
     blueprint = project.world_blueprint if isinstance(project.world_blueprint, Mapping) else {}
     previous_payload = dict(previous or {})
-    story_core: Mapping[str, Any] = {}
-    if store is not None and hasattr(store, "story_core_context"):
-        try:
-            candidate = store.story_core_context("world")
-            if isinstance(candidate, Mapping):
-                story_core = candidate
-        except Exception:
-            story_core = {}
-    if not story_core and isinstance(project.story_core_context, Mapping):
-        story_core = project.story_core_context
-
-    raw_ids = blueprint.get("genre_plugin_ids")
-    genre_ids = normalize_novel_type_ids(raw_ids)
     explicit_source_premise = blueprint.get("source_premise") or blueprint.get("imported_premise")
     current_premise = blueprint.get("premise") or ""
     previous_source_premise = previous_payload.get("source_premise")
@@ -137,7 +158,7 @@ def world_input_revision_payload(
     else:
         source_premise = ""
 
-    current_focus = str(project.current_focus or "").strip()
+    current_focus = payload["current_focus"]
     if (
         previous_payload
         and "current_focus" in previous_payload
@@ -149,17 +170,30 @@ def world_input_revision_payload(
         # looking like a new author input on the next resume.
         current_focus = str(previous_payload.get("current_focus") or "").strip()
 
-    payload = {
-        "title": str(project.title or "").strip(),
-        "seed_outline": str(project.seed_outline or "").strip(),
-        "source_premise": str(source_premise or "").strip(),
-        "story_core": deepcopy(dict(story_core)),
-        "author_constraints": list(project.author_constraints or [])[:16],
-        "current_focus": current_focus,
-        "genre_plugin_ids": genre_ids,
-        "novel_type_id": genre_ids[0] if genre_ids else "generic_webnovel",
-    }
+    payload["source_premise"] = str(source_premise or "").strip()
+    payload["current_focus"] = current_focus
     return payload
+
+
+def world_job_revision_payload(
+    project: NovelProject,
+    *,
+    store: Any | None = None,
+) -> dict[str, Any]:
+    """Return the graph-independent root inputs used by job conflict checks.
+
+    Unlike ``canonical_world_input``, this deliberately does not infer an
+    implicit source premise from the current generated ``premise`` field and
+    never reads a previous ``world_input`` artifact.  Build Graph migration
+    and task execution are internal job mutations, not author edits.
+    """
+
+    return bounded_json_projection(
+        _persisted_world_root_payload(project, store=store),
+        chars=720,
+        items=20,
+        depth=5,
+    )
 
 
 def task_payload_from_project(project: NovelProject, task_id: str) -> dict[str, Any]:

@@ -911,6 +911,29 @@ def test_world_revision_includes_story_core_context(tmp_path: Path, monkeypatch:
     assert store.world_revision() != before
 
 
+def test_world_revision_is_stable_when_graph_internal_state_migrates(tmp_path: Path) -> None:
+    store = _store(tmp_path, plugin_id="urban")
+    first = WorldBuildGraphRunner(
+        NovelProject.model_validate(store.project()),
+        store=store,
+        model_gateway=ScriptedGateway(_generic_payloads()),
+    ).run()
+    _commit_materialized_project(store, first)
+
+    blueprint = dict(store.project().get("world_blueprint") or {})
+    blueprint["genre_plugin_ids"] = ["xuanhuan"]
+    store.update_project({"world_blueprint": blueprint}, replace_world_blueprint=True)
+    before = store.world_revision()
+
+    WorldBuildGraphRunner(
+        NovelProject.model_validate(store.project()),
+        store=store,
+        model_gateway=ScriptedGateway(_structured_payloads()),
+    ).run()
+
+    assert store.world_revision() == before
+
+
 def test_materialization_rejects_root_input_edit_after_graph_run(tmp_path: Path) -> None:
     store = _store(tmp_path, plugin_id="urban")
     project = NovelProject.model_validate(store.project())

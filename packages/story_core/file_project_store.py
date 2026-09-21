@@ -1724,21 +1724,12 @@ class FileProjectStore(
 
         project = self.project()
         from packages.story_core.models import NovelProject
-        from packages.story_core.world_build.tasks import canonical_world_input
+        from packages.story_core.world_build.tasks import world_job_revision_payload
 
-        previous: Mapping[str, Any] | None = None
         try:
-            artifact = self.build_artifact("world_input")
-            candidate = artifact.get("payload") if isinstance(artifact, Mapping) else None
-            if isinstance(candidate, Mapping):
-                previous = candidate
-        except Exception:
-            previous = None
-        try:
-            root_input = canonical_world_input(
+            root_input = world_job_revision_payload(
                 NovelProject.model_validate(project),
                 store=self,
-                previous=previous,
             )
         except Exception:
             # Keep the revision operation total even while a project is being

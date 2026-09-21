@@ -2,6 +2,7 @@ import json
 import threading
 import time
 import asyncio
+from typing import Any
 
 import pytest
 
@@ -13,6 +14,7 @@ from apps.api.routes import stories as story_routes
 from apps.api.routes.stories import _quality_context
 from packages.story_core.engine import ChapterBundle
 from packages.story_core.models import NovelProject, StoryState
+from packages.story_core.model_gateway import ModelRequest, ModelResponse
 from packages.story_core.project_outline import normalize_project_outline
 
 
@@ -90,6 +92,108 @@ def _make_file_project(root, *, project_id="p-file-api", state=None):
         json.dumps(state or {"story_id": "s-file-api", "current_chapter": 0, "world_facts": []}, ensure_ascii=False),
         encoding="utf-8",
     )
+
+
+class _ApiWorldGraphGateway:
+    """Deterministic gateway for exercising the real file-job path."""
+
+    def __init__(self, *, structured: bool, after_first_call=None):
+        self.structured = structured
+        self.after_first_call = after_first_call
+        self.calls = 0
+
+    def complete_stage(self, _stage: str, request: ModelRequest) -> ModelResponse:
+        self.calls += 1
+        task_id = request.operation.removeprefix("world_build_")
+        payload = self._payload(task_id)
+        response = ModelResponse.success(
+            request,
+            text=json.dumps(payload, ensure_ascii=False),
+            raw={"model": "api-world-test-model"},
+        )
+        if self.calls == 1 and self.after_first_call is not None:
+            self.after_first_call()
+        return response
+
+    def _payload(self, task_id: str) -> dict[str, Any]:
+        generic: dict[str, Any] = {
+            "world_core_rules": {
+                "premise": "承诺留下公开记录。",
+                "world_rules": ["记录可以被查询，但不能被删除。"],
+                "constraints": ["每次查询都会留下新的可追踪痕迹。"],
+            },
+            "world_economy": {"economy_rules": ["信息以时间和信誉交换。"]},
+            "world_locations": {"locations": [{"name": "旧档案馆", "description": "保存城市旧记录。"}]},
+            "world_factions": {"factions": [{"name": "记录署", "description": "维护公开记录。"}]},
+            "world_society": {
+                "world_systems": {"conflict_engines": ["记录公开与隐私之间的冲突。"]},
+                "living_world": {"reaction_rules": ["公开记录变化会引发组织反应。"]},
+                "faction_rules": ["组织按权限共享信息。"],
+            },
+            "story_engine_compat": {
+                "current_arc": "主角收到一条迟到的回复。",
+                "progression_rules": ["行动结果必须改变下一步条件。"],
+                "chapter_formula": ["入口、行动、结果、选择。"],
+                "forbidden_breaks": ["不得绕过已建立的记录规则。"],
+                "opening_arc": {"goal": "查明回复来源。"},
+                "volume_plan": {"volume_title": "第一卷", "target_chapters": 50},
+                "longform_framework": {"series_premise": "记录会反过来塑造城市。"},
+                "progression_ledger": {"open_threads": ["回复来源"]},
+            },
+        }
+        if not self.structured:
+            return generic[task_id]
+        power = {
+            "power_system_foundation": {"name": "潮汐灵契", "origin": ["海潮留下的古老契约"]},
+            "power_system_attributes": {"attributes": [{"name": "共鸣", "effect": "决定能否稳定使用契约。"}]},
+            "power_system_paths": {
+                "paths": [
+                    {"name": "血脉路线", "role": "强化身体", "core_resource": "血脉余量", "core_attributes": ["体魄"], "strengths": ["近身稳定"], "weaknesses": ["资源恢复慢"], "skill_categories": ["体术"], "branches": ["强化", "变异"], "advancement": ["完成试炼"]},
+                    {"name": "法则路线", "role": "理解规则", "core_resource": "法则线索", "core_attributes": ["洞察"], "strengths": ["远程控制"], "weaknesses": ["准备时间长"], "skill_categories": ["术式"], "branches": ["观测", "重写"], "advancement": ["完成验证"]},
+                ]
+            },
+            "power_system_stages": {
+                "stages": [
+                    {"name": "听潮", "level": None, "entry": "找到潮痕。", "change": "听见回声。", "failure": "失去感知。"},
+                    {"name": "引潮", "level": None, "entry": "完成共鸣。", "change": "引导潮汐。", "failure": "契约反噬。"},
+                    {"name": "定界", "level": None, "entry": "理解边界。", "change": "限定范围。", "failure": "边界失控。"},
+                ]
+            },
+            "power_system_resources": {"skills": ["潮痕感知"], "equipment": ["潮汐刻盘"], "resources": ["潮汐余量"], "advancement": ["连续验证推进阶段。"]},
+            "power_system_constraints": {"costs": ["越界消耗稳定度。"], "counters": ["干扰切断共鸣。"], "boundaries": ["不能凭空创造事实。"], "social_impact": ["持有者会被组织争夺。"], "visibility": ["接触者可确认痕迹。"], "continuity_ledger": ["阶段", "余量", "反噬", "边界"]},
+        }
+        if task_id in power:
+            return power[task_id]
+        return generic[task_id]
+
+
+def _wait_for_world_job(project_id: str, job_id: str) -> dict[str, Any]:
+    deadline = time.monotonic() + 60
+    terminal = {"completed", "conflicted", "failed", "interrupted"}
+    while time.monotonic() < deadline:
+        with file_projects._world_build_jobs_lock:
+            current = file_projects._world_build_jobs.get(job_id)
+            if current is not None and str(current.get("status")) in terminal:
+                result = dict(current)
+                break
+        time.sleep(0.02)
+    else:
+        raise AssertionError(f"world job did not finish: {job_id}")
+    with file_projects._world_build_jobs_lock:
+        file_projects._world_build_jobs.pop(job_id, None)
+        file_projects._active_world_build_jobs.pop(project_id.removeprefix("file:"), None)
+    return result
+
+
+def _start_and_wait_world_job(project_id: str) -> dict[str, Any]:
+    queued = file_projects._start_world_build_job(project_id)
+    return _wait_for_world_job(project_id, str(queued["job_id"]))
+
+
+def _set_world_genre(store, plugin_id: str) -> None:
+    blueprint = dict(store.project().get("world_blueprint") or {})
+    blueprint["genre_plugin_ids"] = [plugin_id]
+    store.update_project({"world_blueprint": blueprint}, replace_world_blueprint=True)
 
 
 def _seed_shuangwen_review_project(
@@ -2782,6 +2886,115 @@ def test_world_build_job_does_not_conflict_on_running_jobs_own_partial_writes(
         with file_projects._world_build_jobs_lock:
             file_projects._active_world_build_jobs.pop("p-world-self-partial", None)
             file_projects._world_build_jobs.pop(job_id, None)
+
+
+def test_api_world_job_genre_migrations_complete_without_internal_revision_conflict(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    project_root = tmp_path / "p-world-genre-migrations"
+    _make_file_project(project_root, project_id="p-world-genre-migrations")
+    store = file_projects._store_for("file:p-world-genre-migrations")
+    store.update_project(
+        {
+            "seed_outline": "作者明确的初始种子。",
+            "world_blueprint": {"genre_plugin_ids": ["urban"]},
+        },
+        replace_world_blueprint=True,
+    )
+
+    gateways = [
+        _ApiWorldGraphGateway(structured=False),
+        _ApiWorldGraphGateway(structured=True),
+        _ApiWorldGraphGateway(structured=False),
+    ]
+    real_enrich = file_projects.enrich_project_world
+
+    def graph_enrich(project, **kwargs):
+        return real_enrich(project, model_gateway=gateways.pop(0), **kwargs)
+
+    monkeypatch.setattr(file_projects, "enrich_project_world", graph_enrich)
+    try:
+        first = _start_and_wait_world_job("file:p-world-genre-migrations")
+        assert first["status"] == "completed"
+        assert store.project()["pipeline_stage"] == "environment_ready"
+
+        _set_world_genre(store, "xuanhuan")
+        second = _start_and_wait_world_job("file:p-world-genre-migrations")
+        assert second["status"] == "completed"
+        assert second.get("error_code", "") != "world_build_conflict"
+        assert store.project()["pipeline_stage"] == "environment_ready"
+        graph_state = store.build_graph_state()
+        assert graph_state is not None
+        assert "power_system_final" in graph_state["tasks"]
+        marker = store.build_graph_materialization()
+        assert marker is not None
+        assert "power_system_final" in marker["artifact_revisions"]
+
+        _set_world_genre(store, "urban")
+        third = _start_and_wait_world_job("file:p-world-genre-migrations")
+        assert third["status"] == "completed"
+        assert store.project()["pipeline_stage"] == "environment_ready"
+        final_blueprint = store.project().get("world_blueprint") or {}
+        assert "power_system_spec" not in final_blueprint
+        assert "power_system" not in final_blueprint
+    finally:
+        with file_projects._world_build_jobs_lock:
+            file_projects._active_world_build_jobs.pop("p-world-genre-migrations", None)
+
+
+def test_api_world_job_genre_migration_still_conflicts_on_mid_run_author_edit(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_FILE_PROJECTS_DIR", str(tmp_path))
+    project_root = tmp_path / "p-world-genre-conflict"
+    _make_file_project(project_root, project_id="p-world-genre-conflict")
+    store = file_projects._store_for("file:p-world-genre-conflict")
+    store.update_project(
+        {
+            "seed_outline": "作者明确的初始种子。",
+            "world_blueprint": {"genre_plugin_ids": ["urban"]},
+        },
+        replace_world_blueprint=True,
+    )
+
+    real_enrich = file_projects.enrich_project_world
+    first_gateway = _ApiWorldGraphGateway(structured=False)
+    edited = {"done": False}
+
+    def edit_during_run() -> None:
+        if edited["done"]:
+            return
+        edited["done"] = True
+        store.update_project({"seed_outline": "作者在运行中修改的种子。"})
+
+    second_gateway = _ApiWorldGraphGateway(
+        structured=True,
+        after_first_call=edit_during_run,
+    )
+    gateways = [first_gateway, second_gateway]
+
+    def graph_enrich(project, **kwargs):
+        return real_enrich(project, model_gateway=gateways.pop(0), **kwargs)
+
+    monkeypatch.setattr(file_projects, "enrich_project_world", graph_enrich)
+    try:
+        first = _start_and_wait_world_job("file:p-world-genre-conflict")
+        assert first["status"] == "completed"
+        _set_world_genre(store, "xuanhuan")
+
+        conflicted = _start_and_wait_world_job("file:p-world-genre-conflict")
+        assert conflicted["status"] == "conflicted"
+        assert conflicted.get("error_code") == "world_build_conflict"
+        assert store.project()["seed_outline"] == "作者在运行中修改的种子。"
+        # The previous urban materialization remains intact; this conflicted
+        # xuanhuan attempt must not publish a new marker or overwrite it.
+        marker = store.build_graph_materialization()
+        assert marker is not None
+        assert "power_system_final" not in marker["artifact_revisions"]
+    finally:
+        with file_projects._world_build_jobs_lock:
+            file_projects._active_world_build_jobs.pop("p-world-genre-conflict", None)
 
 
 def test_world_build_error_translation_hides_provider_details() -> None:
