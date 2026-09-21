@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from hashlib import sha256
+import inspect
 import json
 import os
 import re
@@ -45,6 +46,7 @@ from packages.story_core.runtime_config import (
     resolve_stage_runtime,
 )
 from packages.story_core.world_enrichment import WorldEnrichmentError, enrich_project_world
+from packages.story_core.world_build.runner import WorldBuildGraphCancelled, WorldBuildGraphFailure
 from packages.story_core.workflow_steps import merge_workflow_step, normalize_workflow_artifact, normalize_workflow_step
 from apps.api.services.file_project_lifecycle import (
     FileProjectLifecycleError,
@@ -355,10 +357,19 @@ _WORLD_BUILD_ERROR_USER_MESSAGES: dict[str, str] = {
     "world_build_validation_error": "本次结果未能通过校验，请重试。",
     "world_build_module_incomplete": "模型返回的设定不完整，请重试。",
     "world_build_unknown": "世界观补全失败，请稍后重试。",
+    "world_build_conflict": "世界观已被手动修改，请重新开始补全。",
 }
 
 
 def _world_build_error_code(exc: BaseException) -> str:
+    declared_code = str(getattr(exc, "code", "") or "")
+    if declared_code == "world_build_conflict":
+        return "world_build_conflict"
+    if declared_code == "world_build_graph_failed":
+        diagnostics = getattr(exc, "diagnostics", ())
+        if any(str(getattr(item, "code", "")).startswith("model.") for item in diagnostics):
+            return "world_build_provider_error"
+        return "world_build_validation_error"
     message = str(exc or "")
     lowered = message.lower()
     if "world_build_module_incomplete" in message:
@@ -632,6 +643,11 @@ def _run_world_build_job(job_id: str, project_id: str) -> None:
         if artifact is not None:
             _persist_partial_world_build_artifact(store, artifact, job_id=job_id)
 
+    def cancel_check() -> bool:
+        if _is_world_build_job_terminal(job_id):
+            return True
+        return _check_world_build_conflict(store, job_id)
+
     try:
         if _is_world_build_job_terminal(job_id):
             return
@@ -644,10 +660,23 @@ def _run_world_build_job(job_id: str, project_id: str) -> None:
             "active_story_id": _story_id_for(store),
             "story_core_context": store.story_core_context("world"),
         }
-        enriched = enrich_project_world(
-            NovelProject.model_validate(project_payload),
-            progress_callback=report_progress,
-        )
+        enrich_project = NovelProject.model_validate(project_payload)
+        enrich_kwargs: dict[str, object] = {"progress_callback": report_progress}
+        # Keep the historical monkeypatch/call signature usable for legacy
+        # route tests and non-file integrations, while the real production
+        # function receives the persistent store and selects the graph runner.
+        try:
+            parameters = inspect.signature(enrich_project_world).parameters.values()
+            accepts_store = any(
+                parameter.name in {"store", "cancel_check"}
+                or parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters
+            )
+        except (TypeError, ValueError):
+            accepts_store = True
+        if accepts_store:
+            enrich_kwargs.update({"store": store, "cancel_check": cancel_check})
+        enriched = enrich_project_world(enrich_project, **enrich_kwargs)
         # Final terminal guard before the big ``store.update_project``:
         # ``_check_world_build_conflict`` only flips the job to
         # ``conflicted`` when the author edit produced a different hash,
@@ -676,6 +705,41 @@ def _run_world_build_job(job_id: str, project_id: str) -> None:
             }
             | {"pipeline_stage": "environment_ready"},
             replace_world_blueprint=True,
+        )
+        if isinstance(enriched, NovelProject):
+            from packages.story_core.world_build.definition import build_world_build_graph
+            from packages.story_core.world_build.validators import make_world_validators
+
+            graph = build_world_build_graph(enriched)
+            graph_service = store.build_graph_service(
+                graph.definition,
+                validators=make_world_validators(enriched),
+            )
+            store.record_build_graph_materialization(graph, graph_service, enriched)
+    except WorldBuildGraphCancelled as exc:  # pragma: no cover - background race
+        if not _is_world_build_job_terminal(job_id):
+            _update_world_build_job(
+                job_id,
+                status="conflicted",
+                progress=_world_build_user_message("world_build_conflict"),
+                error_code="world_build_conflict",
+                error=_world_build_user_message("world_build_conflict"),
+                active_module_status="conflicted",
+            )
+    except WorldBuildGraphFailure as exc:  # pragma: no cover - background safety net
+        diagnostic_payload = {
+            "task_id": exc.task_id,
+            "items": [item.to_dict() for item in exc.diagnostics],
+        }
+        code = _world_build_error_code(exc)
+        _update_world_build_job(
+            job_id,
+            status="failed",
+            progress=_world_build_user_message(code),
+            error_code=code,
+            error=_sanitize_world_build_error_detail(exc),
+            diagnostics=diagnostic_payload,
+            active_module_status="error",
         )
     except Exception as exc:  # pragma: no cover - background safety net
         code = _world_build_error_code(exc)

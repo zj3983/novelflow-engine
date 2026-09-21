@@ -2332,7 +2332,22 @@ def enrich_project_world(
     *,
     model_gateway: RuntimeModelGateway | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    store: Any | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> NovelProject:
+    if store is not None:
+        # File-project production jobs use the persisted Build Graph runner.
+        # Keep the legacy direct helper available for SQLite callers and old
+        # integrations that do not provide a FileProjectStore.
+        from packages.story_core.world_build.runner import WorldBuildGraphRunner
+
+        return WorldBuildGraphRunner(
+            project,
+            store=store,
+            model_gateway=model_gateway,
+            progress_callback=progress_callback,
+            cancel_check=cancel_check,
+        ).run()
     return _call_world_build_modules(
         project,
         model_gateway=model_gateway,

@@ -570,6 +570,33 @@ class BuildGraphService:
             self.store.persist(next_state, runs=(runs[run.run_id],))
             return runs[run.run_id]
 
+    def conflict_run(
+        self,
+        run_id: str,
+        *,
+        message: str = "run was superseded by a newer project revision",
+    ) -> BuildRun:
+        """Mark an active run as conflicted without committing its payload.
+
+        Background domain runners use this narrow primitive when their
+        surrounding job detects cancellation or an author edit between the
+        model call and the Build Graph commit.  It deliberately delegates to
+        the same private transition used by ``commit_run``/``fail_run`` so a
+        stale run cannot remain ``running`` in the manifest or its run file.
+        """
+
+        with project_update_lock(self.store.root):
+            state = self._read_state()
+            run = state.runs.get(str(run_id))
+            if run is None or run.status != "running":
+                raise BuildRunConflict(
+                    "build_run_conflict",
+                    "run is not active",
+                    details={"run_id": str(run_id)},
+                )
+            self._run_conflict_locked(state, run, message=message)
+            raise AssertionError("_run_conflict_locked must raise")
+
     def edit_artifact(
         self,
         task_id: str,

@@ -1712,6 +1712,25 @@ class FileProjectStore(
             validators=validators,
         )
 
+    def build_graph_materialization(self) -> dict[str, Any] | None:
+        """Read the last graph-to-project materialization marker."""
+
+        from packages.story_core.world_build.materialize import read_materialization
+
+        return read_materialization(self)
+
+    def record_build_graph_materialization(
+        self,
+        graph,
+        service,
+        project,
+    ) -> dict[str, Any]:
+        """Atomically persist the graph revisions used by a project write."""
+
+        from packages.story_core.world_build.materialize import write_materialization_marker
+
+        return write_materialization_marker(self, graph, service, project)
+
     @property
     def cover_base_path(self) -> Path:
         return self.webnovel_dir / "assets" / "cover-base.png"
