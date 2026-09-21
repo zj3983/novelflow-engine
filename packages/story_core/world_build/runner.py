@@ -1,0 +1,703 @@
+"""Production runner for the WorldBuild Build Graph slice.
+
+The runner owns orchestration only.  Task state, validation, revision checks,
+artifact history, and run races remain the responsibility of
+``BuildGraphService``.  A model task gets one first pass and at most one
+focused repair pass.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
+from typing import Any
+
+from packages.story_core.build_graph.contracts import (
+    BuildDiagnostic,
+    BuildRunConflict,
+    BuildTaskStateError,
+)
+from packages.story_core.model_gateway import ModelRequest, RuntimeModelGateway
+from packages.story_core.models import NovelProject
+from packages.story_core.power_system_spec import PowerSystemValidationError
+from packages.story_core.prompt_call_log import PromptCallLog
+from packages.story_core.runtime_config import resolve_stage_runtime
+
+from .definition import WorldBuildGraph, WorldBuildTaskSpec, build_world_build_graph
+from .materialize import (
+    materialize_project,
+    reconcile_project_to_graph,
+)
+from .migration import POWER_REPAIR_BUDGET_FILENAME, prepare_world_graph_migration
+from .tasks import (
+    build_input_contract,
+    build_task_prompt,
+    canonical_world_input,
+    input_fingerprint,
+    parse_task_payload,
+    run_read_projection,
+    task_payload_from_project,
+)
+from .validators import assemble_power_candidate, make_world_validators
+from .validators import power_final_owner_task
+
+
+class WorldBuildGraphFailure(RuntimeError):
+    """A safe, structured production graph failure."""
+
+    code = "world_build_graph_failed"
+
+    def __init__(
+        self,
+        task_id: str,
+        diagnostics: Sequence[BuildDiagnostic] = (),
+        *,
+        message: str = "world Build Graph task failed",
+    ) -> None:
+        self.task_id = str(task_id)
+        self.diagnostics = tuple(diagnostics)
+        super().__init__(message)
+
+
+class WorldBuildGraphCancelled(WorldBuildGraphFailure):
+    """The enclosing legacy job was superseded or reached a terminal state."""
+
+    code = "world_build_conflict"
+
+
+class WorldBuildGraphRunner:
+    """Execute the genre-scoped production graph for one file project."""
+
+    def __init__(
+        self,
+        project: NovelProject,
+        *,
+        store: Any,
+        model_gateway: Any | None = None,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> None:
+        self.project = project.model_copy(deep=True)
+        self.store = store
+        self.graph: WorldBuildGraph = build_world_build_graph(self.project)
+        # WorldBuild is the one sanctioned dynamic graph: its task shape is
+        # selected by genre.  Perform an explicit archive/reset migration
+        # before the generic BuildGraphService applies its hard definition
+        # compatibility check.
+        prepare_world_graph_migration(self.store, self.graph)
+        self.validators = make_world_validators(self.project)
+        self.service = store.build_graph_service(
+            self.graph.definition,
+            validators=self.validators,
+        )
+        self.gateway = model_gateway or RuntimeModelGateway(
+            runtime_resolver=resolve_stage_runtime,
+        )
+        self.progress_callback = progress_callback
+        self.cancel_check = cancel_check
+        self._active_run_id: str | None = None
+
+    # ------------------------------------------------------------------
+    # Safe progress/cancellation helpers
+    # ------------------------------------------------------------------
+    def _progress(self, task_id: str, status: str, message: str) -> None:
+        if self.progress_callback is None:
+            return
+        spec = self.graph.spec(task_id)
+        # Deliberately no ``artifact`` field: the old job's partial projection
+        # must not become a second source of truth while graph artifacts are
+        # being committed.
+        self.progress_callback(
+            {
+                "module_id": task_id,
+                "title": spec.task.title,
+                "status": status,
+                "message": message,
+            }
+        )
+
+    def _cancelled(self) -> bool:
+        try:
+            return bool(self.cancel_check and self.cancel_check())
+        except Exception:
+            # A cancellation observer must never make a successful model
+            # result look like a provider failure.  The enclosing job still
+            # performs its terminal guard before materialization.
+            return False
+
+    def _ensure_active(self, task_id: str, *, run_id: str | None = None) -> None:
+        if not self._cancelled():
+            return
+        candidate_run_id = run_id or self._active_run_id
+        if candidate_run_id:
+            try:
+                self.service.conflict_run(
+                    candidate_run_id,
+                    message="world-build job was superseded before commit",
+                )
+            except BuildRunConflict:
+                pass
+        raise WorldBuildGraphCancelled(
+            task_id,
+            (
+                BuildDiagnostic(
+                    "build_run_conflict",
+                    f"tasks.{task_id}",
+                    "world-build job was superseded before this task could commit",
+                ),
+            ),
+            message="world-build job was superseded",
+        )
+
+    # ------------------------------------------------------------------
+    # Root import and existing-project bootstrap
+    # ------------------------------------------------------------------
+    def _ensure_world_input(self) -> None:
+        task_id = "world_input"
+        self._ensure_active(task_id)
+        current = self.service.inspect_artifact(task_id)
+        previous = current.payload if current is not None and isinstance(current.payload, Mapping) else None
+        payload = canonical_world_input(self.project, store=self.store, previous=previous)
+        if current is not None and current.payload == payload:
+            return
+        expected = current.revision if current is not None else None
+        result = self.service.commit_candidate(
+            task_id,
+            payload,
+            expected_revision=expected,
+            source="imported",
+            requested_writes=self.graph.spec(task_id).task.owns,
+        )
+        if result.artifact is None:
+            raise WorldBuildGraphFailure(task_id, result.validation.diagnostics)
+        self._progress(task_id, "done", "已记录世界构建输入")
+
+    def _bootstrap_existing_values(self) -> None:
+        """Import valid existing domain values without calling a model."""
+
+        for task_id in self.graph.definition.ordered_task_ids:
+            if task_id in {"world_input", "power_system_final"}:
+                continue
+            state = self.service.inspect_task(task_id)
+            if state.current_artifact_revision is not None:
+                continue
+            if state.status != "ready":
+                continue
+            payload = task_payload_from_project(self.project, task_id)
+            if not payload:
+                continue
+            spec = self.graph.spec(task_id)
+            # A partial/invalid author value is intentionally not deleted.  A
+            # failed import leaves the task runnable so the model can produce
+            # exactly this section; the invalid value never becomes an
+            # official artifact.
+            result = self.service.commit_candidate(
+                task_id,
+                payload,
+                expected_revision=None,
+                source="imported",
+                requested_writes=spec.task.owns,
+            )
+            if result.artifact is not None:
+                self._progress(task_id, "done", f"已复用现有设定：{spec.task.title}")
+
+    def _preserve_existing_non_power_values(
+        self,
+        task_id: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Keep existing non-power fields authoritative during completion."""
+
+        if task_id.startswith("power_system_"):
+            return dict(payload)
+        existing = task_payload_from_project(self.project, task_id)
+        merged = dict(payload)
+        for key, value in existing.items():
+            if value not in (None, "", [], {}):
+                merged[key] = deepcopy(value)
+        return merged
+
+    # ------------------------------------------------------------------
+    # Model and deterministic tasks
+    # ------------------------------------------------------------------
+    def _prompt_log_start(self, request: ModelRequest) -> tuple[PromptCallLog | None, str | None]:
+        recorder: PromptCallLog | None = None
+        try:
+            candidate = self.store.prompt_call_log()
+            if isinstance(candidate, PromptCallLog):
+                recorder = candidate
+        except Exception:
+            recorder = None
+        if recorder is None:
+            return None, None
+        try:
+            settings = resolve_stage_runtime("planner")
+            provider = str(getattr(settings, "provider_id", "") or "")
+            protocol = str(getattr(settings, "protocol", "") or "")
+            model = str(getattr(settings, "model", "") or "")
+            temperature = getattr(settings, "temperature", None)
+        except Exception:
+            provider = protocol = model = ""
+            temperature = None
+        try:
+            call_id = recorder.start(
+                chapter_number=0,
+                stage="planner",
+                agent=request.operation,
+                user_prompt=request.prompt,
+                system_prompt=request.system_prompt,
+                provider=provider,
+                protocol=protocol,
+                model=model,
+                temperature=temperature,
+            )
+        except Exception:
+            return recorder, None
+        return recorder, call_id
+
+    @staticmethod
+    def _prompt_log_finish(
+        recorder: PromptCallLog | None,
+        call_id: str | None,
+        response: Any,
+    ) -> None:
+        if recorder is None or not call_id:
+            return
+        try:
+            recorder.finish(
+                call_id,
+                status="success" if getattr(response, "ok", False) else "error",
+                provider=str(getattr(response, "provider", "") or ""),
+                model=str(getattr(response, "resolved_model", "") or getattr(response, "model", "") or ""),
+                output=str(getattr(response, "text", "") or "") if getattr(response, "ok", False) else "",
+                error="model_call_failed" if not getattr(response, "ok", False) else "",
+                temperature_omitted=bool(getattr(response, "temperature_omitted", False)),
+            )
+        except Exception:
+            pass
+
+    def _call_model(self, task_id: str, prompt: str) -> tuple[Any, str | None]:
+        spec = self.graph.spec(task_id)
+        request = ModelRequest(
+            prompt=prompt,
+            system_prompt="You are a senior Chinese webnovel worldbuilding editor. Return JSON only.",
+            provider="",
+            model="",
+            operation=f"world_build_{task_id}",
+            max_tokens=spec.max_tokens,
+            json_mode=True,
+            metadata={
+                "reasoning_effort": "low",
+                "enable_thinking": False,
+                "world_build_task": task_id,
+                "stream": False,
+            },
+        )
+        recorder, call_id = self._prompt_log_start(request)
+        try:
+            response = self.gateway.complete_stage("planner", request)
+        except Exception:
+            class FailedResponse:
+                ok = False
+                error = "model_call_failed"
+                text = ""
+                provider = ""
+                model = ""
+                resolved_model = ""
+                temperature_omitted = False
+
+            response = FailedResponse()
+        self._prompt_log_finish(recorder, call_id, response)
+        return response, call_id
+
+    @staticmethod
+    def _power_error_diagnostics(error: PowerSystemValidationError) -> tuple[BuildDiagnostic, ...]:
+        diagnostics: list[BuildDiagnostic] = []
+        for section in error.missing_sections:
+            diagnostics.append(
+                BuildDiagnostic(
+                    f"power.final.missing_{section}",
+                    section,
+                    f"final power spec is missing {section}",
+                )
+            )
+        for violation in error.violations:
+            diagnostics.append(
+                BuildDiagnostic(
+                    f"power.final.{violation}",
+                    violation,
+                    f"final power spec violates {violation}",
+                )
+            )
+        return tuple(diagnostics) or (
+            BuildDiagnostic(
+                "power.final.invalid",
+                "power_system_spec",
+                "final power spec failed deterministic validation",
+            ),
+        )
+
+    def _power_repair_budget_path(self):
+        return self.store.webnovel_dir / POWER_REPAIR_BUDGET_FILENAME
+
+    def _power_input_revision(self) -> int | None:
+        return self.service.inspect_task("world_input").current_artifact_revision
+
+    def _read_power_repair_budget(self) -> dict[str, Any]:
+        raw = self.store.snapshot_store.read_json(self._power_repair_budget_path(), {})
+        return dict(raw) if isinstance(raw, Mapping) else {}
+
+    def _reset_power_repair_budget(self) -> None:
+        payload = {
+            "schema_version": "world-build-power-repair/v1",
+            "definition_fingerprint": self.graph.definition.definition_fingerprint,
+            "world_input_revision": self._power_input_revision(),
+            "attempted_owners": [],
+        }
+        self.store.snapshot_store.replace_json_transaction({self._power_repair_budget_path(): payload})
+
+    def _route_power_final_diagnostics(
+        self,
+        diagnostics: Sequence[BuildDiagnostic],
+    ) -> bool:
+        owners: dict[str, list[BuildDiagnostic]] = {}
+        for diagnostic in diagnostics:
+            owner = power_final_owner_task(diagnostic)
+            if owner is not None:
+                owners.setdefault(owner, []).append(diagnostic)
+        if not owners:
+            return False
+
+        input_revision = self._power_input_revision()
+        budget = self._read_power_repair_budget()
+        same_generation = (
+            budget.get("definition_fingerprint")
+            == self.graph.definition.definition_fingerprint
+            and budget.get("world_input_revision") == input_revision
+        )
+        attempted = set(budget.get("attempted_owners") or []) if same_generation else set()
+        pending = sorted(owner for owner in owners if owner not in attempted)
+        if not pending:
+            # A residual failure after the owner has already had its one
+            # focused repair is a clean, persistent failure, not a hidden
+            # deterministic retry loop.
+            return False
+
+        updated_attempted = sorted(attempted.union(pending))
+        self.store.snapshot_store.replace_json_transaction(
+            {
+                self._power_repair_budget_path(): {
+                    "schema_version": "world-build-power-repair/v1",
+                    "definition_fingerprint": self.graph.definition.definition_fingerprint,
+                    "world_input_revision": input_revision,
+                    "attempted_owners": updated_attempted,
+                }
+            }
+        )
+        for owner in pending:
+            self.service.invalidate_task(owner, owners[owner])
+        return True
+
+    def _power_candidate_from_dependencies(self) -> dict[str, Any]:
+        payloads: dict[str, Mapping[str, Any]] = {}
+        for task_id in (
+            "power_system_foundation",
+            "power_system_attributes",
+            "power_system_paths",
+            "power_system_stages",
+            "power_system_resources",
+            "power_system_constraints",
+        ):
+            artifact = self.service.inspect_artifact(task_id)
+            if artifact is None or not isinstance(artifact.payload, Mapping):
+                raise BuildTaskStateError(
+                    "build_dependencies_incomplete",
+                    "power final task requires all committed power sections",
+                    details={"task_id": "power_system_final", "dependency": task_id},
+                )
+            payloads[task_id] = artifact.payload
+        existing = self.project.world_blueprint.get("power_system") if isinstance(self.project.world_blueprint, Mapping) else None
+        return assemble_power_candidate(
+            foundation=payloads["power_system_foundation"],
+            attributes=payloads["power_system_attributes"],
+            paths=payloads["power_system_paths"],
+            stages=payloads["power_system_stages"],
+            resources=payloads["power_system_resources"],
+            constraints=payloads["power_system_constraints"],
+            project=self.project,
+            existing_summary=existing if isinstance(existing, list) else None,
+        )
+
+    def _run_deterministic(self, task_id: str) -> None:
+        self._ensure_active(task_id)
+        run = self.service.start_run(task_id)
+        self._active_run_id = run.run_id
+        self._progress(task_id, "running", f"正在组装：{self.graph.spec(task_id).task.title}")
+        try:
+            if task_id != "power_system_final":
+                raise WorldBuildGraphFailure(
+                    task_id,
+                    (BuildDiagnostic("world.deterministic_task_unknown", task_id, "unknown deterministic task"),),
+                )
+            try:
+                candidate = self._power_candidate_from_dependencies()
+            except PowerSystemValidationError as exc:
+                diagnostics = self._power_error_diagnostics(exc)
+                self.service.fail_run(run.run_id, diagnostics)
+                if self._route_power_final_diagnostics(diagnostics):
+                    return
+                raise WorldBuildGraphFailure(task_id, diagnostics) from exc
+            self._ensure_active(task_id, run_id=run.run_id)
+            result = self.service.commit_run(
+                run.run_id,
+                candidate,
+                requested_writes=self.graph.spec(task_id).task.owns,
+                source="deterministic",
+            )
+            if result.artifact is None:
+                raise WorldBuildGraphFailure(task_id, result.validation.diagnostics)
+            self._progress(task_id, "done", f"已完成：{self.graph.spec(task_id).task.title}")
+        except BuildRunConflict as exc:
+            raise WorldBuildGraphCancelled(
+                task_id,
+                (BuildDiagnostic("build_run_conflict", f"tasks.{task_id}", "deterministic run was superseded"),),
+            ) from exc
+        finally:
+            self._active_run_id = None
+
+    def _run_model(self, task_id: str) -> None:
+        spec = self.graph.spec(task_id)
+        contract = build_input_contract(self.project, self.graph, self.service, task_id)
+        task_state = self.service.inspect_task(task_id)
+        current_artifact = self.service.inspect_artifact(task_id)
+        final_diagnostics = tuple(
+            diagnostic
+            for diagnostic in task_state.diagnostics
+            if diagnostic.code.startswith("power.final.")
+        )
+        final_repair_candidate = (
+            current_artifact.payload
+            if final_diagnostics
+            and current_artifact is not None
+            and isinstance(current_artifact.payload, Mapping)
+            else None
+        )
+        run = self.service.start_run(
+            task_id,
+            input_fingerprint=input_fingerprint(contract),
+            read_projection=run_read_projection(self.graph, task_id, contract),
+        )
+        self._active_run_id = run.run_id
+        self._progress(task_id, "running", f"正在构建：{spec.task.title}")
+        try:
+            # A residual full-validator diagnostic is already the one focused
+            # repair allowance for this owner.  Do not spend a normal
+            # regeneration call before showing the model the exact final
+            # diagnostic and the current committed section.
+            final_repair = final_repair_candidate is not None
+            prompt = build_task_prompt(
+                self.graph,
+                task_id,
+                contract,
+                repair_candidate=final_repair_candidate if final_repair else None,
+                diagnostics=final_diagnostics if final_repair else (),
+            )
+            self._ensure_active(task_id, run_id=run.run_id)
+            response, call_id = self._call_model(task_id, prompt)
+            self._ensure_active(task_id, run_id=run.run_id)
+            if not getattr(response, "ok", False):
+                diagnostics = (
+                    BuildDiagnostic(
+                        "model.repair_request_failed" if final_repair else "model.request_failed",
+                        f"tasks.{task_id}",
+                        "focused repair request failed" if final_repair else "model request failed",
+                    ),
+                )
+                self.service.fail_run(run.run_id, diagnostics)
+                raise WorldBuildGraphFailure(task_id, diagnostics, message="world model request failed")
+            candidate, parse_diagnostics = parse_task_payload(
+                getattr(response, "text", ""),
+                spec.output_fields,
+            )
+            if candidate is None:
+                diagnostics = parse_diagnostics
+            else:
+                diagnostics = self.service.validate(
+                    task_id,
+                    self._preserve_existing_non_power_values(task_id, candidate),
+                    requested_writes=spec.task.owns,
+                ).diagnostics
+            if final_repair:
+                if candidate is not None and not diagnostics:
+                    self._ensure_active(task_id, run_id=run.run_id)
+                    result = self.service.commit_run(
+                        run.run_id,
+                        self._preserve_existing_non_power_values(task_id, candidate),
+                        requested_writes=spec.task.owns,
+                        source="ai_repair",
+                        provider=str(getattr(response, "provider", "") or "") or None,
+                        model=str(getattr(response, "resolved_model", "") or getattr(response, "model", "") or "") or None,
+                        prompt_call_id=call_id,
+                    )
+                    if result.artifact is None:
+                        raise WorldBuildGraphFailure(task_id, result.validation.diagnostics)
+                    self._progress(task_id, "done", f"已修复并完成：{spec.task.title}")
+                    return
+                self.service.fail_run(run.run_id, diagnostics)
+                raise WorldBuildGraphFailure(task_id, diagnostics)
+            if candidate is not None and not diagnostics:
+                self._ensure_active(task_id, run_id=run.run_id)
+                result = self.service.commit_run(
+                    run.run_id,
+                    self._preserve_existing_non_power_values(task_id, candidate),
+                    requested_writes=spec.task.owns,
+                    source="llm",
+                    provider=str(getattr(response, "provider", "") or "") or None,
+                    model=str(getattr(response, "resolved_model", "") or getattr(response, "model", "") or "") or None,
+                    prompt_call_id=call_id,
+                )
+                if result.artifact is None:
+                    raise WorldBuildGraphFailure(task_id, result.validation.diagnostics)
+                self._progress(task_id, "done", f"已完成：{spec.task.title}")
+                return
+
+            # End the first run with structured validation diagnostics before
+            # beginning the one and only focused repair run.
+            self.service.fail_run(run.run_id, diagnostics)
+            repair_run = self.service.start_run(
+                task_id,
+                input_fingerprint=input_fingerprint(contract),
+                read_projection=run_read_projection(self.graph, task_id, contract),
+            )
+            self._active_run_id = repair_run.run_id
+            repair_prompt = build_task_prompt(
+                self.graph,
+                task_id,
+                contract,
+                repair_candidate=candidate,
+                diagnostics=diagnostics,
+            )
+            self._ensure_active(task_id, run_id=repair_run.run_id)
+            repair_response, repair_call_id = self._call_model(task_id, repair_prompt)
+            self._ensure_active(task_id, run_id=repair_run.run_id)
+            repaired: dict[str, Any] | None = None
+            if not getattr(repair_response, "ok", False):
+                repair_diagnostics = (
+                    BuildDiagnostic(
+                        "model.repair_request_failed",
+                        f"tasks.{task_id}",
+                        "focused repair request failed",
+                    ),
+                )
+            else:
+                repaired, repair_parse_diagnostics = parse_task_payload(
+                    getattr(repair_response, "text", ""),
+                    spec.output_fields,
+                )
+                if repaired is None:
+                    repair_diagnostics = repair_parse_diagnostics
+                else:
+                    repaired = self._preserve_existing_non_power_values(task_id, repaired)
+                    repair_diagnostics = self.service.validate(
+                        task_id,
+                        repaired,
+                        requested_writes=spec.task.owns,
+                    ).diagnostics
+            if repaired is not None and not repair_diagnostics:
+                self._ensure_active(task_id, run_id=repair_run.run_id)
+                result = self.service.commit_run(
+                    repair_run.run_id,
+                    repaired,
+                    requested_writes=spec.task.owns,
+                    source="ai_repair",
+                    provider=str(getattr(repair_response, "provider", "") or "") or None,
+                    model=str(getattr(repair_response, "resolved_model", "") or getattr(repair_response, "model", "") or "") or None,
+                    prompt_call_id=repair_call_id,
+                )
+                if result.artifact is None:
+                    raise WorldBuildGraphFailure(task_id, result.validation.diagnostics)
+                self._progress(task_id, "done", f"已修复并完成：{spec.task.title}")
+                return
+            self.service.fail_run(repair_run.run_id, repair_diagnostics)
+            raise WorldBuildGraphFailure(task_id, repair_diagnostics)
+        except BuildRunConflict as exc:
+            raise WorldBuildGraphCancelled(
+                task_id,
+                (BuildDiagnostic("build_run_conflict", f"tasks.{task_id}", "model run was superseded"),),
+            ) from exc
+        finally:
+            self._active_run_id = None
+
+    def run(self) -> NovelProject:
+        """Resume the graph until ready, then return an unpersisted project candidate."""
+
+        self._ensure_active("world_input")
+        self._ensure_world_input()
+        try:
+            reconciled = reconcile_project_to_graph(
+                self.project,
+                self.graph,
+                self.service,
+                store=self.store,
+            )
+            if reconciled:
+                self._reset_power_repair_budget()
+        except ValueError as exc:
+            # A project with an invalid author edit must not remain labelled
+            # environment_ready.  Revert only the readiness marker; the
+            # author's invalid content remains untouched for review/repair.
+            try:
+                self.store.update_project({"pipeline_stage": "imported"})
+            except Exception:
+                pass
+            raise WorldBuildGraphFailure(
+                "project_reconciliation",
+                (
+                    BuildDiagnostic(
+                        "world.external_edit_invalid",
+                        "world_blueprint",
+                        "an external project edit failed the graph validator",
+                    ),
+                ),
+            ) from exc
+
+        while True:
+            self._ensure_active("world_input")
+            self._bootstrap_existing_values()
+            state = self.service.inspect_graph()
+            readiness = self.service.build_readiness()
+            if readiness.ready:
+                self._ensure_active("materialization")
+                return materialize_project(self.project, self.graph, self.service)
+
+            runnable = [
+                task_id
+                for task_id in self.graph.definition.ordered_task_ids
+                if state.tasks[task_id].status in {"ready", "stale", "validation_failed"}
+            ]
+            if not runnable:
+                blocked = tuple(readiness.blocked_by or readiness.failed_tasks or readiness.review_required_tasks)
+                raise WorldBuildGraphFailure(
+                    "readiness",
+                    (
+                        BuildDiagnostic(
+                            "world.build_not_ready",
+                            "build_graph",
+                            "world Build Graph is not ready",
+                        ),
+                    ),
+                    message=f"world Build Graph is not ready: {','.join(blocked)}",
+                )
+            task_id = runnable[0]
+            spec = self.graph.spec(task_id)
+            if spec.kind == "deterministic":
+                self._run_deterministic(task_id)
+            else:
+                self._run_model(task_id)
+
+
+__all__ = [
+    "WorldBuildGraphCancelled",
+    "WorldBuildGraphFailure",
+    "WorldBuildGraphRunner",
+]

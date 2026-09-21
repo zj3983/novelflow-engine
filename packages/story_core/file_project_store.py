@@ -1712,6 +1712,118 @@ class FileProjectStore(
             validators=validators,
         )
 
+    def build_graph_materialization(self) -> dict[str, Any] | None:
+        """Read the last graph-to-project materialization marker."""
+
+        from packages.story_core.world_build.materialize import read_materialization
+
+        return read_materialization(self)
+
+    def world_revision(self) -> str:
+        """Stable revision of all WorldBuild root inputs and write targets."""
+
+        project = self.project()
+        from packages.story_core.models import NovelProject
+        from packages.story_core.world_build.tasks import world_job_revision_payload
+
+        try:
+            root_input = world_job_revision_payload(
+                NovelProject.model_validate(project),
+                store=self,
+            )
+        except Exception:
+            # Keep the revision operation total even while a project is being
+            # repaired.  The legacy write-target fields still provide a
+            # conservative conflict boundary in this exceptional state.
+            root_input = {
+                "title": str(project.get("title", "")).strip(),
+                "seed_outline": str(project.get("seed_outline", "")).strip(),
+                "author_constraints": project.get("author_constraints") or [],
+                "world_blueprint": project.get("world_blueprint") or {},
+            }
+        payload = {
+            "project_id": str(project.get("project_id", "")).strip(),
+            "world_input": root_input,
+            "world_summary": str(project.get("world_summary", "")).strip(),
+            "current_focus": str(project.get("current_focus", "")).strip(),
+            "world_blueprint": project.get("world_blueprint") or {},
+        }
+        serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        return sha256(serialized.encode("utf-8")).hexdigest()
+
+    def record_build_graph_materialization(
+        self,
+        graph,
+        service,
+        project,
+    ) -> dict[str, Any]:
+        """Atomically persist the graph revisions used by a project write."""
+
+        from packages.story_core.world_build.materialize import write_materialization_marker
+
+        return write_materialization_marker(self, graph, service, project)
+
+    @_with_project_update_lock
+    def commit_build_graph_materialization(
+        self,
+        project,
+        graph,
+        service,
+        *,
+        expected_project_revision: str | None = None,
+    ):
+        """Atomically publish project fields and the graph materialization marker."""
+
+        from packages.story_core.world_build.materialize import (
+            materialization_path,
+            materialization_payload,
+        )
+
+        if (
+            expected_project_revision
+            and self.world_revision() != str(expected_project_revision)
+        ):
+            raise ValueError("world_build_conflict")
+        payload = project.model_dump(mode="json")
+        patch = {
+            key: value
+            for key, value in payload.items()
+            if key in {
+                "title", "world_summary", "current_focus", "author_constraints",
+                "world_blueprint", "character_profiles", "relationship_graph",
+                "enabled_skill_ids", "enabled_skill_module_ids", "status",
+            }
+        } | {"pipeline_stage": "environment_ready"}
+        prepared_project, payloads = self.update_project(
+            patch,
+            replace_world_blueprint=True,
+            _commit=False,
+        )
+        payloads[materialization_path(self)] = materialization_payload(
+            graph,
+            service,
+            type(project).model_validate(prepared_project),
+        )
+        self.snapshot_store.replace_json_transaction(payloads)
+        if isinstance(prepared_project.get("world_blueprint"), dict):
+            title = (
+                prepared_project.get("game_title")
+                or prepared_project.get("title")
+                or "未命名作品"
+            )
+            try:
+                sync_world_markdown(
+                    self.root,
+                    title,
+                    prepared_project["world_blueprint"],
+                )
+            except Exception:  # noqa: BLE001
+                logging.getLogger(__name__).warning(
+                    "world blueprint markdown sync failed",
+                    exc_info=True,
+                )
+        return prepared_project, payloads[materialization_path(self)]
+
     @property
     def cover_base_path(self) -> Path:
         return self.webnovel_dir / "assets" / "cover-base.png"

@@ -574,6 +574,18 @@ def _contains_placeholder_content(value: Any) -> bool:
     return False
 
 
+def is_placeholder_content(value: Any) -> bool:
+    """Return whether one value is a canonical low-information placeholder."""
+
+    return _is_placeholder_content(value)
+
+
+def contains_placeholder_content(value: Any) -> bool:
+    """Return whether a JSON-shaped value contains a canonical placeholder."""
+
+    return _contains_placeholder_content(value)
+
+
 def validate_power_system_spec(
     spec: Any,
     *,
