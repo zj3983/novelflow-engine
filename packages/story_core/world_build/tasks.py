@@ -228,14 +228,71 @@ def build_input_contract(
                 visit(dependency)
 
     visit(task_id)
-    dependencies: dict[str, Any] = {}
+    # The full ancestor revision map is deliberately retained for provenance
+    # and race detection.  It is not the model context: model input is built
+    # strictly from the task's declared read paths below.
     revisions: dict[str, int] = {}
     for dependency in ancestors:
         artifact = service.inspect_artifact(dependency)
         if artifact is None:
             continue
-        dependencies[dependency] = bounded_json_projection(artifact.payload, chars=480, items=16, depth=5)
         revisions[dependency] = artifact.revision
+
+    def owner_for_read(path: str) -> tuple[str, str] | None:
+        candidates: list[tuple[int, str, str]] = []
+        for owner_id in graph.definition.ordered_task_ids:
+            owner = graph.spec(owner_id)
+            for owned_path in owner.task.owns:
+                if path == owned_path or path.startswith(f"{owned_path}."):
+                    candidates.append((len(owned_path), owner_id, owned_path))
+        if not candidates:
+            return None
+        _, owner_id, owned_path = max(candidates)
+        return owner_id, owned_path
+
+    def read_value(payload: Any, owned_path: str, read_path: str) -> Any:
+        if not isinstance(payload, Mapping):
+            return None
+        # Domain-owned tasks often own several dotted paths but return a
+        # flat task payload.  Prefer the leaf field for an exact read so a
+        # declared world_systems read cannot leak living_world/faction_rules.
+        leaf = owned_path.rsplit(".", 1)[-1]
+        value: Any = payload.get(leaf, payload)
+        suffix = read_path[len(owned_path):].lstrip(".")
+        if suffix:
+            for token in suffix.split("."):
+                if not isinstance(value, Mapping):
+                    return None
+                value = value.get(token)
+        return value
+
+    reads: list[dict[str, Any]] = []
+    declared_values: dict[str, Any] = {}
+    read_revisions: dict[str, int] = {}
+    for read_path in spec.task.reads:
+        owner_info = owner_for_read(read_path)
+        if owner_info is None:
+            continue
+        owner_id, owned_path = owner_info
+        artifact = service.inspect_artifact(owner_id)
+        if artifact is None:
+            continue
+        value = bounded_json_projection(
+            read_value(artifact.payload, owned_path, read_path),
+            chars=480,
+            items=16,
+            depth=5,
+        )
+        reads.append(
+            {
+                "path": read_path,
+                "task_id": owner_id,
+                "revision": artifact.revision,
+                "value": value,
+            }
+        )
+        declared_values[read_path] = value
+        read_revisions[read_path] = artifact.revision
     plugin_template: Any = None
     if graph.structured_power and task_id.startswith("power_system_"):
         plugin = graph.plugin_id
@@ -246,7 +303,12 @@ def build_input_contract(
         "read_paths": list(spec.task.reads),
         "write_paths": list(spec.task.owns),
         "forbidden_writes": list(spec.task.forbidden_writes),
-        "dependencies": dependencies,
+        "reads": reads,
+        # Keep this compatibility-shaped field bounded and declared-read
+        # only.  Older callers can still inspect ``dependencies`` without
+        # receiving the ancestor closure.
+        "dependencies": declared_values,
+        "read_revisions": read_revisions,
         "dependency_revisions": revisions,
         "existing_candidate": bounded_json_projection(
             task_payload_from_project(project, task_id),
@@ -270,6 +332,8 @@ def run_read_projection(graph: WorldBuildGraph, task_id: str, contract: Mapping[
         "schema_version": "world-build-read-projection/v1",
         "task_id": task_id,
         "read_paths": list(spec.task.reads),
+        "reads": deepcopy(contract.get("reads") or []),
+        "read_revisions": dict(contract.get("read_revisions") or {}),
         "dependency_revisions": dict(contract.get("dependency_revisions") or {}),
     }
 

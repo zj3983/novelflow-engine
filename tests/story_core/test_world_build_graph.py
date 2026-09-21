@@ -19,6 +19,8 @@ from packages.story_core.world_build.runner import (
 )
 from packages.story_core.world_build.tasks import parse_task_payload
 from packages.story_core.world_build.validators import make_world_validators
+from packages.story_core.world_build.validators import power_final_owner_task
+from packages.story_core.build_graph.contracts import BuildDiagnostic
 from packages.story_core.power_system_spec import validate_power_system_spec
 
 
@@ -529,3 +531,234 @@ def test_materialization_marker_reconciles_author_edit_into_human_revision(tmp_p
         "world_build_world_society",
         "world_build_story_engine_compat",
     ]
+
+
+def _commit_materialized_project(store: FileProjectStore, project: NovelProject) -> None:
+    graph = build_world_build_graph(project)
+    service = store.build_graph_service(
+        graph.definition,
+        validators=make_world_validators(project),
+    )
+    store.commit_build_graph_materialization(project, graph, service)
+
+
+@pytest.mark.parametrize(
+    ("old_plugin", "new_plugin", "old_payloads"),
+    (
+        ("urban", "xuanhuan", _generic_payloads()),
+        ("xuanhuan", "urban", _structured_payloads()),
+        ("game_webnovel", "urban", {**_structured_payloads(), "game_ecology": [{
+            "quest_rules": ["任务由已确认的社会规则触发。"],
+            "panel_rules": ["面板只显示作者明确要求的状态。"],
+            "npc_system": {"roles": ["引导者"]},
+            "quest_network": {"nodes": ["起点"]},
+            "server_runtime": {"availability": "稳定"},
+            "map_ecology": {"regions": ["旧城"]},
+        }]}),
+    ),
+)
+def test_world_genre_shape_migration_archives_old_graph_before_reset(
+    tmp_path: Path,
+    old_plugin: str,
+    new_plugin: str,
+    old_payloads: dict[str, list[Any]],
+) -> None:
+    store = _store(tmp_path, plugin_id=old_plugin)
+    old_project = NovelProject.model_validate(store.project())
+    WorldBuildGraphRunner(
+        old_project,
+        store=store,
+        model_gateway=ScriptedGateway(old_payloads),
+    ).run()
+    old_tasks = set((store.build_graph_state() or {}).get("tasks", {}))
+    assert old_tasks
+
+    blueprint = dict(store.project().get("world_blueprint") or {})
+    blueprint["genre_plugin_ids"] = [new_plugin]
+    store.update_project({"world_blueprint": blueprint}, replace_world_blueprint=True)
+    new_project = NovelProject.model_validate(store.project())
+    WorldBuildGraphRunner(
+        new_project,
+        store=store,
+        model_gateway=ScriptedGateway(_structured_payloads() if new_plugin == "xuanhuan" else _generic_payloads()),
+    ).run()
+
+    new_tasks = set((store.build_graph_state() or {}).get("tasks", {}))
+    assert new_tasks != old_tasks
+    if new_plugin != "xuanhuan":
+        assert store.build_artifact("power_system_final") is None
+    if new_plugin != "game_webnovel":
+        assert store.build_artifact("game_ecology") is None
+    archives = list((store.webnovel_dir / "build_graph_archives").glob("*/build_graph.json"))
+    assert archives, "genre shape migration must preserve the old manifest"
+    assert any(
+        path.parent.joinpath("build_artifacts").exists()
+        or path.parent.joinpath("build_runs").exists()
+        for path in archives
+    )
+
+
+def test_canonical_valid_nontraditional_path_is_imported_without_power_calls(tmp_path: Path) -> None:
+    store = _store(tmp_path, plugin_id="xuanhuan")
+    raw_spec: dict[str, Any] = {}
+    for section in _power_sections().values():
+        raw_spec.update(deepcopy(section))
+    raw_spec["paths"] = [
+        {"name": "观测路线", "branches": ["静观", "校验"]},
+        {"name": "改写路线", "branches": ["拆解", "重组"]},
+    ]
+    valid_spec = validate_power_system_spec(raw_spec, novel_type_id="xuanhuan")
+    project = NovelProject.model_validate(store.project()).model_copy(
+        update={
+            "world_blueprint": {
+                "genre_plugin_ids": ["xuanhuan"],
+                "power_system_spec": valid_spec,
+            }
+        }
+    )
+    store.update_project({"world_blueprint": project.world_blueprint}, replace_world_blueprint=True)
+    gateway = ScriptedGateway(_structured_payloads())
+
+    WorldBuildGraphRunner(
+        NovelProject.model_validate(store.project()),
+        store=store,
+        model_gateway=gateway,
+    ).run()
+
+    assert not any(call.operation.startswith("world_build_power_system_") for call in gateway.calls)
+    assert store.build_artifact("power_system_paths")["source"] == "imported"
+
+
+def test_full_power_spec_edit_decomposes_to_human_sections_and_deterministic_final(tmp_path: Path) -> None:
+    store = _store(tmp_path, plugin_id="xuanhuan")
+    first_gateway = ScriptedGateway(_structured_payloads())
+    first = WorldBuildGraphRunner(
+        NovelProject.model_validate(store.project()),
+        store=store,
+        model_gateway=first_gateway,
+    ).run()
+    _commit_materialized_project(store, first)
+
+    edited_blueprint = deepcopy(store.project()["world_blueprint"])
+    edited_spec = deepcopy(edited_blueprint["power_system_spec"])
+    edited_spec["attributes"][0]["effect"] = "作者确认共鸣会留下可追踪的回声。"
+    edited_spec["stages"][0]["change"] = "作者确认第一阶段只能读取一条契约回声。"
+    edited_blueprint["power_system_spec"] = edited_spec
+    store.update_project({"world_blueprint": edited_blueprint}, replace_world_blueprint=True)
+
+    second_gateway = ScriptedGateway(_structured_payloads())
+    result = WorldBuildGraphRunner(
+        NovelProject.model_validate(store.project()),
+        store=store,
+        model_gateway=second_gateway,
+    ).run()
+
+    assert not any(call.operation.startswith("world_build_power_system_") for call in second_gateway.calls)
+    assert store.build_artifact("power_system_attributes")["source"] == "human"
+    assert store.build_artifact("power_system_stages")["source"] == "human"
+    assert store.build_artifact("power_system_final")["source"] == "deterministic"
+    assert result.world_blueprint["power_system_spec"]["attributes"][0]["effect"].startswith("作者确认")
+
+
+def test_invalid_full_power_spec_edit_blocks_environment_without_ai_rewrite(tmp_path: Path) -> None:
+    store = _store(tmp_path, plugin_id="xuanhuan")
+    first = WorldBuildGraphRunner(
+        NovelProject.model_validate(store.project()),
+        store=store,
+        model_gateway=ScriptedGateway(_structured_payloads()),
+    ).run()
+    _commit_materialized_project(store, first)
+    edited_blueprint = deepcopy(store.project()["world_blueprint"])
+    edited_blueprint["power_system_spec"]["attributes"] = []
+    store.update_project({"world_blueprint": edited_blueprint}, replace_world_blueprint=True)
+
+    gateway = ScriptedGateway({})
+    with pytest.raises(WorldBuildGraphFailure) as caught:
+        WorldBuildGraphRunner(
+            NovelProject.model_validate(store.project()),
+            store=store,
+            model_gateway=gateway,
+        ).run()
+
+    assert caught.value.task_id == "project_reconciliation"
+    assert not gateway.calls
+    assert store.project()["pipeline_stage"] == "imported"
+    assert store.build_artifact("power_system_attributes")["source"] != "human"
+
+
+def test_model_input_contract_uses_declared_reads_not_all_ancestors(tmp_path: Path) -> None:
+    store = _store(tmp_path, plugin_id="xuanhuan")
+    project = NovelProject.model_validate(store.project())
+    WorldBuildGraphRunner(
+        project,
+        store=store,
+        model_gateway=ScriptedGateway(_structured_payloads()),
+    ).run()
+    graph = build_world_build_graph(project)
+    service = store.build_graph_service(graph.definition, validators=make_world_validators(project))
+    from packages.story_core.world_build.tasks import build_input_contract
+
+    locations = build_input_contract(project, graph, service, "world_locations")
+    location_paths = {item["path"] for item in locations["reads"]}
+    assert location_paths == {"build.world_input", "world_blueprint.economy_rules"}
+    assert not any(task_id in str(locations["reads"]) for task_id in ("world_core_rules", "power_system", "world_factions"))
+
+    stages = build_input_contract(project, graph, service, "power_system_stages")
+    stage_paths = {item["path"] for item in stages["reads"]}
+    assert stage_paths == {"build.world_input", "build.power_system.attributes", "build.power_system.paths"}
+    assert not any(
+        item["task_id"] in {"power_system_resources", "power_system_constraints", "world_core_rules"}
+        for item in stages["reads"]
+    )
+
+
+def test_power_final_residual_routes_to_owner_once_and_persists_cap(tmp_path: Path) -> None:
+    store = _store(tmp_path, plugin_id="xuanhuan")
+    project = NovelProject.model_validate(store.project())
+    WorldBuildGraphRunner(
+        project,
+        store=store,
+        model_gateway=ScriptedGateway(_structured_payloads()),
+    ).run()
+    runner = WorldBuildGraphRunner(project, store=store, model_gateway=ScriptedGateway({}))
+    diagnostic = BuildDiagnostic(
+        "power.final.paths.duplicate_names",
+        "paths",
+        "path names must be distinct",
+    )
+    assert power_final_owner_task(diagnostic) == "power_system_paths"
+    assert runner._route_power_final_diagnostics((diagnostic,))
+    assert runner.service.inspect_task("power_system_paths").status == "validation_failed"
+    assert not runner._route_power_final_diagnostics((diagnostic,))
+    budget = store.snapshot_store.read_json(store.webnovel_dir / "world_build_power_final_repair.json", {})
+    assert budget["attempted_owners"] == ["power_system_paths"]
+
+
+def test_materialization_project_and_marker_share_atomic_transaction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = _store(tmp_path, plugin_id="urban")
+    project = NovelProject.model_validate(store.project())
+    result = WorldBuildGraphRunner(
+        project,
+        store=store,
+        model_gateway=ScriptedGateway(_generic_payloads()),
+    ).run()
+    graph = build_world_build_graph(result)
+    service = store.build_graph_service(graph.definition, validators=make_world_validators(result))
+    old_project = deepcopy(store.project())
+    real_transaction = store.snapshot_store.replace_json_transaction
+
+    def fail_if_marker(payloads: dict[Path, Any]) -> None:
+        if any(path.name == "build_graph_materialization.json" for path in payloads):
+            raise RuntimeError("simulated materialization crash")
+        real_transaction(payloads)
+
+    monkeypatch.setattr(store.snapshot_store, "replace_json_transaction", fail_if_marker)
+    with pytest.raises(RuntimeError, match="simulated materialization crash"):
+        store.commit_build_graph_materialization(result, graph, service)
+    assert store.project() == old_project
+    assert store.build_graph_materialization() is None
+
+    monkeypatch.setattr(store.snapshot_store, "replace_json_transaction", real_transaction)
+    store.commit_build_graph_materialization(result, graph, service)
+    assert store.project()["pipeline_stage"] == "environment_ready"
+    assert store.build_graph_materialization() is not None

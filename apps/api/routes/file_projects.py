@@ -31,6 +31,7 @@ from packages.story_core.models import (
     NovelProject,
 )
 from packages.story_core.model_gateway import RuntimeModelGateway
+from packages.story_core.build_graph.contracts import BuildDiagnostic
 from packages.story_core.opening_directions import LLMOpeningDirectionGenerator
 from packages.story_core.outline_planning_generation import LLMOutlinePlanningGenerator
 from packages.story_core.simplified_review import build_simplified_review, user_facing_generation_error
@@ -338,6 +339,8 @@ def _project_world_revision(store: FileProjectStore) -> str:
     gets a different hash and the job is marked conflicted.
     """
 
+    if hasattr(store, "world_revision"):
+        return str(store.world_revision())
     project = store.project() if hasattr(store, "project") else {}
     if not isinstance(project, dict):
         return ""
@@ -692,20 +695,6 @@ def _run_world_build_job(job_id: str, project_id: str) -> None:
             return
         if _check_world_build_conflict(store, job_id):
             return
-        enriched_payload = enriched.model_dump(mode="json")
-        store.update_project(
-            {
-                key: value
-                for key, value in enriched_payload.items()
-                if key in {
-                    "title", "world_summary", "current_focus", "author_constraints",
-                    "world_blueprint", "character_profiles", "relationship_graph",
-                    "enabled_skill_ids", "enabled_skill_module_ids", "status",
-                }
-            }
-            | {"pipeline_stage": "environment_ready"},
-            replace_world_blueprint=True,
-        )
         if isinstance(enriched, NovelProject):
             from packages.story_core.world_build.definition import build_world_build_graph
             from packages.story_core.world_build.validators import make_world_validators
@@ -715,7 +704,48 @@ def _run_world_build_job(job_id: str, project_id: str) -> None:
                 graph.definition,
                 validators=make_world_validators(enriched),
             )
-            store.record_build_graph_materialization(graph, graph_service, enriched)
+            # Project fields and the graph-to-project marker share one
+            # SnapshotStore transaction.  A ready project without its marker
+            # would make the next run unable to detect an author edit.
+            with _world_build_jobs_lock:
+                tracked_job = _world_build_jobs.get(job_id) or {}
+                expected_project_revision = str(tracked_job.get("project_revision") or "")
+            try:
+                store.commit_build_graph_materialization(
+                    enriched,
+                    graph,
+                    graph_service,
+                    expected_project_revision=expected_project_revision or None,
+                )
+            except ValueError as exc:
+                if str(exc) == "world_build_conflict":
+                    _check_world_build_conflict(store, job_id)
+                    raise WorldBuildGraphCancelled(
+                        "materialization",
+                        (
+                            BuildDiagnostic(
+                                "world_build_conflict",
+                                "world_blueprint",
+                                "world-build materialization lost the author-edit race",
+                            ),
+                        ),
+                    ) from exc
+                raise
+        else:
+            enriched_payload = enriched.model_dump(mode="json")
+            store.update_project(
+                {
+                    key: value
+                    for key, value in enriched_payload.items()
+                    if key in {
+                        "title", "world_summary", "current_focus", "author_constraints",
+                        "world_blueprint", "character_profiles", "relationship_graph",
+                        "enabled_skill_ids", "enabled_skill_module_ids", "status",
+                    }
+                }
+                | {"pipeline_stage": "environment_ready"},
+                replace_world_blueprint=True,
+            )
     except WorldBuildGraphCancelled as exc:  # pragma: no cover - background race
         if not _is_world_build_job_terminal(job_id):
             _update_world_build_job(

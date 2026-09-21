@@ -136,6 +136,7 @@ class ProjectProfileStoreMixin:
         patch: dict[str, Any],
         *,
         replace_world_blueprint: bool = False,
+        _commit: bool = True,
     ) -> dict[str, Any]:
         world_blueprint_updated = patch.get("world_blueprint") is not None
         normalized_patch_genre_ids: list[str] | None = None
@@ -337,8 +338,9 @@ class ProjectProfileStoreMixin:
             master["project"] = synchronized_master_project
             payloads[master_path] = master
 
-        self._replace_json_transaction(payloads)
-        if world_blueprint_updated:
+        if _commit:
+            self._replace_json_transaction(payloads)
+        if _commit and world_blueprint_updated:
             title = (
                 project.get("game_title")
                 or project.get("title")
@@ -355,6 +357,11 @@ class ProjectProfileStoreMixin:
                     "world blueprint markdown sync failed",
                     exc_info=True,
                 )
+        if not _commit:
+            # Internal callers that need to commit a related marker in the
+            # same SnapshotStore transaction can reuse every normalization
+            # decision and all synchronized payloads without writing twice.
+            return project, payloads  # type: ignore[return-value]
         return project
 
     @staticmethod

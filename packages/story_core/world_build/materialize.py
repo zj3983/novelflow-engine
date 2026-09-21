@@ -14,11 +14,20 @@ import json
 from typing import Any
 
 from packages.story_core.models import NovelProject
+from packages.story_core.power_system_spec import (
+    PowerSystemValidationError,
+    validate_power_system_spec,
+)
 from packages.story_core.persistence.project_locking import project_update_lock
-from packages.story_core.world_enrichment import _merge_enrichment
+from packages.story_core.world_enrichment import (
+    _merge_enrichment,
+    _power_spec_for_genre,
+    _selected_novel_type_plugin,
+)
 
 from .definition import WorldBuildGraph
 from .tasks import bounded_json_projection, task_payload_from_project
+from .validators import decompose_power_spec
 
 
 MATERIALIZATION_SCHEMA = "build-graph-materialization/v1"
@@ -96,14 +105,25 @@ def write_materialization_marker(
 ) -> dict[str, Any]:
     """Record the exact graph revisions and domain hashes used for materialization."""
 
+    payload = materialization_payload(graph, service, project)
+    with project_update_lock(store.root):
+        store.snapshot_store.replace_json_transaction({materialization_path(store): payload})
+    return payload
+
+
+def materialization_payload(
+    graph: WorldBuildGraph,
+    service: Any,
+    project: NovelProject,
+) -> dict[str, Any]:
+    """Build the marker payload without performing a filesystem write."""
+
     payload = {
         "schema_version": MATERIALIZATION_SCHEMA,
         "graph_id": graph.definition.graph_id,
         "artifact_revisions": graph_artifact_revisions(service, graph),
         "domain_hashes": _domain_hashes(project, graph),
     }
-    with project_update_lock(store.root):
-        store.snapshot_store.replace_json_transaction({materialization_path(store): payload})
     return payload
 
 
@@ -163,6 +183,25 @@ def _graph_owned_project(project: NovelProject, graph: WorldBuildGraph) -> Novel
 
     candidate = project.model_copy(deep=True)
     blueprint = _project_world(candidate)
+    # A genre migration can remove tasks.  Clear all known WorldBuild-owned
+    # fields that are not owned by the new graph so an old power/game output
+    # cannot survive merely because the new graph has no task for it.
+    known_paths = {
+        "premise", "world_rules", "constraints", "economy_rules", "locations",
+        "factions", "world_systems", "living_world", "faction_rules",
+        "power_system_spec", "power_system", "quest_rules", "panel_rules",
+        "npc_system", "quest_network", "server_runtime", "map_ecology",
+        "current_arc", "progression_rules", "chapter_formula", "forbidden_breaks",
+        "opening_arc", "volume_plan", "longform_framework", "progression_ledger",
+    }
+    owned_fields = {
+        path.split(".", 1)[1]
+        for spec in graph.specs.values()
+        for path in spec.domain_paths
+        if path.startswith("world_blueprint.") and "." not in path.split(".", 1)[1]
+    }
+    for field in known_paths - owned_fields:
+        blueprint.pop(field, None)
     for spec in graph.specs.values():
         for path in spec.domain_paths:
             parts = path.split(".")
@@ -241,6 +280,95 @@ def reconcile_project_to_graph(
         return False
 
     changed_set = set(changed_paths)
+
+    # A whole power-spec edit is a domain-level edit, not an edit to the
+    # deterministic finalizer.  Validate the canonical spec first, split it
+    # into section-owned artifacts, and let the finalizer create the new
+    # official aggregate.  This keeps section provenance truthful.
+    full_power_edit = bool(
+        {"world_blueprint.power_system_spec", "world_blueprint.power_system"}
+        & changed_set
+    )
+    if full_power_edit and graph.structured_power:
+        raw_spec = _project_world(project).get("power_system_spec")
+        plugin = _selected_novel_type_plugin(project)
+        try:
+            normalized_spec = validate_power_system_spec(
+                _power_spec_for_genre(raw_spec, plugin.plugin_id),
+                novel_type_id=plugin.plugin_id,
+                template=plugin.power_system_template,
+            )
+        except PowerSystemValidationError as exc:
+            detail = ",".join((*exc.missing_sections, *exc.violations)) or "invalid_power_system_spec"
+            raise ValueError(f"world_build_external_power_spec_invalid:{detail}") from exc
+
+        section_payloads = decompose_power_spec(normalized_spec)
+        section_ids = tuple(section_payloads)
+        changed_section = False
+        changed_sections: set[str] = set()
+        for task_id in section_ids:
+            task_state = service.inspect_task(task_id)
+            candidate = section_payloads[task_id]
+            current_artifact = service.inspect_artifact(task_id)
+            if current_artifact is not None and current_artifact.payload == candidate:
+                continue
+            result = service.edit_artifact(
+                task_id,
+                candidate,
+                expected_revision=task_state.current_artifact_revision,
+                requested_writes=graph.spec(task_id).task.owns,
+            ) if current_artifact is not None else service.commit_candidate(
+                task_id,
+                candidate,
+                expected_revision=None,
+                source="human",
+                requested_writes=graph.spec(task_id).task.owns,
+            )
+            if result.artifact is None:
+                diagnostics = ", ".join(item.code for item in result.validation.diagnostics)
+                raise ValueError(
+                    f"world_build_external_power_spec_invalid:{task_id}:{diagnostics or 'validation_failed'}"
+                )
+            changed_section = True
+            changed_sections.add(task_id)
+
+        # Editing an upstream section makes dependent section artifacts stale
+        # by design.  A canonical full-spec edit already supplies those
+        # dependent values, so revalidate their unchanged payloads
+        # deterministically instead of issuing fresh model calls.
+        if changed_section:
+            for task_id in section_ids:
+                if task_id in changed_sections:
+                    continue
+                task_state = service.inspect_task(task_id)
+                if task_state.status != "stale" or task_state.current_artifact_revision is None:
+                    continue
+                result = service.revalidate_current(task_id)
+                if result.artifact is None:
+                    diagnostics = ", ".join(item.code for item in result.validation.diagnostics)
+                    raise ValueError(
+                        f"world_build_external_power_spec_invalid:{task_id}:{diagnostics or 'validation_failed'}"
+                    )
+
+        if not changed_section and "world_blueprint.power_system" in changed_set:
+            # The summary is still part of the final artifact's compatibility
+            # projection.  Force a deterministic reassembly without inventing
+            # a human-owned final artifact.
+            service.invalidate_task(
+                "power_system_final",
+                [
+                    {
+                        "code": "power.summary.human_edit",
+                        "path": "power_system",
+                        "message": "legacy power summary changed; deterministic finalization required",
+                        "severity": "blocking",
+                    }
+                ],
+            )
+        changed_set -= {
+            "world_blueprint.power_system_spec",
+            "world_blueprint.power_system",
+        }
     for task_id in graph.definition.ordered_task_ids:
         spec = graph.spec(task_id)
         owned_paths = set(spec.domain_paths)
@@ -269,6 +397,7 @@ __all__ = [
     "MATERIALIZATION_SCHEMA",
     "graph_artifact_revisions",
     "legacy_artifacts_projection",
+    "materialization_payload",
     "materialization_path",
     "materialize_project",
     "read_materialization",

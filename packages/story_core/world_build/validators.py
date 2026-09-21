@@ -228,19 +228,14 @@ def _validate_power_paths(payload: Any, project: NovelProject) -> Any:
         if isinstance(project.world_blueprint, Mapping)
         else None
     )
-    required = (
-        "name",
-        "role",
-        "core_resource",
-        "core_attributes",
-        "strengths",
-        "weaknesses",
-        "skill_categories",
-        "branches",
-        "advancement",
-    )
+    # The canonical power validator is the authority for rich path
+    # semantics.  The section validator only checks the shape needed to
+    # safely carry a path through the graph.  In particular, an imported
+    # canonical-valid non-traditional path is not rejected merely because it
+    # lacks game-only or optional descriptive fields.
+    required = ("name", "branches")
     if traditional_game:
-        required = (*required, "weapons", "armor", "combat_loop", "transfer_task", "advancement_tree")
+        required = (*required, "transfer_task", "advancement_tree")
     for index, item in enumerate(values):
         if not isinstance(item, Mapping):
             diagnostics.append(_diagnostic("power.paths.invalid_item", f"paths[{index}]", "path must be an object"))
@@ -255,6 +250,16 @@ def _validate_power_paths(payload: Any, project: NovelProject) -> Any:
                 valid = _nonempty_text(value)
             if not valid:
                 diagnostics.append(_diagnostic(f"power.paths.missing_{field}", f"paths[{index}].{field}", f"{field} is required"))
+    names = [str(item.get("name") or "").casefold() for item in values if isinstance(item, Mapping) and item.get("name")]
+    if len(names) != len(set(names)):
+        diagnostics.append(_diagnostic("paths.duplicate_names", "paths", "path names must be distinct"))
+    if any(
+        isinstance(item, Mapping)
+        and isinstance(item.get("branches"), list)
+        and len({str(branch).casefold() for branch in item.get("branches", [])}) < 2
+        for item in values
+    ):
+        diagnostics.append(_diagnostic("paths.distinct_branches", "paths", "each path needs distinct branches"))
     return _finish(diagnostics)
 
 
@@ -275,6 +280,15 @@ def _validate_power_stages(payload: Any) -> Any:
                 diagnostics.append(_diagnostic(f"stages.missing_{field}", f"stages[{index}].{field}", f"{field} is required"))
         if "level" in item and item.get("level") is not None and (isinstance(item.get("level"), bool) or not isinstance(item.get("level"), (int, float))):
             diagnostics.append(_diagnostic("stages.invalid_level", f"stages[{index}].level", "level must be numeric or null"))
+    levels = [
+        item.get("level")
+        for item in values
+        if isinstance(item, Mapping)
+        and isinstance(item.get("level"), (int, float))
+        and not isinstance(item.get("level"), bool)
+    ]
+    if any(current <= previous for previous, current in zip(levels, levels[1:])):
+        diagnostics.append(_diagnostic("stages.levels_not_increasing", "stages", "numeric stage levels must increase"))
     return _finish(diagnostics)
 
 
@@ -446,4 +460,75 @@ def assemble_power_candidate(
     return {"power_system_spec": normalized, "power_system": summary}
 
 
-__all__ = ["assemble_power_candidate", "make_world_validators"]
+POWER_SECTION_FIELDS: dict[str, tuple[str, ...]] = {
+    "power_system_foundation": ("name", "origin"),
+    "power_system_attributes": ("attributes",),
+    "power_system_paths": ("paths",),
+    "power_system_stages": ("stages",),
+    "power_system_resources": ("skills", "equipment", "resources", "advancement"),
+    "power_system_constraints": (
+        "costs",
+        "counters",
+        "boundaries",
+        "social_impact",
+        "visibility",
+        "continuity_ledger",
+        "attribute_allocation",
+        "class_advancement_tiers",
+    ),
+}
+
+
+def decompose_power_spec(spec: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Split a canonical full spec without applying section-only policy."""
+
+    return {
+        task_id: {
+            field: deepcopy(spec[field])
+            for field in fields
+            if field in spec
+        }
+        for task_id, fields in POWER_SECTION_FIELDS.items()
+    }
+
+
+def power_final_owner_task(diagnostic: BuildDiagnostic) -> str | None:
+    """Route residual full-spec diagnostics back to one section owner."""
+
+    code = diagnostic.code.removeprefix("power.final.")
+    if code.startswith("stages.") or code in {
+        "game.invalid_milestones",
+        "game.missing_milestones",
+        "game.level20_second_transfer",
+    }:
+        return "power_system_stages"
+    if code.startswith("paths.") or code.startswith("game.path_") or code in {
+        "game.invalid_classes",
+        "game.missing_classes",
+    }:
+        return "power_system_paths"
+    if code.startswith("continuity_ledger.") or code.startswith("game.class_advancement") or code in {
+        "game.invalid_class_advancement_tiers",
+        "game.incomplete_class_advancement_tier",
+    }:
+        return "power_system_constraints"
+    for section, task_id in (
+        ("foundation", "power_system_foundation"),
+        ("attributes", "power_system_attributes"),
+        ("resources", "power_system_resources"),
+        ("constraints", "power_system_constraints"),
+        ("paths", "power_system_paths"),
+        ("stages", "power_system_stages"),
+    ):
+        if code.endswith(section) or code.startswith(f"missing_{section}"):
+            return task_id
+    return None
+
+
+__all__ = [
+    "POWER_SECTION_FIELDS",
+    "assemble_power_candidate",
+    "decompose_power_spec",
+    "make_world_validators",
+    "power_final_owner_task",
+]

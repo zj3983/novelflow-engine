@@ -28,6 +28,7 @@ from .materialize import (
     materialize_project,
     reconcile_project_to_graph,
 )
+from .migration import prepare_world_graph_migration
 from .tasks import (
     build_input_contract,
     build_task_prompt,
@@ -38,6 +39,10 @@ from .tasks import (
     task_payload_from_project,
 )
 from .validators import assemble_power_candidate, make_world_validators
+from .validators import power_final_owner_task
+
+
+POWER_REPAIR_BUDGET_FILENAME = "world_build_power_final_repair.json"
 
 
 class WorldBuildGraphFailure(RuntimeError):
@@ -78,6 +83,11 @@ class WorldBuildGraphRunner:
         self.project = project.model_copy(deep=True)
         self.store = store
         self.graph: WorldBuildGraph = build_world_build_graph(self.project)
+        # WorldBuild is the one sanctioned dynamic graph: its task shape is
+        # selected by genre.  Perform an explicit archive/reset migration
+        # before the generic BuildGraphService applies its hard definition
+        # compatibility check.
+        prepare_world_graph_migration(self.store, self.graph)
         self.validators = make_world_validators(self.project)
         self.service = store.build_graph_service(
             self.graph.definition,
@@ -330,6 +340,60 @@ class WorldBuildGraphRunner:
             ),
         )
 
+    def _power_repair_budget_path(self):
+        return self.store.webnovel_dir / POWER_REPAIR_BUDGET_FILENAME
+
+    def _power_input_revision(self) -> int | None:
+        return self.service.inspect_task("world_input").current_artifact_revision
+
+    def _read_power_repair_budget(self) -> dict[str, Any]:
+        raw = self.store.snapshot_store.read_json(self._power_repair_budget_path(), {})
+        return dict(raw) if isinstance(raw, Mapping) else {}
+
+    def _reset_power_repair_budget(self) -> None:
+        payload = {
+            "schema_version": "world-build-power-repair/v1",
+            "world_input_revision": self._power_input_revision(),
+            "attempted_owners": [],
+        }
+        self.store.snapshot_store.replace_json_transaction({self._power_repair_budget_path(): payload})
+
+    def _route_power_final_diagnostics(
+        self,
+        diagnostics: Sequence[BuildDiagnostic],
+    ) -> bool:
+        owners: dict[str, list[BuildDiagnostic]] = {}
+        for diagnostic in diagnostics:
+            owner = power_final_owner_task(diagnostic)
+            if owner is not None:
+                owners.setdefault(owner, []).append(diagnostic)
+        if not owners:
+            return False
+
+        input_revision = self._power_input_revision()
+        budget = self._read_power_repair_budget()
+        attempted = set(budget.get("attempted_owners") or []) if budget.get("world_input_revision") == input_revision else set()
+        pending = sorted(owner for owner in owners if owner not in attempted)
+        if not pending:
+            # A residual failure after the owner has already had its one
+            # focused repair is a clean, persistent failure, not a hidden
+            # deterministic retry loop.
+            return False
+
+        updated_attempted = sorted(attempted.union(pending))
+        self.store.snapshot_store.replace_json_transaction(
+            {
+                self._power_repair_budget_path(): {
+                    "schema_version": "world-build-power-repair/v1",
+                    "world_input_revision": input_revision,
+                    "attempted_owners": updated_attempted,
+                }
+            }
+        )
+        for owner in pending:
+            self.service.invalidate_task(owner, owners[owner])
+        return True
+
     def _power_candidate_from_dependencies(self) -> dict[str, Any]:
         payloads: dict[str, Mapping[str, Any]] = {}
         for task_id in (
@@ -376,6 +440,8 @@ class WorldBuildGraphRunner:
             except PowerSystemValidationError as exc:
                 diagnostics = self._power_error_diagnostics(exc)
                 self.service.fail_run(run.run_id, diagnostics)
+                if self._route_power_final_diagnostics(diagnostics):
+                    return
                 raise WorldBuildGraphFailure(task_id, diagnostics) from exc
             self._ensure_active(task_id, run_id=run.run_id)
             result = self.service.commit_run(
@@ -521,13 +587,22 @@ class WorldBuildGraphRunner:
         self._ensure_active("world_input")
         self._ensure_world_input()
         try:
-            reconcile_project_to_graph(
+            reconciled = reconcile_project_to_graph(
                 self.project,
                 self.graph,
                 self.service,
                 store=self.store,
             )
+            if reconciled:
+                self._reset_power_repair_budget()
         except ValueError as exc:
+            # A project with an invalid author edit must not remain labelled
+            # environment_ready.  Revert only the readiness marker; the
+            # author's invalid content remains untouched for review/repair.
+            try:
+                self.store.update_project({"pipeline_stage": "imported"})
+            except Exception:
+                pass
             raise WorldBuildGraphFailure(
                 "project_reconciliation",
                 (

@@ -570,6 +570,44 @@ class BuildGraphService:
             self.store.persist(next_state, runs=(runs[run.run_id],))
             return runs[run.run_id]
 
+    def invalidate_task(
+        self,
+        task_id: str,
+        diagnostics: Iterable[BuildDiagnostic | Mapping[str, Any]] = (),
+    ) -> BuildTaskState:
+        """Mark an existing artifact as needing repair without deleting it.
+
+        This is intentionally generic: a deterministic aggregate task may
+        discover that one committed section owns a residual invariant.  The
+        section stays versioned and readable, while the task is made runnable
+        again through the normal validation/commit boundary.
+        """
+
+        task = self._task(task_id)
+        with project_update_lock(self.store.root):
+            state = self._read_state()
+            parsed = tuple(
+                item if isinstance(item, BuildDiagnostic) else BuildDiagnostic.from_dict(item)
+                for item in diagnostics
+            )
+            tasks = dict(state.tasks)
+            runs = dict(state.runs)
+            conflicted_run = self._mark_active_run_conflict(tasks, runs, task.task_id)
+            self._set_task(
+                tasks,
+                task.task_id,
+                status="validation_failed",
+                validation_status="failed",
+                diagnostics=parsed,
+                active_run_id=None,
+            )
+            self._mark_descendants_stale(tasks, task.task_id)
+            self._refresh_unmaterialized_tasks(tasks)
+            next_state = self._replace_state(state, tasks=tasks, runs=runs)
+            run_records = (conflicted_run,) if conflicted_run else ()
+            self.store.persist(next_state, runs=run_records)
+            return tasks[task.task_id]
+
     def conflict_run(
         self,
         run_id: str,
