@@ -6,6 +6,7 @@ from dataclasses import replace
 from typing import Any, Callable, Literal
 from urllib.parse import urlsplit
 
+from .capabilities import ModelCapabilityResolver, ModelProfile, decide_streaming
 from .contracts import ModelRequest, ModelResponse
 from .provider_adapters import (
     AntigravityCLIAdapter,
@@ -25,6 +26,7 @@ class RuntimeModelGateway:
         *,
         runtime_resolver: Callable[[str], Any] | None = None,
         transport: JsonTransport | None = None,
+        capability_resolver: ModelCapabilityResolver | None = None,
     ) -> None:
         self.stage = stage
         if runtime_resolver is None:
@@ -33,6 +35,7 @@ class RuntimeModelGateway:
             runtime_resolver = resolve_stage_runtime
         self.runtime_resolver = runtime_resolver
         self.transport = transport
+        self.capability_resolver = capability_resolver or ModelCapabilityResolver()
 
     def complete(self, request: ModelRequest) -> ModelResponse:
         if self.stage is None:
@@ -84,6 +87,44 @@ class RuntimeModelGateway:
             if not protocol.endswith("_cli") and not _valid_http_base_url(settings.base_url):
                 return ModelResponse.failure(runtime_request, "invalid_base_url")
 
+            try:
+                profile = self.capability_resolver.resolve_model_profile(
+                    provider_id,
+                    settings.base_url,
+                    settings.model,
+                    protocol,
+                )
+            except Exception:
+                profile = ModelProfile.unknown(
+                    self.capability_resolver.identity(
+                        provider_id,
+                        settings.base_url,
+                        settings.model,
+                        protocol,
+                    )
+                )
+            metadata = dict(runtime_request.metadata)
+            requested_streaming = bool(metadata.get("stream"))
+            if "stream" in metadata:
+                streaming_decision = decide_streaming(
+                    requested_streaming,
+                    profile.effective_capability("streaming"),
+                )
+                # Keep the standalone decision primitive conservative for
+                # unknown capabilities, but do not change existing production
+                # requests until a real discovery source is wired in.
+                metadata["stream"] = (
+                    requested_streaming
+                    if streaming_decision.capability_state == "unknown"
+                    else streaming_decision.effective_streaming
+                )
+            if (
+                runtime_request.temperature is not None
+                and profile.effective_capability("temperature").state == "unsupported"
+            ):
+                runtime_request = replace(runtime_request, temperature=None)
+            runtime_request = replace(runtime_request, metadata=metadata)
+
             common: dict[str, Any] = {}
             if self.transport is not None:
                 common["transport"] = self.transport
@@ -91,6 +132,7 @@ class RuntimeModelGateway:
                 adapter = OpenAICompatibleAdapter(
                     base_url=settings.base_url,
                     api_key=settings.api_key,
+                    capability_observer=self.capability_resolver.record_runtime_observation,
                     **common,
                 )
             elif protocol == "anthropic":
@@ -113,7 +155,23 @@ class RuntimeModelGateway:
                 return ModelResponse.failure(runtime_request, "unsupported_protocol")
         except Exception:
             return ModelResponse.failure(runtime_request, "unsupported_protocol")
-        return adapter.complete(runtime_request)
+        response = adapter.complete(runtime_request)
+        if response.ok and response.resolved_model:
+            try:
+                self.capability_resolver.record_resolved_model(
+                    self.capability_resolver.identity(
+                        provider_id,
+                        settings.base_url,
+                        settings.model,
+                        protocol,
+                        resolved_model=response.resolved_model,
+                    )
+                )
+            except Exception:
+                # A cache/update failure must not turn a successful model call
+                # into a failed generation.
+                pass
+        return response
 
 
 def _valid_http_base_url(value: str) -> bool:
