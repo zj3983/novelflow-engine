@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
-import re
 from typing import Any, Callable
 
 from packages.story_core.build_graph.contracts import BuildDiagnostic
 from packages.story_core.models import NovelProject
 from packages.story_core.power_system_spec import (
     PowerSystemValidationError,
+    contains_placeholder_content,
     effective_power_system_template,
+    is_placeholder_content,
     uses_traditional_game_class_advancement,
     validate_power_system_spec,
 )
@@ -23,23 +24,6 @@ from packages.story_core.world_enrichment import (
 
 
 Validator = Callable[[Any], Any]
-_PLACEHOLDER_RE = re.compile(r"[\s,，。.!！?？:：;；、_()（）【】\[\]\\\"'“”‘’]+")
-_PLACEHOLDERS = frozenset(
-    {
-        "待定",
-        "待完善",
-        "待补充",
-        "待细化",
-        "后续补充",
-        "后续完善",
-        "暂缺",
-        "暂无",
-        "略",
-        "同上",
-        "todo",
-        "tbd",
-    }
-)
 
 
 def _diagnostic(code: str, path: str, message: str) -> BuildDiagnostic:
@@ -51,19 +35,11 @@ def _finish(diagnostics: list[BuildDiagnostic]) -> Any:
 
 
 def _is_placeholder(value: Any) -> bool:
-    if not isinstance(value, str):
-        return False
-    return _PLACEHOLDER_RE.sub("", value).casefold() in _PLACEHOLDERS
+    return is_placeholder_content(value)
 
 
 def _contains_placeholder(value: Any) -> bool:
-    if _is_placeholder(value):
-        return True
-    if isinstance(value, Mapping):
-        return any(_contains_placeholder(item) for item in value.values())
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return any(_contains_placeholder(item) for item in value)
-    return False
+    return contains_placeholder_content(value)
 
 
 def _nonempty_text(value: Any) -> bool:
@@ -322,6 +298,8 @@ def _validate_power_constraints(payload: Any) -> Any:
         for field in ("attribute_allocation", "class_advancement_tiers"):
             if field in payload and not isinstance(payload[field], (list, dict)):
                 diagnostics.append(_diagnostic(f"power.constraints.invalid_{field}", field, f"{field} must be JSON structured data"))
+            elif field in payload and _contains_placeholder(payload[field]):
+                diagnostics.append(_diagnostic(f"power.constraints.{field}.placeholder", field, f"{field} contains placeholder content"))
     return _finish(diagnostics)
 
 
@@ -512,6 +490,27 @@ def power_final_owner_task(diagnostic: BuildDiagnostic) -> str | None:
         "game.incomplete_class_advancement_tier",
     }:
         return "power_system_constraints"
+    missing_section_owner = {
+        "missing_name": "power_system_foundation",
+        "missing_origin": "power_system_foundation",
+        "missing_attributes": "power_system_attributes",
+        "missing_paths": "power_system_paths",
+        "missing_stages": "power_system_stages",
+        "missing_skills": "power_system_resources",
+        "missing_equipment": "power_system_resources",
+        "missing_resources": "power_system_resources",
+        "missing_advancement": "power_system_resources",
+        "missing_costs": "power_system_constraints",
+        "missing_counters": "power_system_constraints",
+        "missing_boundaries": "power_system_constraints",
+        "missing_social_impact": "power_system_constraints",
+        "missing_visibility": "power_system_constraints",
+        "missing_continuity_ledger": "power_system_constraints",
+        "missing_attribute_allocation": "power_system_constraints",
+        "missing_class_advancement_tiers": "power_system_constraints",
+    }
+    if code in missing_section_owner:
+        return missing_section_owner[code]
     for section, task_id in (
         ("foundation", "power_system_foundation"),
         ("attributes", "power_system_attributes"),

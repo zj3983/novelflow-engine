@@ -26,6 +26,7 @@ from .definition import WORLD_BUILD_GRAPH_ID, WorldBuildGraph
 
 ARCHIVE_SCHEMA = "world-build-graph-archive/v1"
 ARCHIVE_DIRNAME = "build_graph_archives"
+POWER_REPAIR_BUDGET_FILENAME = "world_build_power_final_repair.json"
 
 
 def _shape_from_task_ids(task_ids: set[str]) -> tuple[bool, bool]:
@@ -127,6 +128,12 @@ def prepare_world_graph_migration(store: Any, graph: WorldBuildGraph) -> bool:
                 archive_payloads[target] = raw
                 archived_files.append(str(relative))
 
+        repair_budget_path = store.webnovel_dir / POWER_REPAIR_BUDGET_FILENAME
+        repair_budget = _read_json(store, repair_budget_path, None)
+        if repair_budget is not None:
+            archive_payloads[archive_dir / POWER_REPAIR_BUDGET_FILENAME] = repair_budget
+            archived_files.append(POWER_REPAIR_BUDGET_FILENAME)
+
         manifest_path = archive_dir / "archive.json"
         manifest = {
             "schema_version": ARCHIVE_SCHEMA,
@@ -142,6 +149,12 @@ def prepare_world_graph_migration(store: Any, graph: WorldBuildGraph) -> bool:
         }
         archive_payloads[manifest_path] = manifest
         archive_payloads[graph_store.state_path] = _fresh_state(graph).to_dict()
+        archive_payloads[repair_budget_path] = {
+            "schema_version": "world-build-power-repair/v1",
+            "definition_fingerprint": graph.definition.definition_fingerprint,
+            "world_input_revision": None,
+            "attempted_owners": [],
+        }
         store.snapshot_store.replace_json_transaction(archive_payloads)
 
         for path in old_files:
@@ -151,4 +164,4 @@ def prepare_world_graph_migration(store: Any, graph: WorldBuildGraph) -> bool:
         return True
 
 
-__all__ = ["ARCHIVE_SCHEMA", "prepare_world_graph_migration"]
+__all__ = ["ARCHIVE_SCHEMA", "POWER_REPAIR_BUDGET_FILENAME", "prepare_world_graph_migration"]

@@ -28,7 +28,7 @@ from .materialize import (
     materialize_project,
     reconcile_project_to_graph,
 )
-from .migration import prepare_world_graph_migration
+from .migration import POWER_REPAIR_BUDGET_FILENAME, prepare_world_graph_migration
 from .tasks import (
     build_input_contract,
     build_task_prompt,
@@ -40,9 +40,6 @@ from .tasks import (
 )
 from .validators import assemble_power_candidate, make_world_validators
 from .validators import power_final_owner_task
-
-
-POWER_REPAIR_BUDGET_FILENAME = "world_build_power_final_repair.json"
 
 
 class WorldBuildGraphFailure(RuntimeError):
@@ -353,6 +350,7 @@ class WorldBuildGraphRunner:
     def _reset_power_repair_budget(self) -> None:
         payload = {
             "schema_version": "world-build-power-repair/v1",
+            "definition_fingerprint": self.graph.definition.definition_fingerprint,
             "world_input_revision": self._power_input_revision(),
             "attempted_owners": [],
         }
@@ -372,7 +370,12 @@ class WorldBuildGraphRunner:
 
         input_revision = self._power_input_revision()
         budget = self._read_power_repair_budget()
-        attempted = set(budget.get("attempted_owners") or []) if budget.get("world_input_revision") == input_revision else set()
+        same_generation = (
+            budget.get("definition_fingerprint")
+            == self.graph.definition.definition_fingerprint
+            and budget.get("world_input_revision") == input_revision
+        )
+        attempted = set(budget.get("attempted_owners") or []) if same_generation else set()
         pending = sorted(owner for owner in owners if owner not in attempted)
         if not pending:
             # A residual failure after the owner has already had its one
@@ -385,6 +388,7 @@ class WorldBuildGraphRunner:
             {
                 self._power_repair_budget_path(): {
                     "schema_version": "world-build-power-repair/v1",
+                    "definition_fingerprint": self.graph.definition.definition_fingerprint,
                     "world_input_revision": input_revision,
                     "attempted_owners": updated_attempted,
                 }
@@ -464,6 +468,20 @@ class WorldBuildGraphRunner:
     def _run_model(self, task_id: str) -> None:
         spec = self.graph.spec(task_id)
         contract = build_input_contract(self.project, self.graph, self.service, task_id)
+        task_state = self.service.inspect_task(task_id)
+        current_artifact = self.service.inspect_artifact(task_id)
+        final_diagnostics = tuple(
+            diagnostic
+            for diagnostic in task_state.diagnostics
+            if diagnostic.code.startswith("power.final.")
+        )
+        final_repair_candidate = (
+            current_artifact.payload
+            if final_diagnostics
+            and current_artifact is not None
+            and isinstance(current_artifact.payload, Mapping)
+            else None
+        )
         run = self.service.start_run(
             task_id,
             input_fingerprint=input_fingerprint(contract),
@@ -472,16 +490,27 @@ class WorldBuildGraphRunner:
         self._active_run_id = run.run_id
         self._progress(task_id, "running", f"正在构建：{spec.task.title}")
         try:
-            prompt = build_task_prompt(self.graph, task_id, contract)
+            # A residual full-validator diagnostic is already the one focused
+            # repair allowance for this owner.  Do not spend a normal
+            # regeneration call before showing the model the exact final
+            # diagnostic and the current committed section.
+            final_repair = final_repair_candidate is not None
+            prompt = build_task_prompt(
+                self.graph,
+                task_id,
+                contract,
+                repair_candidate=final_repair_candidate if final_repair else None,
+                diagnostics=final_diagnostics if final_repair else (),
+            )
             self._ensure_active(task_id, run_id=run.run_id)
             response, call_id = self._call_model(task_id, prompt)
             self._ensure_active(task_id, run_id=run.run_id)
             if not getattr(response, "ok", False):
                 diagnostics = (
                     BuildDiagnostic(
-                        "model.request_failed",
+                        "model.repair_request_failed" if final_repair else "model.request_failed",
                         f"tasks.{task_id}",
-                        "model request failed",
+                        "focused repair request failed" if final_repair else "model request failed",
                     ),
                 )
                 self.service.fail_run(run.run_id, diagnostics)
@@ -498,6 +527,24 @@ class WorldBuildGraphRunner:
                     self._preserve_existing_non_power_values(task_id, candidate),
                     requested_writes=spec.task.owns,
                 ).diagnostics
+            if final_repair:
+                if candidate is not None and not diagnostics:
+                    self._ensure_active(task_id, run_id=run.run_id)
+                    result = self.service.commit_run(
+                        run.run_id,
+                        self._preserve_existing_non_power_values(task_id, candidate),
+                        requested_writes=spec.task.owns,
+                        source="ai_repair",
+                        provider=str(getattr(response, "provider", "") or "") or None,
+                        model=str(getattr(response, "resolved_model", "") or getattr(response, "model", "") or "") or None,
+                        prompt_call_id=call_id,
+                    )
+                    if result.artifact is None:
+                        raise WorldBuildGraphFailure(task_id, result.validation.diagnostics)
+                    self._progress(task_id, "done", f"已修复并完成：{spec.task.title}")
+                    return
+                self.service.fail_run(run.run_id, diagnostics)
+                raise WorldBuildGraphFailure(task_id, diagnostics)
             if candidate is not None and not diagnostics:
                 self._ensure_active(task_id, run_id=run.run_id)
                 result = self.service.commit_run(

@@ -762,3 +762,220 @@ def test_materialization_project_and_marker_share_atomic_transaction(tmp_path: P
     store.commit_build_graph_materialization(result, graph, service)
     assert store.project()["pipeline_stage"] == "environment_ready"
     assert store.build_graph_materialization() is not None
+
+
+def _prepare_power_final_residual(
+    tmp_path: Path,
+) -> tuple[FileProjectStore, dict[str, Any], dict[str, Any]]:
+    store = _store(tmp_path, plugin_id="xuanhuan")
+    WorldBuildGraphRunner(
+        NovelProject.model_validate(store.project()),
+        store=store,
+        model_gateway=ScriptedGateway(_structured_payloads()),
+    ).run()
+    graph = build_world_build_graph(NovelProject.model_validate(store.project()))
+    service = store.build_graph_service(graph.definition, validators=make_world_validators(NovelProject.model_validate(store.project())))
+    current = store.build_artifact("power_system_constraints")
+    assert current is not None
+    residual = deepcopy(current["payload"])
+    residual["continuity_ledger"] = ["阶段"]
+    result = service.edit_artifact(
+        "power_system_constraints",
+        residual,
+        expected_revision=current["revision"],
+        requested_writes=graph.spec("power_system_constraints").task.owns,
+    )
+    assert result.artifact is not None
+    return store, residual, deepcopy(_power_sections()["power_system_constraints"])
+
+
+def test_power_final_residual_diagnostic_is_a_focused_repair_end_to_end(tmp_path: Path) -> None:
+    store, _invalid_constraints, valid_constraints = _prepare_power_final_residual(tmp_path)
+    payloads = _generic_payloads()
+    payloads["power_system_constraints"] = [valid_constraints]
+    gateway = ScriptedGateway(payloads)
+
+    WorldBuildGraphRunner(
+        NovelProject.model_validate(store.project()),
+        store=store,
+        model_gateway=gateway,
+    ).run()
+
+    calls = [call for call in gateway.calls if call.operation == "world_build_power_system_constraints"]
+    assert len(calls) == 1
+    assert "power.final.continuity_ledger.minimum_count" in calls[0].prompt
+    assert "当前候选" in calls[0].prompt
+    assert store.build_artifact("power_system_constraints")["source"] == "ai_repair"
+    assert store.build_artifact("power_system_final")["source"] == "deterministic"
+
+
+def test_power_final_residual_repair_failure_is_capped_end_to_end(tmp_path: Path) -> None:
+    store, invalid_constraints, _valid_constraints = _prepare_power_final_residual(tmp_path)
+    payloads = _generic_payloads()
+    payloads["power_system_constraints"] = [invalid_constraints]
+    gateway = ScriptedGateway(payloads)
+
+    with pytest.raises(WorldBuildGraphFailure) as caught:
+        WorldBuildGraphRunner(
+            NovelProject.model_validate(store.project()),
+            store=store,
+            model_gateway=gateway,
+        ).run()
+
+    assert caught.value.task_id == "power_system_final"
+    calls = [call for call in gateway.calls if call.operation == "world_build_power_system_constraints"]
+    assert len(calls) == 1
+    state = store.build_graph_state()
+    assert state is not None
+    assert state["tasks"]["power_system_final"]["status"] == "validation_failed"
+    assert any(
+        item["code"] == "power.final.continuity_ledger.minimum_count"
+        for item in state["tasks"]["power_system_final"]["diagnostics"]
+    )
+
+
+def test_power_placeholder_is_rejected_at_section_boundary_without_official_invalid_artifact(tmp_path: Path) -> None:
+    store = _store(tmp_path, plugin_id="xuanhuan")
+    payloads = _structured_payloads()
+    invalid = deepcopy(_power_sections()["power_system_constraints"])
+    invalid["costs"] = ["TBD"]
+    payloads["power_system_constraints"] = [invalid, _power_sections()["power_system_constraints"]]
+    gateway = ScriptedGateway(payloads)
+
+    WorldBuildGraphRunner(
+        NovelProject.model_validate(store.project()),
+        store=store,
+        model_gateway=gateway,
+    ).run()
+
+    calls = [call for call in gateway.calls if call.operation == "world_build_power_system_constraints"]
+    assert len(calls) == 2
+    assert "power.constraints.costs.missing" in calls[1].prompt
+    history = store.build_artifact_history("power_system_constraints")
+    assert len(history) == 1
+    assert history[0]["source"] == "ai_repair"
+
+
+def test_power_final_diagnostic_routing_covers_section_or_explicit_global_boundary() -> None:
+    routed = {
+        "missing_name": "power_system_foundation",
+        "missing_attributes": "power_system_attributes",
+        "missing_equipment": "power_system_resources",
+        "missing_costs": "power_system_constraints",
+        "stages.missing_change": "power_system_stages",
+        "paths.duplicate_names": "power_system_paths",
+        "continuity_ledger.minimum_count": "power_system_constraints",
+        "game.path_missing_weapon_affinity": "power_system_paths",
+    }
+    for code, task_id in routed.items():
+        assert power_final_owner_task(BuildDiagnostic(f"power.final.{code}", code, code)) == task_id
+
+    # Placeholder content is intentionally boundary-owned by section
+    # validators because the canonical final validator cannot infer which
+    # section supplied a nested placeholder.
+    assert power_final_owner_task(
+        BuildDiagnostic(
+            "power.final.content.placeholder_or_low_information",
+            "power_system_spec",
+            "placeholder",
+        )
+    ) is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("author_constraints", ["新的作者约束"]),
+        ("seed_outline", "新的种子大纲"),
+    ),
+)
+def test_world_revision_includes_authoritative_root_inputs(
+    tmp_path: Path,
+    field: str,
+    value: Any,
+) -> None:
+    store = _store(tmp_path, plugin_id="urban")
+    before = store.world_revision()
+    store.update_project({field: value})
+    assert store.world_revision() != before
+
+
+def test_world_revision_includes_story_core_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = _store(tmp_path, plugin_id="urban")
+    before = store.world_revision()
+    monkeypatch.setattr(
+        store,
+        "story_core_context",
+        lambda _stage: {"title": "story-core-v2", "world": "新的核心设定"},
+    )
+    assert store.world_revision() != before
+
+
+def test_materialization_rejects_root_input_edit_after_graph_run(tmp_path: Path) -> None:
+    store = _store(tmp_path, plugin_id="urban")
+    project = NovelProject.model_validate(store.project())
+    result = WorldBuildGraphRunner(
+        project,
+        store=store,
+        model_gateway=ScriptedGateway(_generic_payloads()),
+    ).run()
+    graph = build_world_build_graph(project)
+    service = store.build_graph_service(graph.definition, validators=make_world_validators(project))
+    expected = store.world_revision()
+    store.update_project({"author_constraints": ["作者在运行中修改"]})
+
+    with pytest.raises(ValueError, match="world_build_conflict"):
+        store.commit_build_graph_materialization(
+            result,
+            graph,
+            service,
+            expected_project_revision=expected,
+        )
+    assert store.project()["author_constraints"] == ["作者在运行中修改"]
+    assert store.project().get("pipeline_stage", "imported") != "environment_ready"
+
+
+def test_genre_migration_resets_power_repair_budget_identity(tmp_path: Path) -> None:
+    store = _store(tmp_path, plugin_id="xuanhuan")
+    old_project = NovelProject.model_validate(store.project())
+    old_runner = WorldBuildGraphRunner(
+        old_project,
+        store=store,
+        model_gateway=ScriptedGateway(_structured_payloads()),
+    )
+    old_runner.run()
+    budget_path = store.webnovel_dir / "world_build_power_final_repair.json"
+    store.snapshot_store.replace_json_transaction(
+        {
+            budget_path: {
+                "schema_version": "world-build-power-repair/v1",
+                "definition_fingerprint": old_runner.graph.definition.definition_fingerprint,
+                "world_input_revision": 1,
+                "attempted_owners": ["power_system_paths"],
+            }
+        }
+    )
+
+    blueprint = dict(store.project().get("world_blueprint") or {})
+    blueprint["genre_plugin_ids"] = ["urban"]
+    store.update_project({"world_blueprint": blueprint}, replace_world_blueprint=True)
+    WorldBuildGraphRunner(
+        NovelProject.model_validate(store.project()),
+        store=store,
+        model_gateway=ScriptedGateway(_generic_payloads()),
+    ).run()
+
+    blueprint = dict(store.project().get("world_blueprint") or {})
+    blueprint["genre_plugin_ids"] = ["xuanhuan"]
+    store.update_project({"world_blueprint": blueprint}, replace_world_blueprint=True)
+    new_runner = WorldBuildGraphRunner(
+        NovelProject.model_validate(store.project()),
+        store=store,
+        model_gateway=ScriptedGateway({}),
+    )
+    budget = store.snapshot_store.read_json(budget_path, {})
+    assert budget["definition_fingerprint"] == new_runner.graph.definition.definition_fingerprint
+    assert budget["attempted_owners"] == []
+    assert new_runner._route_power_final_diagnostics(
+        (BuildDiagnostic("power.final.paths.duplicate_names", "paths", "duplicate"),)
+    )

@@ -1720,12 +1720,39 @@ class FileProjectStore(
         return read_materialization(self)
 
     def world_revision(self) -> str:
-        """Stable revision of fields the WorldBuild job may materialize."""
+        """Stable revision of all WorldBuild root inputs and write targets."""
 
         project = self.project()
+        from packages.story_core.models import NovelProject
+        from packages.story_core.world_build.tasks import canonical_world_input
+
+        previous: Mapping[str, Any] | None = None
+        try:
+            artifact = self.build_artifact("world_input")
+            candidate = artifact.get("payload") if isinstance(artifact, Mapping) else None
+            if isinstance(candidate, Mapping):
+                previous = candidate
+        except Exception:
+            previous = None
+        try:
+            root_input = canonical_world_input(
+                NovelProject.model_validate(project),
+                store=self,
+                previous=previous,
+            )
+        except Exception:
+            # Keep the revision operation total even while a project is being
+            # repaired.  The legacy write-target fields still provide a
+            # conservative conflict boundary in this exceptional state.
+            root_input = {
+                "title": str(project.get("title", "")).strip(),
+                "seed_outline": str(project.get("seed_outline", "")).strip(),
+                "author_constraints": project.get("author_constraints") or [],
+                "world_blueprint": project.get("world_blueprint") or {},
+            }
         payload = {
             "project_id": str(project.get("project_id", "")).strip(),
-            "title": str(project.get("title", "")).strip(),
+            "world_input": root_input,
             "world_summary": str(project.get("world_summary", "")).strip(),
             "current_focus": str(project.get("current_focus", "")).strip(),
             "world_blueprint": project.get("world_blueprint") or {},

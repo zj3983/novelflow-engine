@@ -66,6 +66,28 @@ def canonical_world_input(
 ) -> dict[str, Any]:
     """Return only bounded author/setup inputs, never generated graph output."""
 
+    return bounded_json_projection(
+        world_input_revision_payload(project, store=store, previous=previous),
+        chars=720,
+        items=20,
+        depth=5,
+    )
+
+
+def world_input_revision_payload(
+    project: NovelProject,
+    *,
+    store: Any | None = None,
+    previous: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the shared root-input definition used for graph and job revisions.
+
+    This intentionally returns the pre-projection payload.  Callers that put
+    it into a model prompt should use :func:`canonical_world_input`; callers
+    computing a project revision may canonicalize the same payload without
+    maintaining a second field list.
+    """
+
     blueprint = project.world_blueprint if isinstance(project.world_blueprint, Mapping) else {}
     previous_payload = dict(previous or {})
     story_core: Mapping[str, Any] = {}
@@ -137,7 +159,7 @@ def canonical_world_input(
         "genre_plugin_ids": genre_ids,
         "novel_type_id": genre_ids[0] if genre_ids else "generic_webnovel",
     }
-    return bounded_json_projection(payload, chars=720, items=20, depth=5)
+    return payload
 
 
 def task_payload_from_project(project: NovelProject, task_id: str) -> dict[str, Any]:
