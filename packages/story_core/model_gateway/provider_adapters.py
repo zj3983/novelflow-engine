@@ -227,6 +227,33 @@ class _Adapter:
         return ModelResponse.failure(request, _stable_error(exc), raw=None)
 
 
+def _rejects_temperature(exc: urllib.error.HTTPError) -> bool:
+    """Recognize only an explicit HTTP 400 temperature capability rejection."""
+    if exc.code != 400:
+        return False
+    try:
+        payload = json.loads(exc.read(8192).decode("utf-8", errors="replace"))
+    except (ValueError, UnicodeError, OSError):
+        return False
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if not isinstance(error, dict):
+        return False
+    message = str(error.get("message") or "").casefold()
+    if "temperature" not in message and error.get("param") != "temperature":
+        return False
+    return any(
+        phrase in message
+        for phrase in (
+            "unsupported temperature",
+            "temperature not supported",
+            "temperature is not supported",
+            "only default temperature",
+            "only the default temperature",
+            "only 1 is allowed for this model",
+        )
+    )
+
+
 class OpenAICompatibleAdapter(_Adapter):
     def __init__(self, *, base_url: str, api_key: str, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -246,29 +273,54 @@ class OpenAICompatibleAdapter(_Adapter):
             payload["response_format"] = {"type": "json_object"}
         if request.metadata.get("stream"):
             payload["stream"] = True
+        temperature_omitted = False
         try:
-            raw = self._call(
-                request,
-                url=f"{self.base_url}/chat/completions",
-                payload=payload,
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
-            )
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
+            try:
+                raw = self._call(
+                    request,
+                    url=f"{self.base_url}/chat/completions",
+                    payload=payload,
+                    headers=headers,
+                )
+            except urllib.error.HTTPError as exc:
+                if (
+                    "temperature" not in payload
+                    or not _request_config(request, self._retry_config).allow_compatibility_fallback
+                    or not _rejects_temperature(exc)
+                ):
+                    raise
+                temperature_omitted = True
+                retry_payload = {
+                    key: value for key, value in payload.items() if key != "temperature"
+                }
+                raw = self._call(
+                    request,
+                    url=f"{self.base_url}/chat/completions",
+                    payload=retry_payload,
+                    headers=headers,
+                )
             choice = raw["choices"][0]
             text = _content_text(choice["message"]["content"])
             if not text:
                 raise ValueError("empty_content")
-            return ModelResponse.success(
-                request,
-                text=text,
-                request_id=str(raw.get("id") or ""),
-                usage=raw.get("usage") if isinstance(raw.get("usage"), dict) else {},
-                raw=_redact_raw(raw, self.api_key),
+            return replace(
+                ModelResponse.success(
+                    request,
+                    text=text,
+                    request_id=str(raw.get("id") or ""),
+                    usage=raw.get("usage") if isinstance(raw.get("usage"), dict) else {},
+                    raw=_redact_raw(raw, self.api_key),
+                ),
+                temperature_omitted=temperature_omitted,
             )
         except Exception as exc:
-            return self._failure(request, exc)
+            return replace(
+                self._failure(request, exc), temperature_omitted=temperature_omitted
+            )
 
 
 class AnthropicAdapter(_Adapter):

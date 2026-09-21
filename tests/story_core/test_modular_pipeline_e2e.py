@@ -33,6 +33,7 @@ from packages.story_core.agents.pipeline import (
     _ensure_canon_service,
     _ensure_writer_context,
     _preflight_entities,
+    run_modular_pipeline,
     run_writer,
 )
 from packages.story_core.agents.contracts import (
@@ -49,6 +50,8 @@ from packages.story_core.continuity.delta import ContinuityDelta
 from packages.story_core.context.writer_context import WriterContext
 from packages.story_core.generation_progress import generation_progress
 from packages.story_core.orchestrator import StoryOrchestrator
+from packages.story_core.models import CharacterState, StoryState
+from packages.story_core.persistence.workflow_artifact_store import WorkflowArtifactStore
 
 
 # --- Fixtures ----------------------------------------------------------------
@@ -652,6 +655,50 @@ def test_canonical_writer_context_reads_only_writer_owned_rules_and_modules(
 
 
 # --- Tests -------------------------------------------------------------------
+
+
+def test_double_character_failure_records_empty_source_and_director_continues(tmp_path: Path):
+    _seed_legacy_project(tmp_path, with_outline=False)
+
+    class BrokenRule:
+        def propose_all(self, story):
+            raise RuntimeError("rule unavailable")
+
+    class BrokenCharacter:
+        rule_provider = BrokenRule()
+
+        def propose_all(self, story):
+            raise RuntimeError("llm unavailable")
+
+    class EmptyFacts:
+        def extract(self, context):
+            return ContinuityDelta(chapter_number=context.chapter_number)
+
+    director = _StubDirectorRuntime()
+    writer = _StubWriterRuntime()
+    store = WorkflowArtifactStore(tmp_path)
+    bundle = run_modular_pipeline(
+        project_root=tmp_path,
+        chapter_number=1,
+        story=StoryState(
+            story_id="test-double-failure", outline="上山", genre="玄幻", style="自然",
+            characters=[CharacterState(name="林昭", role="protagonist")],
+        ),
+        character_agent=BrokenCharacter(),
+        director_runtime=director,
+        writer_runtime=writer,
+        fact_extractor=EmptyFacts(),
+        consistency_runtime=_EmptyConsistencyRuntime(),
+        workflow_store=store,
+        job_id="character-double-failure",
+    )
+    assert len(director.calls) == 1
+    assert len(writer.calls) == 1
+    assert bundle.director_artifact.chapter_number == 1
+    record = store.read_stage("character-double-failure", "character-intent")
+    assert record is not None
+    assert record.result_source == "empty"
+    assert "proposals=0" in record.output_summary
 
 
 def test_orchestrator_wires_director_writer_and_fact_extractor(tmp_path: Path):

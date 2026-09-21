@@ -73,6 +73,7 @@ class StageArtifactRecord:
     selected_module_ids: list[str] = field(default_factory=list)
     provider: str = ""
     model: str = ""
+    result_source: str = ""
     prompt_template_id: str = ""
     prompt_template_version: str = ""
     output_summary: str = ""
@@ -95,6 +96,7 @@ class StageArtifactRecord:
             "selected_module_ids": list(self.selected_module_ids),
             "provider": self.provider,
             "model": self.model,
+            "result_source": self.result_source,
             "prompt_template_id": self.prompt_template_id,
             "prompt_template_version": self.prompt_template_version,
             "output_summary": self.output_summary,
@@ -118,6 +120,7 @@ class StageArtifactRecord:
             selected_module_ids=list(payload.get("selected_module_ids") or []),
             provider=str(payload.get("provider") or ""),
             model=str(payload.get("model") or ""),
+            result_source=str(payload.get("result_source") or ""),
             prompt_template_id=str(payload.get("prompt_template_id") or ""),
             prompt_template_version=str(payload.get("prompt_template_version") or ""),
             output_summary=str(payload.get("output_summary") or ""),

@@ -299,6 +299,7 @@ def _character_intents_for_context(
     chapter_number: int,
     *,
     agent: CharacterAgent | None = None,
+    result_source_out: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Run one bounded character-intent pass for the director.
 
@@ -316,6 +317,8 @@ def _character_intents_for_context(
     }
     selected = [by_name[name] for name in cast_names if name in by_name]
     if not selected:
+        if result_source_out is not None:
+            result_source_out["result_source"] = "empty"
         return []
 
     selected_story = story.model_copy(update={"characters": selected}, deep=True)
@@ -352,22 +355,31 @@ def _character_intents_for_context(
             update={"outline_context": outline_context}, deep=True
         )
     planner = agent or CharacterAgent()
+    fallback_source = ""
     try:
         proposals = planner.propose_all(selected_story)
     except Exception:
         try:
             proposals = planner.rule_provider.propose_all(selected_story)
+            fallback_source = "rule_fallback"
         except Exception:
             proposals = []
+            fallback_source = "empty"
     selected_names = {character.name for character in selected}
     # A provider may return malformed or out-of-scope names.  The modular
     # boundary keeps only the bounded cast; a character stage failure remains
     # advisory and cannot introduce a new actor or executable plot event.
-    return [
+    intents = [
         proposal.model_dump(mode="json")
         for proposal in proposals
         if proposal.name in selected_names
     ][:6]
+    if result_source_out is not None:
+        result_source_out["result_source"] = (
+            (fallback_source or getattr(planner, "last_result_source", ""))
+            if intents else "empty"
+        )
+    return intents
 
 
 def _ensure_writer_context(
@@ -1371,11 +1383,13 @@ def run_modular_pipeline(
                 },
             }
         )
+        character_result_source: dict[str, str] = {}
         character_intents = _character_intents_for_context(
             story,
             director_context,
             chapter_number,
             agent=character_agent,
+            result_source_out=character_result_source,
         )
         director_context = director_context.model_copy(
             update={"character_intents": character_intents}
@@ -1563,6 +1577,7 @@ def run_modular_pipeline(
                 started_monotonic=character_started,
                 provider=character_provider,
                 model=character_model,
+                result_source=character_result_source.get("result_source", ""),
             )
         record_director_stage(
             store=workflow_store,
