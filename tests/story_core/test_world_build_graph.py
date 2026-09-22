@@ -159,6 +159,40 @@ def _power_sections() -> dict[str, dict[str, Any]]:
     }
 
 
+def _traditional_path_payload(name: str, *, weapons: bool = True) -> dict[str, Any]:
+    payload = {
+        "name": name,
+        "role": "承担一类职业职责。",
+        "core_resource": "职业资源",
+        "core_attributes": ["体魄"],
+        "armor": ["轻甲"],
+        "combat_loop": "观察、选择、执行、复盘。",
+        "strengths": ["稳定"],
+        "weaknesses": ["准备成本高"],
+        "skill_categories": ["基础技艺"],
+        "branches": ["强化", "变异"],
+        "transfer_task": "完成转职任务。",
+        "advancement": ["完成一次阶段验证。"],
+        "advancement_tree": [
+            {
+                "level": level,
+                "tier_name": f"阶段{level}",
+                "options": [
+                    {
+                        "name": f"选项{level}",
+                        "transfer_task": f"完成{level}级任务",
+                        "ability_changes": [f"获得{level}级能力"],
+                    }
+                ],
+            }
+            for level in (10, 30, 60)
+        ],
+    }
+    if weapons:
+        payload["weapons"] = ["专属武器"]
+    return payload
+
+
 def _structured_payloads() -> dict[str, list[Any]]:
     sections = _power_sections()
     payloads: dict[str, list[Any]] = {key: [value] for key, value in sections.items()}
@@ -1158,9 +1192,10 @@ def test_power_path_repair_scope_supports_advancement_tree_and_exact_append() ->
         project,
     )
     assert append_scope.append_count == 5
+    assert append_scope.append_required_fields == tuple(PATH_FIELDS)
     merged, diagnostics = merge_power_path_repair(
         payload,
-        {"updates": [], "append": [{"name": f"职业{i}", "branches": ["a", "b"]} for i in range(5)]},
+        {"updates": [], "append": [_traditional_path_payload(f"职业{i}") for i in range(5)]},
         append_scope,
     )
     assert not diagnostics
@@ -1398,6 +1433,76 @@ def test_power_final_path_repair_out_of_scope_stops_without_third_call(tmp_path:
     assert state["tasks"]["power_system_paths"]["status"] == "validation_failed"
 
 
+def test_ordinary_traditional_path_repair_uses_structured_scoped_patch(tmp_path: Path) -> None:
+    store = _store(tmp_path, plugin_id="xuanhuan")
+    payloads = _structured_payloads()
+    first_paths = {
+        "paths": [
+            _traditional_path_payload("路线一"),
+            _traditional_path_payload("路线二", weapons=False),
+        ]
+    }
+    repair_patch = {
+        "updates": [{"index": 1, "fields": {"weapons": ["专属武器"]}}],
+        "append": [],
+    }
+    payloads["power_system_paths"] = [first_paths, repair_patch]
+    gateway = ScriptedGateway(payloads)
+
+    result = WorldBuildGraphRunner(
+        NovelProject.model_validate(store.project()),
+        store=store,
+        model_gateway=gateway,
+    ).run()
+
+    calls = [call for call in gateway.calls if call.operation == "world_build_power_system_paths"]
+    assert len(calls) == 2
+    assert "power-path-repair/v1" in calls[1].prompt
+    assert '"updates":"{index:int,fields:object}[]"' in calls[1].prompt
+    assert '"index":1' in calls[1].prompt
+    assert '"fields":["weapons"]' in calls[1].prompt
+    assert "输出契约：{\"paths\":\"object[]\"}" not in calls[1].prompt
+    artifact = store.build_artifact("power_system_paths")
+    assert artifact is not None and artifact["source"] == "ai_repair"
+    assert artifact["payload"]["paths"][0] == first_paths["paths"][0]
+    assert artifact["payload"]["paths"][1]["weapons"] == ["专属武器"]
+    assert result.world_blueprint["power_system_spec"]["paths"][0]["name"] == "路线一"
+
+
+def test_power_path_repair_requires_traditional_append_fields_but_not_nontraditional_extras() -> None:
+    traditional_scope = PowerPathRepairScope(
+        update_fields={},
+        append_count=2,
+        append_fields=tuple(PATH_FIELDS),
+        append_required_fields=tuple(PATH_FIELDS),
+    )
+    merged, diagnostics = merge_power_path_repair(
+        {"paths": []},
+        {"updates": [], "append": [{"name": "职业一", "branches": ["a", "b"]}] * 2},
+        traditional_scope,
+    )
+    assert merged is None
+    assert [item.code for item in diagnostics] == ["task.repair_incomplete"]
+
+    project = NovelProject(
+        project_id="file:nontraditional-append",
+        title="自定义路线",
+        world_blueprint={"genre_plugin_ids": ["xuanhuan"]},
+    )
+    scope = power_path_repair_scope(
+        {"paths": [{"name": "已有", "branches": ["a", "b"]}]},
+        (BuildDiagnostic("power.final.paths.minimum_count", "paths", "count"),),
+        project,
+    )
+    merged, diagnostics = merge_power_path_repair(
+        {"paths": [{"name": "已有", "branches": ["a", "b"]}]},
+        {"updates": [], "append": [{"name": "新增", "branches": ["a", "b"]}]},
+        scope,
+    )
+    assert not diagnostics
+    assert merged is not None and merged["paths"][-1]["name"] == "新增"
+
+
 def test_power_final_residual_repair_failure_is_capped_end_to_end(tmp_path: Path) -> None:
     store, _invalid_constraints, _valid_constraints = _prepare_power_final_residual(tmp_path)
     payloads = _generic_payloads()
@@ -1422,6 +1527,45 @@ def test_power_final_residual_repair_failure_is_capped_end_to_end(tmp_path: Path
         item["code"] == "task.repair_incomplete"
         for item in state["tasks"]["power_system_constraints"]["diagnostics"]
     )
+
+
+def test_failed_power_final_repair_budget_blocks_same_generation_next_job(tmp_path: Path) -> None:
+    store, _invalid_constraints, _valid_constraints = _prepare_power_final_residual(tmp_path)
+    first_gateway = ScriptedGateway({**_generic_payloads(), "power_system_constraints": [{}]})
+
+    with pytest.raises(WorldBuildGraphFailure):
+        WorldBuildGraphRunner(
+            NovelProject.model_validate(store.project()),
+            store=store,
+            model_gateway=first_gateway,
+        ).run()
+
+    first_calls = [
+        call for call in first_gateway.calls if call.operation == "world_build_power_system_constraints"
+    ]
+    assert len(first_calls) == 1
+    budget = store.snapshot_store.read_json(
+        store.webnovel_dir / "world_build_power_final_repair.json",
+        {},
+    )
+    assert budget["failed_owners"] == ["power_system_constraints"]
+
+    second_gateway = ScriptedGateway(_generic_payloads())
+    with pytest.raises(WorldBuildGraphFailure) as caught:
+        WorldBuildGraphRunner(
+            NovelProject.model_validate(store.project()),
+            store=store,
+            model_gateway=second_gateway,
+        ).run()
+
+    assert caught.value.task_id == "power_system_constraints"
+    assert [item.code for item in caught.value.diagnostics] == [
+        "power.final_repair_budget_exhausted"
+    ]
+    assert not second_gateway.calls
+    state = store.build_graph_state()
+    assert state is not None
+    assert state["tasks"]["power_system_constraints"]["status"] == "validation_failed"
 
 
 def test_power_placeholder_is_rejected_at_section_boundary_without_official_invalid_artifact(tmp_path: Path) -> None:

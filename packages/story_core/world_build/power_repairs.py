@@ -5,11 +5,13 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
+import re
 from typing import Any
 
 from packages.story_core.build_graph.contracts import BuildDiagnostic
 from packages.story_core.models import NovelProject
 from packages.story_core.power_system_spec import (
+    contains_placeholder_content,
     GAME_CLASS_ADVANCEMENT_LEVELS,
     PATH_FIELDS,
     effective_power_system_template,
@@ -32,6 +34,13 @@ class PowerPathRepairScope:
     update_fields: Mapping[int, tuple[str, ...]]
     append_count: int
     append_fields: tuple[str, ...]
+    append_required_fields: tuple[str, ...] = ()
+
+    @property
+    def append_allowed_fields(self) -> tuple[str, ...]:
+        """Expose the allowed/required distinction without breaking old callers."""
+
+        return self.append_fields
 
     def as_prompt_payload(self) -> dict[str, Any]:
         return {
@@ -40,7 +49,8 @@ class PowerPathRepairScope:
                 for index, fields in sorted(self.update_fields.items())
             ],
             "append_count": self.append_count,
-            "append_fields": list(self.append_fields),
+            "append_allowed_fields": list(self.append_allowed_fields),
+            "append_required_fields": list(self.append_required_fields),
         }
 
 
@@ -125,6 +135,28 @@ def _indices_missing(paths: Sequence[Any], field: str) -> set[int]:
     }
 
 
+_PATH_INDEX_RE = re.compile(r"^paths\[(\d+)\](?:\.|$)")
+
+
+def _diagnostic_path_index(path: Any) -> int | None:
+    match = _PATH_INDEX_RE.match(str(path or "").strip())
+    return int(match.group(1)) if match else None
+
+
+def _path_fields_with_placeholder(path: Any) -> tuple[str, ...]:
+    if not isinstance(path, Mapping):
+        return ()
+    return tuple(
+        field
+        for field in PATH_FIELDS
+        if field in path and contains_placeholder_content(path[field])
+    )
+
+
+def _path_required_fields(traditional_game: bool) -> tuple[str, ...]:
+    return tuple(PATH_FIELDS) if traditional_game else ("name", "branches")
+
+
 def _advancement_tree_has_diagnostic(path: Any, code: str) -> bool:
     tree = path.get("advancement_tree") if isinstance(path, Mapping) else None
     if code == "game.path_invalid_advancement_tree":
@@ -173,7 +205,11 @@ def power_path_repair_scope(
     traditional_game = _traditional_game_contract(project, paths, raw_spec)
 
     for diagnostic in diagnostics:
-        code = diagnostic.code.removeprefix("power.final.")
+        code = diagnostic.code
+        for prefix in ("power.final.", "power."):
+            if code.startswith(prefix):
+                code = code.removeprefix(prefix)
+                break
         if code == "paths.minimum_count":
             append_count = max(
                 append_count,
@@ -199,8 +235,30 @@ def power_path_repair_scope(
                     _add_field(targets, index, "branches")
             continue
         if code == "paths.missing_name":
-            for index in _indices_missing(paths, "name"):
+            index = _diagnostic_path_index(diagnostic.path)
+            indices = {index} if index is not None else _indices_missing(paths, "name")
+            for index in indices:
                 _add_field(targets, index, "name")
+            continue
+        if code.startswith("paths.missing_"):
+            field = code.removeprefix("paths.missing_")
+            if field in PATH_FIELDS:
+                index = _diagnostic_path_index(diagnostic.path)
+                indices = {index} if index is not None else _indices_missing(paths, field)
+                for index in indices:
+                    _add_field(targets, index, field)
+            continue
+        if code == "paths.placeholder":
+            index = _diagnostic_path_index(diagnostic.path)
+            if index is not None and index < len(paths):
+                for field in _path_fields_with_placeholder(paths[index]):
+                    _add_field(targets, index, field)
+            continue
+        if code == "paths.invalid_item":
+            index = _diagnostic_path_index(diagnostic.path)
+            if index is not None:
+                for field in _path_required_fields(traditional_game):
+                    _add_field(targets, index, field)
             continue
         if code.startswith("game.path_missing_"):
             missing = code.removeprefix("game.path_missing_")
@@ -222,16 +280,15 @@ def power_path_repair_scope(
 
     if traditional_game:
         append_fields = tuple(PATH_FIELDS)
+        append_required_fields = tuple(PATH_FIELDS)
     else:
-        append_fields = tuple(
-            field
-            for field in PATH_FIELDS
-            if field not in {"weapons", "armor", "combat_loop", "transfer_task", "advancement_tree"}
-        )
+        append_fields = tuple(PATH_FIELDS)
+        append_required_fields = ("name", "branches")
     return PowerPathRepairScope(
         update_fields={index: tuple(sorted(fields)) for index, fields in sorted(targets.items())},
         append_count=max(0, append_count),
         append_fields=append_fields,
+        append_required_fields=append_required_fields,
     )
 
 
@@ -329,6 +386,15 @@ def merge_power_path_repair(
         unexpected = sorted(set(item).difference(scope.append_fields))
         if unexpected:
             return None, (_repair_diagnostic("task.repair_out_of_scope", f"append[{index}]", "appended path contains an undeclared field"),)
+        missing_required = sorted(set(scope.append_required_fields).difference(item))
+        if missing_required:
+            return None, (
+                _repair_diagnostic(
+                    "task.repair_incomplete",
+                    f"append[{index}]",
+                    "appended path omitted required field(s): " + ", ".join(missing_required),
+                ),
+            )
         merged_paths.append(deepcopy(dict(item)))
     return {"paths": merged_paths}, ()
 

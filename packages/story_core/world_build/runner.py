@@ -366,6 +366,33 @@ class WorldBuildGraphRunner:
             "definition_fingerprint": self.graph.definition.definition_fingerprint,
             "world_input_revision": self._power_input_revision(),
             "attempted_owners": [],
+            "failed_owners": [],
+        }
+        self.store.snapshot_store.replace_json_transaction({self._power_repair_budget_path(): payload})
+
+    def _power_repair_budget_matches(self, budget: Mapping[str, Any]) -> bool:
+        return (
+            budget.get("definition_fingerprint")
+            == self.graph.definition.definition_fingerprint
+            and budget.get("world_input_revision") == self._power_input_revision()
+        )
+
+    def _power_repair_budget_exhausted(self, task_id: str) -> bool:
+        budget = self._read_power_repair_budget()
+        return self._power_repair_budget_matches(budget) and task_id in set(budget.get("failed_owners") or [])
+
+    def _mark_power_repair_failed(self, task_id: str) -> None:
+        budget = self._read_power_repair_budget()
+        if not self._power_repair_budget_matches(budget):
+            return
+        failed = set(budget.get("failed_owners") or [])
+        failed.add(task_id)
+        payload = {
+            "schema_version": "world-build-power-repair/v1",
+            "definition_fingerprint": self.graph.definition.definition_fingerprint,
+            "world_input_revision": self._power_input_revision(),
+            "attempted_owners": sorted(set(budget.get("attempted_owners") or [])),
+            "failed_owners": sorted(failed),
         }
         self.store.snapshot_store.replace_json_transaction({self._power_repair_budget_path(): payload})
 
@@ -383,11 +410,7 @@ class WorldBuildGraphRunner:
 
         input_revision = self._power_input_revision()
         budget = self._read_power_repair_budget()
-        same_generation = (
-            budget.get("definition_fingerprint")
-            == self.graph.definition.definition_fingerprint
-            and budget.get("world_input_revision") == input_revision
-        )
+        same_generation = self._power_repair_budget_matches(budget)
         attempted = set(budget.get("attempted_owners") or []) if same_generation else set()
         pending = sorted(owner for owner in owners if owner not in attempted)
         if not pending:
@@ -404,6 +427,7 @@ class WorldBuildGraphRunner:
                     "definition_fingerprint": self.graph.definition.definition_fingerprint,
                     "world_input_revision": input_revision,
                     "attempted_owners": updated_attempted,
+                    "failed_owners": sorted(set(budget.get("failed_owners") or [])) if same_generation else [],
                 }
             }
         )
@@ -595,6 +619,8 @@ class WorldBuildGraphRunner:
                     ),
                 )
                 self.service.fail_run(run.run_id, diagnostics)
+                if final_repair:
+                    self._mark_power_repair_failed(task_id)
                 raise WorldBuildGraphFailure(task_id, diagnostics, message="world model request failed")
             if final_repair:
                 repaired: dict[str, Any] | None = None
@@ -649,6 +675,8 @@ class WorldBuildGraphRunner:
                     self._progress(task_id, "done", f"已修复并完成：{spec.task.title}")
                     return
                 self.service.fail_run(run.run_id, repair_diagnostics)
+                if final_repair:
+                    self._mark_power_repair_failed(task_id)
                 raise WorldBuildGraphFailure(task_id, repair_diagnostics)
 
             candidate, parse_diagnostics = parse_task_payload(
@@ -688,18 +716,39 @@ class WorldBuildGraphRunner:
                 read_projection=run_read_projection(self.graph, task_id, contract),
             )
             self._active_run_id = repair_run.run_id
-            repair_prompt = build_task_prompt(
-                self.graph,
-                task_id,
-                contract,
-                repair_candidate=candidate,
-                diagnostics=diagnostics,
-                repair_fields=repair_fields_for_diagnostics(spec, diagnostics),
+            path_repair_scope = (
+                power_path_repair_scope(
+                    candidate,
+                    diagnostics,
+                    self.project,
+                    raw_spec=raw_power_spec_from_artifacts(self.service),
+                )
+                if task_id == "power_system_paths" and isinstance(candidate, Mapping)
+                else None
             )
+            if path_repair_scope is not None:
+                repair_prompt = build_power_path_repair_prompt(
+                    self.graph,
+                    task_id,
+                    contract,
+                    repair_candidate=candidate,
+                    diagnostics=diagnostics,
+                    scope=path_repair_scope,
+                )
+            else:
+                repair_prompt = build_task_prompt(
+                    self.graph,
+                    task_id,
+                    contract,
+                    repair_candidate=candidate,
+                    diagnostics=diagnostics,
+                    repair_fields=repair_fields_for_diagnostics(spec, diagnostics),
+                )
             self._ensure_active(task_id, run_id=repair_run.run_id)
             repair_response, repair_call_id = self._call_model(task_id, repair_prompt)
             self._ensure_active(task_id, run_id=repair_run.run_id)
             repaired: dict[str, Any] | None = None
+            repair_diagnostics: tuple[BuildDiagnostic, ...] = ()
             if not getattr(repair_response, "ok", False):
                 repair_diagnostics = (
                     BuildDiagnostic(
@@ -709,28 +758,41 @@ class WorldBuildGraphRunner:
                     ),
                 )
             else:
-                repaired, repair_parse_diagnostics = parse_task_payload(
-                    getattr(repair_response, "text", ""),
-                    spec.output_fields,
-                )
-                if repaired is None:
-                    repair_diagnostics = repair_parse_diagnostics
-                else:
-                    repair_fields = repair_fields_for_diagnostics(spec, diagnostics)
-                    repaired, merge_diagnostics = self._merge_repair_patch(
-                        candidate,
-                        repaired,
-                        repair_fields,
+                if path_repair_scope is not None:
+                    patch, repair_parse_diagnostics = parse_power_path_repair_payload(
+                        getattr(repair_response, "text", "")
                     )
-                    if merge_diagnostics:
-                        repair_diagnostics = merge_diagnostics
+                    if patch is None:
+                        repair_diagnostics = repair_parse_diagnostics
                     else:
-                        repaired = self._preserve_existing_non_power_values(task_id, repaired)
-                        repair_diagnostics = self.service.validate(
-                            task_id,
+                        repaired, repair_diagnostics = merge_power_path_repair(
+                            candidate,
+                            patch,
+                            path_repair_scope,
+                        )
+                else:
+                    repaired, repair_parse_diagnostics = parse_task_payload(
+                        getattr(repair_response, "text", ""),
+                        spec.output_fields,
+                    )
+                    if repaired is None:
+                        repair_diagnostics = repair_parse_diagnostics
+                    else:
+                        repair_fields = repair_fields_for_diagnostics(spec, diagnostics)
+                        repaired, merge_diagnostics = self._merge_repair_patch(
+                            candidate,
                             repaired,
-                            requested_writes=spec.task.owns,
-                        ).diagnostics
+                            repair_fields,
+                        )
+                        if merge_diagnostics:
+                            repair_diagnostics = merge_diagnostics
+            if repaired is not None and not repair_diagnostics:
+                repaired = self._preserve_existing_non_power_values(task_id, repaired)
+                repair_diagnostics = self.service.validate(
+                    task_id,
+                    repaired,
+                    requested_writes=spec.task.owns,
+                ).diagnostics
             if repaired is not None and not repair_diagnostics:
                 self._ensure_active(task_id, run_id=repair_run.run_id)
                 result = self.service.commit_run(
@@ -817,6 +879,17 @@ class WorldBuildGraphRunner:
                     message=f"world Build Graph is not ready: {','.join(blocked)}",
                 )
             task_id = runnable[0]
+            if self._power_repair_budget_exhausted(task_id):
+                raise WorldBuildGraphFailure(
+                    task_id,
+                    (
+                        BuildDiagnostic(
+                            "power.final_repair_budget_exhausted",
+                            f"tasks.{task_id}",
+                            "the focused power-final repair allowance is exhausted for this graph generation",
+                        ),
+                    ),
+                )
             spec = self.graph.spec(task_id)
             if spec.kind == "deterministic":
                 self._run_deterministic(task_id)
