@@ -39,6 +39,7 @@ def _read_sse_json_stream(response: Any, max_response_bytes: int | None) -> dict
     parts: list[str] = []
     response_id = ""
     resolved_model = ""
+    finish_reason: str | None = None
     usage: dict[str, Any] = {}
     read = 0
     for raw_line in response:
@@ -65,12 +66,19 @@ def _read_sse_json_stream(response: Any, max_response_bytes: int | None) -> dict
             if not isinstance(choice, dict):
                 continue
             delta = choice.get("delta")
+            if choice.get("finish_reason") is not None:
+                finish_reason = str(choice["finish_reason"])
             if isinstance(delta, dict) and delta.get("content"):
                 parts.append(str(delta["content"]))
     return {
         "id": response_id,
         "model": resolved_model,
-        "choices": [{"message": {"content": "".join(parts)}}],
+        "choices": [
+            {
+                "finish_reason": finish_reason,
+                "message": {"content": "".join(parts)},
+            }
+        ],
         "usage": usage,
     }
 
