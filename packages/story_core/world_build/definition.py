@@ -16,6 +16,7 @@ from packages.story_core.build_graph.definition import (
     BuildTaskDefinition,
 )
 from packages.story_core.models import NovelProject
+from packages.story_core.power_system_spec import uses_traditional_game_class_advancement
 from packages.story_core.world_enrichment import (
     _requires_structured_power_system,
     _selected_novel_type_plugin,
@@ -119,6 +120,13 @@ def build_world_build_graph(project: NovelProject) -> WorldBuildGraph:
     plugin_id = plugin.plugin_id
     structured_power = _requires_structured_power_system(plugin_id)
     game_world = _uses_game_world_modules(plugin_id)
+    existing_power_spec = (
+        project.world_blueprint.get("power_system_spec")
+        if isinstance(project.world_blueprint, Mapping)
+        and isinstance(project.world_blueprint.get("power_system_spec"), Mapping)
+        else {}
+    )
+    traditional_game_paths = game_world and uses_traditional_game_class_advancement(existing_power_spec)
 
     all_power_paths = (
         "build.power_system.foundation",
@@ -210,8 +218,22 @@ def build_world_build_graph(project: NovelProject) -> WorldBuildGraph:
                     forbidden_writes=("build.power_system.foundation", "build.power_system.attributes", *all_power_paths[3:], "world_blueprint.power_system_spec", "world_blueprint.power_system"),
                     validator_id="power.paths",
                     output_fields=("paths",),
-                    output_schema={"paths": "object[]"},
-                    instructions="只生成 paths。依据已提交的 foundation 与 attributes，描述路线定位、资源、强弱、分支和推进条件。",
+                    output_schema={
+                        "paths": (
+                            "{name,role,core_resource,core_attributes,weapons,armor,combat_loop,strengths," \
+                            "weaknesses,skill_categories,branches,transfer_task,advancement,advancement_tree}[]"
+                            if traditional_game_paths
+                            else "object[]"
+                        )
+                    },
+                    instructions=(
+                        "只生成 paths。依据已提交的 foundation 与 attributes，描述路线定位、资源、强弱、分支和推进条件。"
+                        + (
+                            " 这是传统等级职业 contract；每条路线必须同时给出 role、core_resource、core_attributes、weapons、armor、combat_loop、strengths、weaknesses、skill_categories、branches、transfer_task、advancement 和 advancement_tree。"
+                            if traditional_game_paths
+                            else ""
+                        )
+                    ),
                     max_tokens=3200,
                 ),
                 _task(

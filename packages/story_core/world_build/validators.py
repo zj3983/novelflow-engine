@@ -199,10 +199,14 @@ def _validate_power_paths(payload: Any, project: NovelProject) -> Any:
     if not isinstance(values, list) or len(values) < minimum:
         diagnostics.append(_diagnostic("power.paths.minimum_count", "paths", f"paths requires at least {minimum} item(s)"))
         return _finish(diagnostics)
-    traditional_game = uses_traditional_game_class_advancement(
+    existing_power_spec = (
         (project.world_blueprint or {}).get("power_system_spec")
         if isinstance(project.world_blueprint, Mapping)
         else None
+    )
+    traditional_game = (
+        uses_traditional_game_class_advancement(existing_power_spec)
+        or uses_traditional_game_class_advancement({"paths": values})
     )
     # The canonical power validator is the authority for rich path
     # semantics.  The section validator only checks the shape needed to
@@ -211,11 +215,34 @@ def _validate_power_paths(payload: Any, project: NovelProject) -> Any:
     # lacks game-only or optional descriptive fields.
     required = ("name", "branches")
     if traditional_game:
-        required = (*required, "transfer_task", "advancement_tree")
+        required = (
+            "name",
+            "role",
+            "core_resource",
+            "core_attributes",
+            "weapons",
+            "armor",
+            "combat_loop",
+            "strengths",
+            "weaknesses",
+            "skill_categories",
+            "branches",
+            "transfer_task",
+            "advancement",
+            "advancement_tree",
+        )
     for index, item in enumerate(values):
         if not isinstance(item, Mapping):
             diagnostics.append(_diagnostic("power.paths.invalid_item", f"paths[{index}]", "path must be an object"))
             continue
+        if _contains_placeholder(item):
+            diagnostics.append(
+                _diagnostic(
+                    "power.paths.placeholder",
+                    f"paths[{index}]",
+                    "path contains placeholder content",
+                )
+            )
         for field in required:
             value = item.get(field)
             if isinstance(value, list):

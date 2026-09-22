@@ -31,9 +31,11 @@ from .materialize import (
 from .migration import POWER_REPAIR_BUDGET_FILENAME, prepare_world_graph_migration
 from .tasks import (
     build_input_contract,
+    build_power_path_repair_prompt,
     build_task_prompt,
     canonical_world_input,
     input_fingerprint,
+    parse_power_path_repair_payload,
     parse_task_payload,
     repair_fields_for_diagnostics,
     run_read_projection,
@@ -41,6 +43,10 @@ from .tasks import (
 )
 from .validators import assemble_power_candidate, make_world_validators
 from .validators import power_final_owner_task
+from .power_repairs import (
+    merge_power_path_repair,
+    power_path_repair_scope,
+)
 
 
 class WorldBuildGraphFailure(RuntimeError):
@@ -534,13 +540,34 @@ class WorldBuildGraphRunner:
             # regeneration call before showing the model the exact final
             # diagnostic and the current committed section.
             final_repair = final_repair_candidate is not None
-            prompt = build_task_prompt(
-                self.graph,
-                task_id,
-                contract,
-                repair_candidate=final_repair_candidate if final_repair else None,
-                diagnostics=final_diagnostics if final_repair else (),
+            final_repair_fields = (
+                repair_fields_for_diagnostics(spec, final_diagnostics)
+                if final_repair and task_id != "power_system_paths"
+                else None
             )
+            final_path_scope = (
+                power_path_repair_scope(final_repair_candidate, final_diagnostics, self.project)
+                if final_repair and task_id == "power_system_paths" and isinstance(final_repair_candidate, Mapping)
+                else None
+            )
+            if final_repair and task_id == "power_system_paths" and final_path_scope is not None:
+                prompt = build_power_path_repair_prompt(
+                    self.graph,
+                    task_id,
+                    contract,
+                    repair_candidate=final_repair_candidate,
+                    diagnostics=final_diagnostics,
+                    scope=final_path_scope,
+                )
+            else:
+                prompt = build_task_prompt(
+                    self.graph,
+                    task_id,
+                    contract,
+                    repair_candidate=final_repair_candidate if final_repair else None,
+                    diagnostics=final_diagnostics if final_repair else (),
+                    repair_fields=final_repair_fields,
+                )
             self._ensure_active(task_id, run_id=run.run_id)
             response, call_id = self._call_model(task_id, prompt)
             self._ensure_active(task_id, run_id=run.run_id)
@@ -554,6 +581,61 @@ class WorldBuildGraphRunner:
                 )
                 self.service.fail_run(run.run_id, diagnostics)
                 raise WorldBuildGraphFailure(task_id, diagnostics, message="world model request failed")
+            if final_repair:
+                repaired: dict[str, Any] | None = None
+                repair_diagnostics: tuple[BuildDiagnostic, ...] = ()
+                if task_id == "power_system_paths" and final_path_scope is not None:
+                    patch, repair_parse_diagnostics = parse_power_path_repair_payload(
+                        getattr(response, "text", "")
+                    )
+                    if patch is None:
+                        repair_diagnostics = repair_parse_diagnostics
+                    else:
+                        repaired, repair_diagnostics = merge_power_path_repair(
+                            final_repair_candidate,
+                            patch,
+                            final_path_scope,
+                        )
+                else:
+                    candidate, parse_diagnostics = parse_task_payload(
+                        getattr(response, "text", ""),
+                        spec.output_fields,
+                    )
+                    if candidate is None:
+                        repair_diagnostics = parse_diagnostics
+                    else:
+                        repaired, merge_diagnostics = self._merge_repair_patch(
+                            final_repair_candidate,
+                            candidate,
+                            final_repair_fields,
+                        )
+                        if merge_diagnostics:
+                            repair_diagnostics = merge_diagnostics
+                if repaired is not None and not repair_diagnostics:
+                    repaired = self._preserve_existing_non_power_values(task_id, repaired)
+                    repair_diagnostics = self.service.validate(
+                        task_id,
+                        repaired,
+                        requested_writes=spec.task.owns,
+                    ).diagnostics
+                if repaired is not None and not repair_diagnostics:
+                    self._ensure_active(task_id, run_id=run.run_id)
+                    result = self.service.commit_run(
+                        run.run_id,
+                        repaired,
+                        requested_writes=spec.task.owns,
+                        source="ai_repair",
+                        provider=str(getattr(response, "provider", "") or "") or None,
+                        model=str(getattr(response, "resolved_model", "") or getattr(response, "model", "") or "") or None,
+                        prompt_call_id=call_id,
+                    )
+                    if result.artifact is None:
+                        raise WorldBuildGraphFailure(task_id, result.validation.diagnostics)
+                    self._progress(task_id, "done", f"已修复并完成：{spec.task.title}")
+                    return
+                self.service.fail_run(run.run_id, repair_diagnostics)
+                raise WorldBuildGraphFailure(task_id, repair_diagnostics)
+
             candidate, parse_diagnostics = parse_task_payload(
                 getattr(response, "text", ""),
                 spec.output_fields,
@@ -566,24 +648,6 @@ class WorldBuildGraphRunner:
                     self._preserve_existing_non_power_values(task_id, candidate),
                     requested_writes=spec.task.owns,
                 ).diagnostics
-            if final_repair:
-                if candidate is not None and not diagnostics:
-                    self._ensure_active(task_id, run_id=run.run_id)
-                    result = self.service.commit_run(
-                        run.run_id,
-                        self._preserve_existing_non_power_values(task_id, candidate),
-                        requested_writes=spec.task.owns,
-                        source="ai_repair",
-                        provider=str(getattr(response, "provider", "") or "") or None,
-                        model=str(getattr(response, "resolved_model", "") or getattr(response, "model", "") or "") or None,
-                        prompt_call_id=call_id,
-                    )
-                    if result.artifact is None:
-                        raise WorldBuildGraphFailure(task_id, result.validation.diagnostics)
-                    self._progress(task_id, "done", f"已修复并完成：{spec.task.title}")
-                    return
-                self.service.fail_run(run.run_id, diagnostics)
-                raise WorldBuildGraphFailure(task_id, diagnostics)
             if candidate is not None and not diagnostics:
                 self._ensure_active(task_id, run_id=run.run_id)
                 result = self.service.commit_run(

@@ -1,0 +1,235 @@
+"""Structured repair contracts for residual power-system validation failures."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from copy import deepcopy
+from dataclasses import dataclass
+from typing import Any
+
+from packages.story_core.build_graph.contracts import BuildDiagnostic
+from packages.story_core.models import NovelProject
+from packages.story_core.power_system_spec import (
+    PATH_FIELDS,
+    effective_power_system_template,
+    is_placeholder_content,
+    uses_traditional_game_class_advancement,
+)
+from packages.story_core.world_enrichment import _selected_novel_type_plugin
+
+
+POWER_PATH_REPAIR_SCHEMA = {
+    "updates": "{index:int,fields:object}[]",
+    "append": "object[]",
+}
+
+
+@dataclass(frozen=True)
+class PowerPathRepairScope:
+    """Deterministic limits for one final residual path repair."""
+
+    update_fields: Mapping[int, tuple[str, ...]]
+    append_count: int
+    append_fields: tuple[str, ...]
+
+    def as_prompt_payload(self) -> dict[str, Any]:
+        return {
+            "updates": [
+                {"index": index, "fields": list(fields)}
+                for index, fields in sorted(self.update_fields.items())
+            ],
+            "append_count": self.append_count,
+            "append_fields": list(self.append_fields),
+        }
+
+
+def _nonempty(value: Any) -> bool:
+    if value is None or value == "" or value == [] or value == {}:
+        return False
+    if isinstance(value, str) and is_placeholder_content(value):
+        return False
+    return True
+
+
+def _path_field_missing(path: Mapping[str, Any], field: str) -> bool:
+    return not _nonempty(path.get(field))
+
+
+def _traditional_game_contract(project: NovelProject, paths: Sequence[Any]) -> bool:
+    blueprint = project.world_blueprint if isinstance(project.world_blueprint, Mapping) else {}
+    existing = blueprint.get("power_system_spec") if isinstance(blueprint.get("power_system_spec"), Mapping) else {}
+    candidate = dict(existing)
+    candidate["paths"] = list(paths)
+    return uses_traditional_game_class_advancement(candidate)
+
+
+def _minimum_path_count(project: NovelProject, paths: Sequence[Any]) -> int:
+    plugin = _selected_novel_type_plugin(project)
+    blueprint = project.world_blueprint if isinstance(project.world_blueprint, Mapping) else {}
+    existing = blueprint.get("power_system_spec") if isinstance(blueprint.get("power_system_spec"), Mapping) else {}
+    candidate = dict(existing)
+    candidate["paths"] = list(paths)
+    template = effective_power_system_template(
+        plugin.plugin_id,
+        plugin.power_system_template,
+        candidate,
+    )
+    value = template.get("minimum_path_count", 2)
+    return max(1, int(value)) if isinstance(value, int) and not isinstance(value, bool) else 2
+
+
+def _add_field(targets: dict[int, set[str]], index: int, field: str) -> None:
+    if field in PATH_FIELDS:
+        targets.setdefault(index, set()).add(field)
+
+
+def _indices_missing(paths: Sequence[Any], field: str) -> set[int]:
+    return {
+        index
+        for index, path in enumerate(paths)
+        if isinstance(path, Mapping) and _path_field_missing(path, field)
+    }
+
+
+def power_path_repair_scope(
+    payload: Mapping[str, Any],
+    diagnostics: Sequence[BuildDiagnostic],
+    project: NovelProject,
+) -> PowerPathRepairScope:
+    """Translate final diagnostics into item/field-level path repair limits."""
+
+    raw_paths = payload.get("paths") if isinstance(payload, Mapping) else None
+    paths = list(raw_paths) if isinstance(raw_paths, list) else []
+    targets: dict[int, set[str]] = {}
+    append_count = 0
+    traditional_game = _traditional_game_contract(project, paths)
+
+    for diagnostic in diagnostics:
+        code = diagnostic.code.removeprefix("power.final.")
+        if code == "paths.minimum_count":
+            append_count = max(append_count, _minimum_path_count(project, paths) - len(paths))
+            continue
+        if code == "game.missing_classes":
+            append_count = max(append_count, 6 - len(paths))
+            continue
+        if code == "paths.duplicate_names" or code == "game.invalid_classes":
+            seen: set[str] = set()
+            for index, path in enumerate(paths):
+                name = str(path.get("name") or "").casefold() if isinstance(path, Mapping) else ""
+                if name and name in seen:
+                    _add_field(targets, index, "name")
+                elif name:
+                    seen.add(name)
+            continue
+        if code == "paths.distinct_branches":
+            for index, path in enumerate(paths):
+                branches = path.get("branches") if isinstance(path, Mapping) else None
+                if not isinstance(branches, list) or len({str(item).casefold() for item in branches}) < 2:
+                    _add_field(targets, index, "branches")
+            continue
+        if code == "paths.missing_name":
+            for index in _indices_missing(paths, "name"):
+                _add_field(targets, index, "name")
+            continue
+        if code.startswith("game.path_missing_"):
+            missing = code.removeprefix("game.path_missing_")
+            field = {
+                "weapon_affinity": "weapons",
+                "armor_affinity": "armor",
+            }.get(missing, missing)
+            for index in _indices_missing(paths, field):
+                _add_field(targets, index, field)
+            continue
+        if code in {
+            "game.path_invalid_advancement_tree",
+            "game.path_incomplete_advancement_node",
+            "game.path_incomplete_advancement_option",
+        }:
+            for index, path in enumerate(paths):
+                tree = path.get("advancement_tree") if isinstance(path, Mapping) else None
+                if not isinstance(tree, list) or not tree or any(not isinstance(node, Mapping) for node in tree):
+                    _add_field(targets, index, "advancement_tree")
+                else:
+                    _add_field(targets, index, "advancement_tree")
+
+    if traditional_game:
+        append_fields = tuple(PATH_FIELDS)
+    else:
+        append_fields = tuple(
+            field
+            for field in PATH_FIELDS
+            if field not in {"weapons", "armor", "combat_loop", "transfer_task", "advancement_tree"}
+        )
+    return PowerPathRepairScope(
+        update_fields={index: tuple(sorted(fields)) for index, fields in sorted(targets.items())},
+        append_count=max(0, append_count),
+        append_fields=append_fields,
+    )
+
+
+def merge_power_path_repair(
+    base_payload: Mapping[str, Any] | None,
+    patch: Mapping[str, Any],
+    scope: PowerPathRepairScope,
+) -> tuple[dict[str, Any] | None, tuple[BuildDiagnostic, ...]]:
+    """Apply only allowed item/field updates and exact bounded appends."""
+
+    if not isinstance(base_payload, Mapping) or not isinstance(base_payload.get("paths"), list):
+        return None, (_repair_diagnostic("task.repair_base_missing", "paths", "path repair requires the committed paths payload"),)
+    if not isinstance(patch, Mapping):
+        return None, (_repair_diagnostic("task.invalid_json", "payload", "path repair must be an object"),)
+    unknown = sorted(set(patch).difference({"updates", "append"}))
+    if unknown:
+        return None, (_repair_diagnostic("task.repair_out_of_scope", "payload", "path repair only allows updates and append"),)
+
+    updates = patch.get("updates", [])
+    appends = patch.get("append", [])
+    if not isinstance(updates, list) or not isinstance(appends, list):
+        return None, (_repair_diagnostic("task.repair_out_of_scope", "payload", "updates and append must be arrays"),)
+    if len(appends) != scope.append_count:
+        return None, (
+            _repair_diagnostic(
+                "task.repair_out_of_scope",
+                "append",
+                f"path repair allows exactly {scope.append_count} appended path(s)",
+            ),
+        )
+
+    merged_paths = deepcopy(base_payload["paths"])
+    for item in updates:
+        if not isinstance(item, Mapping) or set(item).difference({"index", "fields"}):
+            return None, (_repair_diagnostic("task.repair_out_of_scope", "updates", "each update must contain only index and fields"),)
+        index = item.get("index")
+        fields = item.get("fields")
+        if isinstance(index, bool) or not isinstance(index, int) or index not in scope.update_fields:
+            return None, (_repair_diagnostic("task.repair_out_of_scope", "updates", "update index is not an allowed diagnostic target"),)
+        if not isinstance(fields, Mapping) or not fields:
+            return None, (_repair_diagnostic("task.repair_out_of_scope", f"updates[{index}].fields", "update fields must be a non-empty object"),)
+        allowed = set(scope.update_fields[index])
+        unexpected = sorted(set(fields).difference(allowed))
+        if unexpected:
+            return None, (_repair_diagnostic("task.repair_out_of_scope", f"updates[{index}].fields", "update field is outside the diagnostic scope"),)
+        if index >= len(merged_paths) or not isinstance(merged_paths[index], Mapping):
+            return None, (_repair_diagnostic("task.repair_out_of_scope", f"updates[{index}]", "update index is not present in the committed paths"),)
+        merged_paths[index].update(deepcopy(dict(fields)))
+
+    for index, item in enumerate(appends):
+        if not isinstance(item, Mapping) or not item:
+            return None, (_repair_diagnostic("task.repair_out_of_scope", f"append[{index}]", "appended path must be an object"),)
+        unexpected = sorted(set(item).difference(scope.append_fields))
+        if unexpected:
+            return None, (_repair_diagnostic("task.repair_out_of_scope", f"append[{index}]", "appended path contains an undeclared field"),)
+        merged_paths.append(deepcopy(dict(item)))
+    return {"paths": merged_paths}, ()
+
+
+def _repair_diagnostic(code: str, path: str, message: str) -> BuildDiagnostic:
+    return BuildDiagnostic(code=code, path=path, message=message, severity="blocking")
+
+
+__all__ = [
+    "POWER_PATH_REPAIR_SCHEMA",
+    "PowerPathRepairScope",
+    "merge_power_path_repair",
+    "power_path_repair_scope",
+]
