@@ -418,12 +418,49 @@ def repair_fields_for_diagnostics(
                 path = path[len(prefix) :]
                 break
         root = path.split(".", 1)[0].split("[", 1)[0]
+        if root not in output_fields and diagnostic.code.startswith("power.final."):
+            final_code = diagnostic.code.removeprefix("power.final.")
+            final_field = _power_final_field_for_diagnostic(final_code)
+            if final_field in output_fields:
+                root = final_field
         if root not in output_fields:
             return None
         affected.add(root)
 
     fields = tuple(field for field in output_fields if field in affected)
     return fields or None
+
+
+def _power_final_field_for_diagnostic(code: str) -> str:
+    """Map a routed final diagnostic to its owning section field."""
+
+    missing_sections = {
+        "missing_name": "name",
+        "missing_origin": "origin",
+        "missing_attributes": "attributes",
+        "missing_skills": "skills",
+        "missing_equipment": "equipment",
+        "missing_resources": "resources",
+        "missing_advancement": "advancement",
+        "missing_costs": "costs",
+        "missing_counters": "counters",
+        "missing_boundaries": "boundaries",
+        "missing_social_impact": "social_impact",
+        "missing_visibility": "visibility",
+        "missing_continuity_ledger": "continuity_ledger",
+        "missing_attribute_allocation": "attribute_allocation",
+        "missing_class_advancement_tiers": "class_advancement_tiers",
+    }
+    if code in missing_sections:
+        return missing_sections[code]
+    if code.startswith("continuity_ledger."):
+        return "continuity_ledger"
+    if code.startswith("game.class_advancement") or code in {
+        "game.invalid_class_advancement_tiers",
+        "game.incomplete_class_advancement_tier",
+    }:
+        return "class_advancement_tiers"
+    return ""
 
 
 def build_task_prompt(
@@ -473,6 +510,38 @@ def build_task_prompt(
     return "\n".join(lines)
 
 
+def build_power_path_repair_prompt(
+    graph: WorldBuildGraph,
+    task_id: str,
+    contract: Mapping[str, Any],
+    *,
+    repair_candidate: Mapping[str, Any],
+    diagnostics: Sequence[BuildDiagnostic],
+    scope: Any,
+) -> str:
+    """Build the item-scoped patch contract for residual path repairs."""
+
+    from .power_repairs import POWER_PATH_REPAIR_SCHEMA
+
+    spec = graph.spec(task_id)
+    lines = [
+        "你是 NovelFlow 的受 ownership 约束的世界构建修复器。只返回 JSON，不要 Markdown，不要小说正文。",
+        f"当前任务：{task_id} / {spec.task.title}",
+        "修复协议：power-path-repair/v1",
+        "只允许对当前候选中的指定 paths[index] 字段做更新，或按允许数量 append 新路线；禁止删除路线、重排路线或修改未授权字段。",
+        f"任务只允许写入：{', '.join(spec.task.owns)}",
+        f"输出契约：{_json_text(POWER_PATH_REPAIR_SCHEMA)}",
+        f"允许修复范围：{_json_text(scope.as_prompt_payload())}",
+        f"当前候选：{_json_text(repair_candidate)}",
+        "诊断：" + _json_text([item.to_dict() for item in diagnostics]),
+        "输入只来自下面列出的已提交依赖 artifact；不得臆造未提供的事实。",
+        f"bounded input contract: {_json_text(contract)}",
+        "updates 中每项必须使用允许的 index，并且 fields 只能包含该 index 被授权的字段。append 必须严格匹配允许数量。",
+        "replace_indices 中的目标必须用 fields 提交完整 replacement object；其他 index 只能更新被授权字段。",
+    ]
+    return "\n".join(lines)
+
+
 def parse_task_payload(text: str, allowed_fields: Sequence[str]) -> tuple[dict[str, Any] | None, tuple[BuildDiagnostic, ...]]:
     try:
         parsed = parse_json_message_content(
@@ -497,6 +566,27 @@ def parse_task_payload(text: str, allowed_fields: Sequence[str]) -> tuple[dict[s
     return deepcopy(dict(parsed)), ()
 
 
+def parse_power_path_repair_payload(text: str) -> tuple[dict[str, Any] | None, tuple[BuildDiagnostic, ...]]:
+    """Parse the dedicated path patch envelope without silently filtering it."""
+
+    try:
+        parsed = parse_json_message_content(
+            {"choices": [{"message": {"content": str(text or "")}}]}
+        )
+    except Exception:
+        parsed = None
+    if not isinstance(parsed, Mapping):
+        return None, (
+            BuildDiagnostic(
+                "task.invalid_json",
+                "payload",
+                "model response was not a JSON object",
+                "blocking",
+            ),
+        )
+    return deepcopy(dict(parsed)), ()
+
+
 __all__ = [
     "bounded_json_projection",
     "build_input_contract",
@@ -504,6 +594,7 @@ __all__ = [
     "canonical_world_input",
     "input_fingerprint",
     "parse_task_payload",
+    "parse_power_path_repair_payload",
     "repair_fields_for_diagnostics",
     "run_read_projection",
     "task_payload_from_project",

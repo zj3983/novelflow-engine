@@ -24,8 +24,14 @@ from packages.story_core.world_build.tasks import (
 )
 from packages.story_core.world_build.validators import make_world_validators
 from packages.story_core.world_build.validators import power_final_owner_task
+from packages.story_core.world_build.power_repairs import (
+    PowerPathRepairScope,
+    merge_power_path_repair,
+    power_path_repair_scope,
+    raw_power_spec_from_artifacts,
+)
 from packages.story_core.build_graph.contracts import BuildDiagnostic
-from packages.story_core.power_system_spec import validate_power_system_spec
+from packages.story_core.power_system_spec import PATH_FIELDS, validate_power_system_spec
 
 
 def _store(tmp_path: Path, *, plugin_id: str) -> FileProjectStore:
@@ -151,6 +157,88 @@ def _power_sections() -> dict[str, dict[str, Any]]:
             "continuity_ledger": ["阶段", "余量", "反噬", "边界"],
         },
     }
+
+
+def _traditional_path_payload(name: str, *, weapons: bool = True) -> dict[str, Any]:
+    payload = {
+        "name": name,
+        "role": "承担一类职业职责。",
+        "core_resource": "职业资源",
+        "core_attributes": ["体魄"],
+        "armor": ["轻甲"],
+        "combat_loop": "观察、选择、执行、复盘。",
+        "strengths": ["稳定"],
+        "weaknesses": ["准备成本高"],
+        "skill_categories": ["基础技艺"],
+        "branches": ["强化", "变异"],
+        "transfer_task": "完成转职任务。",
+        "advancement": ["完成一次阶段验证。"],
+        "advancement_tree": [
+            {
+                "level": level,
+                "tier_name": f"阶段{level}",
+                "options": [
+                    {
+                        "name": f"选项{level}",
+                        "transfer_task": f"完成{level}级任务",
+                        "ability_changes": [f"获得{level}级能力"],
+                    }
+                ],
+            }
+            for level in (10, 30, 60)
+        ],
+    }
+    if weapons:
+        payload["weapons"] = ["专属武器"]
+    return payload
+
+
+def _traditional_game_power_sections() -> dict[str, dict[str, Any]]:
+    sections = deepcopy(_power_sections())
+    sections["power_system_paths"] = {
+        "paths": [
+            _traditional_path_payload(name)
+            for name in ("战士", "法师", "游侠", "盗贼", "牧师", "召唤师")
+        ]
+    }
+    sections["power_system_stages"] = {
+        "stages": [
+            {
+                "name": name,
+                "level": level,
+                "entry": entry,
+                "change": change,
+                "failure": failure,
+            }
+            for name, level, entry, change, failure in (
+                ("见习者", 1, "创建角色。", "获得通用技能。", "角色重建。"),
+                ("正式职业", 10, "完成Lv.10转职任务。", "获得职业资源。", "任务冷却。"),
+                ("专精", 20, "完成Lv.20专精试炼。", "强化战斗方向。", "材料损失。"),
+                ("进阶职业", 30, "完成Lv.30分支任务。", "获得分支技能。", "晋升延期。"),
+                ("传承", 60, "完成Lv.60传承试炼。", "获得职业权柄。", "传承反噬。"),
+            )
+        ]
+    }
+    constraints = deepcopy(sections["power_system_constraints"])
+    constraints["continuity_ledger"] = [
+        "level",
+        "skills",
+        "equipment",
+        "resources",
+        "conditions",
+    ]
+    constraints["class_advancement_tiers"] = [
+        {
+            "level": level,
+            "name": f"Lv.{level}晋升",
+            "purpose": f"定义{level}级职业里程碑。",
+            "common_requirements": [f"达到{level}级并完成公共试炼。"],
+            "failure_rule": "冷却后可以重新挑战。",
+        }
+        for level in (10, 30, 60)
+    ]
+    sections["power_system_constraints"] = constraints
+    return sections
 
 
 def _structured_payloads() -> dict[str, list[Any]]:
@@ -285,6 +373,91 @@ def test_model_world_tasks_have_complete_output_contract(plugin_id: str) -> None
         if spec.kind != "model":
             continue
         assert set(spec.output_fields) == set((spec.output_schema or {}).keys()), spec.task_id
+
+
+def test_traditional_game_path_contract_declares_structured_path_fields() -> None:
+    graph = build_world_build_graph(
+        NovelProject(
+            project_id="file:x",
+            title="传统职业",
+            world_blueprint={
+                "genre_plugin_ids": ["game_webnovel"],
+                "power_system_spec": {
+                    "class_advancement_tiers": [{"level": 10}],
+                },
+            },
+        )
+    )
+    schema = graph.spec("power_system_paths").output_schema or {}
+    assert "advancement_tree" in str(schema["paths"])
+    assert "weapons" in str(schema["paths"])
+    assert "combat_loop" in str(schema["paths"])
+
+
+def test_nontraditional_game_path_contract_does_not_force_class_fields() -> None:
+    graph = build_world_build_graph(
+        NovelProject(
+            project_id="file:x",
+            title="自定义玩法",
+            world_blueprint={"genre_plugin_ids": ["game_webnovel"]},
+        )
+    )
+    assert graph.spec("power_system_paths").output_schema == {"paths": "object[]"}
+
+
+def test_traditional_path_shape_is_rejected_at_section_boundary() -> None:
+    project = NovelProject(
+        project_id="file:x",
+        title="传统路径边界",
+        world_blueprint={"genre_plugin_ids": ["game_webnovel"]},
+    )
+    result = make_world_validators(project)["power.paths"](
+        {
+            "paths": [
+                {
+                    "name": "职业一",
+                    "branches": ["a", "b"],
+                    "transfer_task": "完成转职",
+                    "advancement_tree": [{"level": 10}],
+                }
+            ]
+        }
+    )
+    codes = {item.code for item in result}
+    assert "power.paths.missing_weapons" in codes
+    assert "power.paths.missing_combat_loop" in codes
+    assert "power.paths.missing_advancement" in codes
+
+
+def test_non_game_transfer_task_does_not_enable_traditional_game_contract() -> None:
+    project = NovelProject(
+        project_id="file:x",
+        title="玄幻路线",
+        world_blueprint={"genre_plugin_ids": ["xuanhuan"]},
+    )
+    paths = [
+        {"name": "剑修", "branches": ["御剑", "剑阵"], "transfer_task": "完成剑心试炼。"},
+        {"name": "符修", "branches": ["阵符", "战符"]},
+    ]
+
+    assert make_world_validators(project)["power.paths"]({"paths": paths}) is True
+
+    sections = _power_sections()
+    spec: dict[str, Any] = {}
+    for payload in sections.values():
+        spec.update(deepcopy(payload))
+    spec["paths"] = paths
+    validated = validate_power_system_spec(spec, novel_type_id="xuanhuan")
+    assert validated["paths"][0]["transfer_task"] == "完成剑心试炼。"
+
+    scope = power_path_repair_scope(
+        {"paths": paths[:1]},
+        (BuildDiagnostic("power.final.paths.minimum_count", "paths", "count"),),
+        project,
+        raw_spec={"paths": paths[:1], "class_advancement_tiers": [{"level": 10}]},
+    )
+    assert scope.append_count == 1
+    assert scope.append_required_fields == ("name", "branches")
 
 
 def test_wrapped_model_payload_keeps_unowned_fields_for_hard_rejection() -> None:
@@ -478,7 +651,7 @@ def test_failed_focused_repair_keeps_task_failed_without_official_artifact(tmp_p
     assert store.build_artifact("power_system_foundation") is not None
     assert store.build_graph_service  # service surface remains available for retry
     assert store.build_graph_materialization() is None
-    assert any(item["code"] == "power.attributes.missing" for item in state["tasks"]["power_system_attributes"]["diagnostics"])
+    assert any(item["code"] == "task.repair_incomplete" for item in state["tasks"]["power_system_attributes"]["diagnostics"])
 
 
 def test_resume_reuses_completed_artifacts_after_model_failure(tmp_path: Path) -> None:
@@ -992,7 +1165,9 @@ def _prepare_power_final_residual(
 def test_power_final_residual_diagnostic_is_a_focused_repair_end_to_end(tmp_path: Path) -> None:
     store, _invalid_constraints, valid_constraints = _prepare_power_final_residual(tmp_path)
     payloads = _generic_payloads()
-    payloads["power_system_constraints"] = [valid_constraints]
+    payloads["power_system_constraints"] = [
+        {"continuity_ledger": valid_constraints["continuity_ledger"]}
+    ]
     gateway = ScriptedGateway(payloads)
 
     WorldBuildGraphRunner(
@@ -1005,14 +1180,486 @@ def test_power_final_residual_diagnostic_is_a_focused_repair_end_to_end(tmp_path
     assert len(calls) == 1
     assert "power.final.continuity_ledger.minimum_count" in calls[0].prompt
     assert "当前候选" in calls[0].prompt
+    assert '输出契约：{"continuity_ledger":"string[]"}' in calls[0].prompt
     assert store.build_artifact("power_system_constraints")["source"] == "ai_repair"
     assert store.build_artifact("power_system_final")["source"] == "deterministic"
 
 
-def test_power_final_residual_repair_failure_is_capped_end_to_end(tmp_path: Path) -> None:
-    store, invalid_constraints, _valid_constraints = _prepare_power_final_residual(tmp_path)
+def test_power_final_constraint_repair_preserves_unaffected_fields(tmp_path: Path) -> None:
+    store, invalid_constraints, valid_constraints = _prepare_power_final_residual(tmp_path)
     payloads = _generic_payloads()
-    payloads["power_system_constraints"] = [invalid_constraints]
+    payloads["power_system_constraints"] = [
+        {"continuity_ledger": valid_constraints["continuity_ledger"]}
+    ]
+    gateway = ScriptedGateway(payloads)
+
+    WorldBuildGraphRunner(
+        NovelProject.model_validate(store.project()),
+        store=store,
+        model_gateway=gateway,
+    ).run()
+
+    repaired = store.build_artifact("power_system_constraints")
+    assert repaired is not None
+    assert repaired["payload"]["continuity_ledger"] == valid_constraints["continuity_ledger"]
+    assert repaired["payload"]["costs"] == invalid_constraints["costs"]
+    assert repaired["payload"]["boundaries"] == invalid_constraints["boundaries"]
+
+
+def test_power_path_repair_scope_targets_only_diagnostic_items_and_fields() -> None:
+    project = NovelProject(
+        project_id="file:path-repair",
+        title="路径修复",
+        world_blueprint={"genre_plugin_ids": ["xuanhuan"]},
+    )
+    payload = {
+        "paths": [
+            {"name": "同名", "branches": ["单分支"], "role": "保留"},
+            {"name": "同名", "branches": ["观测", "重写"], "role": "不应变化"},
+        ]
+    }
+    scope = power_path_repair_scope(
+        payload,
+        (
+            BuildDiagnostic("power.final.paths.duplicate_names", "paths", "duplicate"),
+            BuildDiagnostic("power.final.paths.distinct_branches", "paths", "branches"),
+        ),
+        project,
+    )
+
+    assert scope.update_fields == {0: ("branches",), 1: ("name",)}
+    merged, diagnostics = merge_power_path_repair(
+        payload,
+        {
+            "updates": [
+                {"index": 0, "fields": {"branches": ["强化", "变异"]}},
+                {"index": 1, "fields": {"name": "新名"}},
+            ],
+            "append": [],
+        },
+        scope,
+    )
+
+    assert not diagnostics
+    assert merged is not None
+    assert merged["paths"][0]["role"] == "保留"
+    assert merged["paths"][1]["role"] == "不应变化"
+    assert merged["paths"][0]["branches"] == ["强化", "变异"]
+    assert merged["paths"][1]["name"] == "新名"
+
+
+def test_power_path_repair_scope_supports_advancement_tree_and_exact_append() -> None:
+    project = NovelProject(
+        project_id="file:path-repair",
+        title="路径树",
+        world_blueprint={
+            "genre_plugin_ids": ["game_webnovel"],
+            "power_system_spec": {"class_advancement_tiers": [{"level": 10}]},
+        },
+    )
+    payload = {"paths": [{"name": "职业一", "branches": ["a", "b"], "advancement_tree": []}]}
+    tree_scope = power_path_repair_scope(
+        payload,
+        (BuildDiagnostic("power.final.game.path_invalid_advancement_tree", "paths", "tree"),),
+        project,
+    )
+    assert tree_scope.update_fields == {0: ("advancement_tree",)}
+
+    append_scope = power_path_repair_scope(
+        payload,
+        (BuildDiagnostic("power.final.paths.minimum_count", "paths", "count"),),
+        project,
+    )
+    assert append_scope.append_count == 5
+    assert append_scope.append_required_fields == tuple(PATH_FIELDS)
+    merged, diagnostics = merge_power_path_repair(
+        payload,
+        {"updates": [], "append": [_traditional_path_payload(f"职业{i}") for i in range(5)]},
+        append_scope,
+    )
+    assert not diagnostics
+    assert merged is not None and len(merged["paths"]) == 6
+
+
+def _valid_advancement_tree() -> list[dict[str, Any]]:
+    return [
+        {
+            "level": level,
+            "tier_name": f"阶段{level}",
+            "options": [
+                {
+                    "name": f"选项{level}",
+                    "transfer_task": f"完成{level}级任务",
+                    "ability_changes": [f"获得{level}级能力"],
+                }
+            ],
+        }
+        for level in (10, 30, 60)
+    ]
+
+
+@pytest.mark.parametrize(
+    "diagnostic_code",
+    (
+        "power.final.game.path_invalid_advancement_tree",
+        "power.final.game.path_incomplete_advancement_node",
+        "power.final.game.path_incomplete_advancement_option",
+    ),
+)
+def test_power_path_repair_scope_targets_only_invalid_advancement_tree_index(
+    diagnostic_code: str,
+) -> None:
+    valid_tree = _valid_advancement_tree()
+    invalid_tree = deepcopy(valid_tree)
+    if diagnostic_code.endswith("invalid_advancement_tree"):
+        invalid_tree.pop()
+    elif diagnostic_code.endswith("incomplete_advancement_node"):
+        invalid_tree[0]["tier_name"] = ""
+    else:
+        invalid_tree[0]["options"][0]["name"] = ""
+    paths = [
+        {"name": "职业一", "branches": ["a", "b"], "advancement_tree": valid_tree},
+        {"name": "职业二", "branches": ["a", "b"], "advancement_tree": invalid_tree},
+        {"name": "职业三", "branches": ["a", "b"], "advancement_tree": valid_tree},
+    ]
+    project = NovelProject(
+        project_id="file:path-tree",
+        title="精确树索引",
+        world_blueprint={"genre_plugin_ids": ["game_webnovel"]},
+    )
+    scope = power_path_repair_scope(
+        {"paths": paths},
+        (BuildDiagnostic(diagnostic_code, "paths", "tree diagnostic"),),
+        project,
+        raw_spec={"paths": paths, "class_advancement_tiers": [{"level": 10}]},
+    )
+
+    assert scope.update_fields == {1: ("advancement_tree",)}
+    out_of_scope, diagnostics = merge_power_path_repair(
+        {"paths": paths},
+        {"updates": [{"index": 0, "fields": {"advancement_tree": []}}], "append": []},
+        scope,
+    )
+    assert out_of_scope is None
+    assert [item.code for item in diagnostics] == ["task.repair_out_of_scope"]
+
+
+def test_power_path_repair_uses_raw_committed_sections_for_traditional_mode() -> None:
+    paths = [{"name": "自定义路线", "branches": ["a", "b"]}]
+    project = NovelProject(
+        project_id="file:path-raw-spec",
+        title="未物化传统模式",
+        world_blueprint={"genre_plugin_ids": ["game_webnovel"]},
+    )
+
+    class FakeService:
+        def inspect_artifact(self, task_id: str) -> Any:
+            payloads = {
+                "power_system_foundation": {"name": "体系", "origin": ["来源"]},
+                "power_system_attributes": {"attributes": [{"name": "属性", "effect": "效果"}]},
+                "power_system_paths": {"paths": paths},
+                "power_system_stages": {"stages": []},
+                "power_system_resources": {"skills": [], "equipment": [], "resources": [], "advancement": []},
+                "power_system_constraints": {"class_advancement_tiers": [{"level": 10}]},
+            }
+            value = payloads.get(task_id)
+            return type("Artifact", (), {"payload": value})() if value is not None else None
+
+    raw_spec = raw_power_spec_from_artifacts(FakeService())
+    scope = power_path_repair_scope(
+        {"paths": paths},
+        (BuildDiagnostic("power.final.paths.minimum_count", "paths", "count"),),
+        project,
+        raw_spec=raw_spec,
+    )
+
+    assert scope.append_count == 5
+    assert scope.append_fields == tuple(PATH_FIELDS)
+
+
+def test_power_path_repair_requires_every_update_target_and_field() -> None:
+    scope = PowerPathRepairScope(
+        update_fields={0: ("branches",), 2: ("name", "role")},
+        append_count=1,
+        append_fields=tuple(PATH_FIELDS),
+    )
+    base = {"paths": [{"name": "a"}, {"name": "b"}, {"name": "c"}]}
+    cases = (
+        {"updates": [{"index": 0, "fields": {"branches": ["a", "b"]}}], "append": [{"name": "d"}]},
+        {"updates": [{"index": 0, "fields": {"branches": ["a", "b"]}}, {"index": 2, "fields": {"name": "c"}}], "append": [{"name": "d"}]},
+        {"updates": [], "append": [{"name": "d"}]},
+    )
+    for patch in cases:
+        merged, diagnostics = merge_power_path_repair(base, patch, scope)
+        assert merged is None
+        assert [item.code for item in diagnostics] == ["task.repair_incomplete"]
+
+
+def test_power_path_repair_rejects_out_of_scope_updates() -> None:
+    project = NovelProject(
+        project_id="file:path-repair",
+        title="越界修复",
+        world_blueprint={"genre_plugin_ids": ["xuanhuan"]},
+    )
+    payload = {"paths": [{"name": "路线", "branches": ["a"]}]}
+    scope = power_path_repair_scope(
+        payload,
+        (BuildDiagnostic("power.final.paths.distinct_branches", "paths", "branches"),),
+        project,
+    )
+    merged, diagnostics = merge_power_path_repair(
+        payload,
+        {"updates": [{"index": 0, "fields": {"name": "越界"}}], "append": []},
+        scope,
+    )
+    assert merged is None
+    assert [item.code for item in diagnostics] == ["task.repair_out_of_scope"]
+
+
+def test_power_final_path_residual_uses_structured_patch_and_reruns_final(tmp_path: Path) -> None:
+    store = _store(tmp_path, plugin_id="xuanhuan")
+    first_runner = WorldBuildGraphRunner(
+        NovelProject.model_validate(store.project()),
+        store=store,
+        model_gateway=ScriptedGateway(_structured_payloads()),
+    )
+    first_runner.run()
+
+    current = store.build_artifact("power_system_paths")
+    assert current is not None
+    paths = current["payload"]["paths"]
+    patch = {
+        "updates": [
+            {"index": index, "fields": {"weapons": [f"路线{index}媒介"]}}
+            for index in range(len(paths))
+        ],
+        "append": [],
+    }
+    resumed_payloads = _structured_payloads()
+    resumed_payloads["power_system_paths"] = [patch]
+    second_gateway = ScriptedGateway(resumed_payloads)
+    second_runner = WorldBuildGraphRunner(
+        NovelProject.model_validate(store.project()),
+        store=store,
+        model_gateway=second_gateway,
+    )
+    second_runner.service.invalidate_task(
+        "power_system_paths",
+        (
+            BuildDiagnostic(
+                "power.final.game.path_missing_weapon_affinity",
+                "game.path_missing_weapon_affinity",
+                "path weapons are required",
+            ),
+        ),
+    )
+
+    second_runner.run()
+
+    calls = [call for call in second_gateway.calls if call.operation == "world_build_power_system_paths"]
+    assert len(calls) == 1
+    assert "power-path-repair/v1" in calls[0].prompt
+    assert '输出契约：{"append":"object[]","updates":"{index:int,fields:object}[]"}' in calls[0].prompt
+    repaired = store.build_artifact("power_system_paths")
+    assert repaired is not None
+    assert repaired["source"] == "ai_repair"
+    assert all(path["weapons"] for path in repaired["payload"]["paths"])
+    assert store.build_artifact("power_system_final")["source"] == "deterministic"
+
+
+def test_power_final_path_repair_out_of_scope_stops_without_third_call(tmp_path: Path) -> None:
+    store = _store(tmp_path, plugin_id="xuanhuan")
+    WorldBuildGraphRunner(
+        NovelProject.model_validate(store.project()),
+        store=store,
+        model_gateway=ScriptedGateway(_structured_payloads()),
+    ).run()
+    before = store.build_artifact("power_system_paths")
+    assert before is not None
+    gateway = ScriptedGateway(
+        {
+            "power_system_paths": [
+                {"updates": [{"index": 0, "fields": {"name": "越界"}}], "append": []}
+            ]
+        }
+    )
+    runner = WorldBuildGraphRunner(
+        NovelProject.model_validate(store.project()),
+        store=store,
+        model_gateway=gateway,
+    )
+    runner.service.invalidate_task(
+        "power_system_paths",
+        (
+            BuildDiagnostic(
+                "power.final.game.path_missing_weapon_affinity",
+                "game.path_missing_weapon_affinity",
+                "path weapons are required",
+            ),
+        ),
+    )
+
+    with pytest.raises(WorldBuildGraphFailure) as caught:
+        runner.run()
+
+    assert caught.value.task_id == "power_system_paths"
+    assert len([call for call in gateway.calls if call.operation == "world_build_power_system_paths"]) == 1
+    after = store.build_artifact("power_system_paths")
+    assert after is not None
+    assert after["revision"] == before["revision"]
+    state = store.build_graph_state()
+    assert state is not None
+    assert state["tasks"]["power_system_paths"]["status"] == "validation_failed"
+
+
+def test_ordinary_traditional_path_repair_uses_structured_scoped_patch(tmp_path: Path) -> None:
+    store = _store(tmp_path, plugin_id="game_webnovel")
+    game_sections = _traditional_game_power_sections()
+    payloads = {task_id: [payload] for task_id, payload in game_sections.items()}
+    payloads.update(_generic_payloads())
+    payloads["game_ecology"] = [_game_ecology_payload()]
+    first_paths = {
+        "paths": [
+            _traditional_path_payload("战士"),
+            _traditional_path_payload("法师", weapons=False),
+        ]
+    }
+    repair_patch = {
+        "updates": [{"index": 1, "fields": {"weapons": ["专属武器"]}}],
+        "append": [
+            _traditional_path_payload(name)
+            for name in ("游侠", "盗贼", "牧师", "召唤师")
+        ],
+    }
+    payloads["power_system_paths"] = [first_paths, repair_patch]
+    gateway = ScriptedGateway(payloads)
+
+    result = WorldBuildGraphRunner(
+        NovelProject.model_validate(store.project()),
+        store=store,
+        model_gateway=gateway,
+    ).run()
+
+    calls = [call for call in gateway.calls if call.operation == "world_build_power_system_paths"]
+    assert len(calls) == 2
+    assert "power-path-repair/v1" in calls[1].prompt
+    assert '"updates":"{index:int,fields:object}[]"' in calls[1].prompt
+    assert '"index":1' in calls[1].prompt
+    assert '"fields":["weapons"]' in calls[1].prompt
+    assert '"append_count":4' in calls[1].prompt
+    assert "输出契约：{\"paths\":\"object[]\"}" not in calls[1].prompt
+    artifact = store.build_artifact("power_system_paths")
+    assert artifact is not None and artifact["source"] == "ai_repair"
+    assert artifact["payload"]["paths"][0] == first_paths["paths"][0]
+    assert artifact["payload"]["paths"][1]["weapons"] == ["专属武器"]
+    assert len(artifact["payload"]["paths"]) == 6
+    assert result.world_blueprint["power_system_spec"]["paths"][0]["name"] == "战士"
+
+
+def test_power_path_repair_requires_traditional_append_fields_but_not_nontraditional_extras() -> None:
+    traditional_scope = PowerPathRepairScope(
+        update_fields={},
+        append_count=2,
+        append_fields=tuple(PATH_FIELDS),
+        append_required_fields=tuple(PATH_FIELDS),
+    )
+    merged, diagnostics = merge_power_path_repair(
+        {"paths": []},
+        {"updates": [], "append": [{"name": "职业一", "branches": ["a", "b"]}] * 2},
+        traditional_scope,
+    )
+    assert merged is None
+    assert [item.code for item in diagnostics] == ["task.repair_incomplete"]
+
+    project = NovelProject(
+        project_id="file:nontraditional-append",
+        title="自定义路线",
+        world_blueprint={"genre_plugin_ids": ["xuanhuan"]},
+    )
+    scope = power_path_repair_scope(
+        {"paths": [{"name": "已有", "branches": ["a", "b"]}]},
+        (BuildDiagnostic("power.final.paths.minimum_count", "paths", "count"),),
+        project,
+    )
+    merged, diagnostics = merge_power_path_repair(
+        {"paths": [{"name": "已有", "branches": ["a", "b"]}]},
+        {"updates": [], "append": [{"name": "新增", "branches": ["a", "b"]}]},
+        scope,
+    )
+    assert not diagnostics
+    assert merged is not None and merged["paths"][-1]["name"] == "新增"
+
+
+def test_ordinary_path_repair_replaces_only_invalid_non_object_item(tmp_path: Path) -> None:
+    store = _store(tmp_path, plugin_id="xuanhuan")
+    payloads = _structured_payloads()
+    retained = deepcopy(_power_sections()["power_system_paths"]["paths"][0])
+    payloads["power_system_paths"] = [
+        {"paths": [retained, "bad"]},
+        {
+            "updates": [
+                {
+                    "index": 1,
+                    "fields": {"name": "法则路线", "branches": ["观测", "重写"]},
+                }
+            ],
+            "append": [],
+        },
+    ]
+    gateway = ScriptedGateway(payloads)
+
+    WorldBuildGraphRunner(
+        NovelProject.model_validate(store.project()),
+        store=store,
+        model_gateway=gateway,
+    ).run()
+
+    calls = [call for call in gateway.calls if call.operation == "world_build_power_system_paths"]
+    assert len(calls) == 2
+    assert "power-path-repair/v1" in calls[1].prompt
+    assert '"replace_indices":[1]' in calls[1].prompt
+    artifact = store.build_artifact("power_system_paths")
+    assert artifact is not None and artifact["source"] == "ai_repair"
+    assert artifact["payload"]["paths"][0] == retained
+    assert artifact["payload"]["paths"][1] == {
+        "name": "法则路线",
+        "branches": ["观测", "重写"],
+    }
+
+
+def test_invalid_path_item_replacement_is_limited_to_exact_diagnostic_index() -> None:
+    project = NovelProject(
+        project_id="file:path-replacement",
+        title="路径替换边界",
+        world_blueprint={"genre_plugin_ids": ["xuanhuan"]},
+    )
+    payload = {"paths": [{"name": "保留", "branches": ["甲", "乙"]}, "bad"]}
+    scope = power_path_repair_scope(
+        payload,
+        (BuildDiagnostic("power.paths.invalid_item", "paths[1]", "invalid"),),
+        project,
+    )
+
+    assert scope.replace_indices == (1,)
+    assert scope.update_fields == {1: ("branches", "name")}
+    merged, diagnostics = merge_power_path_repair(
+        payload,
+        {
+            "updates": [
+                {"index": 0, "fields": {"name": "越界", "branches": ["丙", "丁"]}}
+            ],
+            "append": [],
+        },
+        scope,
+    )
+    assert merged is None
+    assert [item.code for item in diagnostics] == ["task.repair_out_of_scope"]
+
+
+def test_power_final_residual_repair_failure_is_capped_end_to_end(tmp_path: Path) -> None:
+    store, _invalid_constraints, _valid_constraints = _prepare_power_final_residual(tmp_path)
+    payloads = _generic_payloads()
+    payloads["power_system_constraints"] = [{}]
     gateway = ScriptedGateway(payloads)
 
     with pytest.raises(WorldBuildGraphFailure) as caught:
@@ -1022,16 +1669,56 @@ def test_power_final_residual_repair_failure_is_capped_end_to_end(tmp_path: Path
             model_gateway=gateway,
         ).run()
 
-    assert caught.value.task_id == "power_system_final"
+    assert caught.value.task_id == "power_system_constraints"
     calls = [call for call in gateway.calls if call.operation == "world_build_power_system_constraints"]
     assert len(calls) == 1
     state = store.build_graph_state()
     assert state is not None
-    assert state["tasks"]["power_system_final"]["status"] == "validation_failed"
+    assert state["tasks"]["power_system_constraints"]["status"] == "validation_failed"
+    assert state["tasks"]["power_system_final"]["status"] == "stale"
     assert any(
-        item["code"] == "power.final.continuity_ledger.minimum_count"
-        for item in state["tasks"]["power_system_final"]["diagnostics"]
+        item["code"] == "task.repair_incomplete"
+        for item in state["tasks"]["power_system_constraints"]["diagnostics"]
     )
+
+
+def test_failed_power_final_repair_budget_blocks_same_generation_next_job(tmp_path: Path) -> None:
+    store, _invalid_constraints, _valid_constraints = _prepare_power_final_residual(tmp_path)
+    first_gateway = ScriptedGateway({**_generic_payloads(), "power_system_constraints": [{}]})
+
+    with pytest.raises(WorldBuildGraphFailure):
+        WorldBuildGraphRunner(
+            NovelProject.model_validate(store.project()),
+            store=store,
+            model_gateway=first_gateway,
+        ).run()
+
+    first_calls = [
+        call for call in first_gateway.calls if call.operation == "world_build_power_system_constraints"
+    ]
+    assert len(first_calls) == 1
+    budget = store.snapshot_store.read_json(
+        store.webnovel_dir / "world_build_power_final_repair.json",
+        {},
+    )
+    assert budget["failed_owners"] == ["power_system_constraints"]
+
+    second_gateway = ScriptedGateway(_generic_payloads())
+    with pytest.raises(WorldBuildGraphFailure) as caught:
+        WorldBuildGraphRunner(
+            NovelProject.model_validate(store.project()),
+            store=store,
+            model_gateway=second_gateway,
+        ).run()
+
+    assert caught.value.task_id == "power_system_constraints"
+    assert [item.code for item in caught.value.diagnostics] == [
+        "power.final_repair_budget_exhausted"
+    ]
+    assert not second_gateway.calls
+    state = store.build_graph_state()
+    assert state is not None
+    assert state["tasks"]["power_system_constraints"]["status"] == "validation_failed"
 
 
 def test_power_placeholder_is_rejected_at_section_boundary_without_official_invalid_artifact(tmp_path: Path) -> None:
