@@ -17,7 +17,10 @@ from packages.story_core.world_build.runner import (
     WorldBuildGraphFailure,
     WorldBuildGraphRunner,
 )
-from packages.story_core.world_build.tasks import parse_task_payload
+from packages.story_core.world_build.tasks import (
+    parse_task_payload,
+    repair_fields_for_diagnostics,
+)
 from packages.story_core.world_build.validators import make_world_validators
 from packages.story_core.world_build.validators import power_final_owner_task
 from packages.story_core.build_graph.contracts import BuildDiagnostic
@@ -156,6 +159,23 @@ def _structured_payloads() -> dict[str, list[Any]]:
     return payloads
 
 
+def _game_ecology_payload(*, include_missing_fields: bool = True) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "npc_system": {"roles": ["公告板管理员"]},
+        "quest_network": {"edges": ["维修单→灯标"]},
+        "server_runtime": {"heartbeat": "按停电周期刷新"},
+        "map_ecology": {"zones": ["新手村", "雾区"]},
+    }
+    if include_missing_fields:
+        payload.update(
+            {
+                "quest_rules": ["维修单完成后才开放下一条灯标"],
+                "panel_rules": ["公告板按登记顺序显示任务"],
+            }
+        )
+    return payload
+
+
 def test_world_graph_order_and_non_power_graph_excludes_power_tasks(tmp_path: Path) -> None:
     structured = build_world_build_graph(
         NovelProject(
@@ -258,6 +278,119 @@ def test_power_attributes_and_stages_have_one_focused_repair_and_final_passes(tm
     assert "power.attributes.missing" in attribute_repairs[1].prompt
     assert "stages.missing_name" in stage_repairs[1].prompt
     assert "stages.missing_change" in stage_repairs[1].prompt
+
+
+def test_repair_fields_map_nested_diagnostics_to_owned_top_level_fields() -> None:
+    graph = build_world_build_graph(
+        NovelProject(
+            project_id="file:x",
+            title="字段映射",
+            world_blueprint={"genre_plugin_ids": ["xuanhuan"]},
+        )
+    )
+
+    fields = repair_fields_for_diagnostics(
+        graph.spec("power_system_stages"),
+        (BuildDiagnostic("stages.invalid_level", "stages[0].level", "level is invalid"),),
+    )
+
+    assert fields == ("stages",)
+
+
+def test_repair_fields_fall_back_for_unscoped_diagnostics() -> None:
+    graph = build_world_build_graph(
+        NovelProject(
+            project_id="file:x",
+            title="无法定位",
+            world_blueprint={"genre_plugin_ids": ["game_webnovel"]},
+        )
+    )
+
+    fields = repair_fields_for_diagnostics(
+        graph.spec("game_ecology"),
+        (BuildDiagnostic("task.invalid_json", "payload", "response is not an object"),),
+    )
+
+    assert fields is None
+
+
+def test_game_ecology_repair_is_field_scoped_and_merges_full_candidate(tmp_path: Path) -> None:
+    store = _store(tmp_path, plugin_id="game_webnovel")
+    payloads = _structured_payloads()
+    payloads["game_ecology"] = [
+        _game_ecology_payload(include_missing_fields=False),
+        {"quest_rules": ["维修单完成后才开放下一条灯标"], "panel_rules": ["公告板按登记顺序显示任务"]},
+    ]
+    gateway = ScriptedGateway(payloads)
+    project = NovelProject.model_validate(store.project())
+
+    result = WorldBuildGraphRunner(project, store=store, model_gateway=gateway).run()
+
+    ecology_calls = [call for call in gateway.calls if call.operation == "world_build_game_ecology"]
+    assert len(ecology_calls) == 2
+    repair_prompt = ecology_calls[1].prompt
+    assert "REPAIR FIELDS: quest_rules, panel_rules" in repair_prompt
+    assert '输出契约：{"panel_rules":"JSON value","quest_rules":"JSON value"}' in repair_prompt
+    assert "不要返回 npc_system" in repair_prompt
+
+    artifact = store.build_artifact("game_ecology")
+    assert artifact is not None
+    assert artifact["source"] == "ai_repair"
+    assert set(artifact["payload"]) == {
+        "quest_rules",
+        "panel_rules",
+        "npc_system",
+        "quest_network",
+        "server_runtime",
+        "map_ecology",
+    }
+    assert len(store.build_artifact_history("game_ecology")) == 1
+    assert result.world_blueprint["quest_rules"]
+
+
+def test_out_of_scope_field_in_repair_is_rejected_without_artifact(tmp_path: Path) -> None:
+    store = _store(tmp_path, plugin_id="game_webnovel")
+    payloads = _structured_payloads()
+    payloads["game_ecology"] = [
+        _game_ecology_payload(include_missing_fields=False),
+        {
+            "quest_rules": ["维修单完成后才开放下一条灯标"],
+            "npc_system": {"roles": ["越界修改"]},
+        },
+    ]
+    gateway = ScriptedGateway(payloads)
+    project = NovelProject.model_validate(store.project())
+
+    with pytest.raises(WorldBuildGraphFailure) as caught:
+        WorldBuildGraphRunner(project, store=store, model_gateway=gateway).run()
+
+    assert caught.value.task_id == "game_ecology"
+    assert len([call for call in gateway.calls if call.operation == "world_build_game_ecology"]) == 2
+    assert store.build_artifact("game_ecology") is None
+    state = store.build_graph_state()
+    assert state is not None
+    diagnostics = state["tasks"]["game_ecology"]["diagnostics"]
+    assert diagnostics[0]["code"] == "task.repair_out_of_scope"
+
+
+def test_field_scoped_repair_still_allows_exactly_one_attempt(tmp_path: Path) -> None:
+    store = _store(tmp_path, plugin_id="game_webnovel")
+    payloads = _structured_payloads()
+    payloads["game_ecology"] = [
+        _game_ecology_payload(include_missing_fields=False),
+        {"quest_rules": ["维修单完成后才开放下一条灯标"]},
+    ]
+    gateway = ScriptedGateway(payloads)
+    project = NovelProject.model_validate(store.project())
+
+    with pytest.raises(WorldBuildGraphFailure):
+        WorldBuildGraphRunner(project, store=store, model_gateway=gateway).run()
+
+    assert len([call for call in gateway.calls if call.operation == "world_build_game_ecology"]) == 2
+    assert store.build_artifact("game_ecology") is None
+    state = store.build_graph_state()
+    assert state is not None
+    assert state["tasks"]["game_ecology"]["status"] == "validation_failed"
 
 
 def test_failed_focused_repair_keeps_task_failed_without_official_artifact(tmp_path: Path) -> None:
@@ -839,7 +972,10 @@ def test_power_placeholder_is_rejected_at_section_boundary_without_official_inva
     payloads = _structured_payloads()
     invalid = deepcopy(_power_sections()["power_system_constraints"])
     invalid["costs"] = ["TBD"]
-    payloads["power_system_constraints"] = [invalid, _power_sections()["power_system_constraints"]]
+    payloads["power_system_constraints"] = [
+        invalid,
+        {"costs": _power_sections()["power_system_constraints"]["costs"]},
+    ]
     gateway = ScriptedGateway(payloads)
 
     WorldBuildGraphRunner(
