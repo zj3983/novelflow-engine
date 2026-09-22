@@ -46,6 +46,7 @@ from .validators import power_final_owner_task
 from .power_repairs import (
     merge_power_path_repair,
     power_path_repair_scope,
+    raw_power_spec_from_artifacts,
 )
 
 
@@ -461,6 +462,15 @@ class WorldBuildGraphRunner:
                     + ", ".join(unexpected),
                 ),
             )
+        missing = sorted(allowed.difference(repair_patch))
+        if missing:
+            return None, (
+                BuildDiagnostic(
+                    "task.repair_incomplete",
+                    "payload",
+                    "repair response omitted required field(s): " + ", ".join(missing),
+                ),
+            )
         if not isinstance(base_candidate, Mapping):
             return None, (
                 BuildDiagnostic(
@@ -546,7 +556,12 @@ class WorldBuildGraphRunner:
                 else None
             )
             final_path_scope = (
-                power_path_repair_scope(final_repair_candidate, final_diagnostics, self.project)
+                power_path_repair_scope(
+                    final_repair_candidate,
+                    final_diagnostics,
+                    self.project,
+                    raw_spec=raw_power_spec_from_artifacts(self.service),
+                )
                 if final_repair and task_id == "power_system_paths" and isinstance(final_repair_candidate, Mapping)
                 else None
             )

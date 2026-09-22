@@ -10,6 +10,7 @@ from typing import Any
 from packages.story_core.build_graph.contracts import BuildDiagnostic
 from packages.story_core.models import NovelProject
 from packages.story_core.power_system_spec import (
+    GAME_CLASS_ADVANCEMENT_LEVELS,
     PATH_FIELDS,
     effective_power_system_template,
     is_placeholder_content,
@@ -43,6 +44,31 @@ class PowerPathRepairScope:
         }
 
 
+_POWER_SECTION_TASKS = (
+    "power_system_foundation",
+    "power_system_attributes",
+    "power_system_paths",
+    "power_system_stages",
+    "power_system_resources",
+    "power_system_constraints",
+)
+
+
+def raw_power_spec_from_artifacts(service: Any) -> dict[str, Any]:
+    """Assemble committed power sections without canonical validation."""
+
+    raw_spec: dict[str, Any] = {}
+    for task_id in _POWER_SECTION_TASKS:
+        artifact = service.inspect_artifact(task_id)
+        if isinstance(artifact, Mapping):
+            payload = artifact.get("payload")
+        else:
+            payload = getattr(artifact, "payload", None)
+        if isinstance(payload, Mapping):
+            raw_spec.update(deepcopy(dict(payload)))
+    return raw_spec
+
+
 def _nonempty(value: Any) -> bool:
     if value is None or value == "" or value == [] or value == {}:
         return False
@@ -55,19 +81,27 @@ def _path_field_missing(path: Mapping[str, Any], field: str) -> bool:
     return not _nonempty(path.get(field))
 
 
-def _traditional_game_contract(project: NovelProject, paths: Sequence[Any]) -> bool:
+def _traditional_game_contract(
+    project: NovelProject,
+    paths: Sequence[Any],
+    raw_spec: Mapping[str, Any] | None = None,
+) -> bool:
     blueprint = project.world_blueprint if isinstance(project.world_blueprint, Mapping) else {}
     existing = blueprint.get("power_system_spec") if isinstance(blueprint.get("power_system_spec"), Mapping) else {}
-    candidate = dict(existing)
+    candidate = dict(raw_spec) if isinstance(raw_spec, Mapping) else dict(existing)
     candidate["paths"] = list(paths)
     return uses_traditional_game_class_advancement(candidate)
 
 
-def _minimum_path_count(project: NovelProject, paths: Sequence[Any]) -> int:
+def _minimum_path_count(
+    project: NovelProject,
+    paths: Sequence[Any],
+    raw_spec: Mapping[str, Any] | None = None,
+) -> int:
     plugin = _selected_novel_type_plugin(project)
     blueprint = project.world_blueprint if isinstance(project.world_blueprint, Mapping) else {}
     existing = blueprint.get("power_system_spec") if isinstance(blueprint.get("power_system_spec"), Mapping) else {}
-    candidate = dict(existing)
+    candidate = dict(raw_spec) if isinstance(raw_spec, Mapping) else dict(existing)
     candidate["paths"] = list(paths)
     template = effective_power_system_template(
         plugin.plugin_id,
@@ -91,10 +125,44 @@ def _indices_missing(paths: Sequence[Any], field: str) -> set[int]:
     }
 
 
+def _advancement_tree_has_diagnostic(path: Any, code: str) -> bool:
+    tree = path.get("advancement_tree") if isinstance(path, Mapping) else None
+    if code == "game.path_invalid_advancement_tree":
+        if not isinstance(tree, list) or any(not isinstance(node, Mapping) for node in tree):
+            return True
+        levels = tuple(node.get("level") for node in tree)
+        return levels != GAME_CLASS_ADVANCEMENT_LEVELS
+    if not isinstance(tree, list):
+        return True
+    if code == "game.path_incomplete_advancement_node":
+        return any(
+            not isinstance(node, Mapping)
+            or not node.get("tier_name")
+            or not isinstance(node.get("options"), list)
+            or not node.get("options")
+            for node in tree
+        )
+    if code == "game.path_incomplete_advancement_option":
+        for node in tree:
+            options = node.get("options") if isinstance(node, Mapping) else None
+            if not isinstance(options, list):
+                return True
+            for option in options:
+                if not isinstance(option, Mapping) or any(
+                    not option.get(field)
+                    for field in ("name", "transfer_task", "ability_changes")
+                ):
+                    return True
+        return False
+    return False
+
+
 def power_path_repair_scope(
     payload: Mapping[str, Any],
     diagnostics: Sequence[BuildDiagnostic],
     project: NovelProject,
+    *,
+    raw_spec: Mapping[str, Any] | None = None,
 ) -> PowerPathRepairScope:
     """Translate final diagnostics into item/field-level path repair limits."""
 
@@ -102,12 +170,15 @@ def power_path_repair_scope(
     paths = list(raw_paths) if isinstance(raw_paths, list) else []
     targets: dict[int, set[str]] = {}
     append_count = 0
-    traditional_game = _traditional_game_contract(project, paths)
+    traditional_game = _traditional_game_contract(project, paths, raw_spec)
 
     for diagnostic in diagnostics:
         code = diagnostic.code.removeprefix("power.final.")
         if code == "paths.minimum_count":
-            append_count = max(append_count, _minimum_path_count(project, paths) - len(paths))
+            append_count = max(
+                append_count,
+                _minimum_path_count(project, paths, raw_spec) - len(paths),
+            )
             continue
         if code == "game.missing_classes":
             append_count = max(append_count, 6 - len(paths))
@@ -146,10 +217,7 @@ def power_path_repair_scope(
             "game.path_incomplete_advancement_option",
         }:
             for index, path in enumerate(paths):
-                tree = path.get("advancement_tree") if isinstance(path, Mapping) else None
-                if not isinstance(tree, list) or not tree or any(not isinstance(node, Mapping) for node in tree):
-                    _add_field(targets, index, "advancement_tree")
-                else:
+                if _advancement_tree_has_diagnostic(path, code):
                     _add_field(targets, index, "advancement_tree")
 
     if traditional_game:
@@ -186,7 +254,15 @@ def merge_power_path_repair(
     appends = patch.get("append", [])
     if not isinstance(updates, list) or not isinstance(appends, list):
         return None, (_repair_diagnostic("task.repair_out_of_scope", "payload", "updates and append must be arrays"),)
-    if len(appends) != scope.append_count:
+    if len(appends) < scope.append_count:
+        return None, (
+            _repair_diagnostic(
+                "task.repair_incomplete",
+                "append",
+                f"path repair requires exactly {scope.append_count} appended path(s)",
+            ),
+        )
+    if len(appends) > scope.append_count:
         return None, (
             _repair_diagnostic(
                 "task.repair_out_of_scope",
@@ -195,20 +271,54 @@ def merge_power_path_repair(
             ),
         )
 
+    expected_indices = set(scope.update_fields)
+    actual_indices: set[int] = set()
+    for item in updates:
+        if not isinstance(item, Mapping):
+            return None, (_repair_diagnostic("task.repair_out_of_scope", "updates", "each update must contain index and fields"),)
+        index = item.get("index")
+        if isinstance(index, bool) or not isinstance(index, int) or index not in expected_indices:
+            return None, (_repair_diagnostic("task.repair_out_of_scope", "updates", "update index is not an allowed diagnostic target"),)
+        if index in actual_indices:
+            return None, (_repair_diagnostic("task.repair_out_of_scope", f"updates[{index}]", "update index may appear only once"),)
+        actual_indices.add(index)
+    missing_indices = sorted(expected_indices.difference(actual_indices))
+    if missing_indices:
+        return None, (
+            _repair_diagnostic(
+                "task.repair_incomplete",
+                "updates",
+                "path repair omitted diagnostic target index(es): " + ", ".join(map(str, missing_indices)),
+            ),
+        )
+
     merged_paths = deepcopy(base_payload["paths"])
     for item in updates:
-        if not isinstance(item, Mapping) or set(item).difference({"index", "fields"}):
+        if not isinstance(item, Mapping):
+            return None, (_repair_diagnostic("task.repair_out_of_scope", "updates", "each update must contain only index and fields"),)
+        if set(item).difference({"index", "fields"}):
             return None, (_repair_diagnostic("task.repair_out_of_scope", "updates", "each update must contain only index and fields"),)
         index = item.get("index")
         fields = item.get("fields")
         if isinstance(index, bool) or not isinstance(index, int) or index not in scope.update_fields:
             return None, (_repair_diagnostic("task.repair_out_of_scope", "updates", "update index is not an allowed diagnostic target"),)
+        if "fields" not in item or fields is None:
+            return None, (_repair_diagnostic("task.repair_incomplete", f"updates[{index}].fields", "update fields are required for every diagnostic target"),)
         if not isinstance(fields, Mapping) or not fields:
-            return None, (_repair_diagnostic("task.repair_out_of_scope", f"updates[{index}].fields", "update fields must be a non-empty object"),)
+            return None, (_repair_diagnostic("task.repair_incomplete", f"updates[{index}].fields", "update fields are required for every diagnostic target"),)
         allowed = set(scope.update_fields[index])
         unexpected = sorted(set(fields).difference(allowed))
         if unexpected:
             return None, (_repair_diagnostic("task.repair_out_of_scope", f"updates[{index}].fields", "update field is outside the diagnostic scope"),)
+        missing_fields = sorted(allowed.difference(fields))
+        if missing_fields:
+            return None, (
+                _repair_diagnostic(
+                    "task.repair_incomplete",
+                    f"updates[{index}].fields",
+                    "update omitted diagnostic field(s): " + ", ".join(missing_fields),
+                ),
+            )
         if index >= len(merged_paths) or not isinstance(merged_paths[index], Mapping):
             return None, (_repair_diagnostic("task.repair_out_of_scope", f"updates[{index}]", "update index is not present in the committed paths"),)
         merged_paths[index].update(deepcopy(dict(fields)))
@@ -232,4 +342,5 @@ __all__ = [
     "PowerPathRepairScope",
     "merge_power_path_repair",
     "power_path_repair_scope",
+    "raw_power_spec_from_artifacts",
 ]

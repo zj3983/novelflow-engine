@@ -25,11 +25,13 @@ from packages.story_core.world_build.tasks import (
 from packages.story_core.world_build.validators import make_world_validators
 from packages.story_core.world_build.validators import power_final_owner_task
 from packages.story_core.world_build.power_repairs import (
+    PowerPathRepairScope,
     merge_power_path_repair,
     power_path_repair_scope,
+    raw_power_spec_from_artifacts,
 )
 from packages.story_core.build_graph.contracts import BuildDiagnostic
-from packages.story_core.power_system_spec import validate_power_system_spec
+from packages.story_core.power_system_spec import PATH_FIELDS, validate_power_system_spec
 
 
 def _store(tmp_path: Path, *, plugin_id: str) -> FileProjectStore:
@@ -536,7 +538,7 @@ def test_failed_focused_repair_keeps_task_failed_without_official_artifact(tmp_p
     assert store.build_artifact("power_system_foundation") is not None
     assert store.build_graph_service  # service surface remains available for retry
     assert store.build_graph_materialization() is None
-    assert any(item["code"] == "power.attributes.missing" for item in state["tasks"]["power_system_attributes"]["diagnostics"])
+    assert any(item["code"] == "task.repair_incomplete" for item in state["tasks"]["power_system_attributes"]["diagnostics"])
 
 
 def test_resume_reuses_completed_artifacts_after_model_failure(tmp_path: Path) -> None:
@@ -1165,6 +1167,120 @@ def test_power_path_repair_scope_supports_advancement_tree_and_exact_append() ->
     assert merged is not None and len(merged["paths"]) == 6
 
 
+def _valid_advancement_tree() -> list[dict[str, Any]]:
+    return [
+        {
+            "level": level,
+            "tier_name": f"阶段{level}",
+            "options": [
+                {
+                    "name": f"选项{level}",
+                    "transfer_task": f"完成{level}级任务",
+                    "ability_changes": [f"获得{level}级能力"],
+                }
+            ],
+        }
+        for level in (10, 30, 60)
+    ]
+
+
+@pytest.mark.parametrize(
+    "diagnostic_code",
+    (
+        "power.final.game.path_invalid_advancement_tree",
+        "power.final.game.path_incomplete_advancement_node",
+        "power.final.game.path_incomplete_advancement_option",
+    ),
+)
+def test_power_path_repair_scope_targets_only_invalid_advancement_tree_index(
+    diagnostic_code: str,
+) -> None:
+    valid_tree = _valid_advancement_tree()
+    invalid_tree = deepcopy(valid_tree)
+    if diagnostic_code.endswith("invalid_advancement_tree"):
+        invalid_tree.pop()
+    elif diagnostic_code.endswith("incomplete_advancement_node"):
+        invalid_tree[0]["tier_name"] = ""
+    else:
+        invalid_tree[0]["options"][0]["name"] = ""
+    paths = [
+        {"name": "职业一", "branches": ["a", "b"], "advancement_tree": valid_tree},
+        {"name": "职业二", "branches": ["a", "b"], "advancement_tree": invalid_tree},
+        {"name": "职业三", "branches": ["a", "b"], "advancement_tree": valid_tree},
+    ]
+    project = NovelProject(
+        project_id="file:path-tree",
+        title="精确树索引",
+        world_blueprint={"genre_plugin_ids": ["game_webnovel"]},
+    )
+    scope = power_path_repair_scope(
+        {"paths": paths},
+        (BuildDiagnostic(diagnostic_code, "paths", "tree diagnostic"),),
+        project,
+        raw_spec={"paths": paths, "class_advancement_tiers": [{"level": 10}]},
+    )
+
+    assert scope.update_fields == {1: ("advancement_tree",)}
+    out_of_scope, diagnostics = merge_power_path_repair(
+        {"paths": paths},
+        {"updates": [{"index": 0, "fields": {"advancement_tree": []}}], "append": []},
+        scope,
+    )
+    assert out_of_scope is None
+    assert [item.code for item in diagnostics] == ["task.repair_out_of_scope"]
+
+
+def test_power_path_repair_uses_raw_committed_sections_for_traditional_mode() -> None:
+    paths = [{"name": "自定义路线", "branches": ["a", "b"]}]
+    project = NovelProject(
+        project_id="file:path-raw-spec",
+        title="未物化传统模式",
+        world_blueprint={"genre_plugin_ids": ["game_webnovel"]},
+    )
+
+    class FakeService:
+        def inspect_artifact(self, task_id: str) -> Any:
+            payloads = {
+                "power_system_foundation": {"name": "体系", "origin": ["来源"]},
+                "power_system_attributes": {"attributes": [{"name": "属性", "effect": "效果"}]},
+                "power_system_paths": {"paths": paths},
+                "power_system_stages": {"stages": []},
+                "power_system_resources": {"skills": [], "equipment": [], "resources": [], "advancement": []},
+                "power_system_constraints": {"class_advancement_tiers": [{"level": 10}]},
+            }
+            value = payloads.get(task_id)
+            return type("Artifact", (), {"payload": value})() if value is not None else None
+
+    raw_spec = raw_power_spec_from_artifacts(FakeService())
+    scope = power_path_repair_scope(
+        {"paths": paths},
+        (BuildDiagnostic("power.final.paths.minimum_count", "paths", "count"),),
+        project,
+        raw_spec=raw_spec,
+    )
+
+    assert scope.append_count == 5
+    assert scope.append_fields == tuple(PATH_FIELDS)
+
+
+def test_power_path_repair_requires_every_update_target_and_field() -> None:
+    scope = PowerPathRepairScope(
+        update_fields={0: ("branches",), 2: ("name", "role")},
+        append_count=1,
+        append_fields=tuple(PATH_FIELDS),
+    )
+    base = {"paths": [{"name": "a"}, {"name": "b"}, {"name": "c"}]}
+    cases = (
+        {"updates": [{"index": 0, "fields": {"branches": ["a", "b"]}}], "append": [{"name": "d"}]},
+        {"updates": [{"index": 0, "fields": {"branches": ["a", "b"]}}, {"index": 2, "fields": {"name": "c"}}], "append": [{"name": "d"}]},
+        {"updates": [], "append": [{"name": "d"}]},
+    )
+    for patch in cases:
+        merged, diagnostics = merge_power_path_repair(base, patch, scope)
+        assert merged is None
+        assert [item.code for item in diagnostics] == ["task.repair_incomplete"]
+
+
 def test_power_path_repair_rejects_out_of_scope_updates() -> None:
     project = NovelProject(
         project_id="file:path-repair",
@@ -1283,9 +1399,9 @@ def test_power_final_path_repair_out_of_scope_stops_without_third_call(tmp_path:
 
 
 def test_power_final_residual_repair_failure_is_capped_end_to_end(tmp_path: Path) -> None:
-    store, invalid_constraints, _valid_constraints = _prepare_power_final_residual(tmp_path)
+    store, _invalid_constraints, _valid_constraints = _prepare_power_final_residual(tmp_path)
     payloads = _generic_payloads()
-    payloads["power_system_constraints"] = [invalid_constraints]
+    payloads["power_system_constraints"] = [{}]
     gateway = ScriptedGateway(payloads)
 
     with pytest.raises(WorldBuildGraphFailure) as caught:
@@ -1302,6 +1418,10 @@ def test_power_final_residual_repair_failure_is_capped_end_to_end(tmp_path: Path
     assert state is not None
     assert state["tasks"]["power_system_constraints"]["status"] == "validation_failed"
     assert state["tasks"]["power_system_final"]["status"] == "stale"
+    assert any(
+        item["code"] == "task.repair_incomplete"
+        for item in state["tasks"]["power_system_constraints"]["diagnostics"]
+    )
 
 
 def test_power_placeholder_is_rejected_at_section_boundary_without_official_invalid_artifact(tmp_path: Path) -> None:
