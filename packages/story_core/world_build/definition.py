@@ -249,7 +249,7 @@ def build_world_build_graph(project: NovelProject) -> WorldBuildGraph:
                     forbidden_writes=("build.power_system.foundation", "build.power_system.attributes", "build.power_system.paths", "build.power_system.stages", "build.power_system.resources", "world_blueprint.power_system_spec", "world_blueprint.power_system"),
                     validator_id="power.constraints",
                     output_fields=("costs", "counters", "boundaries", "social_impact", "visibility", "continuity_ledger", "attribute_allocation", "class_advancement_tiers"),
-                    output_schema={"costs": "string[]", "counters": "string[]", "boundaries": "string[]", "social_impact": "string[]", "visibility": "string[]", "continuity_ledger": "string[]"},
+                    output_schema={"costs": "string[]", "counters": "string[]", "boundaries": "string[]", "social_impact": "string[]", "visibility": "string[]", "continuity_ledger": "string[]", "attribute_allocation": "object", "class_advancement_tiers": "object[]"},
                     instructions="只生成 costs、counters、boundaries、social_impact、visibility、continuity_ledger，以及题材明确要求的扩展字段。不得修改前面章节。",
                     max_tokens=2800,
                 ),
@@ -366,7 +366,7 @@ def build_world_build_graph(project: NovelProject) -> WorldBuildGraph:
                     "world_blueprint.server_runtime",
                     "world_blueprint.map_ecology",
                 ),
-                output_schema={"npc_system": "object", "quest_network": "object", "server_runtime": "object", "map_ecology": "object"},
+                output_schema={"quest_rules": "string[]", "panel_rules": "string[]", "npc_system": "object", "quest_network": "object", "server_runtime": "object", "map_ecology": "object"},
                 instructions="只补充项目已明确的游戏运行规则；不得凭空添加等级、货币、现实反馈或交易行机制。",
                 max_tokens=2800,
             )
@@ -410,7 +410,7 @@ def build_world_build_graph(project: NovelProject) -> WorldBuildGraph:
                 "world_blueprint.longform_framework",
                 "world_blueprint.progression_ledger",
             ),
-            output_schema={"opening_arc": "object", "volume_plan": "object", "longform_framework": "object"},
+            output_schema={"current_arc": "string", "progression_rules": "string[]", "chapter_formula": "string[]", "forbidden_breaks": "string[]", "opening_arc": "object", "volume_plan": "object", "longform_framework": "object", "progression_ledger": "object"},
             instructions="这是明确命名的 story_engine compatibility task。只把已验证世界依赖转成现有长篇运行字段，不扩张为新的规划权威。",
             max_tokens=3000,
         )

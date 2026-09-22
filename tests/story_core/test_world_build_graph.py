@@ -18,6 +18,7 @@ from packages.story_core.world_build.runner import (
     WorldBuildGraphRunner,
 )
 from packages.story_core.world_build.tasks import (
+    build_task_prompt,
     parse_task_payload,
     repair_fields_for_diagnostics,
 )
@@ -220,6 +221,72 @@ def test_world_graph_order_and_non_power_graph_excludes_power_tasks(tmp_path: Pa
         assert not any(task.startswith("power_system_") for task in graph.definition.ordered_task_ids)
 
 
+def test_game_ecology_initial_prompt_declares_every_output_field() -> None:
+    graph = build_world_build_graph(
+        NovelProject(
+            project_id="file:x",
+            title="游戏契约",
+            world_blueprint={"genre_plugin_ids": ["game_webnovel"]},
+        )
+    )
+
+    prompt = build_task_prompt(graph, "game_ecology", {})
+    contract_line = next(line for line in prompt.splitlines() if line.startswith("输出契约："))
+    contract = json.loads(contract_line.removeprefix("输出契约："))
+
+    assert set(contract) == set(graph.spec("game_ecology").output_fields)
+    assert contract == {
+        "map_ecology": "object",
+        "npc_system": "object",
+        "panel_rules": "string[]",
+        "quest_network": "object",
+        "quest_rules": "string[]",
+        "server_runtime": "object",
+    }
+
+
+def test_story_engine_compat_initial_prompt_declares_every_output_field() -> None:
+    graph = build_world_build_graph(
+        NovelProject(
+            project_id="file:x",
+            title="长篇契约",
+            world_blueprint={"genre_plugin_ids": ["urban"]},
+        )
+    )
+
+    prompt = build_task_prompt(graph, "story_engine_compat", {})
+    contract_line = next(line for line in prompt.splitlines() if line.startswith("输出契约："))
+    contract = json.loads(contract_line.removeprefix("输出契约："))
+
+    assert set(contract) == set(graph.spec("story_engine_compat").output_fields)
+    assert contract == {
+        "chapter_formula": "string[]",
+        "current_arc": "string",
+        "forbidden_breaks": "string[]",
+        "longform_framework": "object",
+        "opening_arc": "object",
+        "progression_ledger": "object",
+        "progression_rules": "string[]",
+        "volume_plan": "object",
+    }
+
+
+@pytest.mark.parametrize("plugin_id", ["xuanhuan", "game_webnovel", "urban"])
+def test_model_world_tasks_have_complete_output_contract(plugin_id: str) -> None:
+    graph = build_world_build_graph(
+        NovelProject(
+            project_id="file:x",
+            title="输出合同完整性",
+            world_blueprint={"genre_plugin_ids": [plugin_id]},
+        )
+    )
+
+    for spec in graph.specs.values():
+        if spec.kind != "model":
+            continue
+        assert set(spec.output_fields) == set((spec.output_schema or {}).keys()), spec.task_id
+
+
 def test_wrapped_model_payload_keeps_unowned_fields_for_hard_rejection() -> None:
     payload, diagnostics = parse_task_payload(
         json.dumps(
@@ -330,7 +397,7 @@ def test_game_ecology_repair_is_field_scoped_and_merges_full_candidate(tmp_path:
     assert len(ecology_calls) == 2
     repair_prompt = ecology_calls[1].prompt
     assert "REPAIR FIELDS: quest_rules, panel_rules" in repair_prompt
-    assert '输出契约：{"panel_rules":"JSON value","quest_rules":"JSON value"}' in repair_prompt
+    assert '输出契约：{"panel_rules":"string[]","quest_rules":"string[]"}' in repair_prompt
     assert "不要返回 npc_system" in repair_prompt
 
     artifact = store.build_artifact("game_ecology")
