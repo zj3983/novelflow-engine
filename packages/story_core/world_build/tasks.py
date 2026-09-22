@@ -394,6 +394,38 @@ def run_read_projection(graph: WorldBuildGraph, task_id: str, contract: Mapping[
     }
 
 
+def repair_fields_for_diagnostics(
+    spec: WorldBuildTaskSpec,
+    diagnostics: Sequence[BuildDiagnostic],
+) -> tuple[str, ...] | None:
+    """Map repair diagnostics to the task's owned top-level output fields.
+
+    ``None`` deliberately means "use the existing full-task repair".  A
+    field-scoped patch is safe only when every diagnostic path can be mapped
+    to one declared output field; silently guessing for an unscoped parser or
+    transport failure would risk discarding a valid first candidate.
+    """
+
+    output_fields = tuple(spec.output_fields)
+    if not diagnostics or not output_fields:
+        return None
+
+    affected: set[str] = set()
+    for diagnostic in diagnostics:
+        path = str(diagnostic.path or "").strip()
+        for prefix in ("world_blueprint.", "payload."):
+            if path.startswith(prefix):
+                path = path[len(prefix) :]
+                break
+        root = path.split(".", 1)[0].split("[", 1)[0]
+        if root not in output_fields:
+            return None
+        affected.add(root)
+
+    fields = tuple(field for field in output_fields if field in affected)
+    return fields or None
+
+
 def build_task_prompt(
     graph: WorldBuildGraph,
     task_id: str,
@@ -401,22 +433,39 @@ def build_task_prompt(
     *,
     repair_candidate: Any | None = None,
     diagnostics: Sequence[BuildDiagnostic] = (),
+    repair_fields: Sequence[str] | None = None,
 ) -> str:
     spec = graph.spec(task_id)
+    output_schema = dict(spec.output_schema or {})
+    if repair_fields:
+        output_schema = {
+            field: output_schema.get(field, "JSON value")
+            for field in repair_fields
+        }
     lines = [
         "你是 NovelFlow 的受 ownership 约束的世界构建任务执行器。只返回 JSON，不要 Markdown，不要小说正文。",
         f"当前任务：{task_id} / {spec.task.title}",
         f"任务职责：{spec.instructions}",
         f"只允许写入：{', '.join(spec.task.owns)}",
         f"禁止写入：{', '.join(spec.task.forbidden_writes) or '无'}",
-        f"输出契约：{_json_text(spec.output_schema or {})}",
+        f"输出契约：{_json_text(output_schema)}",
         "输入只来自下面列出的已提交依赖 artifact；不得臆造未提供的事实。",
         f"bounded input contract: {_json_text(contract)}",
     ]
     if repair_candidate is not None or diagnostics:
+        lines.append("这是唯一一次 focused repair。只修复当前任务的结构化诊断，不重写其他任务，不补全整个项目。")
+        if repair_fields:
+            excluded = tuple(field for field in spec.output_fields if field not in repair_fields)
+            lines.extend(
+                [
+                    f"REPAIR FIELDS: {', '.join(repair_fields)}",
+                    "只返回上述 repair fields；不要返回 "
+                    + (", ".join(excluded) if excluded else "其他字段")
+                    + "。",
+                ]
+            )
         lines.extend(
             [
-                "这是唯一一次 focused repair。只修复当前任务的结构化诊断，不重写其他任务，不补全整个项目。",
                 f"当前候选：{_json_text(repair_candidate)}",
                 "诊断：" + _json_text([item.to_dict() for item in diagnostics]),
             ]
@@ -455,6 +504,7 @@ __all__ = [
     "canonical_world_input",
     "input_fingerprint",
     "parse_task_payload",
+    "repair_fields_for_diagnostics",
     "run_read_projection",
     "task_payload_from_project",
 ]

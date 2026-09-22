@@ -35,6 +35,7 @@ from .tasks import (
     canonical_world_input,
     input_fingerprint,
     parse_task_payload,
+    repair_fields_for_diagnostics,
     run_read_projection,
     task_payload_from_project,
 )
@@ -433,6 +434,39 @@ class WorldBuildGraphRunner:
             existing_summary=existing if isinstance(existing, list) else None,
         )
 
+    @staticmethod
+    def _merge_repair_patch(
+        base_candidate: Mapping[str, Any] | None,
+        repair_patch: Mapping[str, Any],
+        repair_fields: Sequence[str] | None,
+    ) -> tuple[dict[str, Any] | None, tuple[BuildDiagnostic, ...]]:
+        """Merge a scoped repair without allowing it to rewrite other fields."""
+
+        if repair_fields is None:
+            return deepcopy(dict(repair_patch)), ()
+        allowed = set(repair_fields)
+        unexpected = sorted(set(repair_patch).difference(allowed))
+        if unexpected:
+            return None, (
+                BuildDiagnostic(
+                    "task.repair_out_of_scope",
+                    "payload",
+                    "repair response contains fields outside the requested repair scope: "
+                    + ", ".join(unexpected),
+                ),
+            )
+        if not isinstance(base_candidate, Mapping):
+            return None, (
+                BuildDiagnostic(
+                    "task.repair_base_missing",
+                    "payload",
+                    "field-scoped repair requires the original candidate payload",
+                ),
+            )
+        merged = deepcopy(dict(base_candidate))
+        merged.update(deepcopy(dict(repair_patch)))
+        return merged, ()
+
     def _run_deterministic(self, task_id: str) -> None:
         self._ensure_active(task_id)
         run = self.service.start_run(task_id)
@@ -581,6 +615,7 @@ class WorldBuildGraphRunner:
                 contract,
                 repair_candidate=candidate,
                 diagnostics=diagnostics,
+                repair_fields=repair_fields_for_diagnostics(spec, diagnostics),
             )
             self._ensure_active(task_id, run_id=repair_run.run_id)
             repair_response, repair_call_id = self._call_model(task_id, repair_prompt)
@@ -602,12 +637,21 @@ class WorldBuildGraphRunner:
                 if repaired is None:
                     repair_diagnostics = repair_parse_diagnostics
                 else:
-                    repaired = self._preserve_existing_non_power_values(task_id, repaired)
-                    repair_diagnostics = self.service.validate(
-                        task_id,
+                    repair_fields = repair_fields_for_diagnostics(spec, diagnostics)
+                    repaired, merge_diagnostics = self._merge_repair_patch(
+                        candidate,
                         repaired,
-                        requested_writes=spec.task.owns,
-                    ).diagnostics
+                        repair_fields,
+                    )
+                    if merge_diagnostics:
+                        repair_diagnostics = merge_diagnostics
+                    else:
+                        repaired = self._preserve_existing_non_power_values(task_id, repaired)
+                        repair_diagnostics = self.service.validate(
+                            task_id,
+                            repaired,
+                            requested_writes=spec.task.owns,
+                        ).diagnostics
             if repaired is not None and not repair_diagnostics:
                 self._ensure_active(task_id, run_id=repair_run.run_id)
                 result = self.service.commit_run(
