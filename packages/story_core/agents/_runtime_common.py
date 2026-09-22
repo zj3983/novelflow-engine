@@ -267,6 +267,8 @@ def call_with_logging(
         protocol=protocol,
         model=model_request.model,
         temperature=model_request.temperature,
+        requested_max_tokens=model_request.max_tokens,
+        json_mode=model_request.json_mode,
     )
 
     try:
@@ -298,9 +300,12 @@ def call_with_logging(
         provider=model_request.provider,
         protocol=protocol,
         model=model_request.model,
+        resolved_model=str(getattr(response, "resolved_model", "") or ""),
         output=text,
         error=error,
         temperature_omitted=bool(getattr(response, "temperature_omitted", False)),
+        raw=getattr(response, "raw", None),
+        usage=getattr(response, "usage", None),
     )
     return response, model_request.provider, model_request.model, protocol
 

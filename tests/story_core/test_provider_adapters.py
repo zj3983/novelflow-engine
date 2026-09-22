@@ -67,6 +67,7 @@ def test_sse_aggregation_preserves_resolved_model_and_content():
     chunks = [
         b'data: {"id":"req-1","model":"backend-b","choices":[{"delta":{"content":"a"}}]}\n',
         b'data: {"choices":[{"delta":{"content":"b"}}]}\n',
+        b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n',
         b'data: {"usage":{"total_tokens":2}}\n',
         b"data: [DONE]\n",
     ]
@@ -76,6 +77,7 @@ def test_sse_aggregation_preserves_resolved_model_and_content():
     assert result["id"] == "req-1"
     assert result["model"] == "backend-b"
     assert result["choices"][0]["message"]["content"] == "ab"
+    assert result["choices"][0]["finish_reason"] == "stop"
     assert result["usage"] == {"total_tokens": 2}
 
 
@@ -115,6 +117,27 @@ def test_openai_compatible_request_and_response_use_standard_chat_shape():
     assert "parameters" not in call["payload"]
     assert call["config"].timeout == 19
     assert response.ok and response.text == "chapter" and response.request_id == "req-1"
+
+
+def test_openai_compatible_response_keeps_allowlisted_completion_metadata():
+    transport = RecordingTransport(
+        {
+            "id": "req-1",
+            "model": "resolved-k3",
+            "choices": [{"finish_reason": "length", "message": {"content": "{}"}}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 2600, "total_tokens": 2700},
+            "Authorization": "Bearer secret",
+        }
+    )
+    response = OpenAICompatibleAdapter(
+        base_url="https://api.example/v1", api_key="secret", transport=transport
+    ).complete(request(json_mode=True))
+
+    assert response.ok
+    assert response.resolved_model == "resolved-k3"
+    assert response.usage == {"prompt_tokens": 100, "completion_tokens": 2600, "total_tokens": 2700}
+    assert response.raw["choices"][0]["finish_reason"] == "length"
+    assert response.raw["Authorization"] == "[REDACTED]"
 
 
 def test_openai_compatible_retries_once_without_temperature_only_on_explicit_rejection():

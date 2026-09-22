@@ -250,6 +250,8 @@ class WorldBuildGraphRunner:
                 protocol=protocol,
                 model=model,
                 temperature=temperature,
+                requested_max_tokens=request.max_tokens,
+                json_mode=request.json_mode,
             )
         except Exception:
             return recorder, None
@@ -269,9 +271,12 @@ class WorldBuildGraphRunner:
                 status="success" if getattr(response, "ok", False) else "error",
                 provider=str(getattr(response, "provider", "") or ""),
                 model=str(getattr(response, "resolved_model", "") or getattr(response, "model", "") or ""),
+                resolved_model=str(getattr(response, "resolved_model", "") or ""),
                 output=str(getattr(response, "text", "") or "") if getattr(response, "ok", False) else "",
                 error="model_call_failed" if not getattr(response, "ok", False) else "",
                 temperature_omitted=bool(getattr(response, "temperature_omitted", False)),
+                raw=getattr(response, "raw", None),
+                usage=getattr(response, "usage", None),
             )
         except Exception:
             pass

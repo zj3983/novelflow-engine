@@ -3566,6 +3566,8 @@ class StoryOrchestrator:
             protocol=str(getattr(initial_settings, "protocol", "")),
             model=initial_settings.model,
             temperature=float(getattr(initial_settings, "temperature", 0.2)),
+            requested_max_tokens=max_tokens,
+            json_mode=json_mode,
             genre_stage=genre_stage,
         )
         started = perf_counter()
@@ -3631,9 +3633,12 @@ class StoryOrchestrator:
             provider=actual_provider,
             protocol=actual_protocol,
             model=actual_model,
+            resolved_model=str(getattr(model_response, "resolved_model", "") or ""),
             elapsed_seconds=elapsed,
             output=text,
             error=error,
+            raw=getattr(model_response, "raw", None),
+            usage=getattr(model_response, "usage", None),
         )
         return text, error
 
