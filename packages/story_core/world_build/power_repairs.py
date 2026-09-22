@@ -35,6 +35,7 @@ class PowerPathRepairScope:
     append_count: int
     append_fields: tuple[str, ...]
     append_required_fields: tuple[str, ...] = ()
+    replace_indices: tuple[int, ...] = ()
 
     @property
     def append_allowed_fields(self) -> tuple[str, ...]:
@@ -51,6 +52,7 @@ class PowerPathRepairScope:
             "append_count": self.append_count,
             "append_allowed_fields": list(self.append_allowed_fields),
             "append_required_fields": list(self.append_required_fields),
+            "replace_indices": list(self.replace_indices),
         }
 
 
@@ -96,6 +98,9 @@ def _traditional_game_contract(
     paths: Sequence[Any],
     raw_spec: Mapping[str, Any] | None = None,
 ) -> bool:
+    plugin = _selected_novel_type_plugin(project)
+    if plugin.plugin_id != "game_webnovel":
+        return False
     blueprint = project.world_blueprint if isinstance(project.world_blueprint, Mapping) else {}
     existing = blueprint.get("power_system_spec") if isinstance(blueprint.get("power_system_spec"), Mapping) else {}
     candidate = dict(raw_spec) if isinstance(raw_spec, Mapping) else dict(existing)
@@ -201,6 +206,7 @@ def power_path_repair_scope(
     raw_paths = payload.get("paths") if isinstance(payload, Mapping) else None
     paths = list(raw_paths) if isinstance(raw_paths, list) else []
     targets: dict[int, set[str]] = {}
+    replace_indices: set[int] = set()
     append_count = 0
     traditional_game = _traditional_game_contract(project, paths, raw_spec)
 
@@ -257,6 +263,7 @@ def power_path_repair_scope(
         if code == "paths.invalid_item":
             index = _diagnostic_path_index(diagnostic.path)
             if index is not None:
+                replace_indices.add(index)
                 for field in _path_required_fields(traditional_game):
                     _add_field(targets, index, field)
             continue
@@ -289,6 +296,7 @@ def power_path_repair_scope(
         append_count=max(0, append_count),
         append_fields=append_fields,
         append_required_fields=append_required_fields,
+        replace_indices=tuple(sorted(replace_indices)),
     )
 
 
@@ -376,9 +384,14 @@ def merge_power_path_repair(
                     "update omitted diagnostic field(s): " + ", ".join(missing_fields),
                 ),
             )
-        if index >= len(merged_paths) or not isinstance(merged_paths[index], Mapping):
+        if index >= len(merged_paths):
             return None, (_repair_diagnostic("task.repair_out_of_scope", f"updates[{index}]", "update index is not present in the committed paths"),)
-        merged_paths[index].update(deepcopy(dict(fields)))
+        if index in scope.replace_indices:
+            merged_paths[index] = deepcopy(dict(fields))
+        else:
+            if not isinstance(merged_paths[index], Mapping):
+                return None, (_repair_diagnostic("task.repair_out_of_scope", f"updates[{index}]", "update index is not a repairable path object"),)
+            merged_paths[index].update(deepcopy(dict(fields)))
 
     for index, item in enumerate(appends):
         if not isinstance(item, Mapping) or not item:

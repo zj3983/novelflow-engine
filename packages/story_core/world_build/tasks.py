@@ -537,6 +537,7 @@ def build_power_path_repair_prompt(
         "输入只来自下面列出的已提交依赖 artifact；不得臆造未提供的事实。",
         f"bounded input contract: {_json_text(contract)}",
         "updates 中每项必须使用允许的 index，并且 fields 只能包含该 index 被授权的字段。append 必须严格匹配允许数量。",
+        "replace_indices 中的目标必须用 fields 提交完整 replacement object；其他 index 只能更新被授权字段。",
     ]
     return "\n".join(lines)
 

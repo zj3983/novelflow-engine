@@ -193,6 +193,54 @@ def _traditional_path_payload(name: str, *, weapons: bool = True) -> dict[str, A
     return payload
 
 
+def _traditional_game_power_sections() -> dict[str, dict[str, Any]]:
+    sections = deepcopy(_power_sections())
+    sections["power_system_paths"] = {
+        "paths": [
+            _traditional_path_payload(name)
+            for name in ("战士", "法师", "游侠", "盗贼", "牧师", "召唤师")
+        ]
+    }
+    sections["power_system_stages"] = {
+        "stages": [
+            {
+                "name": name,
+                "level": level,
+                "entry": entry,
+                "change": change,
+                "failure": failure,
+            }
+            for name, level, entry, change, failure in (
+                ("见习者", 1, "创建角色。", "获得通用技能。", "角色重建。"),
+                ("正式职业", 10, "完成Lv.10转职任务。", "获得职业资源。", "任务冷却。"),
+                ("专精", 20, "完成Lv.20专精试炼。", "强化战斗方向。", "材料损失。"),
+                ("进阶职业", 30, "完成Lv.30分支任务。", "获得分支技能。", "晋升延期。"),
+                ("传承", 60, "完成Lv.60传承试炼。", "获得职业权柄。", "传承反噬。"),
+            )
+        ]
+    }
+    constraints = deepcopy(sections["power_system_constraints"])
+    constraints["continuity_ledger"] = [
+        "level",
+        "skills",
+        "equipment",
+        "resources",
+        "conditions",
+    ]
+    constraints["class_advancement_tiers"] = [
+        {
+            "level": level,
+            "name": f"Lv.{level}晋升",
+            "purpose": f"定义{level}级职业里程碑。",
+            "common_requirements": [f"达到{level}级并完成公共试炼。"],
+            "failure_rule": "冷却后可以重新挑战。",
+        }
+        for level in (10, 30, 60)
+    ]
+    sections["power_system_constraints"] = constraints
+    return sections
+
+
 def _structured_payloads() -> dict[str, list[Any]]:
     sections = _power_sections()
     payloads: dict[str, list[Any]] = {key: [value] for key, value in sections.items()}
@@ -379,6 +427,37 @@ def test_traditional_path_shape_is_rejected_at_section_boundary() -> None:
     assert "power.paths.missing_weapons" in codes
     assert "power.paths.missing_combat_loop" in codes
     assert "power.paths.missing_advancement" in codes
+
+
+def test_non_game_transfer_task_does_not_enable_traditional_game_contract() -> None:
+    project = NovelProject(
+        project_id="file:x",
+        title="玄幻路线",
+        world_blueprint={"genre_plugin_ids": ["xuanhuan"]},
+    )
+    paths = [
+        {"name": "剑修", "branches": ["御剑", "剑阵"], "transfer_task": "完成剑心试炼。"},
+        {"name": "符修", "branches": ["阵符", "战符"]},
+    ]
+
+    assert make_world_validators(project)["power.paths"]({"paths": paths}) is True
+
+    sections = _power_sections()
+    spec: dict[str, Any] = {}
+    for payload in sections.values():
+        spec.update(deepcopy(payload))
+    spec["paths"] = paths
+    validated = validate_power_system_spec(spec, novel_type_id="xuanhuan")
+    assert validated["paths"][0]["transfer_task"] == "完成剑心试炼。"
+
+    scope = power_path_repair_scope(
+        {"paths": paths[:1]},
+        (BuildDiagnostic("power.final.paths.minimum_count", "paths", "count"),),
+        project,
+        raw_spec={"paths": paths[:1], "class_advancement_tiers": [{"level": 10}]},
+    )
+    assert scope.append_count == 1
+    assert scope.append_required_fields == ("name", "branches")
 
 
 def test_wrapped_model_payload_keeps_unowned_fields_for_hard_rejection() -> None:
@@ -1434,17 +1513,23 @@ def test_power_final_path_repair_out_of_scope_stops_without_third_call(tmp_path:
 
 
 def test_ordinary_traditional_path_repair_uses_structured_scoped_patch(tmp_path: Path) -> None:
-    store = _store(tmp_path, plugin_id="xuanhuan")
-    payloads = _structured_payloads()
+    store = _store(tmp_path, plugin_id="game_webnovel")
+    game_sections = _traditional_game_power_sections()
+    payloads = {task_id: [payload] for task_id, payload in game_sections.items()}
+    payloads.update(_generic_payloads())
+    payloads["game_ecology"] = [_game_ecology_payload()]
     first_paths = {
         "paths": [
-            _traditional_path_payload("路线一"),
-            _traditional_path_payload("路线二", weapons=False),
+            _traditional_path_payload("战士"),
+            _traditional_path_payload("法师", weapons=False),
         ]
     }
     repair_patch = {
         "updates": [{"index": 1, "fields": {"weapons": ["专属武器"]}}],
-        "append": [],
+        "append": [
+            _traditional_path_payload(name)
+            for name in ("游侠", "盗贼", "牧师", "召唤师")
+        ],
     }
     payloads["power_system_paths"] = [first_paths, repair_patch]
     gateway = ScriptedGateway(payloads)
@@ -1461,12 +1546,14 @@ def test_ordinary_traditional_path_repair_uses_structured_scoped_patch(tmp_path:
     assert '"updates":"{index:int,fields:object}[]"' in calls[1].prompt
     assert '"index":1' in calls[1].prompt
     assert '"fields":["weapons"]' in calls[1].prompt
+    assert '"append_count":4' in calls[1].prompt
     assert "输出契约：{\"paths\":\"object[]\"}" not in calls[1].prompt
     artifact = store.build_artifact("power_system_paths")
     assert artifact is not None and artifact["source"] == "ai_repair"
     assert artifact["payload"]["paths"][0] == first_paths["paths"][0]
     assert artifact["payload"]["paths"][1]["weapons"] == ["专属武器"]
-    assert result.world_blueprint["power_system_spec"]["paths"][0]["name"] == "路线一"
+    assert len(artifact["payload"]["paths"]) == 6
+    assert result.world_blueprint["power_system_spec"]["paths"][0]["name"] == "战士"
 
 
 def test_power_path_repair_requires_traditional_append_fields_but_not_nontraditional_extras() -> None:
@@ -1501,6 +1588,72 @@ def test_power_path_repair_requires_traditional_append_fields_but_not_nontraditi
     )
     assert not diagnostics
     assert merged is not None and merged["paths"][-1]["name"] == "新增"
+
+
+def test_ordinary_path_repair_replaces_only_invalid_non_object_item(tmp_path: Path) -> None:
+    store = _store(tmp_path, plugin_id="xuanhuan")
+    payloads = _structured_payloads()
+    retained = deepcopy(_power_sections()["power_system_paths"]["paths"][0])
+    payloads["power_system_paths"] = [
+        {"paths": [retained, "bad"]},
+        {
+            "updates": [
+                {
+                    "index": 1,
+                    "fields": {"name": "法则路线", "branches": ["观测", "重写"]},
+                }
+            ],
+            "append": [],
+        },
+    ]
+    gateway = ScriptedGateway(payloads)
+
+    WorldBuildGraphRunner(
+        NovelProject.model_validate(store.project()),
+        store=store,
+        model_gateway=gateway,
+    ).run()
+
+    calls = [call for call in gateway.calls if call.operation == "world_build_power_system_paths"]
+    assert len(calls) == 2
+    assert "power-path-repair/v1" in calls[1].prompt
+    assert '"replace_indices":[1]' in calls[1].prompt
+    artifact = store.build_artifact("power_system_paths")
+    assert artifact is not None and artifact["source"] == "ai_repair"
+    assert artifact["payload"]["paths"][0] == retained
+    assert artifact["payload"]["paths"][1] == {
+        "name": "法则路线",
+        "branches": ["观测", "重写"],
+    }
+
+
+def test_invalid_path_item_replacement_is_limited_to_exact_diagnostic_index() -> None:
+    project = NovelProject(
+        project_id="file:path-replacement",
+        title="路径替换边界",
+        world_blueprint={"genre_plugin_ids": ["xuanhuan"]},
+    )
+    payload = {"paths": [{"name": "保留", "branches": ["甲", "乙"]}, "bad"]}
+    scope = power_path_repair_scope(
+        payload,
+        (BuildDiagnostic("power.paths.invalid_item", "paths[1]", "invalid"),),
+        project,
+    )
+
+    assert scope.replace_indices == (1,)
+    assert scope.update_fields == {1: ("branches", "name")}
+    merged, diagnostics = merge_power_path_repair(
+        payload,
+        {
+            "updates": [
+                {"index": 0, "fields": {"name": "越界", "branches": ["丙", "丁"]}}
+            ],
+            "append": [],
+        },
+        scope,
+    )
+    assert merged is None
+    assert [item.code for item in diagnostics] == ["task.repair_out_of_scope"]
 
 
 def test_power_final_residual_repair_failure_is_capped_end_to_end(tmp_path: Path) -> None:

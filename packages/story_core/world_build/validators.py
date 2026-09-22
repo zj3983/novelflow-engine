@@ -195,18 +195,26 @@ def _validate_power_paths(payload: Any, project: NovelProject) -> Any:
         if isinstance(project.world_blueprint, Mapping)
         else None
     )
-    minimum = _minimum_path_count(plugin, existing_spec)
-    if not isinstance(values, list) or len(values) < minimum:
+    if not isinstance(values, list):
+        minimum = _minimum_path_count(plugin, existing_spec)
         diagnostics.append(_diagnostic("power.paths.minimum_count", "paths", f"paths requires at least {minimum} item(s)"))
         return _finish(diagnostics)
+    candidate_spec = dict(existing_spec) if isinstance(existing_spec, Mapping) else {}
+    candidate_spec["paths"] = values
+    minimum = _minimum_path_count(plugin, candidate_spec)
+    if len(values) < minimum:
+        diagnostics.append(_diagnostic("power.paths.minimum_count", "paths", f"paths requires at least {minimum} item(s)"))
     existing_power_spec = (
         (project.world_blueprint or {}).get("power_system_spec")
         if isinstance(project.world_blueprint, Mapping)
         else None
     )
     traditional_game = (
-        uses_traditional_game_class_advancement(existing_power_spec)
-        or uses_traditional_game_class_advancement({"paths": values})
+        plugin.plugin_id == "game_webnovel"
+        and (
+            uses_traditional_game_class_advancement(existing_power_spec)
+            or uses_traditional_game_class_advancement({"paths": values})
+        )
     )
     # The canonical power validator is the authority for rich path
     # semantics.  The section validator only checks the shape needed to
