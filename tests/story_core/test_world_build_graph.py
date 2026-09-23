@@ -17,6 +17,7 @@ from packages.story_core.world_build.runner import (
     WorldBuildGraphFailure,
     WorldBuildGraphRunner,
 )
+from packages.story_core.world_build import runner as world_build_runner
 from packages.story_core.world_build.tasks import (
     build_task_prompt,
     canonical_world_input,
@@ -1521,6 +1522,236 @@ def test_power_path_repair_scope_targets_only_diagnostic_items_and_fields() -> N
     assert merged["paths"][1]["role"] == "不应变化"
     assert merged["paths"][0]["branches"] == ["强化", "变异"]
     assert merged["paths"][1]["name"] == "新名"
+
+
+def test_path_section_validator_and_repair_scope_share_canonical_text_semantics() -> None:
+    project = NovelProject(
+        project_id="file:canonical-path-semantics",
+        title="路径规范化",
+        world_blueprint={"genre_plugin_ids": ["xuanhuan"]},
+    )
+    paths = [
+        {"name": "路线\t甲\n", "branches": [" 生存\t路线\n", "生存 路线"]},
+        {"name": " 路线\t甲 ", "branches": ["观测", "重写"]},
+    ]
+
+    section_result = make_world_validators(project)["power.paths"]({"paths": paths})
+    section_codes = set() if section_result is True else {item.code for item in section_result}
+    assert "paths.distinct_branches" in section_codes
+    assert "paths.duplicate_names" in section_codes
+
+    scope = power_path_repair_scope(
+        {"paths": paths},
+        (
+            BuildDiagnostic("power.final.paths.distinct_branches", "paths", "branches"),
+            BuildDiagnostic("power.final.paths.duplicate_names", "paths", "duplicate"),
+        ),
+        project,
+    )
+    assert scope.update_fields == {0: ("branches",), 1: ("name",)}
+
+    spec: dict[str, Any] = {}
+    for payload in _power_sections().values():
+        spec.update(deepcopy(payload))
+    spec["paths"] = paths
+    with pytest.raises(PowerSystemValidationError) as caught:
+        validate_power_system_spec(spec, novel_type_id="xuanhuan")
+    assert {"paths.distinct_branches", "paths.duplicate_names"}.issubset(caught.value.violations)
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value", "final_code", "section_code"),
+    (
+        ("weapons", [123], "game.path_missing_weapon_affinity", "power.paths.missing_weapons"),
+        ("skill_categories", ["   "], "game.path_missing_skill_categories", "power.paths.missing_skill_categories"),
+        ("role", "\x00", "game.path_missing_role", "power.paths.missing_role"),
+    ),
+)
+def test_traditional_required_fields_and_repair_scope_use_canonical_values(
+    field: str,
+    invalid_value: Any,
+    final_code: str,
+    section_code: str,
+) -> None:
+    paths = [_traditional_path_payload(f"职业{i}") for i in range(6)]
+    paths[4][field] = invalid_value
+    project = NovelProject(
+        project_id="file:traditional-canonical-path",
+        title="传统路径规范化",
+        world_blueprint={
+            "genre_plugin_ids": ["game_webnovel"],
+            "power_progression_mode": "traditional_class",
+        },
+    )
+
+    result = make_world_validators(project, progression_mode="traditional_class")["power.paths"](
+        {"paths": paths}
+    )
+    diagnostics = () if result is True else result
+    assert section_code in {item.code for item in diagnostics}
+
+    scope = power_path_repair_scope(
+        {"paths": paths},
+        (BuildDiagnostic(f"power.final.{final_code}", "paths[4]." + field, "canonical required field missing"),),
+        project,
+        progression_mode="traditional_class",
+    )
+    assert scope.update_fields == {4: (field,)}
+
+
+@pytest.mark.parametrize(
+    ("diagnostic_code", "mutate_tree"),
+    (
+        (
+            "power.final.game.path_incomplete_advancement_node",
+            lambda tree: tree[0].update(tier_name="   "),
+        ),
+        (
+            "power.final.game.path_incomplete_advancement_option",
+            lambda tree: tree[0]["options"][0].update(ability_changes=["\x00"]),
+        ),
+    ),
+)
+def test_advancement_tree_repair_scope_uses_canonical_nested_values(
+    diagnostic_code: str,
+    mutate_tree: Any,
+) -> None:
+    paths = [_traditional_path_payload(f"职业{i}") for i in range(6)]
+    mutate_tree(paths[4]["advancement_tree"])
+    project = NovelProject(
+        project_id="file:canonical-advancement-tree",
+        title="规范化职业进阶树",
+        world_blueprint={"genre_plugin_ids": ["game_webnovel"], "power_progression_mode": "traditional_class"},
+    )
+
+    scope = power_path_repair_scope(
+        {"paths": paths},
+        (BuildDiagnostic(diagnostic_code, "paths", "canonical tree field missing"),),
+        project,
+        progression_mode="traditional_class",
+    )
+
+    assert scope.update_fields == {4: ("advancement_tree",)}
+
+
+def test_path_repair_scope_preserves_raw_indices_when_normalization_drops_items() -> None:
+    project = NovelProject(
+        project_id="file:canonical-path-indices",
+        title="原始路径索引",
+        world_blueprint={"genre_plugin_ids": ["xuanhuan"]},
+    )
+    paths = [
+        {"name": "有效路线", "branches": ["观测", "重写"]},
+        "invalid item",
+        {"name": "待修路线", "branches": ["生存\t路线", "生存 路线"]},
+    ]
+
+    scope = power_path_repair_scope(
+        {"paths": paths},
+        (BuildDiagnostic("power.final.paths.distinct_branches", "paths", "branches"),),
+        project,
+    )
+
+    assert scope.update_fields == {2: ("branches",)}
+
+
+def test_ordinary_path_repair_uses_canonical_branch_diagnostic_and_exact_scope(tmp_path: Path) -> None:
+    store = _store(tmp_path, plugin_id="xuanhuan")
+    payloads = _structured_payloads()
+    first_candidate = deepcopy(_power_sections()["power_system_paths"])
+    first_candidate["paths"][0]["branches"] = [" 生存\t路线\n", "生存 路线"]
+    payloads["power_system_paths"] = [
+        first_candidate,
+        {
+            "updates": [
+                {"index": 0, "fields": {"branches": ["生存支线", "维修支线"]}}
+            ],
+            "append": [],
+        },
+    ]
+    gateway = ScriptedGateway(payloads)
+
+    WorldBuildGraphRunner(
+        NovelProject.model_validate(store.project()),
+        store=store,
+        model_gateway=gateway,
+    ).run()
+
+    calls = [call for call in gateway.calls if call.operation == "world_build_power_system_paths"]
+    assert len(calls) == 2
+    assert "paths.distinct_branches" in calls[1].prompt
+    assert '"index":0' in calls[1].prompt
+    assert '"fields":["branches"]' in calls[1].prompt
+    artifact = store.build_artifact("power_system_paths")
+    assert artifact is not None and artifact["source"] == "ai_repair"
+    assert artifact["payload"]["paths"][0]["branches"] == ["生存支线", "维修支线"]
+    assert store.build_artifact("power_system_final") is not None
+
+
+def test_empty_final_path_repair_scope_fails_without_model_call_and_consumes_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _store(tmp_path, plugin_id="xuanhuan")
+    WorldBuildGraphRunner(
+        NovelProject.model_validate(store.project()),
+        store=store,
+        model_gateway=ScriptedGateway(_structured_payloads()),
+    ).run()
+    before = store.build_artifact("power_system_paths")
+    assert before is not None
+
+    gateway = ScriptedGateway({})
+    runner = WorldBuildGraphRunner(
+        NovelProject.model_validate(store.project()),
+        store=store,
+        model_gateway=gateway,
+    )
+    assert runner._route_power_final_diagnostics(
+        (BuildDiagnostic("power.final.paths.distinct_branches", "paths", "branches"),)
+    )
+    empty_scope = PowerPathRepairScope({}, 0, tuple(PATH_FIELDS))
+    monkeypatch.setattr(world_build_runner, "power_path_repair_scope", lambda *args, **kwargs: empty_scope)
+
+    with pytest.raises(WorldBuildGraphFailure) as caught:
+        runner.run()
+
+    assert caught.value.task_id == "power_system_paths"
+    assert [item.code for item in caught.value.diagnostics] == ["task.repair_scope_unresolved"]
+    assert gateway.calls == []
+    assert store.build_artifact("power_system_paths")["revision"] == before["revision"]
+    state = store.build_graph_state()
+    assert state["tasks"]["power_system_paths"]["status"] == "validation_failed"
+    budget = json.loads((store.webnovel_dir / "world_build_power_final_repair.json").read_text(encoding="utf-8"))
+    assert budget["failed_owners"] == ["power_system_paths"]
+
+
+def test_empty_ordinary_path_repair_scope_fails_without_second_model_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _store(tmp_path, plugin_id="xuanhuan")
+    payloads = _structured_payloads()
+    payloads["power_system_paths"] = [
+        {"paths": [{"name": "", "branches": ["单分支"]}, {"name": "路线二", "branches": ["观测", "重写"]}]},
+        {"updates": [{"index": 0, "fields": {"name": "修复路线", "branches": ["甲", "乙"]}}], "append": []},
+    ]
+    gateway = ScriptedGateway(payloads)
+    empty_scope = PowerPathRepairScope({}, 0, tuple(PATH_FIELDS))
+    monkeypatch.setattr(world_build_runner, "power_path_repair_scope", lambda *args, **kwargs: empty_scope)
+
+    with pytest.raises(WorldBuildGraphFailure) as caught:
+        WorldBuildGraphRunner(
+            NovelProject.model_validate(store.project()),
+            store=store,
+            model_gateway=gateway,
+        ).run()
+
+    path_calls = [call for call in gateway.calls if call.operation == "world_build_power_system_paths"]
+    assert len(path_calls) == 1
+    assert caught.value.task_id == "power_system_paths"
+    assert [item.code for item in caught.value.diagnostics] == ["task.repair_scope_unresolved"]
+    assert store.build_artifact("power_system_paths") is None
 
 
 def test_power_path_repair_scope_supports_advancement_tree_and_exact_append() -> None:

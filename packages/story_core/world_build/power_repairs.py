@@ -16,6 +16,7 @@ from packages.story_core.power_system_spec import (
     PATH_FIELDS,
     effective_power_system_template,
     is_placeholder_content,
+    normalize_power_path,
     uses_traditional_game_class_advancement,
 )
 from packages.story_core.world_enrichment import _selected_novel_type_plugin
@@ -37,6 +38,10 @@ class PowerPathRepairScope:
     append_fields: tuple[str, ...]
     append_required_fields: tuple[str, ...] = ()
     replace_indices: tuple[int, ...] = ()
+
+    @property
+    def has_mutations(self) -> bool:
+        return bool(self.update_fields or self.append_count or self.replace_indices)
 
     @property
     def append_allowed_fields(self) -> tuple[str, ...]:
@@ -91,7 +96,7 @@ def _nonempty(value: Any) -> bool:
 
 
 def _path_field_missing(path: Mapping[str, Any], field: str) -> bool:
-    return not _nonempty(path.get(field))
+    return not _nonempty(normalize_power_path(path).get(field))
 
 
 def _traditional_game_contract(
@@ -177,7 +182,7 @@ def _path_required_fields(traditional_game: bool) -> tuple[str, ...]:
 
 
 def _advancement_tree_has_diagnostic(path: Any, code: str) -> bool:
-    tree = path.get("advancement_tree") if isinstance(path, Mapping) else None
+    tree = normalize_power_path(path).get("advancement_tree") if isinstance(path, Mapping) else None
     if code == "game.path_invalid_advancement_tree":
         if not isinstance(tree, list) or any(not isinstance(node, Mapping) for node in tree):
             return True
@@ -224,6 +229,11 @@ def power_path_repair_scope(
     replace_indices: set[int] = set()
     append_count = 0
     traditional_game = _traditional_game_contract(project, paths, raw_spec, progression_mode)
+    canonical_paths = [
+        (index, normalize_power_path(path))
+        for index, path in enumerate(paths)
+        if isinstance(path, Mapping)
+    ]
 
     for diagnostic in diagnostics:
         code = diagnostic.code
@@ -242,17 +252,17 @@ def power_path_repair_scope(
             continue
         if code == "paths.duplicate_names" or code == "game.invalid_classes":
             seen: set[str] = set()
-            for index, path in enumerate(paths):
-                name = str(path.get("name") or "").casefold() if isinstance(path, Mapping) else ""
+            for index, path in canonical_paths:
+                name = path.get("name", "").casefold()
                 if name and name in seen:
                     _add_field(targets, index, "name")
                 elif name:
                     seen.add(name)
             continue
         if code == "paths.distinct_branches":
-            for index, path in enumerate(paths):
-                branches = path.get("branches") if isinstance(path, Mapping) else None
-                if not isinstance(branches, list) or len({str(item).casefold() for item in branches}) < 2:
+            for index, path in canonical_paths:
+                branches = path.get("branches", [])
+                if len({item.casefold() for item in branches}) < 2:
                     _add_field(targets, index, "branches")
             continue
         if code == "paths.missing_name":

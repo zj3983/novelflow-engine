@@ -74,6 +74,16 @@ class WorldBuildGraphCancelled(WorldBuildGraphFailure):
     code = "world_build_conflict"
 
 
+def _unresolved_path_repair_scope() -> tuple[BuildDiagnostic, ...]:
+    return (
+        BuildDiagnostic(
+            "task.repair_scope_unresolved",
+            "paths",
+            "path validation failed but no safe repair target could be resolved",
+        ),
+    )
+
+
 class WorldBuildGraphRunner:
     """Execute the genre-scoped production graph for one file project."""
 
@@ -650,6 +660,20 @@ class WorldBuildGraphRunner:
                 if final_repair and task_id == "power_system_paths" and isinstance(final_repair_candidate, Mapping)
                 else None
             )
+            if (
+                final_repair
+                and task_id == "power_system_paths"
+                and final_path_scope is not None
+                and not final_path_scope.has_mutations
+            ):
+                unresolved = _unresolved_path_repair_scope()
+                self.service.fail_run(run.run_id, unresolved)
+                self._mark_power_repair_failed(task_id)
+                raise WorldBuildGraphFailure(
+                    task_id,
+                    unresolved,
+                    message="power path repair scope could not be resolved",
+                )
             if final_repair and task_id == "power_system_paths" and final_path_scope is not None:
                 prompt = build_power_path_repair_prompt(
                     self.graph,
@@ -771,12 +795,6 @@ class WorldBuildGraphRunner:
             # End the first run with structured validation diagnostics before
             # beginning the one and only focused repair run.
             self.service.fail_run(run.run_id, diagnostics)
-            repair_run = self.service.start_run(
-                task_id,
-                input_fingerprint=input_fingerprint(contract),
-                read_projection=run_read_projection(self.graph, task_id, contract),
-            )
-            self._active_run_id = repair_run.run_id
             path_repair_scope = (
                 power_path_repair_scope(
                     candidate,
@@ -788,6 +806,20 @@ class WorldBuildGraphRunner:
                 if task_id == "power_system_paths" and isinstance(candidate, Mapping)
                 else None
             )
+            repair_run = self.service.start_run(
+                task_id,
+                input_fingerprint=input_fingerprint(contract),
+                read_projection=run_read_projection(self.graph, task_id, contract),
+            )
+            self._active_run_id = repair_run.run_id
+            if path_repair_scope is not None and not path_repair_scope.has_mutations:
+                unresolved = _unresolved_path_repair_scope()
+                self.service.fail_run(repair_run.run_id, unresolved)
+                raise WorldBuildGraphFailure(
+                    task_id,
+                    unresolved,
+                    message="power path repair scope could not be resolved",
+                )
             if path_repair_scope is not None:
                 repair_prompt = build_power_path_repair_prompt(
                     self.graph,
