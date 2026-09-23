@@ -318,6 +318,20 @@ def _normalize_class_advancement_tier(value: Any) -> dict[str, Any]:
     return result
 
 
+def normalize_power_path(value: Any) -> dict[str, Any]:
+    """Return one path in the exact canonical form used by the full spec normalizer."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    path = _normalize_record(value, PATH_FIELDS)
+    path["advancement_tree"] = [
+        node
+        for raw_node in _items(_mapping_get(value, "advancement_tree"))
+        if (node := _normalize_class_advancement_node(raw_node))
+    ][:_MAX_LIST]
+    return deepcopy(path)
+
+
 def normalize_power_system_spec(value: Any) -> dict[str, Any]:
     """Return a bounded, canonical, JSON-safe copy of an untrusted specification."""
 
@@ -344,18 +358,11 @@ def normalize_power_system_spec(value: Any) -> dict[str, Any]:
                     if (record := _normalize_record(item, ATTRIBUTE_FIELDS))
                 ][:_MAX_LIST]
             elif field == "paths":
-                paths: list[dict[str, Any]] = []
-                for item in _items(raw):
-                    if not isinstance(item, Mapping):
-                        continue
-                    path = _normalize_record(item, PATH_FIELDS)
-                    path["advancement_tree"] = [
-                        node
-                        for raw_node in _items(_mapping_get(item, "advancement_tree"))
-                        if (node := _normalize_class_advancement_node(raw_node))
-                    ][:_MAX_LIST]
-                    paths.append(path)
-                result[field] = paths[:_MAX_LIST]
+                result[field] = [
+                    normalize_power_path(item)
+                    for item in _items(raw)
+                    if isinstance(item, Mapping)
+                ][:_MAX_LIST]
             elif field == "stages":
                 result[field] = [
                     _normalize_record(item, STAGE_FIELDS)

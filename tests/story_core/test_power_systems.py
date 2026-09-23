@@ -22,8 +22,39 @@ CLASSES = ("战士", "法师", "游侠", "盗贼", "牧师", "召唤师")
 
 def test_public_facade_reexports_specification_api() -> None:
     assert power_system_facade.PowerSystemValidationError is power_system_spec.PowerSystemValidationError
+    assert power_system_facade.normalize_power_path is power_system_spec.normalize_power_path
     assert power_system_facade.normalize_power_system_spec is power_system_spec.normalize_power_system_spec
     assert power_system_facade.validate_power_system_spec is power_system_spec.validate_power_system_spec
+
+
+def test_normalize_power_path_matches_canonical_path_representation() -> None:
+    raw_path = {
+        "name": "  路线\t甲\n",
+        "branches": ["  生存\t路线\n", "生存 路线", "\x00辅助"],
+        "advancement_tree": [
+            {
+                "level": "10",
+                "tier_name": " 阶段\n一 ",
+                "options": [
+                    {
+                        "name": " 选项\t甲 ",
+                        "transfer_task": " 完成\n试炼 ",
+                        "ability_changes": [" 获得\t能力 ", "\x00辅助能力"],
+                    }
+                ],
+            }
+        ],
+    }
+
+    normalize_path = getattr(power_system_spec, "normalize_power_path", None)
+    assert callable(normalize_path)
+    normalized_path = normalize_path(raw_path)
+
+    assert normalized_path == normalize_power_system_spec({"paths": [raw_path]})["paths"][0]
+    assert normalized_path["name"] == "路线 甲"
+    assert normalized_path["branches"] == ["生存 路线", "生存 路线", "辅助"]
+    assert normalized_path["advancement_tree"][0]["tier_name"] == "阶段 一"
+    assert normalized_path["advancement_tree"][0]["options"][0]["ability_changes"] == ["获得 能力", "辅助能力"]
 
 
 def test_public_facade_reexports_prompt_api() -> None:
@@ -35,6 +66,7 @@ def test_public_facade_declares_exact_exports() -> None:
     assert power_system_facade.__all__ == (
         "PowerSystemValidationError",
         "legacy_power_summary",
+        "normalize_power_path",
         "normalize_power_system_spec",
         "power_system_prompt_slice",
         "validate_power_system_spec",

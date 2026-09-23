@@ -6,6 +6,7 @@ from packages.story_core.power_system_prompt import (
 )
 from packages.story_core.power_system_spec import (
     PowerSystemValidationError,
+    normalize_power_path,
     normalize_power_system_spec,
     validate_power_system_spec,
 )
@@ -13,6 +14,7 @@ from packages.story_core.power_system_spec import (
 __all__ = (
     "PowerSystemValidationError",
     "legacy_power_summary",
+    "normalize_power_path",
     "normalize_power_system_spec",
     "power_system_prompt_slice",
     "validate_power_system_spec",

@@ -16,6 +16,7 @@ from packages.story_core.power_system_spec import (
     contains_placeholder_content,
     effective_power_system_template,
     is_placeholder_content,
+    normalize_power_path,
     validate_power_system_spec,
 )
 from packages.story_core.power_systems import legacy_power_summary
@@ -259,13 +260,17 @@ def _validate_power_paths(
                 valid = _nonempty_text(value)
             if not valid:
                 diagnostics.append(_diagnostic(f"power.paths.missing_{field}", f"paths[{index}].{field}", f"{field} is required"))
-    names = [str(item.get("name") or "").casefold() for item in values if isinstance(item, Mapping) and item.get("name")]
+    names = [
+        path["name"].casefold()
+        for item in values
+        if isinstance(item, Mapping)
+        and (path := normalize_power_path(item)).get("name")
+    ]
     if len(names) != len(set(names)):
         diagnostics.append(_diagnostic("paths.duplicate_names", "paths", "path names must be distinct"))
     if any(
         isinstance(item, Mapping)
-        and isinstance(item.get("branches"), list)
-        and len({str(branch).casefold() for branch in item.get("branches", [])}) < 2
+        and len({branch.casefold() for branch in normalize_power_path(item).get("branches", [])}) < 2
         for item in values
     ):
         diagnostics.append(_diagnostic("paths.distinct_branches", "paths", "each path needs distinct branches"))
