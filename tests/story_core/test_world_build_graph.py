@@ -1559,6 +1559,81 @@ def test_path_section_validator_and_repair_scope_share_canonical_text_semantics(
     assert {"paths.distinct_branches", "paths.duplicate_names"}.issubset(caught.value.violations)
 
 
+@pytest.mark.parametrize(
+    ("field", "invalid_value", "final_code", "section_code"),
+    (
+        ("weapons", [123], "game.path_missing_weapon_affinity", "power.paths.missing_weapons"),
+        ("skill_categories", ["   "], "game.path_missing_skill_categories", "power.paths.missing_skill_categories"),
+        ("role", "\x00", "game.path_missing_role", "power.paths.missing_role"),
+    ),
+)
+def test_traditional_required_fields_and_repair_scope_use_canonical_values(
+    field: str,
+    invalid_value: Any,
+    final_code: str,
+    section_code: str,
+) -> None:
+    paths = [_traditional_path_payload(f"职业{i}") for i in range(6)]
+    paths[4][field] = invalid_value
+    project = NovelProject(
+        project_id="file:traditional-canonical-path",
+        title="传统路径规范化",
+        world_blueprint={
+            "genre_plugin_ids": ["game_webnovel"],
+            "power_progression_mode": "traditional_class",
+        },
+    )
+
+    result = make_world_validators(project, progression_mode="traditional_class")["power.paths"](
+        {"paths": paths}
+    )
+    diagnostics = () if result is True else result
+    assert section_code in {item.code for item in diagnostics}
+
+    scope = power_path_repair_scope(
+        {"paths": paths},
+        (BuildDiagnostic(f"power.final.{final_code}", "paths[4]." + field, "canonical required field missing"),),
+        project,
+        progression_mode="traditional_class",
+    )
+    assert scope.update_fields == {4: (field,)}
+
+
+@pytest.mark.parametrize(
+    ("diagnostic_code", "mutate_tree"),
+    (
+        (
+            "power.final.game.path_incomplete_advancement_node",
+            lambda tree: tree[0].update(tier_name="   "),
+        ),
+        (
+            "power.final.game.path_incomplete_advancement_option",
+            lambda tree: tree[0]["options"][0].update(ability_changes=["\x00"]),
+        ),
+    ),
+)
+def test_advancement_tree_repair_scope_uses_canonical_nested_values(
+    diagnostic_code: str,
+    mutate_tree: Any,
+) -> None:
+    paths = [_traditional_path_payload(f"职业{i}") for i in range(6)]
+    mutate_tree(paths[4]["advancement_tree"])
+    project = NovelProject(
+        project_id="file:canonical-advancement-tree",
+        title="规范化职业进阶树",
+        world_blueprint={"genre_plugin_ids": ["game_webnovel"], "power_progression_mode": "traditional_class"},
+    )
+
+    scope = power_path_repair_scope(
+        {"paths": paths},
+        (BuildDiagnostic(diagnostic_code, "paths", "canonical tree field missing"),),
+        project,
+        progression_mode="traditional_class",
+    )
+
+    assert scope.update_fields == {4: ("advancement_tree",)}
+
+
 def test_path_repair_scope_preserves_raw_indices_when_normalization_drops_items() -> None:
     project = NovelProject(
         project_id="file:canonical-path-indices",

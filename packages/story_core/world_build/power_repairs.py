@@ -96,7 +96,7 @@ def _nonempty(value: Any) -> bool:
 
 
 def _path_field_missing(path: Mapping[str, Any], field: str) -> bool:
-    return not _nonempty(path.get(field))
+    return not _nonempty(normalize_power_path(path).get(field))
 
 
 def _traditional_game_contract(
@@ -182,7 +182,7 @@ def _path_required_fields(traditional_game: bool) -> tuple[str, ...]:
 
 
 def _advancement_tree_has_diagnostic(path: Any, code: str) -> bool:
-    tree = path.get("advancement_tree") if isinstance(path, Mapping) else None
+    tree = normalize_power_path(path).get("advancement_tree") if isinstance(path, Mapping) else None
     if code == "game.path_invalid_advancement_tree":
         if not isinstance(tree, list) or any(not isinstance(node, Mapping) for node in tree):
             return True

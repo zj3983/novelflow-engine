@@ -250,8 +250,9 @@ def _validate_power_paths(
                     "path contains placeholder content",
                 )
             )
+        canonical_item = normalize_power_path(item)
         for field in required:
-            value = item.get(field)
+            value = canonical_item.get(field)
             if isinstance(value, list):
                 valid = _nonempty_list(value)
             elif field == "advancement_tree":
