@@ -4376,6 +4376,45 @@ export async function fetchProject(projectId: string): Promise<ProjectResponse> 
   }
 }
 
+export type BuildWorkbenchDiagnostic = {
+  code: string;
+  path: string;
+  message: string;
+  severity?: "warning" | "blocking" | string;
+};
+
+export type BuildWorkbenchTask = {
+  task_id: string;
+  title: string;
+  status: "pending" | "blocked" | "ready" | "running" | "validation_failed" | "review_required" | "completed" | "stale" | string;
+  dependencies: string[];
+  reads: string[];
+  owns: string[];
+  artifact_revision: number | null;
+  artifact_source: string | null;
+  validation_status: string;
+  diagnostics: BuildWorkbenchDiagnostic[];
+  provider: string | null;
+  model: string | null;
+  prompt_call_id: string | null;
+};
+
+export type BuildWorkbenchGraph = {
+  schema_version: "build-workbench/v1";
+  initialized: boolean;
+  graph_id: string;
+  graph_revision: number | null;
+  pipeline_stage: string | null;
+  tasks: BuildWorkbenchTask[];
+};
+
+export async function fetchBuildWorkbench(projectId: string): Promise<BuildWorkbenchGraph> {
+  return await tryFetchJson(`${fileProjectPath(projectId)}/build-graph`, {
+    method: "GET",
+    cache: "no-store",
+  }) as BuildWorkbenchGraph;
+}
+
 export type UpdateProjectOptions = {
   fallbackToMock?: boolean;
 };
