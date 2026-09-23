@@ -1,6 +1,6 @@
 .graph_summary {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 20px;
   margin-bottom: 18px;
 }
@@ -234,9 +234,44 @@
 .empty_value { margin: 0; color: var(--ws-ink-muted); font-size: 12px; }
 .empty_title { margin: 0 0 8px; font-size: 19px; }
 .error { border-color: var(--ws-danger); color: var(--ws-danger); }
+.edit_button,
+.editor_actions button {
+  padding: 8px 12px;
+  border: 1px solid var(--ws-line);
+  border-radius: 7px;
+  background: white;
+  color: var(--ws-ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 750;
+  cursor: pointer;
+}
+.editor { display: grid; gap: 10px; margin-top: 15px; padding: 14px; border: 1px solid var(--ws-line); border-radius: 9px; background: rgba(255,255,255,.48); }
+.editor_heading,
+.editor_actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.editor_heading span { color: var(--ws-ink-muted); font-size: 12px; }
+.editor textarea { width: 100%; min-height: 280px; padding: 11px; border: 1px solid var(--ws-line); border-radius: 7px; background: #fff; color: var(--ws-ink); font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; resize: vertical; }
+.editor_actions { justify-content: flex-end; }
+.editor_actions button:disabled { opacity: .5; cursor: not-allowed; }
+.validation_pass,
+.validation_fail { padding: 9px 10px; border-radius: 7px; font-size: 12px; }
+.validation_pass { background: var(--ws-success-soft); color: var(--ws-success); }
+.validation_fail,
+.edit_error { background: rgba(180,35,24,.08); color: var(--ws-danger); }
+.edit_error { margin: 0; padding: 8px 10px; border-radius: 7px; font-size: 12px; overflow-wrap: anywhere; }
+.outdated_marker,
+.stale_notice { border-left: 4px solid var(--ws-warn); }
+.outdated_marker { margin: 12px 0; padding: 9px 11px; color: var(--ws-warn); font-size: 12px; }
+.stale_notice { margin-bottom: 16px; }
+.stale_notice ul { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 9px 0 0; padding-left: 20px; }
+.stale_notice code { color: var(--ws-ink-muted); font-size: 11px; }
 
 @media (max-width: 1000px) {
   .columns { grid-template-columns: minmax(250px, 0.8fr) minmax(0, 1.2fr); }
+}
+@media (max-width: 740px) {
+  .graph_summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .columns { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-width: 760px) {
