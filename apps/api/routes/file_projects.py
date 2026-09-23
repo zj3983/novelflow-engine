@@ -2501,6 +2501,68 @@ def init_file_project_routes() -> APIRouter:
             raise HTTPException(status_code=409, detail="world_build_in_progress")
         return _start_world_build_job(project_id)
 
+    @router.get("/file-projects/{project_id}/build-graph")
+    def get_file_project_build_graph(project_id: str) -> dict[str, Any]:
+        """Return a read-only projection of the persisted production Build Graph."""
+
+        from packages.story_core.world_build.definition import build_world_build_graph
+
+        store = _store_for(project_id)
+        project = store.project()
+        graph = build_world_build_graph(NovelProject.model_validate(project))
+        build_store = store.build_graph_store()
+        state = build_store.read_state()
+        if state is None:
+            return {
+                "schema_version": "build-workbench/v1",
+                "initialized": False,
+                "graph_id": graph.definition.graph_id,
+                "graph_revision": None,
+                "pipeline_stage": project.get("pipeline_stage"),
+                "tasks": [],
+            }
+
+        if (
+            state.graph_id != graph.definition.graph_id
+            or set(state.tasks) != set(graph.definition.tasks_by_id)
+            or state.definition_fingerprint != graph.definition.definition_fingerprint
+        ):
+            raise HTTPException(status_code=409, detail="build_graph_state_mismatch")
+
+        tasks: list[dict[str, Any]] = []
+        for task in graph.definition.tasks:
+            task_state = state.tasks[task.task_id]
+            revision = task_state.current_artifact_revision
+            artifact = build_store.read_artifact(task.task_id, revision) if revision is not None else None
+            if revision is not None and artifact is None:
+                raise HTTPException(status_code=409, detail="build_graph_artifact_missing")
+            tasks.append(
+                {
+                    "task_id": task.task_id,
+                    "title": task.title,
+                    "status": task_state.status,
+                    "dependencies": list(task.dependencies),
+                    "reads": list(task.reads),
+                    "owns": list(task.owns),
+                    "artifact_revision": revision,
+                    "artifact_source": artifact.source if artifact else None,
+                    "validation_status": task_state.validation_status,
+                    "diagnostics": [item.to_dict() for item in task_state.diagnostics],
+                    "provider": artifact.provider if artifact else None,
+                    "model": artifact.model if artifact else None,
+                    "prompt_call_id": artifact.prompt_call_id if artifact else None,
+                }
+            )
+
+        return {
+            "schema_version": "build-workbench/v1",
+            "initialized": True,
+            "graph_id": state.graph_id,
+            "graph_revision": state.graph_revision,
+            "pipeline_stage": project.get("pipeline_stage"),
+            "tasks": tasks,
+        }
+
     @router.post("/file-projects/{project_id}/world-build-jobs")
     def start_file_project_world_build_job(project_id: str) -> dict[str, object]:
         # Plan rule: starting a job while the legacy endpoint is mid-run
