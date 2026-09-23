@@ -48,6 +48,7 @@ from .power_repairs import (
     power_path_repair_scope,
     raw_power_spec_from_artifacts,
 )
+from .power_contract import select_power_progression_mode
 
 
 class WorldBuildGraphFailure(RuntimeError):
@@ -87,13 +88,29 @@ class WorldBuildGraphRunner:
     ) -> None:
         self.project = project.model_copy(deep=True)
         self.store = store
-        self.graph: WorldBuildGraph = build_world_build_graph(self.project)
+        previous_input: Mapping[str, Any] | None = None
+        try:
+            prior = self.store.build_artifact("world_input")
+            candidate = prior.get("payload") if isinstance(prior, Mapping) else None
+            if isinstance(candidate, Mapping):
+                previous_input = candidate
+        except Exception:
+            previous_input = None
+        self.power_progression_mode = select_power_progression_mode(
+            self.project,
+            locked_mode=(previous_input or {}).get("power_progression_mode"),
+            locked_novel_type_id=(previous_input or {}).get("novel_type_id"),
+        )
+        self.graph: WorldBuildGraph = build_world_build_graph(
+            self.project,
+            progression_mode=self.power_progression_mode,
+        )
         # WorldBuild is the one sanctioned dynamic graph: its task shape is
         # selected by genre.  Perform an explicit archive/reset migration
         # before the generic BuildGraphService applies its hard definition
         # compatibility check.
         prepare_world_graph_migration(self.store, self.graph)
-        self.validators = make_world_validators(self.project)
+        self.validators = make_world_validators(self.project, self.power_progression_mode)
         self.service = store.build_graph_service(
             self.graph.definition,
             validators=self.validators,
@@ -160,6 +177,23 @@ class WorldBuildGraphRunner:
     # ------------------------------------------------------------------
     # Root import and existing-project bootstrap
     # ------------------------------------------------------------------
+    def _materialized_mode_matches_current_graph(self) -> bool:
+        marker = self.store.build_graph_materialization()
+        if not isinstance(marker, Mapping):
+            return False
+        if (
+            marker.get("graph_id") != self.graph.definition.graph_id
+            or marker.get("power_progression_mode") != self.power_progression_mode
+        ):
+            return False
+        state = self.service.inspect_graph()
+        revisions = {
+            task_id: int(task_state.current_artifact_revision)
+            for task_id, task_state in state.tasks.items()
+            if task_state.status == "completed" and task_state.current_artifact_revision is not None
+        }
+        return dict(marker.get("artifact_revisions") or {}) == revisions
+
     def _ensure_world_input(self) -> None:
         task_id = "world_input"
         self._ensure_active(task_id)
@@ -167,6 +201,31 @@ class WorldBuildGraphRunner:
         previous = current.payload if current is not None and isinstance(current.payload, Mapping) else None
         payload = canonical_world_input(self.project, store=self.store, previous=previous)
         if current is not None and current.payload == payload:
+            return
+        explicit_mode = self.project.world_blueprint.get("power_progression_mode")
+        already_materialized_mode = (
+            explicit_mode == self.power_progression_mode
+            and self._materialized_mode_matches_current_graph()
+        )
+        if (
+            current is not None
+            and "power_progression_mode" not in current.payload
+            and (explicit_mode not in {"custom", "traditional_class"} or already_materialized_mode)
+            and {
+                key: value
+                for key, value in current.payload.items()
+                if key != "power_progression_mode"
+            }
+            == {
+                key: value
+                for key, value in payload.items()
+                if key != "power_progression_mode"
+            }
+        ):
+            # Older completed graphs predate the locked mode metadata.  The
+            # mode has already been selected deterministically for this runner
+            # from the project and prior artifacts; backfilling the root
+            # artifact as a new revision would stale every downstream task.
             return
         expected = current.revision if current is not None else None
         result = self.service.commit_candidate(
@@ -462,6 +521,7 @@ class WorldBuildGraphRunner:
             resources=payloads["power_system_resources"],
             constraints=payloads["power_system_constraints"],
             project=self.project,
+            progression_mode=self.power_progression_mode,
             existing_summary=existing if isinstance(existing, list) else None,
         )
 
@@ -585,6 +645,7 @@ class WorldBuildGraphRunner:
                     final_diagnostics,
                     self.project,
                     raw_spec=raw_power_spec_from_artifacts(self.service),
+                    progression_mode=self.power_progression_mode,
                 )
                 if final_repair and task_id == "power_system_paths" and isinstance(final_repair_candidate, Mapping)
                 else None
@@ -722,6 +783,7 @@ class WorldBuildGraphRunner:
                     diagnostics,
                     self.project,
                     raw_spec=raw_power_spec_from_artifacts(self.service),
+                    progression_mode=self.power_progression_mode,
                 )
                 if task_id == "power_system_paths" and isinstance(candidate, Mapping)
                 else None

@@ -121,6 +121,7 @@ def materialization_payload(
     payload = {
         "schema_version": MATERIALIZATION_SCHEMA,
         "graph_id": graph.definition.graph_id,
+        "power_progression_mode": graph.power_progression_mode,
         "artifact_revisions": graph_artifact_revisions(service, graph),
         "domain_hashes": _domain_hashes(project, graph),
     }
@@ -240,6 +241,7 @@ def materialize_project(
     # compatibility projection must use that committed value verbatim.
     if isinstance(payload.get("power_system"), list) and payload.get("power_system"):
         result.world_blueprint["power_system"] = deepcopy(payload["power_system"])
+    result.world_blueprint["power_progression_mode"] = graph.power_progression_mode
     result.world_blueprint["world_build_artifacts"] = legacy_artifacts_projection(service, graph)
     return result
 
@@ -297,6 +299,7 @@ def reconcile_project_to_graph(
                 _power_spec_for_genre(raw_spec, plugin.plugin_id),
                 novel_type_id=plugin.plugin_id,
                 template=plugin.power_system_template,
+                progression_mode=graph.power_progression_mode,
             )
         except PowerSystemValidationError as exc:
             detail = ",".join((*exc.missing_sections, *exc.violations)) or "invalid_power_system_spec"

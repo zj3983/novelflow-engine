@@ -591,22 +591,33 @@ def validate_power_system_spec(
     *,
     novel_type_id: str,
     template: Mapping[str, Any] | None = None,
+    progression_mode: str | None = None,
 ) -> dict[str, Any]:
     """Normalize and validate a project power-system specification."""
 
     normalized = normalize_power_system_spec(spec)
-    selected = effective_power_system_template(
-        novel_type_id,
-        _selected_template(novel_type_id, template),
-        spec,
-    )
     try:
         canonical_id = canonical_novel_type_id(novel_type_id)
     except Exception:
         canonical_id = "generic_webnovel"
+    if progression_mode not in (None, "custom", "traditional_class"):
+        raise ValueError("unsupported_power_progression_mode")
     uses_traditional_game_contract = (
         canonical_id == "game_webnovel"
-        and uses_traditional_game_class_advancement(spec)
+        and (
+            progression_mode == "traditional_class"
+            if progression_mode is not None
+            else uses_traditional_game_class_advancement(spec)
+        )
+    )
+    base_template = _selected_template(novel_type_id, template)
+    # Final validation may be constrained by the persisted WorldBuild root
+    # contract.  Do not let a late section payload switch the selected game
+    # template when that contract explicitly says custom.
+    selected = (
+        dict(base_template)
+        if uses_traditional_game_contract or canonical_id != "game_webnovel"
+        else effective_power_system_template(novel_type_id, base_template, {})
     )
     missing = {
         section

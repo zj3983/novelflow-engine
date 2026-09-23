@@ -9,11 +9,13 @@ from typing import Any, Callable
 from packages.story_core.build_graph.contracts import BuildDiagnostic
 from packages.story_core.models import NovelProject
 from packages.story_core.power_system_spec import (
+    CLASS_ADVANCEMENT_TIER_FIELDS,
+    GAME_CLASS_ADVANCEMENT_LEVELS,
+    PATH_FIELDS,
     PowerSystemValidationError,
     contains_placeholder_content,
     effective_power_system_template,
     is_placeholder_content,
-    uses_traditional_game_class_advancement,
     validate_power_system_spec,
 )
 from packages.story_core.power_systems import legacy_power_summary
@@ -21,6 +23,7 @@ from packages.story_core.world_enrichment import (
     _power_spec_for_genre,
     _selected_novel_type_plugin,
 )
+from .power_contract import PowerProgressionMode, select_power_progression_mode
 
 
 Validator = Callable[[Any], Any]
@@ -136,6 +139,8 @@ def _validate_world_input(payload: Any) -> Any:
         diagnostics.append(_diagnostic("world.input.missing_genre", "genre_plugin_ids", "genre_plugin_ids must be a list"))
     if not isinstance(payload.get("story_core"), Mapping):
         diagnostics.append(_diagnostic("world.input.missing_story_core", "story_core", "story_core projection is required"))
+    if payload.get("power_progression_mode") not in {"custom", "traditional_class"}:
+        diagnostics.append(_diagnostic("world.input.invalid_power_progression_mode", "power_progression_mode", "power progression mode must be locked to a supported contract"))
     return _finish(diagnostics)
 
 
@@ -186,7 +191,11 @@ def _minimum_path_count(plugin: Any, spec: Any = None) -> int:
     return max(1, int(value)) if isinstance(value, int) and not isinstance(value, bool) else 2
 
 
-def _validate_power_paths(payload: Any, project: NovelProject) -> Any:
+def _validate_power_paths(
+    payload: Any,
+    project: NovelProject,
+    progression_mode: PowerProgressionMode,
+) -> Any:
     diagnostics = _reject_unowned_fields(payload, ("paths",), "power.paths")
     plugin = _selected_novel_type_plugin(project)
     values = payload.get("paths") if isinstance(payload, Mapping) else None
@@ -196,26 +205,30 @@ def _validate_power_paths(payload: Any, project: NovelProject) -> Any:
         else None
     )
     if not isinstance(values, list):
-        minimum = _minimum_path_count(plugin, existing_spec)
+        if plugin.plugin_id == "game_webnovel":
+            minimum = 6 if progression_mode == "traditional_class" else 1
+        else:
+            minimum = _minimum_path_count(plugin, existing_spec)
         diagnostics.append(_diagnostic("power.paths.minimum_count", "paths", f"paths requires at least {minimum} item(s)"))
         return _finish(diagnostics)
     candidate_spec = dict(existing_spec) if isinstance(existing_spec, Mapping) else {}
     candidate_spec["paths"] = values
-    minimum = _minimum_path_count(plugin, candidate_spec)
+    if plugin.plugin_id == "game_webnovel":
+        minimum = 6 if progression_mode == "traditional_class" else 1
+    else:
+        minimum = _minimum_path_count(plugin, candidate_spec)
     if len(values) < minimum:
         diagnostics.append(_diagnostic("power.paths.minimum_count", "paths", f"paths requires at least {minimum} item(s)"))
-    existing_power_spec = (
-        (project.world_blueprint or {}).get("power_system_spec")
-        if isinstance(project.world_blueprint, Mapping)
-        else None
-    )
-    traditional_game = (
-        plugin.plugin_id == "game_webnovel"
-        and (
-            uses_traditional_game_class_advancement(existing_power_spec)
-            or uses_traditional_game_class_advancement({"paths": values})
-        )
-    )
+    traditional_game = plugin.plugin_id == "game_webnovel" and progression_mode == "traditional_class"
+    if traditional_game:
+        minimum = max(minimum, 6)
+    elif plugin.plugin_id == "game_webnovel" and isinstance(values, list):
+        for index, item in enumerate(values):
+            if isinstance(item, Mapping) and (
+                _nonempty_text(item.get("transfer_task"))
+                or (isinstance(item.get("advancement_tree"), list) and bool(item.get("advancement_tree")))
+            ):
+                diagnostics.append(_diagnostic("power.paths.mode_switch_field", f"paths[{index}]", "custom game mode cannot be upgraded by path output"))
     # The canonical power validator is the authority for rich path
     # semantics.  The section validator only checks the shape needed to
     # safely carry a path through the graph.  In particular, an imported
@@ -223,22 +236,7 @@ def _validate_power_paths(payload: Any, project: NovelProject) -> Any:
     # lacks game-only or optional descriptive fields.
     required = ("name", "branches")
     if traditional_game:
-        required = (
-            "name",
-            "role",
-            "core_resource",
-            "core_attributes",
-            "weapons",
-            "armor",
-            "combat_loop",
-            "strengths",
-            "weaknesses",
-            "skill_categories",
-            "branches",
-            "transfer_task",
-            "advancement",
-            "advancement_tree",
-        )
+        required = PATH_FIELDS
     for index, item in enumerate(values):
         if not isinstance(item, Mapping):
             diagnostics.append(_diagnostic("power.paths.invalid_item", f"paths[{index}]", "path must be an object"))
@@ -310,7 +308,7 @@ def _validate_power_resources(payload: Any) -> Any:
     return _finish(diagnostics)
 
 
-def _validate_power_constraints(payload: Any) -> Any:
+def _validate_power_constraints(payload: Any, progression_mode: PowerProgressionMode, *, game_world: bool) -> Any:
     allowed = (
         "costs",
         "counters",
@@ -319,9 +317,15 @@ def _validate_power_constraints(payload: Any) -> Any:
         "visibility",
         "continuity_ledger",
         "attribute_allocation",
-        "class_advancement_tiers",
     )
+    traditional_game = game_world and progression_mode == "traditional_class"
+    class_tiers_allowed = traditional_game or not game_world
+    if class_tiers_allowed:
+        allowed = (*allowed, "class_advancement_tiers")
     diagnostics = _reject_unowned_fields(payload, allowed, "power.constraints")
+    if game_world and not traditional_game and isinstance(payload, Mapping) and "class_advancement_tiers" in payload:
+        diagnostics = [item for item in diagnostics if not (item.code == "power.constraints.unowned_field" and item.path == "class_advancement_tiers")]
+        diagnostics.append(_diagnostic("power.constraints.mode_switch_field", "class_advancement_tiers", "custom game mode cannot be upgraded by constraints output"))
     diagnostics.extend(
         _required_lists(
             payload,
@@ -330,15 +334,30 @@ def _validate_power_constraints(payload: Any) -> Any:
         )
     )
     if isinstance(payload, Mapping):
-        for field in ("attribute_allocation", "class_advancement_tiers"):
+        for field in ("attribute_allocation", *(('class_advancement_tiers',) if class_tiers_allowed else ())):
             if field in payload and not isinstance(payload[field], (list, dict)):
                 diagnostics.append(_diagnostic(f"power.constraints.invalid_{field}", field, f"{field} must be JSON structured data"))
             elif field in payload and _contains_placeholder(payload[field]):
                 diagnostics.append(_diagnostic(f"power.constraints.{field}.placeholder", field, f"{field} contains placeholder content"))
+        if traditional_game:
+            tiers = payload.get("class_advancement_tiers")
+            if "class_advancement_tiers" not in payload:
+                diagnostics.append(_diagnostic("power.constraints.missing_class_advancement_tiers", "class_advancement_tiers", "traditional class tiers are required"))
+            elif not isinstance(tiers, list) or tuple(
+                tier.get("level") for tier in tiers if isinstance(tier, Mapping)
+            ) != GAME_CLASS_ADVANCEMENT_LEVELS or len(tiers) != len(GAME_CLASS_ADVANCEMENT_LEVELS):
+                diagnostics.append(_diagnostic("power.constraints.invalid_class_advancement_tiers", "class_advancement_tiers", "traditional class tiers must cover levels 10, 30, and 60"))
+            else:
+                for index, tier in enumerate(tiers):
+                    for field in CLASS_ADVANCEMENT_TIER_FIELDS:
+                        value = tier.get(field)
+                        valid = _nonempty_list(value) if field == "common_requirements" else value is not None and not isinstance(value, bool) if field == "level" else _nonempty_text(value)
+                        if not valid:
+                            diagnostics.append(_diagnostic("power.constraints.incomplete_class_advancement_tier", f"class_advancement_tiers[{index}].{field}", f"{field} is required"))
     return _finish(diagnostics)
 
 
-def _validate_power_final(payload: Any, project: NovelProject) -> Any:
+def _validate_power_final(payload: Any, project: NovelProject, progression_mode: PowerProgressionMode) -> Any:
     diagnostics = _reject_unowned_fields(payload, ("power_system_spec", "power_system"), "power.final")
     if not isinstance(payload, Mapping):
         return _finish(diagnostics)
@@ -349,6 +368,7 @@ def _validate_power_final(payload: Any, project: NovelProject) -> Any:
             _power_spec_for_genre(spec, plugin.plugin_id),
             novel_type_id=plugin.plugin_id,
             template=plugin.power_system_template,
+            progression_mode=progression_mode,
         )
     except PowerSystemValidationError as exc:
         for section in exc.missing_sections:
@@ -425,19 +445,25 @@ def _validate_story_engine(payload: Any) -> Any:
     return _finish(diagnostics)
 
 
-def make_world_validators(project: NovelProject) -> dict[str, Validator]:
+def make_world_validators(
+    project: NovelProject,
+    progression_mode: PowerProgressionMode | None = None,
+) -> dict[str, Validator]:
     """Return validators closed over the selected genre/template."""
 
+    selected_mode = progression_mode or select_power_progression_mode(project)
+    plugin = _selected_novel_type_plugin(project)
+    game_world = plugin.plugin_id == "game_webnovel"
     return {
         "world.input": _validate_world_input,
         "world.core_rules": _validate_core_rules,
         "power.foundation": _validate_power_foundation,
         "power.attributes": _validate_power_attributes,
-        "power.paths": lambda payload: _validate_power_paths(payload, project),
+        "power.paths": lambda payload: _validate_power_paths(payload, project, selected_mode),
         "power.stages": _validate_power_stages,
         "power.resources": _validate_power_resources,
-        "power.constraints": _validate_power_constraints,
-        "power.final": lambda payload: _validate_power_final(payload, project),
+        "power.constraints": lambda payload: _validate_power_constraints(payload, selected_mode, game_world=game_world),
+        "power.final": lambda payload: _validate_power_final(payload, project, selected_mode),
         "world.economy": _validate_economy,
         "world.locations": _validate_locations,
         "world.factions": _validate_factions,
@@ -456,6 +482,7 @@ def assemble_power_candidate(
     resources: Mapping[str, Any],
     constraints: Mapping[str, Any],
     project: NovelProject,
+    progression_mode: PowerProgressionMode | None = None,
     existing_summary: list[str] | None = None,
 ) -> dict[str, Any]:
     """Assemble the full spec from committed section payloads only."""
@@ -464,10 +491,12 @@ def assemble_power_candidate(
     for section in (foundation, attributes, paths, stages, resources, constraints):
         spec.update(deepcopy(dict(section)))
     plugin = _selected_novel_type_plugin(project)
+    selected_mode = progression_mode or select_power_progression_mode(project)
     normalized = validate_power_system_spec(
         _power_spec_for_genre(spec, plugin.plugin_id),
         novel_type_id=plugin.plugin_id,
         template=plugin.power_system_template,
+        progression_mode=selected_mode,
     )
     summary = deepcopy(existing_summary) if isinstance(existing_summary, list) and existing_summary else legacy_power_summary(normalized)
     return {"power_system_spec": normalized, "power_system": summary}
