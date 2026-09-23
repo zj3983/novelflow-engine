@@ -177,6 +177,23 @@ class WorldBuildGraphRunner:
     # ------------------------------------------------------------------
     # Root import and existing-project bootstrap
     # ------------------------------------------------------------------
+    def _materialized_mode_matches_current_graph(self) -> bool:
+        marker = self.store.build_graph_materialization()
+        if not isinstance(marker, Mapping):
+            return False
+        if (
+            marker.get("graph_id") != self.graph.definition.graph_id
+            or marker.get("power_progression_mode") != self.power_progression_mode
+        ):
+            return False
+        state = self.service.inspect_graph()
+        revisions = {
+            task_id: int(task_state.current_artifact_revision)
+            for task_id, task_state in state.tasks.items()
+            if task_state.status == "completed" and task_state.current_artifact_revision is not None
+        }
+        return dict(marker.get("artifact_revisions") or {}) == revisions
+
     def _ensure_world_input(self) -> None:
         task_id = "world_input"
         self._ensure_active(task_id)
@@ -184,6 +201,31 @@ class WorldBuildGraphRunner:
         previous = current.payload if current is not None and isinstance(current.payload, Mapping) else None
         payload = canonical_world_input(self.project, store=self.store, previous=previous)
         if current is not None and current.payload == payload:
+            return
+        explicit_mode = self.project.world_blueprint.get("power_progression_mode")
+        already_materialized_mode = (
+            explicit_mode == self.power_progression_mode
+            and self._materialized_mode_matches_current_graph()
+        )
+        if (
+            current is not None
+            and "power_progression_mode" not in current.payload
+            and (explicit_mode not in {"custom", "traditional_class"} or already_materialized_mode)
+            and {
+                key: value
+                for key, value in current.payload.items()
+                if key != "power_progression_mode"
+            }
+            == {
+                key: value
+                for key, value in payload.items()
+                if key != "power_progression_mode"
+            }
+        ):
+            # Older completed graphs predate the locked mode metadata.  The
+            # mode has already been selected deterministically for this runner
+            # from the project and prior artifacts; backfilling the root
+            # artifact as a new revision would stale every downstream task.
             return
         expected = current.revision if current is not None else None
         result = self.service.commit_candidate(

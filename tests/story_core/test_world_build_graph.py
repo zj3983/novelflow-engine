@@ -567,6 +567,105 @@ def test_valid_imported_game_spec_locks_mode_and_skips_power_calls(
     assert store.build_artifact("power_system_constraints")["source"] == "imported"
     assert store.build_artifact("power_system_final")["source"] == "deterministic"
     assert result.world_blueprint["power_system"] == ["作者原有摘要"]
+    assert result.world_blueprint["power_progression_mode"] == mode
+
+
+@pytest.mark.parametrize(
+    ("mode", "traditional"),
+    [("custom", False), ("traditional_class", True)],
+)
+def test_legacy_completed_graph_mode_upgrade_is_metadata_only_and_zero_call(
+    tmp_path: Path,
+    mode: str,
+    traditional: bool,
+) -> None:
+    store = _store(tmp_path, plugin_id="game_webnovel")
+    project = NovelProject.model_validate(store.project())
+    if traditional:
+        project.world_blueprint["power_progression_mode"] = "traditional_class"
+        raw_spec: dict[str, Any] = {}
+        for section in _traditional_game_power_sections().values():
+            raw_spec.update(deepcopy(section))
+        project.world_blueprint["power_system_spec"] = validate_power_system_spec(
+            raw_spec,
+            novel_type_id="game_webnovel",
+            progression_mode="traditional_class",
+        )
+        project.world_blueprint["power_system"] = ["作者原有摘要"]
+        store.update_project({"world_blueprint": project.world_blueprint}, replace_world_blueprint=True)
+
+    initial_gateway = ScriptedGateway(
+        {
+            **_structured_payloads(),
+            **_generic_payloads(),
+            "game_ecology": [_game_ecology_payload()],
+        }
+    )
+    initial_runner = WorldBuildGraphRunner(
+        NovelProject.model_validate(store.project()),
+        store=store,
+        model_gateway=initial_gateway,
+    )
+    materialized = initial_runner.run()
+    store.commit_build_graph_materialization(
+        materialized,
+        initial_runner.graph,
+        initial_runner.service,
+    )
+
+    # Recreate the pre-mode-contract state without changing graph revisions.
+    project_data = store.project()
+    project_data["world_blueprint"].pop("power_progression_mode", None)
+    store.update_project({"world_blueprint": project_data["world_blueprint"]}, replace_world_blueprint=True)
+    artifact = store.build_artifact("world_input")
+    assert artifact is not None
+    artifact["payload"].pop("power_progression_mode", None)
+    artifact_path = store.build_graph_store().artifact_path("world_input", artifact["revision"])
+    store.snapshot_store.replace_json_transaction({artifact_path: artifact})
+
+    revisions_before = {
+        task_id: state["current_artifact_revision"]
+        for task_id, state in store.build_graph_state()["tasks"].items()
+    }
+    empty_gateway = ScriptedGateway({})
+    resumed_runner = WorldBuildGraphRunner(
+        NovelProject.model_validate(store.project()),
+        store=store,
+        model_gateway=empty_gateway,
+    )
+    resumed = resumed_runner.run()
+
+    assert resumed.world_blueprint["power_progression_mode"] == mode
+    assert empty_gateway.calls == []
+    assert store.build_artifact("world_input")["revision"] == artifact["revision"]
+    assert {
+        task_id: state["current_artifact_revision"]
+        for task_id, state in store.build_graph_state()["tasks"].items()
+    } == revisions_before
+
+    store.commit_build_graph_materialization(
+        resumed,
+        resumed_runner.graph,
+        resumed_runner.service,
+    )
+    assert store.project()["world_blueprint"]["power_progression_mode"] == mode
+    final_revisions = {
+        task_id: state["current_artifact_revision"]
+        for task_id, state in store.build_graph_state()["tasks"].items()
+    }
+    final_gateway = ScriptedGateway({})
+    final_runner = WorldBuildGraphRunner(
+        NovelProject.model_validate(store.project()),
+        store=store,
+        model_gateway=final_gateway,
+    )
+    final_result = final_runner.run()
+    assert final_result.world_blueprint["power_progression_mode"] == mode
+    assert final_gateway.calls == []
+    assert {
+        task_id: state["current_artifact_revision"]
+        for task_id, state in store.build_graph_state()["tasks"].items()
+    } == final_revisions
 
 
 def test_non_game_contract_stays_custom_even_with_class_like_existing_data() -> None:
