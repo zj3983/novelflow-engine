@@ -297,6 +297,7 @@ def reconcile_project_to_graph(
                 _power_spec_for_genre(raw_spec, plugin.plugin_id),
                 novel_type_id=plugin.plugin_id,
                 template=plugin.power_system_template,
+                progression_mode=graph.power_progression_mode,
             )
         except PowerSystemValidationError as exc:
             detail = ",".join((*exc.missing_sections, *exc.violations)) or "invalid_power_system_spec"

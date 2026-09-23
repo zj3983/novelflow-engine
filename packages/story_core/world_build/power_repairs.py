@@ -19,6 +19,7 @@ from packages.story_core.power_system_spec import (
     uses_traditional_game_class_advancement,
 )
 from packages.story_core.world_enrichment import _selected_novel_type_plugin
+from .power_contract import PowerProgressionMode
 
 
 POWER_PATH_REPAIR_SCHEMA = {
@@ -97,11 +98,17 @@ def _traditional_game_contract(
     project: NovelProject,
     paths: Sequence[Any],
     raw_spec: Mapping[str, Any] | None = None,
+    progression_mode: PowerProgressionMode | None = None,
 ) -> bool:
     plugin = _selected_novel_type_plugin(project)
     if plugin.plugin_id != "game_webnovel":
         return False
+    if progression_mode is not None:
+        return progression_mode == "traditional_class"
     blueprint = project.world_blueprint if isinstance(project.world_blueprint, Mapping) else {}
+    explicit = blueprint.get("power_progression_mode")
+    if explicit in {"custom", "traditional_class"}:
+        return explicit == "traditional_class"
     existing = blueprint.get("power_system_spec") if isinstance(blueprint.get("power_system_spec"), Mapping) else {}
     candidate = dict(raw_spec) if isinstance(raw_spec, Mapping) else dict(existing)
     candidate["paths"] = list(paths)
@@ -112,12 +119,19 @@ def _minimum_path_count(
     project: NovelProject,
     paths: Sequence[Any],
     raw_spec: Mapping[str, Any] | None = None,
+    progression_mode: PowerProgressionMode | None = None,
 ) -> int:
     plugin = _selected_novel_type_plugin(project)
     blueprint = project.world_blueprint if isinstance(project.world_blueprint, Mapping) else {}
     existing = blueprint.get("power_system_spec") if isinstance(blueprint.get("power_system_spec"), Mapping) else {}
     candidate = dict(raw_spec) if isinstance(raw_spec, Mapping) else dict(existing)
     candidate["paths"] = list(paths)
+    if plugin.plugin_id == "game_webnovel" and progression_mode is not None:
+        if progression_mode == "traditional_class":
+            return max(6, int(plugin.power_system_template.get("minimum_path_count", 6)))
+        return 1
+    if plugin.plugin_id == "game_webnovel" and _traditional_game_contract(project, paths, raw_spec):
+        return max(6, int(plugin.power_system_template.get("minimum_path_count", 6)))
     template = effective_power_system_template(
         plugin.plugin_id,
         plugin.power_system_template,
@@ -200,6 +214,7 @@ def power_path_repair_scope(
     project: NovelProject,
     *,
     raw_spec: Mapping[str, Any] | None = None,
+    progression_mode: PowerProgressionMode | None = None,
 ) -> PowerPathRepairScope:
     """Translate final diagnostics into item/field-level path repair limits."""
 
@@ -208,7 +223,7 @@ def power_path_repair_scope(
     targets: dict[int, set[str]] = {}
     replace_indices: set[int] = set()
     append_count = 0
-    traditional_game = _traditional_game_contract(project, paths, raw_spec)
+    traditional_game = _traditional_game_contract(project, paths, raw_spec, progression_mode)
 
     for diagnostic in diagnostics:
         code = diagnostic.code
@@ -219,7 +234,7 @@ def power_path_repair_scope(
         if code == "paths.minimum_count":
             append_count = max(
                 append_count,
-                _minimum_path_count(project, paths, raw_spec) - len(paths),
+                _minimum_path_count(project, paths, raw_spec, progression_mode) - len(paths),
             )
             continue
         if code == "game.missing_classes":

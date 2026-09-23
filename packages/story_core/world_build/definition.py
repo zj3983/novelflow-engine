@@ -16,12 +16,13 @@ from packages.story_core.build_graph.definition import (
     BuildTaskDefinition,
 )
 from packages.story_core.models import NovelProject
-from packages.story_core.power_system_spec import uses_traditional_game_class_advancement
 from packages.story_core.world_enrichment import (
     _requires_structured_power_system,
     _selected_novel_type_plugin,
     _uses_game_world_modules,
 )
+
+from .power_contract import PowerProgressionMode, select_power_progression_mode
 
 
 WORLD_BUILD_GRAPH_ID = "novelflow-project-build"
@@ -61,6 +62,7 @@ class WorldBuildGraph:
     plugin_id: str
     structured_power: bool
     game_world: bool
+    power_progression_mode: PowerProgressionMode
 
     def spec(self, task_id: str) -> WorldBuildTaskSpec:
         return self.specs[task_id]
@@ -113,20 +115,20 @@ def _task(
     )
 
 
-def build_world_build_graph(project: NovelProject) -> WorldBuildGraph:
+def build_world_build_graph(
+    project: NovelProject,
+    *,
+    progression_mode: PowerProgressionMode | None = None,
+) -> WorldBuildGraph:
     """Build the genre-scoped WorldBuild slice used by production jobs."""
 
     plugin = _selected_novel_type_plugin(project)
     plugin_id = plugin.plugin_id
     structured_power = _requires_structured_power_system(plugin_id)
     game_world = _uses_game_world_modules(plugin_id)
-    existing_power_spec = (
-        project.world_blueprint.get("power_system_spec")
-        if isinstance(project.world_blueprint, Mapping)
-        and isinstance(project.world_blueprint.get("power_system_spec"), Mapping)
-        else {}
-    )
-    traditional_game_paths = game_world and uses_traditional_game_class_advancement(existing_power_spec)
+    selected_progression_mode = progression_mode or select_power_progression_mode(project)
+    traditional_game_paths = game_world and selected_progression_mode == "traditional_class"
+    expose_class_advancement_tiers = traditional_game_paths or not game_world
 
     all_power_paths = (
         "build.power_system.foundation",
@@ -144,8 +146,8 @@ def build_world_build_graph(project: NovelProject) -> WorldBuildGraph:
             kind="imported",
             validator_id="world.input",
             owns=("build.world_input",),
-            output_fields=("title", "seed_outline", "story_core", "author_constraints", "current_focus", "genre_plugin_ids", "source_premise"),
-            output_schema={"title": "string", "story_core": "object", "genre_plugin_ids": "string[]"},
+            output_fields=("title", "seed_outline", "story_core", "author_constraints", "current_focus", "genre_plugin_ids", "source_premise", "power_progression_mode"),
+            output_schema={"title": "string", "story_core": "object", "genre_plugin_ids": "string[]", "power_progression_mode": "custom | traditional_class"},
             instructions="版本化作者输入与题材契约，不生成任何世界事实。",
             max_tokens=800,
         ),
@@ -270,9 +272,17 @@ def build_world_build_graph(project: NovelProject) -> WorldBuildGraph:
                     owns=("build.power_system.constraints",),
                     forbidden_writes=("build.power_system.foundation", "build.power_system.attributes", "build.power_system.paths", "build.power_system.stages", "build.power_system.resources", "world_blueprint.power_system_spec", "world_blueprint.power_system"),
                     validator_id="power.constraints",
-                    output_fields=("costs", "counters", "boundaries", "social_impact", "visibility", "continuity_ledger", "attribute_allocation", "class_advancement_tiers"),
-                    output_schema={"costs": "string[]", "counters": "string[]", "boundaries": "string[]", "social_impact": "string[]", "visibility": "string[]", "continuity_ledger": "string[]", "attribute_allocation": "object", "class_advancement_tiers": "object[]"},
-                    instructions="只生成 costs、counters、boundaries、social_impact、visibility、continuity_ledger，以及题材明确要求的扩展字段。不得修改前面章节。",
+                    output_fields=("costs", "counters", "boundaries", "social_impact", "visibility", "continuity_ledger", "attribute_allocation", *(('class_advancement_tiers',) if expose_class_advancement_tiers else ())),
+                    output_schema={
+                        "costs": "string[]", "counters": "string[]", "boundaries": "string[]",
+                        "social_impact": "string[]", "visibility": "string[]", "continuity_ledger": "string[]",
+                        "attribute_allocation": "object",
+                        **({"class_advancement_tiers": "{level,name,purpose,common_requirements,failure_rule}[]"} if expose_class_advancement_tiers else {}),
+                    },
+                    instructions=(
+                        "只生成 costs、counters、boundaries、social_impact、visibility、continuity_ledger，以及题材明确要求的扩展字段。不得修改前面章节。"
+                        + (" 必须同时生成完整 class_advancement_tiers，覆盖 Lv.10、Lv.30、Lv.60，每项包括 name、purpose、common_requirements、failure_rule。" if traditional_game_paths else "")
+                    ),
                     max_tokens=2800,
                 ),
                 _task(
@@ -448,6 +458,7 @@ def build_world_build_graph(project: NovelProject) -> WorldBuildGraph:
         plugin_id=plugin_id,
         structured_power=structured_power,
         game_world=game_world,
+        power_progression_mode=selected_progression_mode,
     )
 
 

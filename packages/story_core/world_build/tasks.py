@@ -14,6 +14,7 @@ from packages.story_core.models import NovelProject
 from packages.story_core.novel_type_catalog import normalize_novel_type_ids
 
 from .definition import WorldBuildGraph, WorldBuildTaskSpec
+from .power_contract import select_power_progression_mode
 
 
 def bounded_json_projection(value: Any, *, chars: int = 360, items: int = 12, depth: int = 4) -> Any:
@@ -88,6 +89,7 @@ def _persisted_world_root_payload(
         "current_focus": str(project.current_focus or "").strip(),
         "genre_plugin_ids": genre_ids,
         "novel_type_id": genre_ids[0] if genre_ids else "generic_webnovel",
+        "power_progression_mode": str(blueprint.get("power_progression_mode") or "").strip(),
     }
 
 
@@ -172,6 +174,11 @@ def world_input_revision_payload(
 
     payload["source_premise"] = str(source_premise or "").strip()
     payload["current_focus"] = current_focus
+    payload["power_progression_mode"] = select_power_progression_mode(
+        project,
+        locked_mode=previous_payload.get("power_progression_mode"),
+        locked_novel_type_id=previous_payload.get("novel_type_id"),
+    )
     return payload
 
 
@@ -373,6 +380,14 @@ def build_input_contract(
             depth=5,
         ),
         "novel_type": plugin_template,
+        "power_progression_mode": next(
+            (
+                value.get("power_progression_mode")
+                for value in declared_values.values()
+                if isinstance(value, Mapping) and value.get("power_progression_mode") in {"custom", "traditional_class"}
+            ),
+            graph.power_progression_mode,
+        ),
         "output_schema": deepcopy(dict(spec.output_schema or {})),
     }
     return bounded_json_projection(contract, chars=720, items=20, depth=6)
@@ -489,6 +504,12 @@ def build_task_prompt(
         "输入只来自下面列出的已提交依赖 artifact；不得臆造未提供的事实。",
         f"bounded input contract: {_json_text(contract)}",
     ]
+    if task_id.startswith("power_system_"):
+        lines.append(
+            "锁定的 power_progression_mode："
+            + str(contract.get("power_progression_mode") or graph.power_progression_mode)
+            + "。本次 world_input revision 内不得升级或降级该合同。"
+        )
     if repair_candidate is not None or diagnostics:
         lines.append("这是唯一一次 focused repair。只修复当前任务的结构化诊断，不重写其他任务，不补全整个项目。")
         if repair_fields:

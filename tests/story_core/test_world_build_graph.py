@@ -19,6 +19,7 @@ from packages.story_core.world_build.runner import (
 )
 from packages.story_core.world_build.tasks import (
     build_task_prompt,
+    canonical_world_input,
     parse_task_payload,
     repair_fields_for_diagnostics,
 )
@@ -31,7 +32,7 @@ from packages.story_core.world_build.power_repairs import (
     raw_power_spec_from_artifacts,
 )
 from packages.story_core.build_graph.contracts import BuildDiagnostic
-from packages.story_core.power_system_spec import PATH_FIELDS, validate_power_system_spec
+from packages.story_core.power_system_spec import PATH_FIELDS, PowerSystemValidationError, validate_power_system_spec
 
 
 def _store(tmp_path: Path, *, plugin_id: str) -> FileProjectStore:
@@ -382,9 +383,7 @@ def test_traditional_game_path_contract_declares_structured_path_fields() -> Non
             title="传统职业",
             world_blueprint={
                 "genre_plugin_ids": ["game_webnovel"],
-                "power_system_spec": {
-                    "class_advancement_tiers": [{"level": 10}],
-                },
+                "power_progression_mode": "traditional_class",
             },
         )
     )
@@ -403,6 +402,183 @@ def test_nontraditional_game_path_contract_does_not_force_class_fields() -> None
         )
     )
     assert graph.spec("power_system_paths").output_schema == {"paths": "object[]"}
+    assert "class_advancement_tiers" not in (graph.spec("power_system_constraints").output_schema or {})
+
+
+def test_world_input_locks_power_progression_mode_before_power_tasks() -> None:
+    game = NovelProject(
+        project_id="file:x",
+        title="自定义成长",
+        world_blueprint={"genre_plugin_ids": ["game_webnovel"]},
+    )
+    assert canonical_world_input(game)["power_progression_mode"] == "custom"
+    assert canonical_world_input(
+        game,
+        previous={"power_progression_mode": "custom"},
+    )["power_progression_mode"] == "custom"
+    game.world_blueprint["power_system_spec"] = {
+        "class_advancement_tiers": [{"level": 10}],
+    }
+    assert canonical_world_input(
+        game,
+        previous={"novel_type_id": "game_webnovel", "power_progression_mode": "custom"},
+    )["power_progression_mode"] == "custom"
+
+    sections = _traditional_game_power_sections()
+    valid_spec: dict[str, Any] = {}
+    for section in sections.values():
+        valid_spec.update(deepcopy(section))
+    imported = game.model_copy(deep=True)
+    imported.world_blueprint["power_system_spec"] = valid_spec
+    assert canonical_world_input(imported)["power_progression_mode"] == "traditional_class"
+    assert canonical_world_input(
+        imported,
+        previous={"novel_type_id": "urban", "power_progression_mode": "custom"},
+    )["power_progression_mode"] == "traditional_class"
+
+
+def test_explicit_power_progression_mode_controls_first_power_contracts() -> None:
+    project = NovelProject(
+        project_id="file:x",
+        title="传统职业合同",
+        world_blueprint={
+            "genre_plugin_ids": ["game_webnovel"],
+            "power_progression_mode": "traditional_class",
+        },
+    )
+    graph = build_world_build_graph(project)
+    assert canonical_world_input(project)["power_progression_mode"] == "traditional_class"
+    schema = graph.spec("power_system_paths").output_schema or {}
+    for field in PATH_FIELDS:
+        assert field in str(schema["paths"])
+    assert "class_advancement_tiers" in graph.spec("power_system_constraints").output_fields
+    assert "class_advancement_tiers" in (graph.spec("power_system_constraints").output_schema or {})
+    prompt = build_task_prompt(graph, "power_system_paths", {})
+    assert all(field in prompt for field in PATH_FIELDS)
+    constraints_prompt = build_task_prompt(graph, "power_system_constraints", {})
+    assert "class_advancement_tiers" in constraints_prompt
+
+
+def test_custom_game_section_validators_reject_late_mode_upgrade() -> None:
+    project = NovelProject(
+        project_id="file:x",
+        title="自定义游戏",
+        world_blueprint={"genre_plugin_ids": ["game_webnovel"]},
+    )
+    validators = make_world_validators(project, progression_mode="custom")
+    path_result = validators["power.paths"](
+        {
+            "paths": [
+                {"name": "路线一", "branches": ["甲", "乙"], "transfer_task": "转职"},
+                {"name": "路线二", "branches": ["丙", "丁"], "advancement_tree": [{"level": 10}]},
+            ]
+        }
+    )
+    assert [(item.code, item.path) for item in path_result if item.code == "power.paths.mode_switch_field"] == [
+        ("power.paths.mode_switch_field", "paths[0]"),
+        ("power.paths.mode_switch_field", "paths[1]"),
+    ]
+    constraint_result = validators["power.constraints"](
+        {
+            **_power_sections()["power_system_constraints"],
+            "class_advancement_tiers": [{"level": 10}],
+        }
+    )
+    assert "power.constraints.mode_switch_field" in {item.code for item in constraint_result}
+
+    custom_spec: dict[str, Any] = {}
+    for section in _power_sections().values():
+        custom_spec.update(deepcopy(section))
+    custom_spec["paths"][0]["transfer_task"] = "模型擅自增加的转职任务。"
+    custom_spec["class_advancement_tiers"] = [{"level": 10}]
+    assert validate_power_system_spec(
+        custom_spec,
+        novel_type_id="game_webnovel",
+        progression_mode="custom",
+    )["paths"][0]["transfer_task"] == "模型擅自增加的转职任务。"
+    with pytest.raises(PowerSystemValidationError):
+        validate_power_system_spec(
+            custom_spec,
+            novel_type_id="game_webnovel",
+            progression_mode="traditional_class",
+        )
+
+
+def test_late_constraints_mode_switch_is_repaired_without_upgrading_contract(tmp_path: Path) -> None:
+    store = _store(tmp_path, plugin_id="game_webnovel")
+    payloads = _structured_payloads()
+    payloads["game_ecology"] = [_game_ecology_payload()]
+    payloads["power_system_constraints"] = [
+        {
+            **_power_sections()["power_system_constraints"],
+            "class_advancement_tiers": [
+                {"level": level, "name": f"Lv.{level}", "purpose": "里程碑", "common_requirements": ["完成验证"], "failure_rule": "等待后重试。"}
+                for level in (10, 30, 60)
+            ],
+        },
+        deepcopy(_power_sections()["power_system_constraints"]),
+    ]
+    gateway = ScriptedGateway(payloads)
+    project = NovelProject.model_validate(store.project())
+    result = WorldBuildGraphRunner(project, store=store, model_gateway=gateway).run()
+
+    assert store.build_artifact("world_input")["payload"]["power_progression_mode"] == "custom"
+    assert store.build_artifact("power_system_paths") is not None
+    assert store.build_artifact("power_system_constraints")["source"] == "ai_repair"
+    assert "class_advancement_tiers" not in store.build_artifact("power_system_constraints")["payload"]
+    assert store.build_artifact("power_system_final")["source"] == "deterministic"
+    assert result.world_blueprint["power_system_spec"].get("class_advancement_tiers", []) == []
+    assert len([call for call in gateway.calls if call.operation == "world_build_power_system_paths"]) == 1
+    assert len([call for call in gateway.calls if call.operation == "world_build_power_system_constraints"]) == 2
+
+
+@pytest.mark.parametrize(
+    ("mode", "sections"),
+    [
+        ("custom", _power_sections),
+        ("traditional_class", _traditional_game_power_sections),
+    ],
+)
+def test_valid_imported_game_spec_locks_mode_and_skips_power_calls(
+    tmp_path: Path,
+    mode: str,
+    sections: Any,
+) -> None:
+    store = _store(tmp_path, plugin_id="game_webnovel")
+    raw_spec: dict[str, Any] = {}
+    for section in sections().values():
+        raw_spec.update(deepcopy(section))
+    valid_spec = validate_power_system_spec(raw_spec, novel_type_id="game_webnovel")
+    project = NovelProject.model_validate(store.project())
+    project.world_blueprint["power_system_spec"] = valid_spec
+    project.world_blueprint["power_system"] = ["作者原有摘要"]
+    store.update_project({"world_blueprint": project.world_blueprint}, replace_world_blueprint=True)
+    gateway = ScriptedGateway({**_structured_payloads(), **_generic_payloads(), "game_ecology": [_game_ecology_payload()]})
+
+    result = WorldBuildGraphRunner(
+        NovelProject.model_validate(store.project()),
+        store=store,
+        model_gateway=gateway,
+    ).run()
+
+    assert store.build_artifact("world_input")["payload"]["power_progression_mode"] == mode
+    assert not any(call.operation.startswith("world_build_power_system_") for call in gateway.calls), [call.operation for call in gateway.calls]
+    assert store.build_artifact("power_system_paths")["source"] == "imported"
+    assert store.build_artifact("power_system_constraints")["source"] == "imported"
+    assert store.build_artifact("power_system_final")["source"] == "deterministic"
+    assert result.world_blueprint["power_system"] == ["作者原有摘要"]
+
+
+def test_non_game_contract_stays_custom_even_with_class_like_existing_data() -> None:
+    project = NovelProject(
+        project_id="file:x",
+        title="玄幻项目",
+        world_blueprint={
+            "genre_plugin_ids": ["xuanhuan"],
+            "power_system_spec": {"class_advancement_tiers": [{"level": 10}]},
+        },
+    )
+    assert canonical_world_input(project)["power_progression_mode"] == "custom"
 
 
 def test_traditional_path_shape_is_rejected_at_section_boundary() -> None:
@@ -411,7 +587,7 @@ def test_traditional_path_shape_is_rejected_at_section_boundary() -> None:
         title="传统路径边界",
         world_blueprint={"genre_plugin_ids": ["game_webnovel"]},
     )
-    result = make_world_validators(project)["power.paths"](
+    result = make_world_validators(project, progression_mode="traditional_class")["power.paths"](
         {
             "paths": [
                 {
@@ -1254,7 +1430,7 @@ def test_power_path_repair_scope_supports_advancement_tree_and_exact_append() ->
         title="路径树",
         world_blueprint={
             "genre_plugin_ids": ["game_webnovel"],
-            "power_system_spec": {"class_advancement_tiers": [{"level": 10}]},
+            "power_progression_mode": "traditional_class",
         },
     )
     payload = {"paths": [{"name": "职业一", "branches": ["a", "b"], "advancement_tree": []}]}
@@ -1349,7 +1525,7 @@ def test_power_path_repair_uses_raw_committed_sections_for_traditional_mode() ->
     project = NovelProject(
         project_id="file:path-raw-spec",
         title="未物化传统模式",
-        world_blueprint={"genre_plugin_ids": ["game_webnovel"]},
+        world_blueprint={"genre_plugin_ids": ["game_webnovel"], "power_progression_mode": "traditional_class"},
     )
 
     class FakeService:
@@ -1371,6 +1547,7 @@ def test_power_path_repair_uses_raw_committed_sections_for_traditional_mode() ->
         (BuildDiagnostic("power.final.paths.minimum_count", "paths", "count"),),
         project,
         raw_spec=raw_spec,
+        progression_mode="traditional_class",
     )
 
     assert scope.append_count == 5
@@ -1514,6 +1691,8 @@ def test_power_final_path_repair_out_of_scope_stops_without_third_call(tmp_path:
 
 def test_ordinary_traditional_path_repair_uses_structured_scoped_patch(tmp_path: Path) -> None:
     store = _store(tmp_path, plugin_id="game_webnovel")
+    game_project = NovelProject.model_validate(store.project())
+    game_project.world_blueprint["power_progression_mode"] = "traditional_class"
     game_sections = _traditional_game_power_sections()
     payloads = {task_id: [payload] for task_id, payload in game_sections.items()}
     payloads.update(_generic_payloads())
@@ -1535,7 +1714,7 @@ def test_ordinary_traditional_path_repair_uses_structured_scoped_patch(tmp_path:
     gateway = ScriptedGateway(payloads)
 
     result = WorldBuildGraphRunner(
-        NovelProject.model_validate(store.project()),
+        game_project,
         store=store,
         model_gateway=gateway,
     ).run()

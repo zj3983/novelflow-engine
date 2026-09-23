@@ -48,6 +48,7 @@ from .power_repairs import (
     power_path_repair_scope,
     raw_power_spec_from_artifacts,
 )
+from .power_contract import select_power_progression_mode
 
 
 class WorldBuildGraphFailure(RuntimeError):
@@ -87,13 +88,29 @@ class WorldBuildGraphRunner:
     ) -> None:
         self.project = project.model_copy(deep=True)
         self.store = store
-        self.graph: WorldBuildGraph = build_world_build_graph(self.project)
+        previous_input: Mapping[str, Any] | None = None
+        try:
+            prior = self.store.build_artifact("world_input")
+            candidate = prior.get("payload") if isinstance(prior, Mapping) else None
+            if isinstance(candidate, Mapping):
+                previous_input = candidate
+        except Exception:
+            previous_input = None
+        self.power_progression_mode = select_power_progression_mode(
+            self.project,
+            locked_mode=(previous_input or {}).get("power_progression_mode"),
+            locked_novel_type_id=(previous_input or {}).get("novel_type_id"),
+        )
+        self.graph: WorldBuildGraph = build_world_build_graph(
+            self.project,
+            progression_mode=self.power_progression_mode,
+        )
         # WorldBuild is the one sanctioned dynamic graph: its task shape is
         # selected by genre.  Perform an explicit archive/reset migration
         # before the generic BuildGraphService applies its hard definition
         # compatibility check.
         prepare_world_graph_migration(self.store, self.graph)
-        self.validators = make_world_validators(self.project)
+        self.validators = make_world_validators(self.project, self.power_progression_mode)
         self.service = store.build_graph_service(
             self.graph.definition,
             validators=self.validators,
@@ -462,6 +479,7 @@ class WorldBuildGraphRunner:
             resources=payloads["power_system_resources"],
             constraints=payloads["power_system_constraints"],
             project=self.project,
+            progression_mode=self.power_progression_mode,
             existing_summary=existing if isinstance(existing, list) else None,
         )
 
@@ -585,6 +603,7 @@ class WorldBuildGraphRunner:
                     final_diagnostics,
                     self.project,
                     raw_spec=raw_power_spec_from_artifacts(self.service),
+                    progression_mode=self.power_progression_mode,
                 )
                 if final_repair and task_id == "power_system_paths" and isinstance(final_repair_candidate, Mapping)
                 else None
@@ -722,6 +741,7 @@ class WorldBuildGraphRunner:
                     diagnostics,
                     self.project,
                     raw_spec=raw_power_spec_from_artifacts(self.service),
+                    progression_mode=self.power_progression_mode,
                 )
                 if task_id == "power_system_paths" and isinstance(candidate, Mapping)
                 else None
