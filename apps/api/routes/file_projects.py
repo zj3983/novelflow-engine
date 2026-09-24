@@ -31,7 +31,13 @@ from packages.story_core.models import (
     NovelProject,
 )
 from packages.story_core.model_gateway import RuntimeModelGateway
-from packages.story_core.build_graph.contracts import BuildDiagnostic
+from packages.story_core.build_graph.contracts import (
+    BuildDiagnostic,
+    BuildGraphError,
+    BuildRevisionConflict,
+    BuildRunConflict,
+)
+from packages.story_core.persistence.project_locking import project_update_lock
 from packages.story_core.opening_directions import LLMOpeningDirectionGenerator
 from packages.story_core.outline_planning_generation import LLMOutlinePlanningGenerator
 from packages.story_core.simplified_review import build_simplified_review, user_facing_generation_error
@@ -146,6 +152,19 @@ class FileProjectUpdateRequest(BaseModel):
     enabled_skill_module_ids: list[str] | None = None
     status: str | None = None
     pipeline_stage: str | None = None
+
+
+class BuildWorkbenchValidateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    payload: dict[str, Any]
+
+
+class BuildWorkbenchArtifactCommitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    expected_revision: int = Field(ge=1)
+    payload: dict[str, Any]
 
 
 class BookDissectionReferenceRequest(BaseModel):
@@ -2501,6 +2520,58 @@ def init_file_project_routes() -> APIRouter:
             raise HTTPException(status_code=409, detail="world_build_in_progress")
         return _start_world_build_job(project_id)
 
+    def _build_workbench_context(project_id: str):
+        from packages.story_core.world_build.definition import build_world_build_graph
+
+        store = _store_for(project_id)
+        project = store.project()
+        graph = build_world_build_graph(NovelProject.model_validate(project))
+        build_store = store.build_graph_store()
+        state = build_store.read_state()
+        if state is None:
+            raise HTTPException(status_code=409, detail="build_graph_not_initialized")
+        if (
+            state.graph_id != graph.definition.graph_id
+            or set(state.tasks) != set(graph.definition.tasks_by_id)
+            or state.definition_fingerprint != graph.definition.definition_fingerprint
+        ):
+            raise HTTPException(status_code=409, detail="build_graph_state_mismatch")
+        from packages.story_core.world_build.validators import make_world_validators
+
+        service = store.build_graph_service(
+            graph.definition,
+            validators=make_world_validators(NovelProject.model_validate(project)),
+        )
+        return store, project, graph, build_store, state, service
+
+    def _workbench_materialization_status(build_store, state) -> str:
+        snapshot_store = getattr(build_store, "snapshot_store", None)
+        root = getattr(build_store, "root", None)
+        if snapshot_store is None or root is None:
+            return "not_materialized"
+        marker = snapshot_store.read_json(root / ".webnovel" / "build_graph_materialization.json", None)
+        if not isinstance(marker, dict):
+            return "not_materialized"
+        if marker.get("graph_id") != state.graph_id:
+            return "outdated"
+        recorded = marker.get("artifact_revisions")
+        if not isinstance(recorded, dict):
+            return "outdated"
+        current_revisions = {
+            task_id: task.current_artifact_revision
+            for task_id, task in state.tasks.items()
+            if task.status == "completed" and task.current_artifact_revision is not None
+        }
+        try:
+            marker_revisions = {str(task_id): int(revision) for task_id, revision in recorded.items()}
+        except (TypeError, ValueError):
+            return "outdated"
+        if marker_revisions != current_revisions:
+            return "outdated"
+        if any(task.status != "completed" for task in state.tasks.values()):
+            return "outdated"
+        return "current"
+
     @router.get("/file-projects/{project_id}/build-graph")
     def get_file_project_build_graph(project_id: str) -> dict[str, Any]:
         """Return a read-only projection of the persisted production Build Graph."""
@@ -2560,7 +2631,123 @@ def init_file_project_routes() -> APIRouter:
             "graph_id": state.graph_id,
             "graph_revision": state.graph_revision,
             "pipeline_stage": project.get("pipeline_stage"),
+            "materialization_status": _workbench_materialization_status(build_store, state),
             "tasks": tasks,
+        }
+
+    @router.get("/file-projects/{project_id}/build-graph/tasks/{task_id}")
+    def get_file_project_build_graph_task(project_id: str, task_id: str) -> dict[str, Any]:
+        try:
+            _store, _project, graph, build_store, state, _service = _build_workbench_context(project_id)
+        except BuildGraphError as exc:
+            raise HTTPException(status_code=409, detail=exc.to_dict()) from exc
+        task = graph.definition.tasks_by_id.get(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="build_task_not_found")
+        task_state = state.tasks[task_id]
+        revision = task_state.current_artifact_revision
+        artifact = build_store.read_artifact(task_id, revision) if revision is not None else None
+        if revision is not None and artifact is None:
+            raise HTTPException(status_code=409, detail="build_graph_artifact_missing")
+        materialization = _store.build_graph_materialization()
+        return {
+            "task_id": task_id,
+            "title": task.title,
+            "status": task_state.status,
+            "editable": graph.spec(task_id).kind == "model" and artifact is not None,
+            "artifact": artifact.to_dict() if artifact else None,
+            "owns": list(task.owns),
+            "validation_status": task_state.validation_status,
+            "diagnostics": [item.to_dict() for item in task_state.diagnostics],
+            "materialization_status": _workbench_materialization_status(build_store, state),
+            "materialization_marker": materialization,
+        }
+
+    @router.post("/file-projects/{project_id}/build-graph/tasks/{task_id}/validate")
+    def validate_file_project_build_graph_task(
+        project_id: str,
+        task_id: str,
+        request: BuildWorkbenchValidateRequest,
+    ) -> dict[str, Any]:
+        try:
+            _store, _project, graph, _build_store, _state, service = _build_workbench_context(project_id)
+            task = graph.definition.tasks_by_id.get(task_id)
+            if task is None:
+                raise HTTPException(status_code=404, detail="build_task_not_found")
+            if graph.spec(task_id).kind != "model":
+                raise HTTPException(status_code=403, detail="build_task_not_editable")
+            validation = service.validate(task_id, request.payload, requested_writes=task.owns)
+        except HTTPException:
+            raise
+        except BuildGraphError as exc:
+            raise HTTPException(status_code=409, detail=exc.to_dict()) from exc
+        return validation.to_dict()
+
+    @router.patch("/file-projects/{project_id}/build-graph/tasks/{task_id}/artifact")
+    def edit_file_project_build_graph_task(
+        project_id: str,
+        task_id: str,
+        request: BuildWorkbenchArtifactCommitRequest,
+    ) -> dict[str, Any]:
+        normalized_project_id = _strip_file_prefix(project_id)
+        # Match the WorldBuild runner's lock order: active-job lock, then project lock.
+        with _world_build_jobs_lock:
+            if _has_active_world_build_job(normalized_project_id):
+                raise HTTPException(status_code=409, detail="world_build_in_progress")
+            store = _store_for(project_id)
+            with project_update_lock(store.root):
+                try:
+                    store, project, graph, build_store, state, service = _build_workbench_context(project_id)
+                    task = graph.definition.tasks_by_id.get(task_id)
+                    if task is None:
+                        raise HTTPException(status_code=404, detail="build_task_not_found")
+                    if graph.spec(task_id).kind != "model":
+                        raise HTTPException(status_code=403, detail="build_task_not_editable")
+                    task_state = state.tasks[task_id]
+                    current_revision = task_state.current_artifact_revision
+                    if current_revision != request.expected_revision:
+                        raise BuildRevisionConflict(
+                            "build_revision_conflict",
+                            "artifact revision changed before this edit was saved",
+                            details={
+                                "task_id": task_id,
+                                "expected_revision": request.expected_revision,
+                                "current_revision": current_revision,
+                            },
+                        )
+                    validation = service.validate(
+                        task_id,
+                        request.payload,
+                        requested_writes=task.owns,
+                    )
+                    if not validation.passed:
+                        raise HTTPException(status_code=422, detail=validation.to_dict())
+                    if project.get("pipeline_stage") == "environment_ready":
+                        # Demote first so a crash can only leave a conservatively unready project.
+                        store.update_project({"pipeline_stage": "world_ready"})
+                    result = service.edit_artifact(
+                        task_id,
+                        request.payload,
+                        expected_revision=request.expected_revision,
+                        requested_writes=task.owns,
+                    )
+                except HTTPException:
+                    raise
+                except BuildRevisionConflict as exc:
+                    raise HTTPException(status_code=409, detail=exc.to_dict()) from exc
+                except BuildRunConflict as exc:
+                    raise HTTPException(status_code=409, detail=exc.to_dict()) from exc
+                except BuildGraphError as exc:
+                    raise HTTPException(status_code=422, detail=exc.to_dict()) from exc
+
+        return {
+            "task_id": task_id,
+            "artifact": result.artifact.to_dict() if result.artifact else None,
+            "validation": result.validation.to_dict(),
+            "disposition": result.disposition,
+            "graph_revision": service.inspect_graph().graph_revision,
+            "pipeline_stage": store.project().get("pipeline_stage"),
+            "materialization_status": _workbench_materialization_status(build_store, service.inspect_graph()),
         }
 
     @router.post("/file-projects/{project_id}/world-build-jobs")

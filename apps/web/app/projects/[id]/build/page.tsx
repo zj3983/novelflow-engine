@@ -4,7 +4,16 @@ import { useEffect, useMemo, useState } from "react";
 
 import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
-import { fetchBuildWorkbench, type BuildWorkbenchGraph, type BuildWorkbenchTask } from "../../../../lib/api";
+import {
+  commitBuildWorkbenchTaskEdit,
+  fetchBuildWorkbench,
+  fetchBuildWorkbenchTask,
+  validateBuildWorkbenchTask,
+  type BuildWorkbenchGraph,
+  type BuildWorkbenchTask,
+  type BuildWorkbenchTaskDetail,
+  type BuildWorkbenchValidation,
+} from "../../../../lib/api";
 import styles from "./build.module.css";
 
 const STATUS_LABELS: Record<string, string> = {
@@ -40,13 +49,75 @@ function ValueList({ values }: { values: string[] }) {
     : <p className={styles.empty_value}>无</p>;
 }
 
-function TaskDetail({ task, graph, onSelectDependency }: {
+function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved }: {
   task: BuildWorkbenchTask;
   graph: BuildWorkbenchGraph;
+  projectId: string;
   onSelectDependency: (taskId: string) => void;
+  onSaved: () => Promise<void>;
 }) {
   const taskTitles = useMemo(() => new Map(graph.tasks.map((item) => [item.task_id, item.title])), [graph.tasks]);
   const source = task.artifact_source ? SOURCE_LABELS[task.artifact_source] ?? task.artifact_source : "尚无产物";
+  const [detail, setDetail] = useState<BuildWorkbenchTaskDetail | null>(null);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [validation, setValidation] = useState<BuildWorkbenchValidation | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    setDetail(null);
+    setEditorOpen(false);
+    setValidation(null);
+    setEditError(null);
+    fetchBuildWorkbenchTask(projectId, task.task_id)
+      .then((result) => {
+        if (!active) return;
+        setDetail(result);
+        setDraft(JSON.stringify(result.artifact?.payload ?? {}, null, 2));
+      })
+      .catch((reason: unknown) => { if (active) setEditError(reason instanceof Error ? reason.message : String(reason)); });
+    return () => { active = false; };
+  }, [projectId, task.task_id, task.artifact_revision]);
+
+  const validateDraft = async () => {
+    setEditError(null);
+    let payload: Record<string, unknown>;
+    try {
+      const parsed: unknown = JSON.parse(draft);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Payload 必须是 JSON object");
+      payload = parsed as Record<string, unknown>;
+    } catch (reason) {
+      setValidation(null);
+      setEditError(reason instanceof Error ? reason.message : String(reason));
+      return;
+    }
+    setBusy(true);
+    try {
+      setValidation(await validateBuildWorkbenchTask(projectId, task.task_id, payload));
+    } catch (reason) {
+      setValidation(null);
+      setEditError(reason instanceof Error ? reason.message : String(reason));
+    } finally { setBusy(false); }
+  };
+
+  const saveDraft = async () => {
+    if (!validation?.passed || !detail?.artifact) return;
+    let payload: Record<string, unknown>;
+    try { payload = JSON.parse(draft) as Record<string, unknown>; }
+    catch (reason) { setEditError(reason instanceof Error ? reason.message : String(reason)); return; }
+    setBusy(true);
+    setEditError(null);
+    try {
+      await commitBuildWorkbenchTaskEdit(projectId, task.task_id, detail.artifact.revision, payload);
+      setEditorOpen(false);
+      setValidation(null);
+      await onSaved();
+    } catch (reason) {
+      setEditError(reason instanceof Error ? reason.message : String(reason));
+    } finally { setBusy(false); }
+  };
 
   return (
     <section className={`ws-card ${styles.detail}`} aria-labelledby="build-task-detail-title">
@@ -60,10 +131,41 @@ function TaskDetail({ task, graph, onSelectDependency }: {
       </div>
 
       <div className={styles.facts}>
-        <div><span>产物版本</span><strong>{task.artifact_revision === null ? "暂无" : `r${task.artifact_revision}`}</strong></div>
-        <div><span>产物来源</span><strong>{source}</strong></div>
+        <div><span>产物版本</span><strong>{detail?.artifact ? `r${detail.artifact.revision}` : task.artifact_revision === null ? "暂无" : `r${task.artifact_revision}`}</strong></div>
+        <div><span>产物来源</span><strong>{detail?.artifact ? SOURCE_LABELS[detail.artifact.source] ?? detail.artifact.source : source}</strong></div>
         <div><span>校验状态</span><strong>{task.validation_status}</strong></div>
       </div>
+
+      {detail?.editable && !editorOpen ? <button type="button" className={styles.edit_button} onClick={() => {
+        setDraft(JSON.stringify(detail.artifact?.payload ?? {}, null, 2));
+        setValidation(null);
+        setEditError(null);
+        setEditorOpen(true);
+      }}>人工编辑</button> : null}
+      {editorOpen ? (
+        <section className={styles.editor} aria-label="人工编辑产物">
+          <div className={styles.editor_heading}><strong>人工编辑 JSON</strong><span>当前 revision：r{detail?.artifact?.revision}</span></div>
+          <textarea
+            aria-label="Artifact JSON draft"
+            spellCheck={false}
+            value={draft}
+            onChange={(event) => { setDraft(event.target.value); setValidation(null); setEditError(null); }}
+          />
+          <div className={styles.editor_actions}>
+            <button type="button" disabled={busy} onClick={() => { setEditorOpen(false); setValidation(null); setEditError(null); }}>取消</button>
+            <button type="button" disabled={busy} onClick={() => void validateDraft()}>{busy ? "处理中…" : "校验"}</button>
+            <button type="button" disabled={busy || !validation?.passed} onClick={() => void saveDraft()}>保存</button>
+          </div>
+          {editError ? <p className={styles.edit_error} role="alert">{editError}</p> : null}
+          {validation ? <div className={validation.passed ? styles.validation_pass : styles.validation_fail} role="status">
+            <strong>{validation.passed ? `校验通过 · ${validation.disposition}` : "校验未通过"}</strong>
+            {validation.diagnostics.length ? <ul className={styles.diagnostics}>{validation.diagnostics.map((diagnostic, index) => (
+              <li key={`${diagnostic.code}-${diagnostic.path}-${index}`}><strong>{diagnostic.code}</strong><code>{diagnostic.path || "（未提供路径）"}</code><p>{diagnostic.message}</p></li>
+            ))}</ul> : null}
+          </div> : null}
+        </section>
+      ) : null}
+      {detail?.materialization_status === "outdated" ? <p className={styles.outdated_marker}>旧物化结果已过期；保存不会自动重建世界。</p> : null}
 
       <section className={styles.detail_section}>
         <h3>依赖任务</h3>
@@ -126,6 +228,13 @@ export default function BuildWorkbenchPage() {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [detailReload, setDetailReload] = useState(0);
+
+  const reloadGraph = async () => {
+    const result = await fetchBuildWorkbench(projectId);
+    setGraph(result);
+    setDetailReload((current) => current + 1);
+  };
 
   useEffect(() => {
     let active = true;
@@ -153,7 +262,7 @@ export default function BuildWorkbenchPage() {
       <PageHeader
         crumbs={[{ label: "作品", href: "/projects" }, { label: project?.title ?? "项目", href: `/projects/${encodedProjectId}` }]}
         title="开书构建"
-        subtitle="查看正式 Build Graph 的任务状态、依赖、产物版本与校验诊断。此页面只读取项目状态。"
+        subtitle="查看正式 Build Graph 状态与产物；模型任务支持先校验再保存人工修改。"
       />
 
       {loading ? <section className="ws-card" role="status">正在读取 Build Graph…</section> : null}
@@ -172,7 +281,13 @@ export default function BuildWorkbenchPage() {
             <div><span>Pipeline stage</span><strong>{graph.pipeline_stage || "未知"}</strong></div>
             <div><span>Graph revision</span><strong>{graph.graph_revision === null ? "—" : graph.graph_revision}</strong></div>
             <div><span>任务进度</span><strong>{completedCount} / {graph.tasks.length} 已完成</strong></div>
+            <div><span>物化状态</span><strong>{graph.materialization_status === "outdated" ? "旧物化结果已过期" : graph.materialization_status === "current" ? "当前" : "未物化"}</strong></div>
           </section>
+
+          {graph.tasks.some((task) => task.status === "stale") ? <section className={`ws-card ${styles.stale_notice}`} role="status">
+            <strong>上游修改后，以下任务已过期</strong>
+            <ul>{graph.tasks.filter((task) => task.status === "stale").map((task) => <li key={task.task_id}>{task.title} <code>{task.task_id}</code></li>)}</ul>
+          </section> : null}
 
           {graph.tasks.length > 0 ? (
             <div className={styles.columns}>
@@ -202,7 +317,7 @@ export default function BuildWorkbenchPage() {
                 </ol>
               </section>
 
-              {selectedTask ? <TaskDetail task={selectedTask} graph={graph} onSelectDependency={setSelectedTaskId} /> : null}
+              {selectedTask ? <TaskDetail key={`${selectedTask.task_id}-${detailReload}`} task={selectedTask} graph={graph} projectId={projectId} onSelectDependency={setSelectedTaskId} onSaved={reloadGraph} /> : null}
             </div>
           ) : <section className="ws-card"><p className="ws-card__hint">当前 graph 没有任务。</p></section>}
         </>

@@ -151,6 +151,11 @@ def test_build_workbench_does_not_initialize_missing_graph_state(monkeypatch):
 
     with TestClient(app, raise_server_exceptions=False) as client:
         response = client.get("/file-projects/p-readonly/build-graph")
+        detail = client.get("/file-projects/p-readonly/build-graph/tasks/world_input")
+        validation = client.post(
+            "/file-projects/p-readonly/build-graph/tasks/world_input/validate",
+            json={"payload": {"value": "candidate"}},
+        )
 
     assert response.status_code == 200
     assert response.json() == {
@@ -161,3 +166,7 @@ def test_build_workbench_does_not_initialize_missing_graph_state(monkeypatch):
         "pipeline_stage": "draft",
         "tasks": [],
     }
+    assert detail.status_code == 409
+    assert detail.json()["detail"] == "build_graph_not_initialized"
+    assert validation.status_code == 409
+    assert validation.json()["detail"] == "build_graph_not_initialized"

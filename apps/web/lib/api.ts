@@ -4405,7 +4405,27 @@ export type BuildWorkbenchGraph = {
   graph_id: string;
   graph_revision: number | null;
   pipeline_stage: string | null;
+  materialization_status?: "not_materialized" | "current" | "outdated" | string;
   tasks: BuildWorkbenchTask[];
+};
+
+export type BuildWorkbenchTaskDetail = {
+  task_id: string;
+  title: string;
+  status: string;
+  editable: boolean;
+  artifact: { revision: number; source: string; payload: Record<string, unknown> } | null;
+  owns: string[];
+  validation_status: string;
+  diagnostics: BuildWorkbenchDiagnostic[];
+  materialization_status: string;
+  materialization_marker: Record<string, unknown> | null;
+};
+
+export type BuildWorkbenchValidation = {
+  passed: boolean;
+  disposition: string;
+  diagnostics: BuildWorkbenchDiagnostic[];
 };
 
 export async function fetchBuildWorkbench(projectId: string): Promise<BuildWorkbenchGraph> {
@@ -4413,6 +4433,38 @@ export async function fetchBuildWorkbench(projectId: string): Promise<BuildWorkb
     method: "GET",
     cache: "no-store",
   }) as BuildWorkbenchGraph;
+}
+
+export async function fetchBuildWorkbenchTask(projectId: string, taskId: string): Promise<BuildWorkbenchTaskDetail> {
+  return await tryFetchJson(`${fileProjectPath(projectId)}/build-graph/tasks/${encodeURIComponent(taskId)}`, {
+    method: "GET",
+    cache: "no-store",
+  }) as BuildWorkbenchTaskDetail;
+}
+
+export async function validateBuildWorkbenchTask(
+  projectId: string,
+  taskId: string,
+  payload: Record<string, unknown>,
+): Promise<BuildWorkbenchValidation> {
+  return await tryFetchJson(`${fileProjectPath(projectId)}/build-graph/tasks/${encodeURIComponent(taskId)}/validate`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ payload }),
+  }) as BuildWorkbenchValidation;
+}
+
+export async function commitBuildWorkbenchTaskEdit(
+  projectId: string,
+  taskId: string,
+  expectedRevision: number,
+  payload: Record<string, unknown>,
+): Promise<{ artifact: BuildWorkbenchTaskDetail["artifact"]; pipeline_stage: string; materialization_status: string }> {
+  return await tryFetchJson(`${fileProjectPath(projectId)}/build-graph/tasks/${encodeURIComponent(taskId)}/artifact`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ expected_revision: expectedRevision, payload }),
+  }) as { artifact: BuildWorkbenchTaskDetail["artifact"]; pipeline_stage: string; materialization_status: string };
 }
 
 export type UpdateProjectOptions = {
