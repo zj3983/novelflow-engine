@@ -38,7 +38,53 @@ def enabled(store):
 
 def graph_for(store, project):
     from packages.story_core.world_build.definition import build_world_build_graph
-    return opening_graph(project) if enabled(store) else build_world_build_graph(project)
+    if not enabled(store):
+        return build_world_build_graph(project)
+    locked_project = definition_project(store, project)
+    graph = opening_graph(locked_project)
+    if settings(store).get("topology") is None:
+        state = store.build_graph_store().read_state()
+        legacy = opening_graph(locked_project, bind_topology=False)
+        if state and state.definition_fingerprint == legacy.definition.definition_fingerprint:
+            return legacy
+    return graph
+
+
+def topology(graph):
+    return {"genre_plugin_ids": [graph.plugin_id], "power_progression_mode": graph.power_progression_mode}
+
+
+def definition_project(store, project):
+    """Use the activated topology for reads, even while author inputs differ."""
+    config = settings(store)
+    locked = config.get("topology")
+    if locked is None:
+        # Iteration-0 settings did not store topology. Recover it read-only
+        # from the committed input, verifying against the persisted definition.
+        root = store.build_graph_store().read_artifact("world_input")
+        author = config["author_input"]
+        ids = author.get("genre_plugin_ids", [])
+        if root and root.payload.get("novel_type_id"):
+            ids = [root.payload["novel_type_id"]]
+        state = store.build_graph_store().read_state()
+        preferred_mode = root.payload.get("power_progression_mode") if root else author.get("power_progression_mode")
+        modes = [preferred_mode] if preferred_mode in {"custom", "traditional_class"} else ["custom", "traditional_class"]
+        for mode in modes:
+            historical = NovelProject.model_validate({**author, "project_id": project.project_id, "world_blueprint": {
+                "genre_plugin_ids": ids, "power_progression_mode": mode,
+            }})
+            for bind_topology in (True, False):
+                recovered = opening_graph(historical, bind_topology=bind_topology)
+                if state and recovered.definition.definition_fingerprint == state.definition_fingerprint:
+                    locked = topology(recovered)
+                    break
+            if locked is not None:
+                break
+        if locked is None:
+            raise ValueError("opening_topology_snapshot_missing")
+    candidate = project.model_copy(deep=True)
+    candidate.world_blueprint.update(deepcopy(locked))
+    return candidate
 
 
 def source_revision(store, *, project=None, outline=None):
@@ -58,7 +104,7 @@ def assert_sources_current(store):
     config = settings(store)
     if config:
         assert_unwritten(store)
-    if config and config.get("source_revision") != source_revision(store):
+    if config and (config.get("sync_pending") or config.get("source_revision") != source_revision(store)):
         raise ValueError("opening_source_changed_sync_required")
 
 
@@ -72,6 +118,17 @@ def reject_legacy_generation(store):
         raise ValueError("opening_build_use_workbench")
 
 
+def reject_legacy_downstream_edit(store, payload):
+    if not enabled(store):
+        return
+    from packages.story_core.project_outline import outline_from_legacy_project
+    current = store.snapshot_store.read_json(store.webnovel_dir / "outline.json", None)
+    if current is None:
+        current = outline_from_legacy_project(store.project())
+    if any(payload.get(key, []) != current.get(key, []) for key in ("arcs", "chapters")):
+        raise ValueError("opening_build_use_workbench")
+
+
 def author_input(store):
     project = store.project()
     outline = store.snapshot_store.read_json(store.webnovel_dir / "outline.json", {})
@@ -81,6 +138,7 @@ def author_input(store):
         "author_constraints": project.get("author_constraints", []),
         "current_focus": project.get("current_focus", ""),
         "genre_plugin_ids": (project.get("world_blueprint") or {}).get("genre_plugin_ids", []),
+        "power_progression_mode": build_world_build_graph(NovelProject.model_validate(project)).power_progression_mode,
         "source_premise": (project.get("world_blueprint") or {}).get("source_premise") or (project.get("world_blueprint") or {}).get("imported_premise") or "",
         "story_core": story_core_from_overall(outline.get("overall", {}), title=project.get("title", "")).model_dump(mode="json"),
         "brief": store.snapshot_store.read_json(store.webnovel_dir / "opening_brief.json", {}),
@@ -122,7 +180,8 @@ def activate(store, expected_graph_revision):
             runs=old.runs if old else {}, definition_fingerprint=graph.definition.definition_fingerprint,
         )
         config = {"schema_version": "opening-build/v1", "chapter_count": CHAPTER_COUNT,
-                  "source_revision": source_revision(store), "author_input": author_input(store)}
+                  "source_revision": source_revision(store), "author_input": author_input(store),
+                  "topology": topology(graph)}
         _prepared, payloads = store.update_project({"pipeline_stage": "world_ready"}, _commit=False)
         payloads[store.webnovel_dir / SETTINGS] = config
         payloads[store.build_graph_store().state_path] = state.to_dict()
@@ -144,17 +203,43 @@ def sync_input(store, expected_graph_revision):
         if not enabled(store):
             raise ValueError("opening_graph_not_enabled")
         config = dict(settings(store))
-        graph = opening_graph(NovelProject.model_validate(store.project()))
+        project = NovelProject.model_validate(store.project())
+        previous_graph = graph_for(store, project)
+        graph = opening_graph(project)
         state = store.build_graph_store().read_state()
+        if state is None:
+            raise ValueError("build_graph_not_initialized")
         if state.graph_revision != expected_graph_revision:
             raise ValueError("build_graph_changed")
         if any(task.active_run_id for task in state.tasks.values()):
             raise ValueError("build_run_in_progress")
+        # Verify the old definition before authorizing a sanctioned migration.
+        store.build_graph_store().initialize(previous_graph.definition)
         current_input = author_input(store)
-        validators = validators_for(store, NovelProject.model_validate(store.project()))
+        _prepared, payloads = store.update_project({"pipeline_stage": "world_ready"}, _commit=False)
+        config.update(topology=topology(graph), sync_pending=True)
+        payloads[store.webnovel_dir / SETTINGS] = config
+        if graph.definition.definition_fingerprint != state.definition_fingerprint:
+            tasks = {}
+            for task_id in graph.definition.ordered_task_ids:
+                previous = state.tasks.get(task_id)
+                if previous is None:
+                    # A removed task can return on a later genre switch. Keep
+                    # its revision high-water mark; never overwrite history.
+                    history = store.build_graph_store().artifact_history(task_id)
+                    previous = BuildTaskState(task_id=task_id, current_artifact_revision=history[-1].revision if history else None)
+                tasks[task_id] = replace(previous, active_run_id=None, validation_status="unknown",
+                    status="stale" if previous.current_artifact_revision is not None else "blocked" if graph.spec(task_id).task.dependencies else "ready")
+            payloads[store.webnovel_dir / "build_graph_archives" / ("opening-" + uuid4().hex) / "build_graph.json"] = state.to_dict()
+            state = replace(state, graph_revision=state.graph_revision + 1, tasks=tasks,
+                            definition_fingerprint=graph.definition.definition_fingerprint)
+            payloads[store.build_graph_store().state_path] = state.to_dict()
+        # Publish definition/settings/readiness together. If the following core
+        # commit fails, sync_pending keeps execution blocked and sync retryable.
+        store.snapshot_store.replace_json_transaction(payloads)
+        validators = validators_for(store, project)
         validators["opening.opening_input"] = lambda payload: payload == current_input
         service = store.build_graph_service(graph.definition, validators=validators)
-        store.update_project({"pipeline_stage": "world_ready"})
         result = service.commit_candidate(
             "opening_input", current_input, source="imported",
             expected_revision=state.tasks["opening_input"].current_artifact_revision,
@@ -162,7 +247,7 @@ def sync_input(store, expected_graph_revision):
         )
         if result.artifact is None:
             raise ValueError("opening_input_invalid")
-        config.update(author_input=current_input, source_revision=source_revision(store))
+        config.update(author_input=current_input, source_revision=source_revision(store), sync_pending=False)
         # On interruption before this record, the previous source hash keeps
         # execution blocked until an explicit retry; no stale input can run.
         store.snapshot_store.replace_json_transaction({store.webnovel_dir / SETTINGS: config})
@@ -216,6 +301,8 @@ def deterministic_candidate(store, task_id, project, graph):
 
 def validators_for(store, project):
     from packages.story_core.world_build.validators import make_world_validators
+    if enabled(store):
+        project = definition_project(store, project)
     validators = make_world_validators(project)
     if not enabled(store):
         return validators

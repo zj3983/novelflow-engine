@@ -1,4 +1,6 @@
 import json
+import pytest
+from pathlib import Path
 from collections import Counter
 from threading import Event
 from types import SimpleNamespace
@@ -135,4 +137,77 @@ def test_activation_rejects_written_projects_and_stale_revision(tmp_path, monkey
     response = client.post(BASE + "/opening", json={})
     assert response.status_code == 409
     assert response.json()["detail"] == "opening_requires_unwritten_project"
+    assert tree(store) == before
+
+
+@pytest.mark.parametrize("initial,mode,task_set_changes", [
+    ("generic_webnovel", "custom", True),
+    ("game_webnovel", "traditional_class", False),
+])
+def test_topology_change_remains_readable_and_sync_migrates(tmp_path, monkeypatch, initial, mode, task_set_changes):
+    from packages.story_core.models import NovelProject
+    store = _store(tmp_path, plugin_id=initial)
+    monkeypatch.setattr(file_projects, "_store_for", lambda _: store)
+    client = TestClient(app)
+    assert client.post(BASE + "/opening", json={}).status_code == 200
+    assert client.post(BASE + "/opening/input", json={"expected_graph_revision": 0}).status_code == 200
+    service = store.build_graph_service(runtime.graph_for(store, NovelProject.model_validate(store.project())).definition,
+        validators=runtime.validators_for(store, NovelProject.model_validate(store.project())))
+    run = service.start_run("story_core")
+    assert service.commit_run(run.run_id, opening_payloads()["story_core"]).artifact is not None
+    before_state = service.inspect_graph()
+    history = {str(p): p.read_bytes() for p in store.build_graph_store().artifacts_dir.rglob("*.json")}
+    old_run = store.build_graph_store().read_run(run.run_id)
+    store.update_project({"world_blueprint": {"genre_plugin_ids": ["game_webnovel"], "power_progression_mode": mode}})
+    before_read = tree(store)
+    visible = client.get(BASE)
+    assert visible.status_code == 200, visible.text
+    assert client.get(BASE + "/tasks/story_core").status_code == 200
+    assert tree(store) == before_read
+    assert client.post(BASE + "/orchestrations", json={"mode": "continue"}).status_code == 409
+    before_sync = tree(store)
+    assert client.post(BASE + "/opening/input", json={"expected_graph_revision": 0}).status_code == 409
+    assert tree(store) == before_sync
+    synced = client.post(BASE + "/opening/input", json={"expected_graph_revision": before_state.graph_revision})
+    assert synced.status_code == 200, synced.text
+    state = store.build_graph_store().read_state()
+    assert state.definition_fingerprint != before_state.definition_fingerprint
+    assert (set(state.tasks) != set(before_state.tasks)) == task_set_changes
+    assert "game_ecology" in state.tasks
+    assert state.tasks["opening_input"].current_artifact_revision == 2
+    assert state.tasks["story_core"].status == "stale"
+    assert state.tasks["story_core"].current_artifact_revision == 1
+    assert store.project()["pipeline_stage"] == "world_ready"
+    assert store.build_graph_store().read_run(run.run_id) == old_run
+    assert all(Path(p).read_bytes() == data for p, data in history.items())
+    assert any(json.loads(p.read_text(encoding="utf-8")) == before_state.to_dict()
+        for p in (store.webnovel_dir / "build_graph_archives").glob("opening-*/build_graph.json"))
+    assert client.get(BASE).status_code == 200
+    runtime.assert_sources_current(store)
+    calls = []
+    def complete(_stage, request):
+        calls.append(request.metadata["world_build_task"])
+        return SimpleNamespace(ok=True, text=json.dumps(opening_payloads()["story_core"]), provider="test", model="test", resolved_model="test")
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", SimpleNamespace(complete_stage=complete))
+    resumed = client.post(BASE + "/orchestrations", json={"mode": "next"})
+    assert resumed.status_code == 200, resumed.text
+    job = _wait_orchestration(client, "generic_webnovel", resumed.json()["job_id"])
+    assert job["status"] == "completed", job
+    assert calls == ["story_core"]
+
+
+def test_enabled_opening_rejects_legacy_outline_put_without_mutation(tmp_path, monkeypatch):
+    from fastapi import FastAPI, APIRouter
+    from apps.api.routes.file_project_outline import register_file_project_outline_routes
+    store, client = setup(tmp_path, monkeypatch)
+    fresh = FastAPI()
+    router = APIRouter()
+    register_file_project_outline_routes(router, store_for=lambda _: store, planning_generator=lambda: None)
+    fresh.include_router(router)
+    client = TestClient(fresh)
+    runtime.activate(store, None)
+    before = tree(store)
+    response = client.put("/file-projects/generic_webnovel/outline", json={"arcs": [], "chapters": [{"chapter_number": 1}]})
+    assert response.status_code == 422
+    assert response.json()["detail"] == "opening_build_use_workbench"
     assert tree(store) == before

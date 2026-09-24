@@ -1,4 +1,5 @@
 from copy import deepcopy
+from dataclasses import replace
 import json
 
 import pytest
@@ -175,3 +176,105 @@ def test_publication_failure_does_not_partially_publish_outline_or_readiness(tmp
     assert store.project() == original
     assert not (store.webnovel_dir / "outline.json").exists()
     assert store.build_graph_materialization() is None
+
+
+@pytest.mark.parametrize("initial", ["generic_webnovel", "game_webnovel"])
+def test_iteration_zero_settings_recover_read_only_then_migrate(tmp_path, initial):
+    store = _store(tmp_path, plugin_id=initial)
+    runtime.activate(store, None)
+    legacy = opening_graph(NovelProject.model_validate(store.project()), bind_topology=False)
+    state = replace(store.build_graph_store().read_state(), definition_fingerprint=legacy.definition.definition_fingerprint)
+    config = runtime.settings(store)
+    config.pop("topology")
+    config["author_input"].pop("power_progression_mode")
+    store.snapshot_store.replace_json_transaction({store.build_graph_store().state_path: state.to_dict(), store.webnovel_dir / runtime.SETTINGS: config})
+    store.update_project({"world_blueprint": {"genre_plugin_ids": ["game_webnovel"], "power_progression_mode": "traditional_class"}})
+    before = {p: p.read_bytes() for p in store.root.rglob("*") if p.is_file()}
+    assert runtime.graph_for(store, NovelProject.model_validate(store.project())).definition.definition_fingerprint == state.definition_fingerprint
+    assert {p: p.read_bytes() for p in store.root.rglob("*") if p.is_file()} == before
+    runtime.sync_input(store, state.graph_revision)
+    assert runtime.settings(store)["topology"]["power_progression_mode"] == "traditional_class"
+    runtime.assert_sources_current(store)
+
+
+def test_interrupted_topology_sync_is_blocked_readable_and_retryable(tmp_path, monkeypatch):
+    from packages.story_core.build_graph.service import BuildGraphService
+    store, graph, service = opening_store(tmp_path)
+    complete_opening(store, graph, service)
+    runtime.publish(store, graph, service, runtime.source_revision(store))
+    marker_path = store.webnovel_dir / "build_graph_materialization.json"
+    marker = marker_path.read_bytes()
+    original = store.build_graph_store().read_artifact("opening_input", 1)
+    store.update_project({"world_blueprint": {"genre_plugin_ids": ["game_webnovel"]}})
+    commit = BuildGraphService.commit_candidate
+    def fail_commit(*args, **kwargs):
+        raise OSError("synthetic interruption after definition migration")
+    monkeypatch.setattr(BuildGraphService, "commit_candidate", fail_commit)
+    with pytest.raises(OSError, match="synthetic interruption"):
+        runtime.sync_input(store, service.inspect_graph().graph_revision)
+    assert store.project()["pipeline_stage"] == "world_ready"
+    assert marker_path.read_bytes() == marker
+    with pytest.raises(ValueError, match="opening_source_changed_sync_required"):
+        runtime.assert_sources_current(store)
+    migrated = runtime.graph_for(store, NovelProject.model_validate(store.project()))
+    store.build_graph_store().initialize(migrated.definition)
+    monkeypatch.setattr(BuildGraphService, "commit_candidate", commit)
+    runtime.sync_input(store, store.build_graph_store().read_state().graph_revision)
+    runtime.assert_sources_current(store)
+    assert store.build_graph_store().read_artifact("opening_input", 1) == original
+    assert store.build_graph_store().read_artifact("opening_input").revision == 2
+    assert marker_path.read_bytes() == marker
+
+
+def test_active_run_blocks_sync_without_mutation(tmp_path):
+    store, graph, service = opening_store(tmp_path)
+    service.commit_candidate("opening_input", runtime.settings(store)["author_input"], source="imported")
+    service.start_run("story_core")
+    store.update_project({"world_blueprint": {"genre_plugin_ids": ["game_webnovel"]}})
+    before = {p: p.read_bytes() for p in store.root.rglob("*") if p.is_file()}
+    with pytest.raises(ValueError, match="build_run_in_progress"):
+        runtime.sync_input(store, service.inspect_graph().graph_revision)
+    assert {p: p.read_bytes() for p in store.root.rglob("*") if p.is_file()} == before
+
+
+def test_removed_task_can_return_without_overwriting_artifact_history(tmp_path):
+    store = _store(tmp_path, plugin_id="game_webnovel")
+    runtime.activate(store, None)
+    runtime.sync_input(store, 0)
+    def commit_foundation():
+        project = NovelProject.model_validate(store.project())
+        graph = runtime.graph_for(store, project)
+        service = store.build_graph_service(graph.definition, validators=runtime.validators_for(store, project))
+        payloads = opening_payloads()
+        payloads["power_system_foundation"] = {"name": "印记体系", "origin": ["先民留下的精神印记"]}
+        for task_id in ("story_core", "character_seeds", "world_input", "world_core_rules", "power_system_foundation"):
+            payload = runtime.deterministic_candidate(store, task_id, project, graph) if task_id == "world_input" else payloads[task_id]
+            result = service.commit_candidate(task_id, payload, requested_writes=graph.spec(task_id).task.owns,
+                expected_revision=service.inspect_task(task_id).current_artifact_revision)
+            assert result.artifact is not None, result.validation
+    commit_foundation()
+    old = store.build_graph_store().read_artifact("power_system_foundation", 1)
+    for genre in ("generic_webnovel", "game_webnovel"):
+        store.update_project({"world_blueprint": {"genre_plugin_ids": [genre]}})
+        runtime.sync_input(store, store.build_graph_store().read_state().graph_revision)
+    assert store.build_graph_store().read_state().tasks["power_system_foundation"].current_artifact_revision == 1
+    commit_foundation()
+    assert store.build_graph_store().read_artifact("power_system_foundation", 1) == old
+    assert store.build_graph_store().read_artifact("power_system_foundation").revision == 2
+
+
+def test_author_story_core_edit_preserves_downstream_and_requires_sync(tmp_path):
+    store, graph, service = opening_store(tmp_path)
+    complete_opening(store, graph, service)
+    runtime.publish(store, graph, service, runtime.source_revision(store))
+    outline = store.snapshot_store.read_json(store.webnovel_dir / "outline.json", {})
+    card = opening_payloads()["story_core"]["story_core"]
+    card["main_conflict"] = "作者修改的故事核心冲突"
+    store.update_story_core(card)
+    updated = store.snapshot_store.read_json(store.webnovel_dir / "outline.json", {})
+    assert updated["arcs"] == outline["arcs"]
+    assert updated["chapters"] == outline["chapters"]
+    with pytest.raises(ValueError, match="opening_source_changed_sync_required"):
+        runtime.assert_sources_current(store)
+    runtime.sync_input(store, service.inspect_graph().graph_revision)
+    assert store.build_graph_store().read_artifact("opening_input").payload["story_core"]["main_conflict"] == card["main_conflict"]

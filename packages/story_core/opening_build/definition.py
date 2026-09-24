@@ -9,7 +9,7 @@ from .contracts import output_model
 CHAPTER_COUNT = 3
 
 
-def opening_graph(project):
+def opening_graph(project, *, bind_topology=True):
     world = build_world_build_graph(project)
     specs = dict(world.specs)
 
@@ -32,6 +32,9 @@ def opening_graph(project):
     specs["world_input"] = replace(root, kind="deterministic", task=replace(
         root.task, dependencies=("opening_input", "story_core", "character_seeds"),
         reads=("build.opening.opening_input", "build.opening.story_core", "build.opening.character_seeds"),
+        context_policy={**root.task.context_policy, **({"opening_topology": {
+            "plugin_id": world.plugin_id, "power_progression_mode": world.power_progression_mode,
+        }} if bind_topology else {})},
     ))
     add("detailed_characters", "详细角色", ("character_seeds", *world.definition.ordered_task_ids), instructions="沿用种子全部角色姓名与分类，补足正式角色卡，包括身份、经历、生活、动机、行为与声音。", tokens=14000)
     add("relationships", "角色关系", ("detailed_characters",), instructions="只在已提交角色之间定义关系。source和target使用角色姓名，禁止自环，id唯一。")

@@ -2659,7 +2659,7 @@ def init_file_project_routes() -> APIRouter:
             return "not_materialized"
         if project_store is not None:
             from packages.story_core.opening_build.runtime import enabled, settings, source_revision
-            if enabled(project_store) and settings(project_store).get("source_revision") != source_revision(project_store):
+            if enabled(project_store) and (settings(project_store).get("sync_pending") or settings(project_store).get("source_revision") != source_revision(project_store)):
                 return "outdated"
         if marker.get("graph_id") != state.graph_id:
             return "outdated"
@@ -2686,10 +2686,10 @@ def init_file_project_routes() -> APIRouter:
         return "current"
 
     def _invalidate_workbench_readiness(store, project: dict[str, Any]) -> None:
-        from packages.story_core.opening_build.runtime import enabled, assert_unwritten
+        from packages.story_core.opening_build.runtime import enabled, assert_sources_current
         if enabled(store):
             try:
-                assert_unwritten(store)
+                assert_sources_current(store)
             except ValueError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
         if project.get("pipeline_stage") == "environment_ready":

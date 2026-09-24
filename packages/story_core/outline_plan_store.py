@@ -98,6 +98,8 @@ class OutlinePlanStoreMixin:
 
     @with_project_update_lock
     def update_project_outline(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from packages.story_core.opening_build.runtime import reject_legacy_downstream_edit
+        reject_legacy_downstream_edit(self, payload)
         outline_payload = dict(payload)
         outline_payload.pop("source", None)
         state = self._read_json(self.webnovel_dir / "state.json", {})
