@@ -1367,9 +1367,7 @@ def test_orchestration_deterministic_source_edit_conflicts_before_commit(tmp_pat
     assert job["completed_task_ids"] == []
     assert service.inspect_artifact("power_system_final") == original
     state = service.inspect_graph()
-    # Core conflict_run marks the interrupted task stale; its accepted
-    # artifact and revision remain unchanged.
-    assert state.tasks["power_system_final"].status == "stale"
+    assert state.tasks["power_system_final"].status == original_task.status
     assert state.tasks["power_system_final"].current_artifact_revision == original_task.current_artifact_revision
     assert state.tasks["power_system_final"].active_run_id is None
     assert len([run for run in state.runs.values() if run.task_id == "power_system_final" and run.status == "conflict"]) == 1

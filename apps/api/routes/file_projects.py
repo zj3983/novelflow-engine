@@ -3079,7 +3079,10 @@ def init_file_project_routes() -> APIRouter:
             with project_update_lock(store.root):
                 if expected_project_revision is not None and _project_world_revision(store) != expected_project_revision:
                     try:
-                        service.conflict_run(run.run_id, message="project world changed during the model run")
+                        service.conflict_run(
+                            run.run_id, message="project world changed during the model run",
+                            preserve_task_state=base_task_state,
+                        )
                     except BuildRunConflict:
                         pass
                     raise HTTPException(status_code=409, detail="project_world_changed")
@@ -3205,7 +3208,10 @@ def init_file_project_routes() -> APIRouter:
                 with project_update_lock(store.root):
                     if _project_world_revision(store) != expected_project_revision:
                         try:
-                            service.conflict_run(run.run_id, message="project world changed during the deterministic run")
+                            service.conflict_run(
+                                run.run_id, message="project world changed during the deterministic run",
+                                preserve_task_state=task_state,
+                            )
                         except BuildRunConflict:
                             pass
                         raise HTTPException(status_code=409, detail="project_world_changed")

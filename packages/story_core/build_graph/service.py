@@ -327,9 +327,14 @@ class BuildGraphService:
         run: BuildRun,
         *,
         message: str,
+        preserve_task_state: BuildTaskState | None = None,
     ) -> None:
         tasks = dict(state.tasks)
         runs = dict(state.runs)
+        if preserve_task_state is not None and preserve_task_state.task_id != run.task_id:
+            raise BuildTaskStateError(
+                "build_task_state_mismatch", "conflict task state does not match the run task"
+            )
         runs[run.run_id] = replace(
             run,
             status="conflict",
@@ -337,7 +342,18 @@ class BuildGraphService:
             diagnostics=(BuildDiagnostic("build_run_conflict", f"runs.{run.run_id}", message),),
         )
         if run.task_id in tasks and tasks[run.task_id].active_run_id == run.run_id:
-            self._set_task(tasks, run.task_id, active_run_id=None, status="stale")
+            if preserve_task_state is None:
+                self._set_task(tasks, run.task_id, active_run_id=None, status="stale")
+            else:
+                self._set_task(
+                    tasks, run.task_id,
+                    status=preserve_task_state.status,
+                    current_artifact_revision=preserve_task_state.current_artifact_revision,
+                    dependency_revisions=preserve_task_state.dependency_revisions,
+                    validation_status=preserve_task_state.validation_status,
+                    diagnostics=preserve_task_state.diagnostics,
+                    active_run_id=None,
+                )
         self.store.persist(self._replace_state(state, tasks=tasks, runs=runs), runs=(runs[run.run_id],))
         raise BuildRunConflict(
             "build_run_conflict",
@@ -659,6 +675,7 @@ class BuildGraphService:
         run_id: str,
         *,
         message: str = "run was superseded by a newer project revision",
+        preserve_task_state: BuildTaskState | None = None,
     ) -> BuildRun:
         """Mark an active run as conflicted without committing its payload.
 
@@ -678,7 +695,9 @@ class BuildGraphService:
                     "run is not active",
                     details={"run_id": str(run_id)},
                 )
-            self._run_conflict_locked(state, run, message=message)
+            self._run_conflict_locked(
+                state, run, message=message, preserve_task_state=preserve_task_state,
+            )
             raise AssertionError("_run_conflict_locked must raise")
 
     def edit_artifact(
