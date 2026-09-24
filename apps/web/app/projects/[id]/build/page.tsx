@@ -5,9 +5,11 @@ import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
 import {
+  BuildWorkbenchRepairError,
   commitBuildWorkbenchTaskEdit,
   fetchBuildWorkbench,
   fetchBuildWorkbenchTask,
+  repairBuildWorkbenchTask,
   validateBuildWorkbenchTask,
   type BuildWorkbenchGraph,
   type BuildWorkbenchTask,
@@ -64,6 +66,9 @@ function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved }: {
   const [validation, setValidation] = useState<BuildWorkbenchValidation | null>(null);
   const [busy, setBusy] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
+  const [repairBusy, setRepairBusy] = useState(false);
+  const [repairDiagnostics, setRepairDiagnostics] = useState<BuildWorkbenchTaskDetail["diagnostics"]>([]);
+  const [repairError, setRepairError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -119,6 +124,30 @@ function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved }: {
     } finally { setBusy(false); }
   };
 
+  const repairArtifact = async () => {
+    if (!detail?.editable || !detail.artifact) return;
+    if (editorOpen) {
+      setRepairError("当前有未保存的 JSON 草稿。请先保存或取消草稿，再运行 AI 修复。");
+      return;
+    }
+    setRepairBusy(true);
+    setRepairDiagnostics([]);
+    setRepairError(null);
+    try {
+      await repairBuildWorkbenchTask(projectId, task.task_id, detail.artifact.revision);
+      await onSaved();
+    } catch (reason) {
+      if (reason instanceof BuildWorkbenchRepairError) {
+        setRepairDiagnostics(reason.diagnostics);
+        setRepairError(reason.message);
+      } else {
+        setRepairError(reason instanceof Error ? reason.message : String(reason));
+      }
+    } finally {
+      setRepairBusy(false);
+    }
+  };
+
   return (
     <section className={`ws-card ${styles.detail}`} aria-labelledby="build-task-detail-title">
       <div className={styles.detail_head}>
@@ -142,6 +171,15 @@ function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved }: {
         setEditError(null);
         setEditorOpen(true);
       }}>人工编辑</button> : null}
+      {detail?.editable ? <button type="button" className={styles.edit_button} disabled={repairBusy || busy} onClick={() => void repairArtifact()}>
+        {repairBusy ? "AI 修复中…" : "AI 修复"}
+      </button> : null}
+      {repairError ? <div className={styles.validation_fail} role="alert">
+        <strong>{repairError}</strong>
+        {repairDiagnostics.length ? <ul className={styles.diagnostics}>{repairDiagnostics.map((diagnostic, index) => (
+          <li key={`${diagnostic.code}-${diagnostic.path}-${index}`}><strong>{diagnostic.code}</strong><code>{diagnostic.path || "（未提供路径）"}</code><p>{diagnostic.message}</p></li>
+        ))}</ul> : null}
+      </div> : null}
       {editorOpen ? (
         <section className={styles.editor} aria-label="人工编辑产物">
           <div className={styles.editor_heading}><strong>人工编辑 JSON</strong><span>当前 revision：r{detail?.artifact?.revision}</span></div>

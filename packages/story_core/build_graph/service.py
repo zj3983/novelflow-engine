@@ -278,6 +278,7 @@ class BuildGraphService:
         *,
         input_fingerprint: str | None = None,
         read_projection: Mapping[str, Any] | None = None,
+        allow_completed_with_artifact: bool = False,
     ) -> BuildRun:
         task = self._task(task_id)
         with project_update_lock(self.store.root):
@@ -289,7 +290,10 @@ class BuildGraphService:
                     "task already has an active run",
                     details={"task_id": task.task_id, "run_id": current.active_run_id},
                 )
-            if current.status not in {"ready", "stale", "validation_failed"}:
+            runnable_statuses = {"ready", "stale", "validation_failed"}
+            if allow_completed_with_artifact and current.current_artifact_revision is not None:
+                runnable_statuses.add("completed")
+            if current.status not in runnable_statuses:
                 raise BuildTaskStateError(
                     "build_task_not_runnable",
                     "task must be ready, stale, or validation_failed before starting a run",
@@ -378,6 +382,8 @@ class BuildGraphService:
         parent_revision: int | None,
         run_id: str | None = None,
         additional_runs: Iterable[BuildRun] = (),
+        failure_task_state: BuildTaskState | None = None,
+        before_commit: Callable[[], None] | None = None,
     ) -> BuildCommitResult:
         if source not in ARTIFACT_SOURCES:
             raise BuildTaskStateError("build_artifact_source_invalid", "unsupported artifact source")
@@ -392,18 +398,36 @@ class BuildGraphService:
         dependency_revisions = self._dependency_revisions(state, task)
         validation, written_paths = self._validate(task, payload, requested_writes)
         disposition = disposition_for(validation, task.review_policy)
+        if disposition != "FAIL" and before_commit is not None:
+            before_commit()
         tasks = dict(state.tasks)
         runs = dict(state.runs)
         additional_run_records = tuple(additional_runs)
         if disposition == "FAIL":
-            self._set_task(
-                tasks,
-                task.task_id,
-                status="validation_failed",
-                validation_status="failed",
-                diagnostics=validation.diagnostics,
-                active_run_id=None,
-            )
+            if failure_task_state is not None:
+                if failure_task_state.task_id != task.task_id:
+                    raise BuildTaskStateError(
+                        "build_task_state_mismatch", "failure task state does not match the run task"
+                    )
+                self._set_task(
+                    tasks,
+                    task.task_id,
+                    status=failure_task_state.status,
+                    current_artifact_revision=failure_task_state.current_artifact_revision,
+                    dependency_revisions=failure_task_state.dependency_revisions,
+                    validation_status=failure_task_state.validation_status,
+                    diagnostics=failure_task_state.diagnostics,
+                    active_run_id=None,
+                )
+            else:
+                self._set_task(
+                    tasks,
+                    task.task_id,
+                    status="validation_failed",
+                    validation_status="failed",
+                    diagnostics=validation.diagnostics,
+                    active_run_id=None,
+                )
             committed_validation = validation.with_disposition("FAIL")
             finished_run: BuildRun | None = None
             if run_id and run_id in runs:
@@ -518,6 +542,8 @@ class BuildGraphService:
         provider: str | None = None,
         model: str | None = None,
         prompt_call_id: str | None = None,
+        preserve_task_state_on_failure: BuildTaskState | None = None,
+        before_commit: Callable[[], None] | None = None,
     ) -> BuildCommitResult:
         with project_update_lock(self.store.root):
             state = self._read_state()
@@ -538,12 +564,16 @@ class BuildGraphService:
                 prompt_call_id=prompt_call_id,
                 parent_revision=run.base_artifact_revision,
                 run_id=run.run_id,
+                failure_task_state=preserve_task_state_on_failure,
+                before_commit=before_commit,
             )
 
     def fail_run(
         self,
         run_id: str,
         diagnostics: Iterable[BuildDiagnostic | Mapping[str, Any]],
+        *,
+        preserve_task_state: BuildTaskState | None = None,
     ) -> BuildRun:
         with project_update_lock(self.store.root):
             state = self._read_state()
@@ -557,15 +587,31 @@ class BuildGraphService:
             )
             tasks = dict(state.tasks)
             runs = dict(state.runs)
+            if preserve_task_state is not None and preserve_task_state.task_id != run.task_id:
+                raise BuildTaskStateError(
+                    "build_task_state_mismatch", "failure task state does not match the run task"
+                )
             runs[run.run_id] = replace(run, status="failed", finished_at=self.clock(), diagnostics=parsed)
-            self._set_task(
-                tasks,
-                run.task_id,
-                status="validation_failed",
-                validation_status="failed",
-                diagnostics=parsed,
-                active_run_id=None,
-            )
+            if preserve_task_state is not None:
+                self._set_task(
+                    tasks,
+                    run.task_id,
+                    status=preserve_task_state.status,
+                    current_artifact_revision=preserve_task_state.current_artifact_revision,
+                    dependency_revisions=preserve_task_state.dependency_revisions,
+                    validation_status=preserve_task_state.validation_status,
+                    diagnostics=preserve_task_state.diagnostics,
+                    active_run_id=None,
+                )
+            else:
+                self._set_task(
+                    tasks,
+                    run.task_id,
+                    status="validation_failed",
+                    validation_status="failed",
+                    diagnostics=parsed,
+                    active_run_id=None,
+                )
             next_state = self._replace_state(state, tasks=tasks, runs=runs)
             self.store.persist(next_state, runs=(runs[run.run_id],))
             return runs[run.run_id]
