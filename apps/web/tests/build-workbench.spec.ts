@@ -112,6 +112,40 @@ test("首卷扩展需显式操作，正文确认后规划动作锁定", async ({
   expect(writes).toBe(1);
 });
 
+test("卷末显式扩展下一卷，刷新后显示版本和待构建任务", async ({ page }) => {
+  const currentGraph = {
+    ...graph([task(0)]), opening_graph: true, opening_chapter_count: 50,
+    opening_execution_started: true, opening_planning_pending: false,
+    opening_confirmed_through: 50, opening_next_volume_available: true,
+    opening_plan_versions: [], materialization_status: "in_use",
+  };
+  await routeProjectAndGraph(page, currentGraph);
+  let writes = 0;
+  await page.route(/\/build-graph\/opening\/next-volume$/, async (route) => {
+    writes += 1;
+    expect(route.request().method()).toBe("POST");
+    expect(route.request().postDataJSON()).toEqual({ expected_graph_revision: 33 });
+    Object.assign(currentGraph, {
+      opening_chapter_count: 100, opening_planning_pending: true,
+      opening_next_volume_available: false, graph_revision: 34,
+      materialization_status: "outdated", pipeline_stage: "world_ready",
+      opening_plan_versions: [{ version: 1, start_chapter: 1, end_chapter: 50 }],
+      tasks: [task(0), task(1, { task_id: "chapter_outline_51", title: "第51章细纲", status: "ready", artifact_revision: null })],
+    });
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(currentGraph) });
+  });
+  await page.goto(`/projects/${encodedId}/build`);
+  await expect(page.getByRole("button", { name: "扩展下一卷细纲任务" })).toBeVisible();
+  expect(writes).toBe(0);
+  await page.getByRole("button", { name: "扩展下一卷细纲任务" }).click();
+  await expect(page.getByText("下一卷规划扩展中。完成并发布全部细纲之前，正文候选入口保持关闭。")).toBeVisible();
+  await expect(page.getByRole("button", { name: "继续构建" })).toBeEnabled();
+  await expect(page.getByText("规划版本：v1（第 1–50 章）")).toBeVisible();
+  await page.reload();
+  await expect(page.getByText("第51章细纲")).toBeVisible();
+  expect(writes).toBe(1);
+});
+
 async function routeProjectAndGraph(page: Page, response: ReturnType<typeof graph>) {
   await page.route(`**/file-projects/${encodedId}`, async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });

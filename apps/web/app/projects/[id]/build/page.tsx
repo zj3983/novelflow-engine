@@ -17,6 +17,7 @@ import {
   startBuildOrchestration,
   updateOpeningBuildGraph,
   extendOpeningVolume,
+  extendOpeningNextVolume,
   validateBuildWorkbenchTask,
   type BuildOrchestrationJob,
   type BuildOrchestrationMode,
@@ -343,6 +344,20 @@ export default function BuildWorkbenchPage() {
     }
   };
 
+  const extendNextVolume = async () => {
+    if (!graph || draftOpen || openingBusy) return;
+    setOpeningBusy(true);
+    setOrchestrationError(null);
+    try {
+      const result = await extendOpeningNextVolume(projectId, graph.graph_revision);
+      setGraph(result);
+      setSelectedTaskId(result.tasks.find((task) => task.status === "ready")?.task_id ?? selectedTaskId);
+      setDetailReload((current) => current + 1);
+    } catch (reason) {
+      setOrchestrationError(reason instanceof Error ? reason.message : String(reason));
+    } finally { setOpeningBusy(false); }
+  };
+
   const reloadGraph = async () => {
     const result = await fetchBuildWorkbench(projectId);
     setGraph(result);
@@ -439,10 +454,13 @@ export default function BuildWorkbenchPage() {
           {openingBusy ? "处理中…" : graph.opening_graph ? "同步作者输入" : "启用完整开局图"}
         </button>
         {graph.opening_graph ? <>
-          <p className="ws-card__hint">细纲窗口：前 {graph.opening_chapter_count ?? 3} 章。开始正文前需补齐首卷细纲，再点击继续构建；不会自动生成或确认正文。</p>
+          <p className="ws-card__hint">细纲窗口：前 {graph.opening_chapter_count ?? 3} 章。正文逐章人工确认；下一卷需在卷末显式扩展并构建完整细纲。</p>
           <button type="button" disabled={openingBusy || orchestrationBusy || draftOpen || graph.opening_execution_started || graph.tasks.some((task) => task.status !== "completed")} onClick={() => void updateOpening(true)}>补齐首卷细纲任务</button>
+          {graph.opening_next_volume_available ? <button type="button" disabled={openingBusy || orchestrationBusy || draftOpen} onClick={() => void extendNextVolume()}>扩展下一卷细纲任务</button> : null}
+          {graph.opening_planning_pending ? <p role="status">下一卷规划扩展中。完成并发布全部细纲之前，正文候选入口保持关闭。</p> : null}
+          {graph.opening_plan_versions?.length ? <p>规划版本：{graph.opening_plan_versions.map((item) => `v${item.version}（第 ${item.start_chapter}–${item.end_chapter} 章）`).join("、")}</p> : null}
           <a href={`/projects/${encodedProjectId}/write`}>前往正文候选与审查</a>
-          {graph.opening_execution_started ? <p>正文已开始，开局规划已锁定。后续章节沿用该规划和已确认的故事状态。</p> : null}
+          {graph.opening_execution_started && !graph.opening_planning_pending ? <p>已确认正文与已消费规划保持锁定；可在卷末显式扩展未来细纲。</p> : null}
         </> : null}
         {orchestrationError && !graph.initialized ? <p role="alert">{orchestrationError}</p> : null}
       </section> : null}
@@ -465,9 +483,9 @@ export default function BuildWorkbenchPage() {
 
           <section className={`ws-card ${styles.orchestration}`} aria-label="构建操作">
             <div className={styles.orchestration_actions}>
-              <button type="button" disabled={orchestrationBusy || openingBusy || graph.opening_execution_started} onClick={() => void runOrchestration("continue")}>继续构建</button>
-              <button type="button" disabled={orchestrationBusy || openingBusy || graph.opening_execution_started || !graph.tasks.some((task) => task.status === "stale")} onClick={() => void runOrchestration("rebuild_stale")}>重建过期项</button>
-              <button type="button" disabled={orchestrationBusy || openingBusy || graph.opening_execution_started} onClick={() => void runOrchestration("next")}>运行下一任务</button>
+              <button type="button" disabled={orchestrationBusy || openingBusy || (graph.opening_execution_started && !graph.opening_planning_pending)} onClick={() => void runOrchestration("continue")}>继续构建</button>
+              <button type="button" disabled={orchestrationBusy || openingBusy || (graph.opening_execution_started && !graph.opening_planning_pending) || !graph.tasks.some((task) => task.status === "stale")} onClick={() => void runOrchestration("rebuild_stale")}>重建过期项</button>
+              <button type="button" disabled={orchestrationBusy || openingBusy || (graph.opening_execution_started && !graph.opening_planning_pending)} onClick={() => void runOrchestration("next")}>运行下一任务</button>
             </div>
             {orchestrationError ? <p role="alert" className={styles.edit_error}>{orchestrationError}</p> : null}
             {orchestration ? <div className={styles.orchestration_progress} aria-live="polite">
