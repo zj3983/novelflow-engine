@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from threading import Event
+from time import monotonic, sleep
 
 import pytest
 
@@ -1008,4 +1009,566 @@ def test_leaf_edit_still_invalidates_environment_readiness_and_old_marker(tmp_pa
     assert response.json()["pipeline_stage"] == "world_ready"
     assert response.json()["materialization_status"] == "outdated"
     assert service.inspect_graph().tasks["transitive_model"].current_artifact_revision == 2
+    assert marker_path.read_bytes() == marker_bytes
+
+
+def _wait_orchestration(client: TestClient, project_id: str, job_id: str) -> dict:
+    deadline = monotonic() + 12
+    while monotonic() < deadline:
+        response = client.get(f"/file-projects/{project_id}/build-graph/orchestrations/{job_id}")
+        assert response.status_code == 200, response.text
+        job = response.json()
+        if job["status"] in {"completed", "failed", "conflicted", "interrupted"}:
+            return job
+        sleep(0.1)
+    raise AssertionError("orchestration job did not finish")
+
+
+def test_rebuild_stale_runs_dependency_order_and_rematerializes(tmp_path, monkeypatch):
+    store, _graph, service, marker_path, marker_bytes = _setup_project(tmp_path, monkeypatch)
+    client = TestClient(app, raise_server_exceptions=True)
+    changed = client.patch(
+        "/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/artifact",
+        json={"expected_revision": 1, "payload": {"label": "Human change"}},
+    )
+    assert changed.status_code == 200, changed.text
+    assert store.project()["pipeline_stage"] == "world_ready"
+    calls = []
+
+    class Gateway:
+        def complete_stage(self, _stage, request):
+            calls.append(request.operation)
+            if request.operation.endswith("downstream_model"):
+                return SimpleNamespace(ok=True, text='{"world_detail":"New detail"}', provider="test", model="test", resolved_model="test")
+            return SimpleNamespace(ok=True, text='{"world_transitive":"New transitive"}', provider="test", model="test", resolved_model="test")
+
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", Gateway())
+    start = client.post(
+        "/file-projects/p-synthetic-build-edit/build-graph/orchestrations",
+        json={"mode": "rebuild_stale"},
+    )
+    assert start.status_code == 200, start.text
+    job = _wait_orchestration(client, "p-synthetic-build-edit", start.json()["job_id"])
+    assert job["status"] == "completed", job
+    assert job["completed_task_ids"] == ["downstream_model", "transitive_model"]
+    assert job["materialized"] is True
+    assert calls == ["workbench_rerun_downstream_model", "workbench_rerun_transitive_model"]
+    assert service.inspect_graph().tasks["world_model"].current_artifact_revision == 2
+    assert store.build_artifact("downstream_model", 2)["payload"] == {"world_detail": "New detail"}
+    assert store.build_artifact("transitive_model", 2)["payload"] == {"world_transitive": "New transitive"}
+    assert store.project()["pipeline_stage"] == "environment_ready"
+    assert marker_path.read_bytes() != marker_bytes
+    assert store.build_graph_materialization()["artifact_revisions"]["transitive_model"] == 2
+
+
+@pytest.mark.parametrize("legacy_value", [False, True])
+def test_continue_build_first_model_and_next_action(tmp_path, monkeypatch, legacy_value):
+    root = tmp_path / "new-graph"
+    (root / ".story-system").mkdir(parents=True)
+    (root / ".webnovel").mkdir()
+    (root / "chapters").mkdir()
+    project = {
+        "project_id": "p-synthetic-new-graph", "title": "New graph", "pipeline_stage": "world_ready",
+        "world_blueprint": {"economy_rules": ["AUTHOR"]} if legacy_value else {},
+    }
+    (root / ".story-system" / "MASTER_SETTING.json").write_text(
+        json.dumps({"schema_version": "story-system-master-setting/v1", "project": project}), encoding="utf-8",
+    )
+    (root / ".webnovel" / "project.json").write_text(json.dumps(project), encoding="utf-8")
+    (root / ".webnovel" / "state.json").write_text(json.dumps({"story_id": "s-new", "current_chapter": 0}), encoding="utf-8")
+    spec = WorldBuildTaskSpec(
+        BuildTaskDefinition(
+            task_id="world_economy", title="经济", owns=("world.economy",),
+            required_for_readiness=True,
+        ),
+        "model", ("economy_rules",), domain_paths=("world_blueprint.economy_rules",),
+        output_schema={"economy_rules": "string[]"},
+    )
+    definition = BuildGraphDefinition(graph_id="novelflow-project-build", tasks=(spec.task,))
+    graph = SimpleNamespace(
+        definition=definition, specs={spec.task_id: spec}, spec=lambda _task_id: spec,
+        structured_power=False, plugin_id=None, power_progression_mode=None,
+    )
+    store = FileProjectStore(root)
+    service = store.build_graph_service(definition, validators={})
+    monkeypatch.setattr(file_projects, "_store_for", lambda _project_id: store)
+    monkeypatch.setattr(world_definition, "build_world_build_graph", lambda _project: graph)
+    monkeypatch.setattr(world_validators, "make_world_validators", lambda _project: {})
+    calls = []
+
+    class Gateway:
+        def complete_stage(self, _stage, request):
+            calls.append(request)
+            return SimpleNamespace(
+                ok=True, text='{"economy_rules":["NEW"]}',
+                provider="test", model="test", resolved_model="test",
+            )
+
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", Gateway())
+    client = TestClient(app, raise_server_exceptions=False)
+    start = client.post(
+        "/file-projects/p-synthetic-new-graph/build-graph/orchestrations", json={"mode": "next"},
+    )
+    assert start.status_code == 200, start.text
+    job = _wait_orchestration(client, "p-synthetic-new-graph", start.json()["job_id"])
+    assert job["status"] == "completed", job
+    assert job["completed_task_ids"] == ["world_economy"]
+    assert job["materialized"] is True
+    assert len(calls) == (0 if legacy_value else 1)
+    if calls:
+        assert "existing_candidate" not in calls[0].prompt
+    assert service.inspect_artifact("world_economy").source == ("imported" if legacy_value else "llm")
+    assert service.inspect_artifact("world_economy").payload == {
+        "economy_rules": ["AUTHOR"] if legacy_value else ["NEW"],
+    }
+    assert store.project()["pipeline_stage"] == "environment_ready"
+    assert store.build_graph_materialization()["artifact_revisions"] == {"world_economy": 1}
+
+
+def test_orchestration_provider_failure_stops_without_changing_official_artifacts(tmp_path, monkeypatch):
+    store, _graph, service, marker_path, marker_bytes = _setup_project(tmp_path, monkeypatch)
+    client = TestClient(app, raise_server_exceptions=False)
+    changed = client.patch(
+        "/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/artifact",
+        json={"expected_revision": 1, "payload": {"label": "Human change"}},
+    )
+    assert changed.status_code == 200
+    calls = []
+
+    class Gateway:
+        def complete_stage(self, _stage, request):
+            calls.append(request.operation)
+            return SimpleNamespace(ok=False, text="", provider="", model="", resolved_model="")
+
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", Gateway())
+    start = client.post(
+        "/file-projects/p-synthetic-build-edit/build-graph/orchestrations",
+        json={"mode": "continue"},
+    )
+    assert start.status_code == 200, start.text
+    job = _wait_orchestration(client, "p-synthetic-build-edit", start.json()["job_id"])
+    assert job["status"] == "failed", job
+    assert job["failure_task_id"] == "downstream_model"
+    assert job["error_code"] == "build_orchestration_failed"
+    assert job["diagnostics"][0]["code"] == "model.rerun_request_failed"
+    assert calls == ["workbench_rerun_downstream_model"]
+    assert service.inspect_graph().tasks["downstream_model"].status == "stale"
+    assert store.build_artifact("downstream_model", 2) is None
+    assert store.build_artifact("transitive_model", 2) is None
+    assert store.project()["pipeline_stage"] == "world_ready"
+    assert marker_path.read_bytes() == marker_bytes
+
+
+def test_orchestration_human_edit_supersedes_blocked_model_and_blocks_second_job(tmp_path, monkeypatch):
+    store, _graph, service, marker_path, marker_bytes = _setup_project(tmp_path, monkeypatch)
+    client = TestClient(app, raise_server_exceptions=False)
+    changed = client.patch(
+        "/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/artifact",
+        json={"expected_revision": 1, "payload": {"label": "Human upstream"}},
+    )
+    assert changed.status_code == 200
+    entered = Event()
+    release = Event()
+
+    class Gateway:
+        def complete_stage(self, _stage, _request):
+            entered.set()
+            assert release.wait(10), "blocked model call was not released"
+            return SimpleNamespace(
+                ok=True, text='{"world_detail":"AI loses"}',
+                provider="test", model="test", resolved_model="test",
+            )
+
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", Gateway())
+    start = client.post(
+        "/file-projects/p-synthetic-build-edit/build-graph/orchestrations",
+        json={"mode": "rebuild_stale"},
+    )
+    assert start.status_code == 200, start.text
+    try:
+        assert entered.wait(5), "orchestration did not reach provider"
+        graph = client.get("/file-projects/p-synthetic-build-edit/build-graph").json()
+        assert graph["tasks"][1]["status"] == "running"
+        assert file_projects._world_build_jobs_lock.acquire(timeout=1)
+        file_projects._world_build_jobs_lock.release()
+        duplicate = client.post(
+            "/file-projects/p-synthetic-build-edit/build-graph/orchestrations",
+            json={"mode": "continue"},
+        )
+        assert duplicate.status_code == 409
+        assert duplicate.json()["detail"] == "build_orchestration_in_progress"
+        world_build = client.post("/file-projects/p-synthetic-build-edit/world-build-jobs")
+        assert world_build.status_code == 409
+        assert world_build.json()["detail"] == "build_orchestration_in_progress"
+        for action in ("rerun", "repair"):
+            direct = client.post(
+                f"/file-projects/p-synthetic-build-edit/build-graph/tasks/downstream_model/{action}",
+                json={"expected_revision": 1},
+            )
+            assert direct.status_code == 409
+            assert direct.json()["detail"] == "build_orchestration_in_progress"
+        human = client.patch(
+            "/file-projects/p-synthetic-build-edit/build-graph/tasks/downstream_model/artifact",
+            json={"expected_revision": 1, "payload": {"world_detail": "Human wins"}},
+        )
+        assert human.status_code == 200, human.text
+    finally:
+        release.set()
+    job = _wait_orchestration(client, "p-synthetic-build-edit", start.json()["job_id"])
+    assert job["status"] == "conflicted", job
+    assert job["error_code"] == "build_run_conflict"
+    assert service.inspect_graph().tasks["downstream_model"].current_artifact_revision == 2
+    assert store.build_artifact("downstream_model", 2)["payload"] == {"world_detail": "Human wins"}
+    assert store.build_artifact("downstream_model", 3) is None
+    assert marker_path.read_bytes() == marker_bytes
+
+
+def test_orchestration_rejects_external_project_edit_since_marker(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from packages.story_core.models import NovelProject
+    from packages.story_core.world_build.materialize import materialization_payload
+
+    store, graph, service, marker_path, _marker_bytes = _setup_project(tmp_path, monkeypatch)
+    specs = dict(graph.specs)
+    specs["world_model"] = replace(
+        specs["world_model"], domain_paths=("world_blueprint.world_rules",),
+    )
+    graph = SimpleNamespace(
+        definition=graph.definition, specs=specs, spec=lambda task_id: specs[task_id],
+        structured_power=False, plugin_id=None, power_progression_mode=None,
+    )
+    monkeypatch.setattr(world_definition, "build_world_build_graph", lambda _project: graph)
+    store.update_project({"world_blueprint": {"world_rules": ["OLD"]}})
+    marker_path.write_text(
+        json.dumps(materialization_payload(graph, service, NovelProject.model_validate(store.project()))),
+        encoding="utf-8",
+    )
+    before_graph = service.inspect_graph().to_dict()
+    store.update_project({"world_blueprint": {"world_rules": ["AUTHOR EDIT"]}})
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.post(
+        "/file-projects/p-synthetic-build-edit/build-graph/orchestrations",
+        json={"mode": "continue"},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "project_source_changed"
+    assert response.json()["detail"]["paths"] == ["world_blueprint.world_rules"]
+    assert service.inspect_graph().to_dict() == before_graph
+    assert store.project()["world_blueprint"]["world_rules"] == ["AUTHOR EDIT"]
+
+
+def test_orchestration_runs_deterministic_task_without_provider(tmp_path, monkeypatch):
+    from packages.story_core.world_build import runner as world_runner
+
+    store, _graph, service, _marker_path, _marker_bytes = _setup_project(tmp_path, monkeypatch)
+    service.invalidate_task("power_system_final")
+    monkeypatch.setattr(world_runner, "power_candidate_from_dependencies", lambda *_args: {"power_system_final": "NEW"})
+
+    class Gateway:
+        def complete_stage(self, *_args):
+            raise AssertionError("deterministic task must not call the provider")
+
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", Gateway())
+    client = TestClient(app, raise_server_exceptions=False)
+    start = client.post(
+        "/file-projects/p-synthetic-build-edit/build-graph/orchestrations", json={"mode": "next"},
+    )
+    assert start.status_code == 200, start.text
+    job = _wait_orchestration(client, "p-synthetic-build-edit", start.json()["job_id"])
+    assert job["status"] == "completed", job
+    assert job["completed_task_ids"] == ["power_system_final"]
+    assert service.inspect_artifact("power_system_final").revision == 2
+    assert service.inspect_artifact("power_system_final").source == "deterministic"
+    assert store.project()["pipeline_stage"] == "environment_ready"
+
+
+def test_orchestration_does_not_materialize_over_project_edit_during_provider(tmp_path, monkeypatch):
+    store, _graph, service, marker_path, marker_bytes = _setup_project(tmp_path, monkeypatch)
+    client = TestClient(app, raise_server_exceptions=False)
+    assert client.patch(
+        "/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/artifact",
+        json={"expected_revision": 1, "payload": {"label": "Human upstream"}},
+    ).status_code == 200
+    original = service.inspect_artifact("downstream_model")
+    original_task = service.inspect_graph().tasks["downstream_model"]
+    original_transitive = service.inspect_artifact("transitive_model")
+    entered = Event()
+    release = Event()
+    returned = Event()
+
+    class Gateway:
+        def complete_stage(self, _stage, _request):
+            entered.set()
+            assert release.wait(10)
+            returned.set()
+            return SimpleNamespace(
+                ok=True, text='{"world_detail":"Model output"}',
+                provider="test", model="test", resolved_model="test",
+            )
+
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", Gateway())
+    start = client.post(
+        "/file-projects/p-synthetic-build-edit/build-graph/orchestrations",
+        json={"mode": "continue"},
+    )
+    assert start.status_code == 200, start.text
+    try:
+        assert entered.wait(5)
+        store.update_project({"world_blueprint": {"world_rules": ["AUTHOR PROJECT EDIT"]}})
+    finally:
+        release.set()
+    job = _wait_orchestration(client, "p-synthetic-build-edit", start.json()["job_id"])
+    assert returned.is_set()
+    assert job["status"] == "conflicted", job
+    assert job["error_code"] == "project_world_changed"
+    assert job["completed_task_ids"] == []
+    assert service.inspect_artifact("downstream_model") == original
+    assert service.inspect_artifact("transitive_model") == original_transitive
+    state = service.inspect_graph()
+    assert state.tasks["downstream_model"].status == original_task.status
+    assert state.tasks["downstream_model"].current_artifact_revision == original_task.current_artifact_revision
+    assert state.tasks["downstream_model"].active_run_id is None
+    assert len([run for run in state.runs.values() if run.task_id == "downstream_model" and run.status == "conflict"]) == 1
+    assert store.project()["world_blueprint"]["world_rules"] == ["AUTHOR PROJECT EDIT"]
+    assert store.project()["pipeline_stage"] == "world_ready"
+    assert marker_path.read_bytes() == marker_bytes
+    assert state.tasks["transitive_model"].status == "stale"
+
+
+def test_orchestration_deterministic_source_edit_conflicts_before_commit(tmp_path, monkeypatch):
+    from packages.story_core.world_build import runner as world_runner
+
+    store, _graph, service, marker_path, marker_bytes = _setup_project(tmp_path, monkeypatch)
+    service.invalidate_task("power_system_final")
+    original = service.inspect_artifact("power_system_final")
+    original_task = service.inspect_graph().tasks["power_system_final"]
+    entered = Event()
+    release = Event()
+
+    def candidate_from_dependencies(*_args):
+        entered.set()
+        assert release.wait(10)
+        return {"power_system_final": "STALE CANDIDATE"}
+
+    monkeypatch.setattr(world_runner, "power_candidate_from_dependencies", candidate_from_dependencies)
+    client = TestClient(app, raise_server_exceptions=False)
+    start = client.post(
+        "/file-projects/p-synthetic-build-edit/build-graph/orchestrations", json={"mode": "next"},
+    )
+    assert start.status_code == 200, start.text
+    try:
+        assert entered.wait(5)
+        store.update_project({"world_blueprint": {"world_rules": ["AUTHOR PROJECT EDIT"]}})
+    finally:
+        release.set()
+    job = _wait_orchestration(client, "p-synthetic-build-edit", start.json()["job_id"])
+    assert job["status"] == "conflicted", job
+    assert job["error_code"] == "project_world_changed"
+    assert job["completed_task_ids"] == []
+    assert service.inspect_artifact("power_system_final") == original
+    state = service.inspect_graph()
+    assert state.tasks["power_system_final"].status == original_task.status
+    assert state.tasks["power_system_final"].current_artifact_revision == original_task.current_artifact_revision
+    assert state.tasks["power_system_final"].active_run_id is None
+    assert len([run for run in state.runs.values() if run.task_id == "power_system_final" and run.status == "conflict"]) == 1
+    assert store.project()["world_blueprint"]["world_rules"] == ["AUTHOR PROJECT EDIT"]
+    assert marker_path.read_bytes() == marker_bytes
+
+
+def test_interrupted_orchestration_releases_only_its_persisted_run_on_retry(tmp_path, monkeypatch):
+    store, _graph, service, _marker_path, _marker_bytes = _setup_project(tmp_path, monkeypatch)
+    client = TestClient(app, raise_server_exceptions=False)
+    assert client.patch(
+        "/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/artifact",
+        json={"expected_revision": 1, "payload": {"label": "Human upstream"}},
+    ).status_code == 200
+    old_run = service.start_run("downstream_model")
+    old_job_id = "wbo-" + "a" * 32
+    file_projects._persist_build_orchestration_job({
+        "job_id": old_job_id, "project_id": "p-synthetic-build-edit",
+        "schema_version": "build-orchestration-job/v1", "mode": "next", "status": "running",
+        "current_task_id": "downstream_model", "active_run_id": old_run.run_id,
+        "_project_root": str(store.root),
+    })
+    old_path = store.root / ".story-system" / "build-orchestration-jobs" / f"{old_job_id}.json"
+    before = old_path.read_bytes()
+    current = client.get("/file-projects/p-synthetic-build-edit/build-graph/orchestrations/current")
+    assert current.status_code == 200
+    assert current.json()["status"] == "interrupted"
+    assert old_path.read_bytes() == before
+    assert service.inspect_graph().tasks["downstream_model"].active_run_id == old_run.run_id
+
+    class Gateway:
+        def complete_stage(self, _stage, _request):
+            return SimpleNamespace(ok=True, text='{"world_detail":"Recovered"}', provider="test", model="test", resolved_model="test")
+
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", Gateway())
+    start = client.post(
+        "/file-projects/p-synthetic-build-edit/build-graph/orchestrations", json={"mode": "next"},
+    )
+    assert start.status_code == 200, start.text
+    job = _wait_orchestration(client, "p-synthetic-build-edit", start.json()["job_id"])
+    assert job["status"] == "completed", job
+    assert service.inspect_graph().runs[old_run.run_id].status == "conflict"
+    assert service.inspect_artifact("downstream_model").payload == {"world_detail": "Recovered"}
+
+
+def test_continue_clean_graph_makes_no_provider_call(tmp_path, monkeypatch):
+    store, _graph, service, marker_path, marker_bytes = _setup_project(tmp_path, monkeypatch)
+
+    class Gateway:
+        def complete_stage(self, *_args):
+            raise AssertionError("completed tasks must not be regenerated")
+
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", Gateway())
+    client = TestClient(app, raise_server_exceptions=False)
+    start = client.post(
+        "/file-projects/p-synthetic-build-edit/build-graph/orchestrations", json={"mode": "continue"},
+    )
+    assert start.status_code == 200, start.text
+    job = _wait_orchestration(client, "p-synthetic-build-edit", start.json()["job_id"])
+    assert job["status"] == "completed", job
+    assert job["completed_task_ids"] == []
+    assert job["materialized"] is False
+    assert service.inspect_graph().tasks["world_model"].current_artifact_revision == 1
+    assert store.project()["pipeline_stage"] == "environment_ready"
+    assert marker_path.read_bytes() == marker_bytes
+
+
+def test_next_action_runs_exactly_one_task_and_reports_following_task(tmp_path, monkeypatch):
+    store, _graph, service, marker_path, marker_bytes = _setup_project(tmp_path, monkeypatch)
+    service.invalidate_task("world_model")
+    calls = []
+
+    class Gateway:
+        def complete_stage(self, _stage, request):
+            calls.append(request.operation)
+            return SimpleNamespace(ok=True, text='{"label":"Regenerated"}', provider="test", model="test", resolved_model="test")
+
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", Gateway())
+    client = TestClient(app, raise_server_exceptions=False)
+    start = client.post(
+        "/file-projects/p-synthetic-build-edit/build-graph/orchestrations", json={"mode": "next"},
+    )
+    assert start.status_code == 200, start.text
+    job = _wait_orchestration(client, "p-synthetic-build-edit", start.json()["job_id"])
+    assert job["status"] == "completed", job
+    assert job["completed_task_ids"] == ["world_model"]
+    assert job["next_task_id"] == "downstream_model"
+    assert job["materialized"] is False
+    assert calls == ["workbench_rerun_world_model"]
+    assert service.inspect_artifact("world_model").revision == 2
+    assert service.inspect_graph().tasks["downstream_model"].status == "stale"
+    assert store.project()["pipeline_stage"] == "world_ready"
+    assert marker_path.read_bytes() == marker_bytes
+
+
+def test_orchestration_stops_after_independent_human_edit_during_provider(tmp_path, monkeypatch):
+    store, _graph, service, marker_path, marker_bytes, _old = _setup_materialized_non_power_project(tmp_path, monkeypatch)
+    service.invalidate_task("world_economy")
+    service.invalidate_task("world_society")
+    entered = Event()
+    release = Event()
+    calls = []
+
+    class Gateway:
+        def complete_stage(self, _stage, request):
+            calls.append(request.operation)
+            entered.set()
+            assert release.wait(10)
+            return SimpleNamespace(
+                ok=True, text='{"economy_rules":["NEW economy"]}',
+                provider="test", model="test", resolved_model="test",
+            )
+
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", Gateway())
+    client = TestClient(app, raise_server_exceptions=False)
+    start = client.post(
+        "/file-projects/p-synthetic-materialized-rerun/build-graph/orchestrations",
+        json={"mode": "continue"},
+    )
+    assert start.status_code == 200, start.text
+    try:
+        assert entered.wait(5)
+        human = client.patch(
+            "/file-projects/p-synthetic-materialized-rerun/build-graph/tasks/world_society/artifact",
+            json={"expected_revision": 1, "payload": {
+                "world_systems": {"law": "AUTHOR"},
+                "living_world": {"climate": "AUTHOR"},
+                "faction_rules": ["AUTHOR"],
+            }},
+        )
+        assert human.status_code == 200, human.text
+    finally:
+        release.set()
+    job = _wait_orchestration(client, "p-synthetic-materialized-rerun", start.json()["job_id"])
+    assert job["status"] == "conflicted", job
+    assert job["error_code"] == "build_graph_changed"
+    assert calls == ["workbench_rerun_world_economy"]
+    assert store.build_artifact("world_society", 2)["source"] == "human"
+    assert store.build_artifact("world_society", 2)["payload"]["world_systems"] == {"law": "AUTHOR"}
+    assert store.build_artifact("world_society", 3) is None
+    assert store.project()["pipeline_stage"] == "world_ready"
+    assert marker_path.read_bytes() == marker_bytes
+
+
+def test_orchestration_progress_write_failure_releases_run_without_artifact(tmp_path, monkeypatch):
+    store, _graph, service, marker_path, marker_bytes = _setup_project(tmp_path, monkeypatch)
+    client = TestClient(app, raise_server_exceptions=False)
+    assert client.patch(
+        "/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/artifact",
+        json={"expected_revision": 1, "payload": {"label": "Human upstream"}},
+    ).status_code == 200
+    original_persist = file_projects._persist_build_orchestration_job
+    writes = 0
+
+    def fail_active_run_record(job):
+        nonlocal writes
+        writes += 1
+        if writes == 4:
+            raise OSError("synthetic progress write failure")
+        original_persist(job)
+
+    monkeypatch.setattr(file_projects, "_persist_build_orchestration_job", fail_active_run_record)
+
+    class Gateway:
+        def complete_stage(self, *_args):
+            raise AssertionError("provider must not run after progress record failure")
+
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", Gateway())
+    start = client.post(
+        "/file-projects/p-synthetic-build-edit/build-graph/orchestrations",
+        json={"mode": "next"},
+    )
+    assert start.status_code == 200, start.text
+    job = _wait_orchestration(client, "p-synthetic-build-edit", start.json()["job_id"])
+    assert job["status"] == "failed", job
+    assert service.inspect_graph().tasks["downstream_model"].status == "stale"
+    assert service.inspect_graph().tasks["downstream_model"].active_run_id is None
+    assert store.build_artifact("downstream_model", 2) is None
+    assert store.project()["pipeline_stage"] == "world_ready"
+    assert marker_path.read_bytes() == marker_bytes
+
+
+def test_rebuild_stale_reports_blocked_upstream_instead_of_success(tmp_path, monkeypatch):
+    store, _graph, service, marker_path, marker_bytes = _setup_project(tmp_path, monkeypatch)
+    service.invalidate_task("world_model")
+
+    class Gateway:
+        def complete_stage(self, *_args):
+            raise AssertionError("blocked stale task must not call a provider")
+
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", Gateway())
+    client = TestClient(app, raise_server_exceptions=False)
+    start = client.post(
+        "/file-projects/p-synthetic-build-edit/build-graph/orchestrations",
+        json={"mode": "rebuild_stale"},
+    )
+    assert start.status_code == 200, start.text
+    job = _wait_orchestration(client, "p-synthetic-build-edit", start.json()["job_id"])
+    assert job["status"] == "failed", job
+    assert job["error_code"] == "build_orchestration_blocked"
+    assert job["completed_task_ids"] == []
+    assert service.inspect_graph().tasks["downstream_model"].status == "stale"
+    assert store.project()["pipeline_stage"] == "environment_ready"
     assert marker_path.read_bytes() == marker_bytes

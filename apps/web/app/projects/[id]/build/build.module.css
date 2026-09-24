@@ -25,6 +25,34 @@
   font-size: 15px;
 }
 
+.orchestration {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.orchestration_actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.orchestration_actions button {
+  padding: 9px 13px;
+  border: 1px solid var(--ws-line);
+  border-radius: 8px;
+  background: var(--ws-accent-soft);
+  color: var(--ws-accent);
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.orchestration_actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.orchestration_progress { display: grid; gap: 5px; }
+.orchestration_progress p { margin: 0; }
+
 .columns {
   display: grid;
   grid-template-columns: minmax(300px, 0.88fr) minmax(0, 1.45fr);

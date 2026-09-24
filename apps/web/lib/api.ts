@@ -4428,6 +4428,47 @@ export type BuildWorkbenchValidation = {
   diagnostics: BuildWorkbenchDiagnostic[];
 };
 
+export type BuildOrchestrationMode = "continue" | "rebuild_stale" | "next";
+
+export type BuildOrchestrationJob = {
+  schema_version: "build-orchestration-job/v1";
+  job_id: string;
+  project_id: string;
+  mode: BuildOrchestrationMode;
+  status: "queued" | "running" | "completed" | "failed" | "conflicted" | "interrupted";
+  current_task_id: string | null;
+  current_task_title: string | null;
+  next_task_id: string | null;
+  completed_task_ids: string[];
+  failure_task_id: string | null;
+  diagnostics: BuildWorkbenchDiagnostic[];
+  error_code: string | null;
+  materialized: boolean;
+  pipeline_stage: string | null;
+};
+
+export async function startBuildOrchestration(
+  projectId: string, mode: BuildOrchestrationMode,
+): Promise<BuildOrchestrationJob> {
+  return await fetchJson<BuildOrchestrationJob>(`${fileProjectPath(projectId)}/build-graph/orchestrations`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ mode }),
+  });
+}
+
+export async function fetchCurrentBuildOrchestration(projectId: string): Promise<BuildOrchestrationJob | null> {
+  return await tryFetchJson(`${fileProjectPath(projectId)}/build-graph/orchestrations/current`, {
+    method: "GET", cache: "no-store",
+  }) as BuildOrchestrationJob | null;
+}
+
+export async function fetchBuildOrchestration(projectId: string, jobId: string): Promise<BuildOrchestrationJob> {
+  return await tryFetchJson(`${fileProjectPath(projectId)}/build-graph/orchestrations/${encodeURIComponent(jobId)}`, {
+    method: "GET", cache: "no-store",
+  }) as BuildOrchestrationJob;
+}
+
 export class BuildWorkbenchRepairError extends Error {
   diagnostics: BuildWorkbenchDiagnostic[];
   constructor(message: string, diagnostics: BuildWorkbenchDiagnostic[]) {

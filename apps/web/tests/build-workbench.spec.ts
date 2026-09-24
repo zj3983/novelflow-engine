@@ -21,6 +21,12 @@ const project = {
   storage_source: "file",
 };
 
+test.beforeEach(async ({ page }) => {
+  await page.route(`**/file-projects/${encodedId}/build-graph/orchestrations/current`, async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: "null" });
+  });
+});
+
 function task(index: number, overrides: Record<string, unknown> = {}) {
   const taskId = `task_${String(index).padStart(2, "0")}`;
   return {
@@ -318,4 +324,68 @@ test("完整重跑发送当前 revision，成功后刷新完整产物并显示 s
   await expect(page.getByText("r2 · AI 生成", { exact: true })).toBeVisible();
   await expect(page.getByText("上游修改后，以下任务已过期")).toBeVisible();
   expect(requestBody).toEqual({ expected_revision: 1 });
+});
+
+test("重建过期项显示运行任务、完成任务与重新物化结果", async ({ page }) => {
+  let currentGraph = {
+    ...graph([
+      task(0, { task_id: "world_model", title: "世界规则", artifact_revision: 2, artifact_source: "human", dependencies: [] }),
+      task(1, { task_id: "downstream_model", title: "下游设定", status: "stale" }),
+    ]),
+    pipeline_stage: "world_ready",
+    materialization_status: "outdated",
+  };
+  const jobId = "wbo-1234567890abcdef1234567890abcdef";
+  let jobReads = 0;
+  let requestedMode = "";
+  const running = {
+    schema_version: "build-orchestration-job/v1", job_id: jobId, project_id: projectId,
+    mode: "rebuild_stale", status: "running", current_task_id: "downstream_model",
+    current_task_title: "下游设定", next_task_id: "downstream_model",
+    completed_task_ids: [], failure_task_id: null, diagnostics: [], error_code: null,
+    materialized: false, pipeline_stage: "world_ready",
+  };
+  await page.route(`**/file-projects/${encodedId}`, async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
+  });
+  await page.route(`**/file-projects/${encodedId}/build-graph`, async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(currentGraph) });
+  });
+  await page.route(`**/file-projects/${encodedId}/build-graph/tasks/**`, async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    const taskId = route.request().url().split("/build-graph/tasks/")[1];
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      task_id: taskId, title: taskId, status: "completed", editable: false,
+      artifact: { revision: 1, source: "llm", payload: {} }, owns: [],
+      validation_status: "passed", diagnostics: [], materialization_status: "outdated", materialization_marker: null,
+    }) });
+  });
+  await page.route(`**/file-projects/${encodedId}/build-graph/orchestrations`, async (route) => {
+    requestedMode = (route.request().postDataJSON() as { mode: string }).mode;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(running) });
+  });
+  await page.route(`**/file-projects/${encodedId}/build-graph/orchestrations/${jobId}`, async (route) => {
+    jobReads += 1;
+    if (jobReads >= 3) {
+      currentGraph = {
+        ...currentGraph, pipeline_stage: "environment_ready", materialization_status: "current",
+        tasks: currentGraph.tasks.map((item) => item.task_id === "downstream_model"
+          ? { ...item, status: "completed", artifact_revision: 2, artifact_source: "llm" } : item),
+      };
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(jobReads < 3 ? running : {
+      ...running, status: "completed", current_task_id: null, current_task_title: null,
+      next_task_id: null, completed_task_ids: ["downstream_model"], materialized: true,
+      pipeline_stage: "environment_ready",
+    }) });
+  });
+
+  await page.goto(`/projects/${encodedId}/build`);
+  await page.getByRole("button", { name: "重建过期项" }).click();
+  await expect(page.getByText("当前任务：下游设定")).toBeVisible();
+  await expect(page.getByText("本次构建已结束")).toBeVisible();
+  await expect(page.getByText("已完成任务：下游设定")).toBeVisible();
+  await expect(page.getByText("全部任务已就绪，世界设定已重新物化。")).toBeVisible();
+  await expect(page.getByText("environment_ready", { exact: true })).toBeVisible();
+  expect(requestedMode).toBe("rebuild_stale");
 });

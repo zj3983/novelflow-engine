@@ -10,7 +10,7 @@ import re
 import shutil
 from pathlib import Path
 from threading import RLock, Lock
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Callable, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Path as ApiPath, Request, Response, status
@@ -94,6 +94,9 @@ _world_build_executor = ThreadPoolExecutor(max_workers=1)
 _world_build_jobs: dict[str, dict[str, object]] = {}
 _active_world_build_jobs: dict[str, str] = {}
 _world_build_jobs_lock = RLock()
+_build_orchestration_executor = ThreadPoolExecutor(max_workers=1)
+_build_orchestration_jobs: dict[str, dict[str, object]] = {}
+_active_build_orchestration_jobs: dict[str, str] = {}
 _continuous_generation_executor = ThreadPoolExecutor(max_workers=1)
 _active_continuous_generation_jobs: dict[str, str] = {}
 # Plan rule: "Add a dedicated single-worker executor" for the
@@ -178,6 +181,12 @@ class BuildWorkbenchRerunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     expected_revision: int = Field(ge=1)
+
+
+class BuildWorkbenchOrchestrationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    mode: Literal["continue", "rebuild_stale", "next"]
 
 
 class BookDissectionReferenceRequest(BaseModel):
@@ -360,6 +369,70 @@ def _load_world_build_job(store: FileProjectStore, job_id: str | None = None) ->
         return None
     payload["_project_root"] = str(store.root)
     return _reconcile_world_build_job(store, payload)
+
+
+def _build_orchestration_job_response(job: dict[str, object]) -> dict[str, object]:
+    return {key: value for key, value in job.items() if not str(key).startswith("_")}
+
+
+def _persist_build_orchestration_job(job: dict[str, object]) -> None:
+    root = str(job.get("_project_root") or "")
+    job_id = str(job.get("job_id") or "")
+    if not root or not job_id:
+        return
+    log_dir = Path(root) / ".story-system" / "build-orchestration-jobs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    serialized = json.dumps(_build_orchestration_job_response(job), ensure_ascii=False, indent=2)
+    for target in (log_dir / f"{job_id}.json", log_dir / "latest.json"):
+        temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
+        temporary.write_text(serialized, encoding="utf-8")
+        temporary.replace(target)
+
+
+def _load_build_orchestration_job(store: FileProjectStore, job_id: str | None = None) -> dict[str, object] | None:
+    filename = f"{job_id}.json" if job_id else "latest.json"
+    path = store.root / ".story-system" / "build-orchestration-jobs" / filename
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or not str(payload.get("job_id") or ""):
+        return None
+    if payload.get("status") in {"queued", "running"}:
+        return {**payload, "status": "interrupted", "error_code": "build_orchestration_interrupted"}
+    return payload
+
+
+def _has_active_build_orchestration_job(project_id: str) -> bool:
+    normalized = _strip_file_prefix(project_id)
+    with _world_build_jobs_lock:
+        job_id = _active_build_orchestration_jobs.get(normalized)
+        job = _build_orchestration_jobs.get(job_id or "")
+        if job is None or job.get("status") not in {"queued", "running"}:
+            _active_build_orchestration_jobs.pop(normalized, None)
+            return False
+        return True
+
+
+def _update_build_orchestration_job(job_id: str, **updates: object) -> None:
+    with _world_build_jobs_lock:
+        job = _build_orchestration_jobs.get(job_id)
+        if job is None or job.get("status") in {"completed", "failed", "conflicted", "interrupted"}:
+            return
+        job.update(updates)
+        job["updated_at"] = _now_iso()
+        _persist_build_orchestration_job(job)
+
+
+def _next_build_orchestration_task(graph, state, mode: str) -> str | None:
+    allowed = {"stale"} if mode == "rebuild_stale" else {"ready", "stale", "validation_failed"}
+    for task_id in graph.definition.ordered_task_ids:
+        task = state.tasks[task_id]
+        if task.status not in allowed:
+            continue
+        if all(state.tasks[dependency].status == "completed" for dependency in graph.spec(task_id).task.dependencies):
+            return task_id
+    return None
 
 
 def _project_world_revision(store: FileProjectStore) -> str:
@@ -831,6 +904,8 @@ def _start_world_build_job(project_id: str) -> dict[str, object]:
     store = _store_for(project_id)
     normalized_project_id = _strip_file_prefix(project_id)
     with _world_build_jobs_lock:
+        if _has_active_build_orchestration_job(normalized_project_id):
+            raise HTTPException(status_code=409, detail="build_orchestration_in_progress")
         active_job_id = _active_world_build_jobs.get(normalized_project_id)
         if active_job_id:
             active = _world_build_jobs.get(active_job_id)
@@ -2833,11 +2908,17 @@ def init_file_project_routes() -> APIRouter:
             "materialization_status": _workbench_materialization_status(build_store, service.inspect_graph()),
         }
 
-    @router.post("/file-projects/{project_id}/build-graph/tasks/{task_id}/rerun")
-    def rerun_file_project_build_graph_task(
+    def _run_full_workbench_model_task(
         project_id: str,
         task_id: str,
-        request: BuildWorkbenchRerunRequest,
+        expected_revision: int | None,
+        *,
+        require_existing: bool,
+        operation: str,
+        on_started: Callable[[str], None] | None = None,
+        allow_orchestration: bool = False,
+        expected_graph_revision: int | None = None,
+        expected_project_revision: str | None = None,
     ) -> dict[str, Any]:
         from copy import deepcopy
 
@@ -2859,10 +2940,16 @@ def init_file_project_routes() -> APIRouter:
         with _world_build_jobs_lock:
             if _has_active_world_build_job(normalized_project_id):
                 raise HTTPException(status_code=409, detail="world_build_in_progress")
+            if not allow_orchestration and _has_active_build_orchestration_job(normalized_project_id):
+                raise HTTPException(status_code=409, detail="build_orchestration_in_progress")
             store = _store_for(project_id)
             with project_update_lock(store.root):
                 try:
                     store, project, graph, build_store, state, service = _build_workbench_context(project_id)
+                    if expected_graph_revision is not None and state.graph_revision != expected_graph_revision:
+                        raise HTTPException(status_code=409, detail="build_graph_changed")
+                    if expected_project_revision is not None and _project_world_revision(store) != expected_project_revision:
+                        raise HTTPException(status_code=409, detail="project_world_changed")
                     task = graph.definition.tasks_by_id.get(task_id)
                     if task is None:
                         raise HTTPException(status_code=404, detail="build_task_not_found")
@@ -2870,15 +2957,15 @@ def init_file_project_routes() -> APIRouter:
                         raise HTTPException(status_code=403, detail="build_task_not_rerunnable")
                     task_state = state.tasks[task_id]
                     artifact = service.inspect_artifact(task_id)
-                    if artifact is None:
+                    if require_existing and artifact is None:
                         raise HTTPException(status_code=403, detail="build_task_not_rerunnable")
-                    if task_state.current_artifact_revision != request.expected_revision:
+                    if task_state.current_artifact_revision != expected_revision:
                         raise BuildRevisionConflict(
                             "build_revision_conflict",
                             "artifact revision changed before task rerun started",
                             details={
                                 "task_id": task_id,
-                                "expected_revision": request.expected_revision,
+                                "expected_revision": expected_revision,
                                 "current_revision": task_state.current_artifact_revision,
                             },
                         )
@@ -2905,13 +2992,28 @@ def init_file_project_routes() -> APIRouter:
                     rerun_contract.pop("existing_candidate", None)
                     prompt = build_task_prompt(graph, task_id, rerun_contract) + (
                         "\n这是一次完整任务重跑。请按完整输出契约重新生成本任务的全部输出字段；不要只返回局部 patch。"
+                        if require_existing else
+                        "\n请按完整输出契约生成本任务的全部输出字段；不要只返回局部 patch。"
                     )
                     run = service.start_run(
                         task_id,
                         input_fingerprint=input_fingerprint(rerun_contract),
                         read_projection=run_read_projection(graph, task_id, rerun_contract),
-                        allow_completed_with_artifact=True,
+                        allow_completed_with_artifact=require_existing,
                     )
+                    if on_started is not None:
+                        try:
+                            on_started(run.run_id)
+                        except Exception:
+                            service.fail_run(
+                                run.run_id,
+                                (BuildDiagnostic(
+                                    "build.orchestration_record_failed", f"tasks.{task_id}",
+                                    "build orchestration progress could not be saved",
+                                ),),
+                                preserve_task_state=base_task_state,
+                            )
+                            raise
                 except HTTPException:
                     raise
                 except BuildRevisionConflict as exc:
@@ -2945,18 +3047,18 @@ def init_file_project_routes() -> APIRouter:
         # Phase B: make exactly one full-task model request and validate its
         # complete output without holding the global or project lock.
         response, call_id = _call_workbench_model(
-            store, task_id, prompt, graph.spec(task_id).max_tokens, operation="rerun"
+            store, task_id, prompt, graph.spec(task_id).max_tokens, operation=operation
         )
         if not getattr(response, "ok", False):
             fail_rerun((BuildDiagnostic(
-                "model.rerun_request_failed", f"tasks.{task_id}",
-                "full task rerun failed; the current artifact was kept",
+                f"model.{operation}_request_failed", f"tasks.{task_id}",
+                "full task generation failed; the current artifact was kept",
             ),))
         if not call_id or not str(getattr(response, "provider", "") or "").strip() or not str(
             getattr(response, "resolved_model", "") or getattr(response, "model", "") or ""
         ).strip():
             fail_rerun((BuildDiagnostic(
-                "model.rerun_provenance_missing", f"tasks.{task_id}",
+                f"model.{operation}_provenance_missing", f"tasks.{task_id}",
                 "rerun response is missing required model provenance",
             ),))
 
@@ -2970,20 +3072,31 @@ def init_file_project_routes() -> APIRouter:
                 "task.rerun_failed", f"tasks.{task_id}", "full task output could not be validated"
             ),))
 
-        # Phase C: commit_run rechecks active run ownership, artifact and
-        # dependency revisions, and validation before readiness is invalidated.
+        # Phase C: keep the external project revision guard in the same lock
+        # boundary as the official Build Graph commit. Core checks graph-owned
+        # revisions, but cannot see author edits to project/root source.
         try:
-            result = service.commit_run(
-                run.run_id,
-                candidate,
-                requested_writes=task.owns,
-                source="llm",
-                provider=str(getattr(response, "provider", "") or "") or None,
-                model=str(getattr(response, "resolved_model", "") or getattr(response, "model", "") or "") or None,
-                prompt_call_id=call_id,
-                preserve_task_state_on_failure=base_task_state,
-                before_commit=lambda: _invalidate_workbench_readiness(store, store.project()),
-            )
+            with project_update_lock(store.root):
+                if expected_project_revision is not None and _project_world_revision(store) != expected_project_revision:
+                    try:
+                        service.conflict_run(
+                            run.run_id, message="project world changed during the model run",
+                            preserve_task_state=base_task_state,
+                        )
+                    except BuildRunConflict:
+                        pass
+                    raise HTTPException(status_code=409, detail="project_world_changed")
+                result = service.commit_run(
+                    run.run_id,
+                    candidate,
+                    requested_writes=task.owns,
+                    source="llm",
+                    provider=str(getattr(response, "provider", "") or "") or None,
+                    model=str(getattr(response, "resolved_model", "") or getattr(response, "model", "") or "") or None,
+                    prompt_call_id=call_id,
+                    preserve_task_state_on_failure=base_task_state,
+                    before_commit=lambda: _invalidate_workbench_readiness(store, store.project()),
+                )
         except BuildRunConflict as exc:
             raise HTTPException(status_code=409, detail=exc.to_dict()) from exc
         if result.artifact is None:
@@ -3002,6 +3115,365 @@ def init_file_project_routes() -> APIRouter:
             "pipeline_stage": store.project().get("pipeline_stage"),
             "materialization_status": _workbench_materialization_status(build_store, final_state),
         }
+
+    @router.post("/file-projects/{project_id}/build-graph/tasks/{task_id}/rerun")
+    def rerun_file_project_build_graph_task(
+        project_id: str,
+        task_id: str,
+        request: BuildWorkbenchRerunRequest,
+    ) -> dict[str, Any]:
+        return _run_full_workbench_model_task(
+            project_id, task_id, request.expected_revision,
+            require_existing=True, operation="rerun",
+        )
+
+    def _run_build_orchestration_task(
+        job_id: str, project_id: str, task_id: str,
+        expected_graph_revision: int, expected_project_revision: str,
+    ) -> int:
+        from packages.story_core.world_build.runner import power_candidate_from_dependencies
+        from packages.story_core.world_build.tasks import canonical_world_input, task_payload_from_project
+
+        store = _store_for(project_id)
+        with project_update_lock(store.root):
+            _store, project, graph, _build_store, state, service = _build_workbench_context(project_id)
+            if state.graph_revision != expected_graph_revision:
+                raise HTTPException(status_code=409, detail="build_graph_changed")
+            if _project_world_revision(store) != expected_project_revision:
+                raise HTTPException(status_code=409, detail="project_world_changed")
+        spec = graph.spec(task_id)
+        task_state = state.tasks[task_id]
+        project_model = NovelProject.model_validate(project)
+        if spec.kind == "model":
+            if task_state.current_artifact_revision is not None:
+                _run_full_workbench_model_task(
+                    project_id, task_id, task_state.current_artifact_revision,
+                    require_existing=True, operation="rerun",
+                    on_started=lambda run_id: _update_build_orchestration_job(job_id, active_run_id=run_id),
+                    allow_orchestration=True,
+                    expected_graph_revision=expected_graph_revision,
+                    expected_project_revision=expected_project_revision,
+                )
+                return 2
+            legacy_payload = task_payload_from_project(project_model, task_id)
+            if not legacy_payload:
+                _run_full_workbench_model_task(
+                    project_id, task_id, None,
+                    require_existing=False, operation="continue",
+                    on_started=lambda run_id: _update_build_orchestration_job(job_id, active_run_id=run_id),
+                    allow_orchestration=True,
+                    expected_graph_revision=expected_graph_revision,
+                    expected_project_revision=expected_project_revision,
+                )
+                return 2
+            candidate = legacy_payload
+            source = "imported"
+        elif spec.kind == "imported":
+            if task_id != "world_input":
+                raise HTTPException(status_code=422, detail="build_imported_task_unknown")
+            current = service.inspect_artifact(task_id)
+            previous = current.payload if current is not None and isinstance(current.payload, dict) else None
+            candidate = canonical_world_input(project_model, store=store, previous=previous)
+            source = "imported"
+        elif spec.kind == "deterministic":
+            if task_id != "power_system_final":
+                raise HTTPException(status_code=422, detail="build_deterministic_task_unknown")
+            with project_update_lock(store.root):
+                if service.inspect_graph().graph_revision != expected_graph_revision:
+                    raise HTTPException(status_code=409, detail="build_graph_changed")
+                if _project_world_revision(store) != expected_project_revision:
+                    raise HTTPException(status_code=409, detail="project_world_changed")
+                run = service.start_run(task_id)
+            try:
+                _update_build_orchestration_job(job_id, active_run_id=run.run_id)
+            except Exception:
+                service.fail_run(
+                    run.run_id,
+                    (BuildDiagnostic(
+                        "build.orchestration_record_failed", f"tasks.{task_id}",
+                        "build orchestration progress could not be saved",
+                    ),),
+                    preserve_task_state=task_state,
+                )
+                raise
+            try:
+                candidate = power_candidate_from_dependencies(project_model, service, graph.power_progression_mode)
+                validation = service.validate(task_id, candidate, requested_writes=spec.task.owns)
+                if not validation.passed:
+                    service.fail_run(run.run_id, validation.diagnostics, preserve_task_state=task_state)
+                    raise HTTPException(status_code=422, detail={
+                        "code": "build_validation_failed",
+                        "diagnostics": [item.to_dict() for item in validation.diagnostics],
+                    })
+                with project_update_lock(store.root):
+                    if _project_world_revision(store) != expected_project_revision:
+                        try:
+                            service.conflict_run(
+                                run.run_id, message="project world changed during the deterministic run",
+                                preserve_task_state=task_state,
+                            )
+                        except BuildRunConflict:
+                            pass
+                        raise HTTPException(status_code=409, detail="project_world_changed")
+                    result = service.commit_run(
+                        run.run_id, candidate, requested_writes=spec.task.owns,
+                        source="deterministic", preserve_task_state_on_failure=task_state,
+                        before_commit=lambda: _invalidate_workbench_readiness(store, store.project()),
+                    )
+                if result.artifact is None:
+                    raise HTTPException(status_code=422, detail={
+                        "code": "build_validation_failed",
+                        "diagnostics": [item.to_dict() for item in result.validation.diagnostics],
+                    })
+                return 2
+            except HTTPException:
+                raise
+            except BuildRunConflict:
+                raise
+            except Exception:
+                service.fail_run(run.run_id, (
+                    BuildDiagnostic("build.deterministic_failed", f"tasks.{task_id}", "deterministic task failed"),
+                ), preserve_task_state=task_state)
+                raise
+        else:
+            raise HTTPException(status_code=422, detail="build_task_kind_unknown")
+
+        # Imported project values and the canonical root use the same owner
+        # and validator as generated artifacts. Hold the project lock through
+        # validation and the readiness-first commit.
+        with project_update_lock(store.root):
+            current_graph = service.inspect_graph()
+            if current_graph.graph_revision != expected_graph_revision:
+                raise HTTPException(status_code=409, detail="build_graph_changed")
+            if _project_world_revision(store) != expected_project_revision:
+                raise HTTPException(status_code=409, detail="project_world_changed")
+            current = current_graph.tasks[task_id]
+            if current.current_artifact_revision != task_state.current_artifact_revision:
+                raise BuildRevisionConflict(
+                    "build_revision_conflict", "task changed before import",
+                    details={"task_id": task_id},
+                )
+            validation = service.validate(task_id, candidate, requested_writes=spec.task.owns)
+            if not validation.passed:
+                raise HTTPException(status_code=422, detail={
+                    "code": "build_validation_failed",
+                    "diagnostics": [item.to_dict() for item in validation.diagnostics],
+                })
+            _invalidate_workbench_readiness(store, store.project())
+            result = service.commit_candidate(
+                task_id, candidate, expected_revision=current.current_artifact_revision,
+                source=source, requested_writes=spec.task.owns,
+            )
+            if result.artifact is None:
+                raise HTTPException(status_code=422, detail={
+                    "code": "build_validation_failed",
+                    "diagnostics": [item.to_dict() for item in result.validation.diagnostics],
+                })
+            return 1
+
+    def _run_build_orchestration(job_id: str, project_id: str) -> None:
+        from packages.story_core.world_build.materialize import (
+            materialize_project, materialized_domain_conflicts,
+        )
+
+        with _world_build_jobs_lock:
+            job = _build_orchestration_jobs[job_id]
+            mode = str(job["mode"])
+            starting_revision = str(job["project_revision"])
+            expected_graph_revision = int(job["graph_revision"])
+        completed: list[str] = []
+        try:
+            store = _store_for(project_id)
+            _update_build_orchestration_job(job_id, status="running")
+            while True:
+                next_task_id = None
+                with project_update_lock(store.root):
+                    _store, project, graph, build_store, state, service = _build_workbench_context(project_id)
+                    if state.graph_revision != expected_graph_revision:
+                        raise HTTPException(status_code=409, detail="build_graph_changed")
+                    if _project_world_revision(store) != starting_revision:
+                        raise HTTPException(status_code=409, detail="project_world_changed")
+                    project_model = NovelProject.model_validate(project)
+                    conflicts = materialized_domain_conflicts(
+                        project_model, graph, store.build_graph_materialization(),
+                    )
+                    if conflicts:
+                        raise HTTPException(status_code=409, detail={
+                            "code": "project_source_changed", "paths": list(conflicts),
+                        })
+                    next_task_id = _next_build_orchestration_task(graph, state, mode)
+                    readiness = service.build_readiness()
+                    if next_task_id is None or (mode == "next" and completed):
+                        graph_clean = readiness.ready and all(
+                            task.status == "completed" for task in state.tasks.values()
+                        )
+                        if graph_clean:
+                            status = _workbench_materialization_status(build_store, state)
+                            if status != "current" or project.get("pipeline_stage") != "environment_ready":
+                                candidate = materialize_project(project_model, graph, service)
+                                store.commit_build_graph_materialization(
+                                    candidate, graph, service,
+                                    expected_project_revision=starting_revision,
+                                )
+                                materialized = True
+                            else:
+                                materialized = False
+                        else:
+                            materialized = False
+                            unresolved_stale = any(task.status == "stale" for task in state.tasks.values())
+                            if mode == "continue" or (mode == "next" and not completed) or (
+                                mode == "rebuild_stale" and unresolved_stale
+                            ):
+                                raise HTTPException(status_code=409, detail={
+                                    "code": "build_orchestration_blocked",
+                                    "blocked_by": list(readiness.blocked_by) or [
+                                        task_id for task_id, task in state.tasks.items()
+                                        if task.status != "completed"
+                                    ],
+                                    "stale_tasks": list(readiness.stale_tasks),
+                                    "failed_tasks": list(readiness.failed_tasks),
+                                    "review_required_tasks": list(readiness.review_required_tasks),
+                                })
+                        _update_build_orchestration_job(
+                            job_id, status="completed", current_task_id=None,
+                            completed_task_ids=completed, next_task_id=next_task_id,
+                            materialized=materialized,
+                            pipeline_stage=store.project().get("pipeline_stage"),
+                        )
+                        return
+                    task_title = graph.spec(next_task_id).task.title
+                    _update_build_orchestration_job(
+                        job_id, current_task_id=next_task_id, current_task_title=task_title,
+                        next_task_id=next_task_id, completed_task_ids=completed,
+                    )
+                graph_mutations = _run_build_orchestration_task(
+                    job_id, project_id, next_task_id,
+                    expected_graph_revision, starting_revision,
+                )
+                expected_graph_revision += graph_mutations
+                with project_update_lock(store.root):
+                    current_graph = store.build_graph_store().read_state()
+                    if current_graph is None or current_graph.graph_revision != expected_graph_revision:
+                        raise HTTPException(status_code=409, detail="build_graph_changed")
+                completed.append(next_task_id)
+                _update_build_orchestration_job(
+                    job_id, current_task_id=None, active_run_id=None,
+                    completed_task_ids=list(completed), graph_revision=expected_graph_revision,
+                )
+        except (HTTPException, BuildGraphError, ValueError) as exc:
+            detail = exc.detail if isinstance(exc, HTTPException) else exc.to_dict() if isinstance(exc, BuildGraphError) else str(exc)
+            code = detail.get("code", "build_orchestration_failed") if isinstance(detail, dict) else str(detail)
+            diagnostics = detail.get("diagnostics", []) if isinstance(detail, dict) else []
+            _update_build_orchestration_job(
+                job_id, status="conflicted" if code in {
+                    "build_run_conflict", "build_revision_conflict", "build_graph_changed", "project_world_changed",
+                    "project_source_changed", "world_build_in_progress",
+                } else "failed",
+                error_code=code, diagnostics=diagnostics,
+                failure_task_id=next_task_id if "next_task_id" in locals() else None,
+                current_task_id=None, active_run_id=None, completed_task_ids=list(completed),
+            )
+        except Exception:
+            _update_build_orchestration_job(
+                job_id, status="failed", error_code="build_orchestration_failed",
+                failure_task_id=next_task_id if "next_task_id" in locals() else None,
+                current_task_id=None, active_run_id=None, completed_task_ids=list(completed),
+            )
+        finally:
+            with _world_build_jobs_lock:
+                normalized = _strip_file_prefix(project_id)
+                if _active_build_orchestration_jobs.get(normalized) == job_id:
+                    _active_build_orchestration_jobs.pop(normalized, None)
+
+    @router.post("/file-projects/{project_id}/build-graph/orchestrations")
+    def start_file_project_build_orchestration(
+        project_id: str, request: BuildWorkbenchOrchestrationRequest,
+    ) -> dict[str, object]:
+        from packages.story_core.world_build.materialize import materialized_domain_conflicts
+
+        normalized = _strip_file_prefix(project_id)
+        store = _store_for(project_id)
+        with _world_build_jobs_lock:
+            if _has_active_world_build_job(normalized):
+                raise HTTPException(status_code=409, detail="world_build_in_progress")
+            if _has_active_build_orchestration_job(normalized):
+                raise HTTPException(status_code=409, detail="build_orchestration_in_progress")
+            with project_update_lock(store.root):
+                _store, project, graph, _build_store, state, service = _build_workbench_context(project_id)
+                previous = _load_build_orchestration_job(store)
+                if previous is not None and previous.get("status") == "interrupted":
+                    previous_task_id = str(previous.get("current_task_id") or "")
+                    previous_run_id = str(previous.get("active_run_id") or "")
+                    if (
+                        previous_task_id in state.tasks and previous_run_id
+                        and state.tasks[previous_task_id].active_run_id == previous_run_id
+                    ):
+                        try:
+                            service.conflict_run(
+                                previous_run_id, message="interrupted build orchestration was not resumed",
+                            )
+                        except BuildRunConflict:
+                            pass
+                        state = service.inspect_graph()
+                        _persist_build_orchestration_job({**previous, "_project_root": str(store.root)})
+                if any(task.active_run_id for task in state.tasks.values()):
+                    raise HTTPException(status_code=409, detail="build_run_in_progress")
+                conflicts = materialized_domain_conflicts(
+                    NovelProject.model_validate(project), graph, store.build_graph_materialization(),
+                )
+                if conflicts:
+                    raise HTTPException(status_code=409, detail={
+                        "code": "project_source_changed", "paths": list(conflicts),
+                    })
+                now = _now_iso()
+                job_id = f"wbo-{uuid4().hex}"
+                job: dict[str, object] = {
+                    "schema_version": "build-orchestration-job/v1",
+                    "job_id": job_id, "project_id": _public_project_id(store),
+                    "mode": request.mode, "status": "queued", "current_task_id": None,
+                    "current_task_title": None, "active_run_id": None,
+                    "next_task_id": _next_build_orchestration_task(graph, state, request.mode),
+                    "completed_task_ids": [], "failure_task_id": None,
+                    "diagnostics": [], "error_code": None, "materialized": False,
+                    "pipeline_stage": project.get("pipeline_stage"),
+                    "project_revision": _project_world_revision(store),
+                    "graph_revision": state.graph_revision,
+                    "created_at": now, "updated_at": now,
+                    "_project_root": str(store.root),
+                }
+                _build_orchestration_jobs[job_id] = job
+                _active_build_orchestration_jobs[normalized] = job_id
+                try:
+                    _persist_build_orchestration_job(job)
+                except Exception:
+                    _active_build_orchestration_jobs.pop(normalized, None)
+                    _build_orchestration_jobs.pop(job_id, None)
+                    raise
+        _build_orchestration_executor.submit(_run_build_orchestration, job_id, project_id)
+        return _build_orchestration_job_response(job)
+
+    @router.get("/file-projects/{project_id}/build-graph/orchestrations/current")
+    def get_current_file_project_build_orchestration(project_id: str) -> dict[str, object] | None:
+        normalized = _strip_file_prefix(project_id)
+        with _world_build_jobs_lock:
+            job_id = _active_build_orchestration_jobs.get(normalized)
+            job = _build_orchestration_jobs.get(job_id or "")
+        if job is not None:
+            return _build_orchestration_job_response(job)
+        return _load_build_orchestration_job(_store_for(project_id))
+
+    @router.get("/file-projects/{project_id}/build-graph/orchestrations/{job_id}")
+    def get_file_project_build_orchestration(project_id: str, job_id: str) -> dict[str, object]:
+        if re.fullmatch(r"wbo-[0-9a-f]{32}", job_id) is None:
+            raise HTTPException(status_code=404, detail="build_orchestration_job_not_found")
+        with _world_build_jobs_lock:
+            job = _build_orchestration_jobs.get(job_id)
+        if job is not None and job.get("project_id") == _public_project_id(_store_for(project_id)):
+            return _build_orchestration_job_response(job)
+        saved = _load_build_orchestration_job(_store_for(project_id), job_id)
+        if saved is None:
+            raise HTTPException(status_code=404, detail="build_orchestration_job_not_found")
+        return saved
 
     @router.post("/file-projects/{project_id}/build-graph/tasks/{task_id}/repair")
     def repair_file_project_build_graph_task(
@@ -3044,6 +3516,8 @@ def init_file_project_routes() -> APIRouter:
         with _world_build_jobs_lock:
             if _has_active_world_build_job(normalized_project_id):
                 raise HTTPException(status_code=409, detail="world_build_in_progress")
+            if _has_active_build_orchestration_job(normalized_project_id):
+                raise HTTPException(status_code=409, detail="build_orchestration_in_progress")
             store = _store_for(project_id)
             with project_update_lock(store.root):
                 try:

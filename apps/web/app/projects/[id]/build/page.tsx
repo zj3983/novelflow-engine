@@ -8,11 +8,16 @@ import {
   BuildWorkbenchRepairError,
   BuildWorkbenchRerunError,
   commitBuildWorkbenchTaskEdit,
+  fetchBuildOrchestration,
   fetchBuildWorkbench,
   fetchBuildWorkbenchTask,
+  fetchCurrentBuildOrchestration,
   repairBuildWorkbenchTask,
   rerunBuildWorkbenchTask,
+  startBuildOrchestration,
   validateBuildWorkbenchTask,
+  type BuildOrchestrationJob,
+  type BuildOrchestrationMode,
   type BuildWorkbenchGraph,
   type BuildWorkbenchTask,
   type BuildWorkbenchTaskDetail,
@@ -53,12 +58,14 @@ function ValueList({ values }: { values: string[] }) {
     : <p className={styles.empty_value}>无</p>;
 }
 
-function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved }: {
+function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved, onDraftChange, orchestrationBusy }: {
   task: BuildWorkbenchTask;
   graph: BuildWorkbenchGraph;
   projectId: string;
   onSelectDependency: (taskId: string) => void;
   onSaved: () => Promise<void>;
+  onDraftChange: (open: boolean) => void;
+  orchestrationBusy: boolean;
 }) {
   const taskTitles = useMemo(() => new Map(graph.tasks.map((item) => [item.task_id, item.title])), [graph.tasks]);
   const source = task.artifact_source ? SOURCE_LABELS[task.artifact_source] ?? task.artifact_source : "尚无产物";
@@ -79,6 +86,7 @@ function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved }: {
     let active = true;
     setDetail(null);
     setEditorOpen(false);
+    onDraftChange(false);
     setValidation(null);
     setEditError(null);
     setRerunError(null);
@@ -91,7 +99,7 @@ function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved }: {
       })
       .catch((reason: unknown) => { if (active) setEditError(reason instanceof Error ? reason.message : String(reason)); });
     return () => { active = false; };
-  }, [projectId, task.task_id, task.artifact_revision]);
+  }, [projectId, task.task_id, task.artifact_revision, onDraftChange]);
 
   const validateDraft = async () => {
     setEditError(null);
@@ -124,6 +132,7 @@ function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved }: {
     try {
       await commitBuildWorkbenchTaskEdit(projectId, task.task_id, detail.artifact.revision, payload);
       setEditorOpen(false);
+      onDraftChange(false);
       setValidation(null);
       await onSaved();
     } catch (reason) {
@@ -201,11 +210,12 @@ function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved }: {
         setValidation(null);
         setEditError(null);
         setEditorOpen(true);
-      }}>人工编辑</button> : null}
-      {detail?.editable ? <button type="button" className={styles.edit_button} disabled={repairBusy || rerunBusy || busy} onClick={() => void repairArtifact()}>
+        onDraftChange(true);
+      }} disabled={orchestrationBusy}>人工编辑</button> : null}
+      {detail?.editable ? <button type="button" className={styles.edit_button} disabled={repairBusy || rerunBusy || busy || orchestrationBusy} onClick={() => void repairArtifact()}>
         {repairBusy ? "AI 修复中…" : "AI 修复"}
       </button> : null}
-      {detail?.editable ? <button type="button" className={styles.edit_button} disabled={repairBusy || rerunBusy || busy} onClick={() => void rerunArtifact()}>
+      {detail?.editable ? <button type="button" className={styles.edit_button} disabled={repairBusy || rerunBusy || busy || orchestrationBusy} onClick={() => void rerunArtifact()}>
         {rerunBusy ? "完整重跑中…" : "完整重跑"}
       </button> : null}
       {detail?.editable ? <p className={styles.empty_value}>完整重生成此任务；成功后下游会标记为过期，不会自动重跑。</p> : null}
@@ -231,7 +241,7 @@ function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved }: {
             onChange={(event) => { setDraft(event.target.value); setValidation(null); setEditError(null); }}
           />
           <div className={styles.editor_actions}>
-            <button type="button" disabled={busy} onClick={() => { setEditorOpen(false); setValidation(null); setEditError(null); }}>取消</button>
+            <button type="button" disabled={busy} onClick={() => { setEditorOpen(false); onDraftChange(false); setValidation(null); setEditError(null); }}>取消</button>
             <button type="button" disabled={busy} onClick={() => void validateDraft()}>{busy ? "处理中…" : "校验"}</button>
             <button type="button" disabled={busy || !validation?.passed} onClick={() => void saveDraft()}>保存</button>
           </div>
@@ -308,6 +318,9 @@ export default function BuildWorkbenchPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [detailReload, setDetailReload] = useState(0);
+  const [orchestration, setOrchestration] = useState<BuildOrchestrationJob | null>(null);
+  const [orchestrationError, setOrchestrationError] = useState<string | null>(null);
+  const [draftOpen, setDraftOpen] = useState(false);
 
   const reloadGraph = async () => {
     const result = await fetchBuildWorkbench(projectId);
@@ -332,6 +345,56 @@ export default function BuildWorkbenchPage() {
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [projectId]);
+
+  useEffect(() => {
+    let active = true;
+    fetchCurrentBuildOrchestration(projectId)
+      .then((job) => { if (active) setOrchestration((current) =>
+        current?.status === "queued" || current?.status === "running" ? current : job,
+      ); })
+      .catch((reason: unknown) => { if (active) setOrchestrationError(reason instanceof Error ? reason.message : String(reason)); });
+    return () => { active = false; };
+  }, [projectId]);
+
+  const orchestrationBusy = orchestration?.status === "queued" || orchestration?.status === "running";
+  useEffect(() => {
+    if (!orchestrationBusy || !orchestration) return;
+    let active = true;
+    let pending = false;
+    const poll = async () => {
+      if (pending) return;
+      pending = true;
+      try {
+        const [job, latestGraph] = await Promise.all([
+          fetchBuildOrchestration(projectId, orchestration.job_id), fetchBuildWorkbench(projectId),
+        ]);
+        if (!active) return;
+        setOrchestration(job);
+        setGraph(latestGraph);
+        setDetailReload((current) => current + 1);
+      } catch (reason) {
+        if (active) setOrchestrationError(reason instanceof Error ? reason.message : String(reason));
+      } finally {
+        pending = false;
+      }
+    };
+    const timer = window.setInterval(() => { void poll(); }, 1000);
+    void poll();
+    return () => { active = false; window.clearInterval(timer); };
+  }, [projectId, orchestration?.job_id, orchestrationBusy]);
+
+  const runOrchestration = async (mode: BuildOrchestrationMode) => {
+    if (draftOpen) {
+      setOrchestrationError("当前有未保存的 JSON 草稿。请先保存或取消草稿，再继续构建。");
+      return;
+    }
+    setOrchestrationError(null);
+    try {
+      setOrchestration(await startBuildOrchestration(projectId, mode));
+    } catch (reason) {
+      setOrchestrationError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
 
   const selectedTask = graph?.tasks.find((task) => task.task_id === selectedTaskId) ?? null;
   const completedCount = graph?.tasks.filter((task) => task.status === "completed").length ?? 0;
@@ -363,6 +426,26 @@ export default function BuildWorkbenchPage() {
             <div><span>物化状态</span><strong>{graph.materialization_status === "outdated" ? "旧物化结果已过期" : graph.materialization_status === "current" ? "当前" : "未物化"}</strong></div>
           </section>
 
+          <section className={`ws-card ${styles.orchestration}`} aria-label="构建操作">
+            <div className={styles.orchestration_actions}>
+              <button type="button" disabled={orchestrationBusy} onClick={() => void runOrchestration("continue")}>继续构建</button>
+              <button type="button" disabled={orchestrationBusy || !graph.tasks.some((task) => task.status === "stale")} onClick={() => void runOrchestration("rebuild_stale")}>重建过期项</button>
+              <button type="button" disabled={orchestrationBusy} onClick={() => void runOrchestration("next")}>运行下一任务</button>
+            </div>
+            {orchestrationError ? <p role="alert" className={styles.edit_error}>{orchestrationError}</p> : null}
+            {orchestration ? <div className={styles.orchestration_progress} aria-live="polite">
+              <strong>{orchestration.status === "completed" ? "本次构建已结束" : orchestration.status === "running" || orchestration.status === "queued" ? "正在构建" : "构建已停止"}</strong>
+              {orchestration.current_task_id ? <p>当前任务：{orchestration.current_task_title || orchestration.current_task_id}</p> : null}
+              <p>已完成任务：{orchestration.completed_task_ids.length ? orchestration.completed_task_ids.map((id) => graph.tasks.find((task) => task.task_id === id)?.title || id).join("、") : "暂无"}</p>
+              {orchestration.failure_task_id ? <p>失败任务：{graph.tasks.find((task) => task.task_id === orchestration.failure_task_id)?.title || orchestration.failure_task_id} · {orchestration.error_code}</p> : null}
+              {orchestration.next_task_id && orchestration.status === "completed" ? <p>下一任务：{graph.tasks.find((task) => task.task_id === orchestration.next_task_id)?.title || orchestration.next_task_id}</p> : null}
+              {orchestration.materialized ? <p>全部任务已就绪，世界设定已重新物化。</p> : null}
+              {orchestration.diagnostics?.length ? <ul className={styles.diagnostics}>{orchestration.diagnostics.map((diagnostic, index) => (
+                <li key={`${diagnostic.code}-${diagnostic.path}-${index}`}><strong>{diagnostic.code}</strong><code>{diagnostic.path || "（未提供路径）"}</code><p>{diagnostic.message}</p></li>
+              ))}</ul> : null}
+            </div> : null}
+          </section>
+
           {graph.tasks.some((task) => task.status === "stale") ? <section className={`ws-card ${styles.stale_notice}`} role="status">
             <strong>上游修改后，以下任务已过期</strong>
             <ul>{graph.tasks.filter((task) => task.status === "stale").map((task) => <li key={task.task_id}>{task.title} <code>{task.task_id}</code></li>)}</ul>
@@ -381,7 +464,7 @@ export default function BuildWorkbenchPage() {
                       <button
                         type="button"
                         className={`${styles.task_button}${selectedTaskId === task.task_id ? ` ${styles.task_selected}` : ""}${task.status !== "completed" ? ` ${styles.task_attention}` : ""}`}
-                        onClick={() => setSelectedTaskId(task.task_id)}
+                        onClick={() => { if (!draftOpen) setSelectedTaskId(task.task_id); else setOrchestrationError("请先保存或取消当前 JSON 草稿。"); }}
                         aria-current={selectedTaskId === task.task_id ? "true" : undefined}
                       >
                         <span className={styles.task_button_title}>{task.title}</span>
@@ -396,7 +479,7 @@ export default function BuildWorkbenchPage() {
                 </ol>
               </section>
 
-              {selectedTask ? <TaskDetail key={`${selectedTask.task_id}-${detailReload}`} task={selectedTask} graph={graph} projectId={projectId} onSelectDependency={setSelectedTaskId} onSaved={reloadGraph} /> : null}
+              {selectedTask ? <TaskDetail key={`${selectedTask.task_id}-${detailReload}`} task={selectedTask} graph={graph} projectId={projectId} onSelectDependency={(id) => { if (!draftOpen) setSelectedTaskId(id); }} onSaved={reloadGraph} onDraftChange={setDraftOpen} orchestrationBusy={orchestrationBusy} /> : null}
             </div>
           ) : <section className="ws-card"><p className="ws-card__hint">当前 graph 没有任务。</p></section>}
         </>

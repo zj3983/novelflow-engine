@@ -471,6 +471,28 @@ def test_opt_in_run_failure_preserves_existing_task_state_and_artifact(tmp_path:
     assert service.inspect_graph().runs[run.run_id].diagnostics[0].code == "repair.failure"
 
 
+def test_opt_in_run_conflict_preserves_existing_task_state_and_artifact(tmp_path: Path):
+    service = _service(tmp_path)
+    _commit(service, "foundation")
+    _commit(service, "world_rules", payload={"task": "world_rules", "revision": 1})
+    base_state = service.inspect_task("world_rules")
+    run = service.start_run("world_rules", allow_completed_with_artifact=True)
+
+    with pytest.raises(BuildRunConflict):
+        service.conflict_run(
+            run.run_id, message="project world changed", preserve_task_state=base_state,
+        )
+
+    current = service.inspect_task("world_rules")
+    assert current.status == base_state.status == "completed"
+    assert current.validation_status == base_state.validation_status
+    assert current.diagnostics == base_state.diagnostics
+    assert current.current_artifact_revision == base_state.current_artifact_revision == 1
+    assert current.active_run_id is None
+    assert service.inspect_artifact("world_rules").payload == {"task": "world_rules", "revision": 1}
+    assert service.inspect_graph().runs[run.run_id].status == "conflict"
+
+
 def test_opt_in_commit_validation_failure_preserves_task_state_and_skips_precommit(tmp_path: Path):
     invalid = False
 
