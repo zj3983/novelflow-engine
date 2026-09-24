@@ -2846,7 +2846,6 @@ def init_file_project_routes() -> APIRouter:
             build_task_prompt,
             input_fingerprint,
             parse_task_payload,
-            preserve_existing_non_power_values,
             run_read_projection,
         )
 
@@ -2900,14 +2899,17 @@ def init_file_project_routes() -> APIRouter:
 
                     base_task_state = task_state
                     project_model = NovelProject.model_validate(project)
-                    contract = deepcopy(build_input_contract(project_model, graph, service, task_id))
-                    prompt = build_task_prompt(graph, task_id, contract) + (
+                    rerun_contract = deepcopy(build_input_contract(project_model, graph, service, task_id))
+                    # Full rerun consumes declared reads and the complete output
+                    # contract, never the legacy projection of its own task.
+                    rerun_contract.pop("existing_candidate", None)
+                    prompt = build_task_prompt(graph, task_id, rerun_contract) + (
                         "\n这是一次完整任务重跑。请按完整输出契约重新生成本任务的全部输出字段；不要只返回局部 patch。"
                     )
                     run = service.start_run(
                         task_id,
-                        input_fingerprint=input_fingerprint(contract),
-                        read_projection=run_read_projection(graph, task_id, contract),
+                        input_fingerprint=input_fingerprint(rerun_contract),
+                        read_projection=run_read_projection(graph, task_id, rerun_contract),
                         allow_completed_with_artifact=True,
                     )
                 except HTTPException:
@@ -2962,7 +2964,6 @@ def init_file_project_routes() -> APIRouter:
             getattr(response, "text", ""), graph.spec(task_id).output_fields
         )
         if candidate is not None and not diagnostics:
-            candidate = preserve_existing_non_power_values(project_model, task_id, candidate)
             diagnostics = service.validate(task_id, candidate, requested_writes=task.owns).diagnostics
         if candidate is None or diagnostics:
             fail_rerun(tuple(diagnostics) or (BuildDiagnostic(
