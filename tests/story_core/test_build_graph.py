@@ -447,6 +447,70 @@ def test_run_failure_preserves_previous_artifact_and_persists_diagnostics(tmp_pa
     assert service.store.read_run(run.run_id).diagnostics[0].code == "synthetic.failure"
 
 
+def test_opt_in_run_failure_preserves_existing_task_state_and_artifact(tmp_path: Path):
+    service = _service(tmp_path)
+    _commit(service, "foundation")
+    _commit(service, "world_rules", payload={"task": "world_rules", "revision": 1})
+    base_state = service.inspect_task("world_rules")
+    run = service.start_run("world_rules", allow_completed_with_artifact=True)
+
+    failure = service.fail_run(
+        run.run_id,
+        [BuildDiagnostic("repair.failure", "domain.world_rules", "repair failed")],
+        preserve_task_state=base_state,
+    )
+
+    current = service.inspect_task("world_rules")
+    assert failure.status == "failed"
+    assert current.status == base_state.status == "completed"
+    assert current.validation_status == base_state.validation_status == "passed"
+    assert current.diagnostics == base_state.diagnostics
+    assert current.current_artifact_revision == 1
+    assert current.active_run_id is None
+    assert service.inspect_artifact("world_rules").payload == {"task": "world_rules", "revision": 1}
+    assert service.inspect_graph().runs[run.run_id].diagnostics[0].code == "repair.failure"
+
+
+def test_opt_in_commit_validation_failure_preserves_task_state_and_skips_precommit(tmp_path: Path):
+    invalid = False
+
+    def validate_foundation(_payload):
+        if invalid:
+            return (BuildDiagnostic("foundation.invalid", "domain.foundation", "invalid candidate"),)
+        return ()
+
+    service = _service(
+        tmp_path,
+        definition=_definition(with_validator=True),
+        validators={"foundation": validate_foundation},
+    )
+    _commit(service, "foundation", payload={"task": "foundation", "revision": 1})
+    base_state = service.inspect_task("foundation")
+    run = service.start_run("foundation", allow_completed_with_artifact=True)
+    invalid = True
+    before_commit_calls = []
+
+    result = service.commit_run(
+        run.run_id,
+        {"task": "foundation", "revision": 2},
+        requested_writes=("domain.foundation",),
+        source="ai_repair",
+        preserve_task_state_on_failure=base_state,
+        before_commit=lambda: before_commit_calls.append(True),
+    )
+
+    current = service.inspect_task("foundation")
+    assert result.artifact is None
+    assert result.validation.diagnostics[0].code == "foundation.invalid"
+    assert before_commit_calls == []
+    assert current.status == base_state.status == "completed"
+    assert current.validation_status == base_state.validation_status == "passed"
+    assert current.current_artifact_revision == 1
+    assert current.diagnostics == base_state.diagnostics
+    assert service.inspect_artifact("foundation").payload == {"task": "foundation", "revision": 1}
+    assert service.inspect_graph().runs[run.run_id].status == "failed"
+
+
 def test_file_project_store_exposes_separate_build_graph_persistence(tmp_path: Path):
     project_store = FileProjectStore(tmp_path)
     definition = BuildGraphDefinition(
