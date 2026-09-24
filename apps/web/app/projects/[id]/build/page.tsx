@@ -6,10 +6,12 @@ import { PageHeader } from "../../../../components/ws/PageHeader";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
 import {
   BuildWorkbenchRepairError,
+  BuildWorkbenchRerunError,
   commitBuildWorkbenchTaskEdit,
   fetchBuildWorkbench,
   fetchBuildWorkbenchTask,
   repairBuildWorkbenchTask,
+  rerunBuildWorkbenchTask,
   validateBuildWorkbenchTask,
   type BuildWorkbenchGraph,
   type BuildWorkbenchTask,
@@ -69,6 +71,9 @@ function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved }: {
   const [repairBusy, setRepairBusy] = useState(false);
   const [repairDiagnostics, setRepairDiagnostics] = useState<BuildWorkbenchTaskDetail["diagnostics"]>([]);
   const [repairError, setRepairError] = useState<string | null>(null);
+  const [rerunBusy, setRerunBusy] = useState(false);
+  const [rerunDiagnostics, setRerunDiagnostics] = useState<BuildWorkbenchTaskDetail["diagnostics"]>([]);
+  const [rerunError, setRerunError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -76,6 +81,8 @@ function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved }: {
     setEditorOpen(false);
     setValidation(null);
     setEditError(null);
+    setRerunError(null);
+    setRerunDiagnostics([]);
     fetchBuildWorkbenchTask(projectId, task.task_id)
       .then((result) => {
         if (!active) return;
@@ -148,6 +155,30 @@ function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved }: {
     }
   };
 
+  const rerunArtifact = async () => {
+    if (!detail?.editable || !detail.artifact) return;
+    if (editorOpen) {
+      setRerunError("当前有未保存的 JSON 草稿。请先保存或取消草稿，再完整重跑任务。");
+      return;
+    }
+    setRerunBusy(true);
+    setRerunDiagnostics([]);
+    setRerunError(null);
+    try {
+      await rerunBuildWorkbenchTask(projectId, task.task_id, detail.artifact.revision);
+      await onSaved();
+    } catch (reason) {
+      if (reason instanceof BuildWorkbenchRerunError) {
+        setRerunDiagnostics(reason.diagnostics);
+        setRerunError(reason.message);
+      } else {
+        setRerunError(reason instanceof Error ? reason.message : String(reason));
+      }
+    } finally {
+      setRerunBusy(false);
+    }
+  };
+
   return (
     <section className={`ws-card ${styles.detail}`} aria-labelledby="build-task-detail-title">
       <div className={styles.detail_head}>
@@ -171,12 +202,22 @@ function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved }: {
         setEditError(null);
         setEditorOpen(true);
       }}>人工编辑</button> : null}
-      {detail?.editable ? <button type="button" className={styles.edit_button} disabled={repairBusy || busy} onClick={() => void repairArtifact()}>
+      {detail?.editable ? <button type="button" className={styles.edit_button} disabled={repairBusy || rerunBusy || busy} onClick={() => void repairArtifact()}>
         {repairBusy ? "AI 修复中…" : "AI 修复"}
       </button> : null}
+      {detail?.editable ? <button type="button" className={styles.edit_button} disabled={repairBusy || rerunBusy || busy} onClick={() => void rerunArtifact()}>
+        {rerunBusy ? "完整重跑中…" : "完整重跑"}
+      </button> : null}
+      {detail?.editable ? <p className={styles.empty_value}>完整重生成此任务；成功后下游会标记为过期，不会自动重跑。</p> : null}
       {repairError ? <div className={styles.validation_fail} role="alert">
         <strong>{repairError}</strong>
         {repairDiagnostics.length ? <ul className={styles.diagnostics}>{repairDiagnostics.map((diagnostic, index) => (
+          <li key={`${diagnostic.code}-${diagnostic.path}-${index}`}><strong>{diagnostic.code}</strong><code>{diagnostic.path || "（未提供路径）"}</code><p>{diagnostic.message}</p></li>
+        ))}</ul> : null}
+      </div> : null}
+      {rerunError ? <div className={styles.validation_fail} role="alert">
+        <strong>{rerunError}</strong>
+        {rerunDiagnostics.length ? <ul className={styles.diagnostics}>{rerunDiagnostics.map((diagnostic, index) => (
           <li key={`${diagnostic.code}-${diagnostic.path}-${index}`}><strong>{diagnostic.code}</strong><code>{diagnostic.path || "（未提供路径）"}</code><p>{diagnostic.message}</p></li>
         ))}</ul> : null}
       </div> : null}

@@ -174,6 +174,12 @@ class BuildWorkbenchRepairRequest(BaseModel):
     expected_revision: int = Field(ge=1)
 
 
+class BuildWorkbenchRerunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    expected_revision: int = Field(ge=1)
+
+
 class BookDissectionReferenceRequest(BaseModel):
     text: str
     genre: str = ""
@@ -2594,7 +2600,7 @@ def init_file_project_routes() -> APIRouter:
             # Demote first so a crash can only leave a conservatively unready project.
             store.update_project({"pipeline_stage": "world_ready"})
 
-    def _call_workbench_repair_model(store, task_id: str, prompt: str, max_tokens: int):
+    def _call_workbench_model(store, task_id: str, prompt: str, max_tokens: int, *, operation: str):
         from packages.story_core.model_gateway import ModelRequest
 
         request = ModelRequest(
@@ -2602,7 +2608,7 @@ def init_file_project_routes() -> APIRouter:
             system_prompt="You are a senior Chinese webnovel worldbuilding editor. Return JSON only.",
             provider="",
             model="",
-            operation=f"workbench_repair_{task_id}",
+            operation=f"workbench_{operation}_{task_id}",
             max_tokens=max_tokens,
             json_mode=True,
             metadata={"reasoning_effort": "low", "enable_thinking": False, "world_build_task": task_id, "stream": False},
@@ -2827,6 +2833,175 @@ def init_file_project_routes() -> APIRouter:
             "materialization_status": _workbench_materialization_status(build_store, service.inspect_graph()),
         }
 
+    @router.post("/file-projects/{project_id}/build-graph/tasks/{task_id}/rerun")
+    def rerun_file_project_build_graph_task(
+        project_id: str,
+        task_id: str,
+        request: BuildWorkbenchRerunRequest,
+    ) -> dict[str, Any]:
+        from copy import deepcopy
+
+        from packages.story_core.world_build.tasks import (
+            build_input_contract,
+            build_task_prompt,
+            input_fingerprint,
+            parse_task_payload,
+            preserve_existing_non_power_values,
+            run_read_projection,
+        )
+
+        normalized_project_id = _strip_file_prefix(project_id)
+        run = None
+        base_task_state = None
+        prompt = ""
+        project_model = None
+        # Phase A: admit one model task, snapshot bounded inputs, and persist
+        # run ownership while holding only the short admission locks.
+        with _world_build_jobs_lock:
+            if _has_active_world_build_job(normalized_project_id):
+                raise HTTPException(status_code=409, detail="world_build_in_progress")
+            store = _store_for(project_id)
+            with project_update_lock(store.root):
+                try:
+                    store, project, graph, build_store, state, service = _build_workbench_context(project_id)
+                    task = graph.definition.tasks_by_id.get(task_id)
+                    if task is None:
+                        raise HTTPException(status_code=404, detail="build_task_not_found")
+                    if graph.spec(task_id).kind != "model":
+                        raise HTTPException(status_code=403, detail="build_task_not_rerunnable")
+                    task_state = state.tasks[task_id]
+                    artifact = service.inspect_artifact(task_id)
+                    if artifact is None:
+                        raise HTTPException(status_code=403, detail="build_task_not_rerunnable")
+                    if task_state.current_artifact_revision != request.expected_revision:
+                        raise BuildRevisionConflict(
+                            "build_revision_conflict",
+                            "artifact revision changed before task rerun started",
+                            details={
+                                "task_id": task_id,
+                                "expected_revision": request.expected_revision,
+                                "current_revision": task_state.current_artifact_revision,
+                            },
+                        )
+                    if task_state.active_run_id:
+                        raise HTTPException(status_code=409, detail={
+                            "code": "build_run_conflict",
+                            "message": "task already has an active Build Graph run",
+                            "details": {"task_id": task_id, "run_id": task_state.active_run_id},
+                            "diagnostics": [],
+                        })
+                    if task_state.status not in {"ready", "stale", "validation_failed", "completed"}:
+                        raise HTTPException(status_code=409, detail={
+                            "code": "build_run_conflict",
+                            "message": "task is not in a state that can be rerun",
+                            "details": {"task_id": task_id, "status": task_state.status},
+                            "diagnostics": [],
+                        })
+
+                    base_task_state = task_state
+                    project_model = NovelProject.model_validate(project)
+                    contract = deepcopy(build_input_contract(project_model, graph, service, task_id))
+                    prompt = build_task_prompt(graph, task_id, contract) + (
+                        "\n这是一次完整任务重跑。请按完整输出契约重新生成本任务的全部输出字段；不要只返回局部 patch。"
+                    )
+                    run = service.start_run(
+                        task_id,
+                        input_fingerprint=input_fingerprint(contract),
+                        read_projection=run_read_projection(graph, task_id, contract),
+                        allow_completed_with_artifact=True,
+                    )
+                except HTTPException:
+                    raise
+                except BuildRevisionConflict as exc:
+                    raise HTTPException(status_code=409, detail=exc.to_dict()) from exc
+                except BuildRunConflict as exc:
+                    raise HTTPException(status_code=409, detail=exc.to_dict()) from exc
+                except BuildTaskStateError as exc:
+                    if exc.code in {"build_run_active", "build_task_not_runnable"}:
+                        raise HTTPException(status_code=409, detail={
+                            "code": "build_run_conflict",
+                            "message": str(exc),
+                            "details": exc.details,
+                            "diagnostics": [],
+                        }) from exc
+                    raise HTTPException(status_code=409, detail=exc.to_dict()) from exc
+                except BuildGraphError as exc:
+                    raise HTTPException(status_code=422, detail=exc.to_dict()) from exc
+
+        assert run is not None and base_task_state is not None
+
+        def fail_rerun(failure: tuple[BuildDiagnostic, ...]) -> None:
+            try:
+                service.fail_run(run.run_id, failure, preserve_task_state=base_task_state)
+            except BuildRunConflict as exc:
+                raise HTTPException(status_code=409, detail=exc.to_dict()) from exc
+            raise HTTPException(status_code=422, detail={
+                "passed": False,
+                "diagnostics": [item.to_dict() for item in failure],
+            })
+
+        # Phase B: make exactly one full-task model request and validate its
+        # complete output without holding the global or project lock.
+        response, call_id = _call_workbench_model(
+            store, task_id, prompt, graph.spec(task_id).max_tokens, operation="rerun"
+        )
+        if not getattr(response, "ok", False):
+            fail_rerun((BuildDiagnostic(
+                "model.rerun_request_failed", f"tasks.{task_id}",
+                "full task rerun failed; the current artifact was kept",
+            ),))
+        if not call_id or not str(getattr(response, "provider", "") or "").strip() or not str(
+            getattr(response, "resolved_model", "") or getattr(response, "model", "") or ""
+        ).strip():
+            fail_rerun((BuildDiagnostic(
+                "model.rerun_provenance_missing", f"tasks.{task_id}",
+                "rerun response is missing required model provenance",
+            ),))
+
+        candidate, diagnostics = parse_task_payload(
+            getattr(response, "text", ""), graph.spec(task_id).output_fields
+        )
+        if candidate is not None and not diagnostics:
+            candidate = preserve_existing_non_power_values(project_model, task_id, candidate)
+            diagnostics = service.validate(task_id, candidate, requested_writes=task.owns).diagnostics
+        if candidate is None or diagnostics:
+            fail_rerun(tuple(diagnostics) or (BuildDiagnostic(
+                "task.rerun_failed", f"tasks.{task_id}", "full task output could not be validated"
+            ),))
+
+        # Phase C: commit_run rechecks active run ownership, artifact and
+        # dependency revisions, and validation before readiness is invalidated.
+        try:
+            result = service.commit_run(
+                run.run_id,
+                candidate,
+                requested_writes=task.owns,
+                source="llm",
+                provider=str(getattr(response, "provider", "") or "") or None,
+                model=str(getattr(response, "resolved_model", "") or getattr(response, "model", "") or "") or None,
+                prompt_call_id=call_id,
+                preserve_task_state_on_failure=base_task_state,
+                before_commit=lambda: _invalidate_workbench_readiness(store, store.project()),
+            )
+        except BuildRunConflict as exc:
+            raise HTTPException(status_code=409, detail=exc.to_dict()) from exc
+        if result.artifact is None:
+            raise HTTPException(status_code=422, detail={
+                "passed": False,
+                "diagnostics": [item.to_dict() for item in result.validation.diagnostics],
+            })
+        final_state = service.inspect_graph()
+        return {
+            "task_id": task_id,
+            "task": final_state.tasks[task_id].to_dict(),
+            "artifact": result.artifact.to_dict(),
+            "validation": result.validation.to_dict(),
+            "disposition": result.disposition,
+            "graph_revision": final_state.graph_revision,
+            "pipeline_stage": store.project().get("pipeline_stage"),
+            "materialization_status": _workbench_materialization_status(build_store, final_state),
+        }
+
     @router.post("/file-projects/{project_id}/build-graph/tasks/{task_id}/repair")
     def repair_file_project_build_graph_task(
         project_id: str,
@@ -2989,8 +3164,8 @@ def init_file_project_routes() -> APIRouter:
         if task_id == "power_system_paths" and path_scope is not None and not path_scope.has_mutations:
             fail_repair(diagnostics)
 
-        response, call_id = _call_workbench_repair_model(
-            store, task_id, prompt, graph.spec(task_id).max_tokens
+        response, call_id = _call_workbench_model(
+            store, task_id, prompt, graph.spec(task_id).max_tokens, operation="repair"
         )
         if not getattr(response, "ok", False):
             fail_repair((BuildDiagnostic(
