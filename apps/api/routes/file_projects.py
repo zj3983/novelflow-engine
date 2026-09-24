@@ -3072,20 +3072,28 @@ def init_file_project_routes() -> APIRouter:
                 "task.rerun_failed", f"tasks.{task_id}", "full task output could not be validated"
             ),))
 
-        # Phase C: commit_run rechecks active run ownership, artifact and
-        # dependency revisions, and validation before readiness is invalidated.
+        # Phase C: keep the external project revision guard in the same lock
+        # boundary as the official Build Graph commit. Core checks graph-owned
+        # revisions, but cannot see author edits to project/root source.
         try:
-            result = service.commit_run(
-                run.run_id,
-                candidate,
-                requested_writes=task.owns,
-                source="llm",
-                provider=str(getattr(response, "provider", "") or "") or None,
-                model=str(getattr(response, "resolved_model", "") or getattr(response, "model", "") or "") or None,
-                prompt_call_id=call_id,
-                preserve_task_state_on_failure=base_task_state,
-                before_commit=lambda: _invalidate_workbench_readiness(store, store.project()),
-            )
+            with project_update_lock(store.root):
+                if expected_project_revision is not None and _project_world_revision(store) != expected_project_revision:
+                    try:
+                        service.conflict_run(run.run_id, message="project world changed during the model run")
+                    except BuildRunConflict:
+                        pass
+                    raise HTTPException(status_code=409, detail="project_world_changed")
+                result = service.commit_run(
+                    run.run_id,
+                    candidate,
+                    requested_writes=task.owns,
+                    source="llm",
+                    provider=str(getattr(response, "provider", "") or "") or None,
+                    model=str(getattr(response, "resolved_model", "") or getattr(response, "model", "") or "") or None,
+                    prompt_call_id=call_id,
+                    preserve_task_state_on_failure=base_task_state,
+                    before_commit=lambda: _invalidate_workbench_readiness(store, store.project()),
+                )
         except BuildRunConflict as exc:
             raise HTTPException(status_code=409, detail=exc.to_dict()) from exc
         if result.artifact is None:
@@ -3194,11 +3202,18 @@ def init_file_project_routes() -> APIRouter:
                         "code": "build_validation_failed",
                         "diagnostics": [item.to_dict() for item in validation.diagnostics],
                     })
-                result = service.commit_run(
-                    run.run_id, candidate, requested_writes=spec.task.owns,
-                    source="deterministic", preserve_task_state_on_failure=task_state,
-                    before_commit=lambda: _invalidate_workbench_readiness(store, store.project()),
-                )
+                with project_update_lock(store.root):
+                    if _project_world_revision(store) != expected_project_revision:
+                        try:
+                            service.conflict_run(run.run_id, message="project world changed during the deterministic run")
+                        except BuildRunConflict:
+                            pass
+                        raise HTTPException(status_code=409, detail="project_world_changed")
+                    result = service.commit_run(
+                        run.run_id, candidate, requested_writes=spec.task.owns,
+                        source="deterministic", preserve_task_state_on_failure=task_state,
+                        before_commit=lambda: _invalidate_workbench_readiness(store, store.project()),
+                    )
                 if result.artifact is None:
                     raise HTTPException(status_code=422, detail={
                         "code": "build_validation_failed",

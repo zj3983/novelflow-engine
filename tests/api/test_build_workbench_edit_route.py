@@ -1289,13 +1289,18 @@ def test_orchestration_does_not_materialize_over_project_edit_during_provider(tm
         "/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/artifact",
         json={"expected_revision": 1, "payload": {"label": "Human upstream"}},
     ).status_code == 200
+    original = service.inspect_artifact("downstream_model")
+    original_task = service.inspect_graph().tasks["downstream_model"]
+    original_transitive = service.inspect_artifact("transitive_model")
     entered = Event()
     release = Event()
+    returned = Event()
 
     class Gateway:
         def complete_stage(self, _stage, _request):
             entered.set()
             assert release.wait(10)
+            returned.set()
             return SimpleNamespace(
                 ok=True, text='{"world_detail":"Model output"}',
                 provider="test", model="test", resolved_model="test",
@@ -1313,12 +1318,63 @@ def test_orchestration_does_not_materialize_over_project_edit_during_provider(tm
     finally:
         release.set()
     job = _wait_orchestration(client, "p-synthetic-build-edit", start.json()["job_id"])
+    assert returned.is_set()
     assert job["status"] == "conflicted", job
     assert job["error_code"] == "project_world_changed"
+    assert job["completed_task_ids"] == []
+    assert service.inspect_artifact("downstream_model") == original
+    assert service.inspect_artifact("transitive_model") == original_transitive
+    state = service.inspect_graph()
+    assert state.tasks["downstream_model"].status == original_task.status
+    assert state.tasks["downstream_model"].current_artifact_revision == original_task.current_artifact_revision
+    assert state.tasks["downstream_model"].active_run_id is None
+    assert len([run for run in state.runs.values() if run.task_id == "downstream_model" and run.status == "conflict"]) == 1
     assert store.project()["world_blueprint"]["world_rules"] == ["AUTHOR PROJECT EDIT"]
     assert store.project()["pipeline_stage"] == "world_ready"
     assert marker_path.read_bytes() == marker_bytes
-    assert service.inspect_graph().tasks["transitive_model"].status == "stale"
+    assert state.tasks["transitive_model"].status == "stale"
+
+
+def test_orchestration_deterministic_source_edit_conflicts_before_commit(tmp_path, monkeypatch):
+    from packages.story_core.world_build import runner as world_runner
+
+    store, _graph, service, marker_path, marker_bytes = _setup_project(tmp_path, monkeypatch)
+    service.invalidate_task("power_system_final")
+    original = service.inspect_artifact("power_system_final")
+    original_task = service.inspect_graph().tasks["power_system_final"]
+    entered = Event()
+    release = Event()
+
+    def candidate_from_dependencies(*_args):
+        entered.set()
+        assert release.wait(10)
+        return {"power_system_final": "STALE CANDIDATE"}
+
+    monkeypatch.setattr(world_runner, "power_candidate_from_dependencies", candidate_from_dependencies)
+    client = TestClient(app, raise_server_exceptions=False)
+    start = client.post(
+        "/file-projects/p-synthetic-build-edit/build-graph/orchestrations", json={"mode": "next"},
+    )
+    assert start.status_code == 200, start.text
+    try:
+        assert entered.wait(5)
+        store.update_project({"world_blueprint": {"world_rules": ["AUTHOR PROJECT EDIT"]}})
+    finally:
+        release.set()
+    job = _wait_orchestration(client, "p-synthetic-build-edit", start.json()["job_id"])
+    assert job["status"] == "conflicted", job
+    assert job["error_code"] == "project_world_changed"
+    assert job["completed_task_ids"] == []
+    assert service.inspect_artifact("power_system_final") == original
+    state = service.inspect_graph()
+    # Core conflict_run marks the interrupted task stale; its accepted
+    # artifact and revision remain unchanged.
+    assert state.tasks["power_system_final"].status == "stale"
+    assert state.tasks["power_system_final"].current_artifact_revision == original_task.current_artifact_revision
+    assert state.tasks["power_system_final"].active_run_id is None
+    assert len([run for run in state.runs.values() if run.task_id == "power_system_final" and run.status == "conflict"]) == 1
+    assert store.project()["world_blueprint"]["world_rules"] == ["AUTHOR PROJECT EDIT"]
+    assert marker_path.read_bytes() == marker_bytes
 
 
 def test_interrupted_orchestration_releases_only_its_persisted_run_on_retry(tmp_path, monkeypatch):
