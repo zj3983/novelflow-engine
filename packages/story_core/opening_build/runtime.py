@@ -41,7 +41,7 @@ def graph_for(store, project):
     if not enabled(store):
         return build_world_build_graph(project)
     locked_project = definition_project(store, project)
-    graph = opening_graph(locked_project)
+    graph = opening_graph(locked_project, chapter_count=settings(store).get("chapter_count", CHAPTER_COUNT))
     if settings(store).get("topology") is None:
         state = store.build_graph_store().read_state()
         legacy = opening_graph(locked_project, bind_topology=False)
@@ -205,7 +205,7 @@ def sync_input(store, expected_graph_revision):
         config = dict(settings(store))
         project = NovelProject.model_validate(store.project())
         previous_graph = graph_for(store, project)
-        graph = opening_graph(project)
+        graph = opening_graph(project, chapter_count=config.get("chapter_count", CHAPTER_COUNT))
         state = store.build_graph_store().read_state()
         if state is None:
             raise ValueError("build_graph_not_initialized")
@@ -263,14 +263,59 @@ def assembled_plan(store):
         arc["story_nodes"] = chains[arc["id"]]
     return {
         "outline": {"schema_version": "project-outline/v1", "overall": overall, "arcs": arcs,
-                    "chapters": [_artifact(store, f"chapter_outline_{n}")["chapter"] for n in range(1, CHAPTER_COUNT + 1)]},
+                    "chapters": [_artifact(store, f"chapter_outline_{n}")["chapter"] for n in range(1, settings(store).get("chapter_count", CHAPTER_COUNT) + 1)]},
         "characters": _artifact(store, "detailed_characters")["characters"],
     }
 
 
+def extend_first_volume(store, expected_graph_revision):
+    """Explicitly add missing detail tasks; never regenerate accepted inputs."""
+    with project_update_lock(store.root):
+        if not enabled(store):
+            raise ValueError("opening_graph_not_enabled")
+        assert_sources_current(store)
+        project = NovelProject.model_validate(store.project())
+        previous = graph_for(store, project)
+        state = store.build_graph_store().read_state()
+        if state is None:
+            raise ValueError("build_graph_not_initialized")
+        if state.graph_revision != expected_graph_revision:
+            raise ValueError("build_graph_changed")
+        if any(task.active_run_id for task in state.tasks.values()):
+            raise ValueError("build_run_in_progress")
+        service = store.build_graph_service(previous.definition, validators=validators_for(store, project))
+        if not service.build_readiness().ready or any(task.status != "completed" for task in state.tasks.values()):
+            raise ValueError("opening_graph_not_ready")
+        plan = canonical_plan(store)
+        first_volume = next((arc for arc in plan.outline.arcs if arc.start_chapter == 1), None)
+        if first_volume is None:
+            raise ValueError("opening_first_volume_missing")
+        config = dict(settings(store))
+        target = max(config.get("chapter_count", CHAPTER_COUNT), first_volume.end_chapter)
+        if target == config.get("chapter_count", CHAPTER_COUNT):
+            return
+        graph = opening_graph(definition_project(store, project), chapter_count=target)
+        tasks = dict(state.tasks)
+        for task_id in graph.definition.ordered_task_ids:
+            if task_id not in tasks:
+                ready = all(tasks[dep].status == "completed" for dep in graph.spec(task_id).task.dependencies)
+                tasks[task_id] = BuildTaskState(task_id=task_id, status="ready" if ready else "blocked")
+        tasks["outline_execution_contract"] = replace(tasks["outline_execution_contract"], status="stale", validation_status="unknown")
+        updated = replace(state, tasks=tasks, graph_revision=state.graph_revision + 1,
+                          definition_fingerprint=graph.definition.definition_fingerprint)
+        config["chapter_count"] = target
+        _prepared, payloads = store.update_project({"pipeline_stage": "world_ready"}, _commit=False)
+        payloads.update({
+            store.webnovel_dir / SETTINGS: config,
+            store.build_graph_store().state_path: updated.to_dict(),
+            store.webnovel_dir / "build_graph_archives" / ("opening-window-" + uuid4().hex) / "build_graph.json": state.to_dict(),
+        })
+        store.snapshot_store.replace_json_transaction(payloads)
+
+
 def canonical_plan(store):
     return validate_generated_opening_plan(
-        assembled_plan(store), expected_chapter_numbers=list(range(1, CHAPTER_COUNT + 1)),
+        assembled_plan(store), expected_chapter_numbers=list(range(1, settings(store).get("chapter_count", CHAPTER_COUNT) + 1)),
         require_chapter_contracts=True,
     )
 
@@ -294,7 +339,7 @@ def deterministic_candidate(store, task_id, project, graph):
         chapters = plan.outline.model_dump(mode="json")["chapters"]
         return {"outline_execution_contract": [
             build_outline_execution_contract(SimpleNamespace(chapter_number=n, nearby_outline=chapters)).model_dump(mode="json")
-            for n in range(1, CHAPTER_COUNT + 1)
+            for n in range(1, settings(store).get("chapter_count", CHAPTER_COUNT) + 1)
         ]}
     raise ValueError("build_deterministic_task_unknown")
 
@@ -306,7 +351,7 @@ def validators_for(store, project):
     validators = make_world_validators(project)
     if not enabled(store):
         return validators
-    graph = opening_graph(project)
+    graph = graph_for(store, project)
 
     def validate(task_id, payload):
         try:

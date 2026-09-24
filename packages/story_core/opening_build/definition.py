@@ -9,7 +9,9 @@ from .contracts import output_model
 CHAPTER_COUNT = 3
 
 
-def opening_graph(project, *, bind_topology=True):
+def opening_graph(project, *, bind_topology=True, chapter_count=CHAPTER_COUNT):
+    if isinstance(chapter_count, bool) or not isinstance(chapter_count, int) or not CHAPTER_COUNT <= chapter_count <= 200:
+        raise ValueError("opening_chapter_window_invalid")
     world = build_world_build_graph(project)
     specs = dict(world.specs)
 
@@ -43,7 +45,7 @@ def opening_graph(project, *, bind_topology=True):
     add("volume_plan", "分卷规划", ("book_outline", "detailed_characters", "longform_story_engine"), instructions="覆盖全书。除最后一卷外每卷至少50章，区间连续不重叠；填写情绪曲线、钩子、不可逆变化、恰好三个key_results、具名阶段反派与长期反派痕迹，以及完整覆盖每卷区间的story_nodes。", tokens=10000)
     add("event_chains", "事件链", ("volume_plan", "relationships"), instructions="为每卷给出约每15章一个story node，完整覆盖分卷区间。每个节点包含目标、压力、转折、兑现和后续影响。", tokens=10000)
     previous = None
-    for number in range(1, CHAPTER_COUNT + 1):
+    for number in range(1, chapter_count + 1):
         task_id = f"chapter_outline_{number}"
         deps = ("book_outline", "volume_plan", "event_chains", "detailed_characters", "relationships")
         if previous:
@@ -52,7 +54,7 @@ def opening_graph(project, *, bind_topology=True):
         previous = task_id
     add("outline_execution_contract", "章节执行契约", (
         "story_core", "book_outline", "volume_plan", "event_chains", "detailed_characters",
-        *(f"chapter_outline_{n}" for n in range(1, CHAPTER_COUNT + 1)),
+        *(f"chapter_outline_{n}" for n in range(1, chapter_count + 1)),
     ), kind="deterministic")
     definition = BuildGraphDefinition(graph_id=world.definition.graph_id, tasks=tuple(spec.task for spec in specs.values()))
     return replace(world, definition=definition, specs=specs)

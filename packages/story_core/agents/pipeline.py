@@ -187,9 +187,10 @@ def _ensure_director_context(
     legacy = _legacy_director_context(
         system_root=system_root, project_root=project_root, chapter_number=chapter_number
     )
+    from packages.story_core.opening_build.execution import bind_director_planning
     if canonical is None:
-        return legacy
-    return canonical.model_copy(
+        return bind_director_planning(project_root, legacy)
+    combined = canonical.model_copy(
         update={
             "volume": canonical.volume or legacy.volume,
             "book_outline_summary": (
@@ -214,6 +215,7 @@ def _ensure_director_context(
             ),
         }
     )
+    return bind_director_planning(project_root, combined)
 
 
 def _chapter_cast_names(
@@ -734,6 +736,8 @@ def run_writer(
     this argument is intentionally ignored: Writer consumes only the final
     scene-level intents in ``director_artifact.scene_beats``.
     """
+    from packages.story_core.opening_build.execution import verify_writer_planning
+    verify_writer_planning(project_root, director_artifact)
     context = _ensure_writer_context(
         project_root=project_root,
         chapter_number=chapter_number,

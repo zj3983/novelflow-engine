@@ -2634,8 +2634,11 @@ class FileProjectStore(
         project_id: str,
         quality_report: dict[str, Any] | None = None,
         operation: str = "generate",
+        opening_authority: dict[str, Any] | None = None,
     ) -> CandidateDraft:
         submission_payload = self._bundle_to_dict(bundle)
+        if opening_authority is not None:
+            submission_payload["opening_authority"] = deepcopy(opening_authority)
         updated_story = submission_payload.get("updated_story")
         if hasattr(updated_story, "model_dump"):
             submission_payload["updated_story"] = updated_story.model_dump(mode="json")
@@ -7144,6 +7147,11 @@ class FileProjectStore(
         accept_quality_warnings: bool = False,
     ) -> dict[str, Any]:
         chapter = self._bundle_to_dict(bundle)
+        from packages.story_core.opening_build import runtime as opening_runtime, execution as opening_execution
+        if opening_runtime.enabled(self):
+            if operation != "generate":
+                raise ValueError("opening_prose_operation_unsupported")
+            opening_execution.verify(self, chapter.get("opening_authority"))
         chapter_number = int(chapter.get("chapter_number") or 0)
         if chapter_number <= 0:
             raise ValueError("chapter_number_must_be_positive")
@@ -7427,6 +7435,13 @@ class FileProjectStore(
     ) -> dict[str, Any]:
         from packages.story_core.engine import StoryEngine
 
+        from packages.story_core.opening_build import runtime as opening_runtime, execution as opening_execution
+        authority = None
+        if opening_runtime.enabled(self):
+            if persist:
+                raise ValueError("opening_candidate_confirmation_required")
+            authority = opening_execution.capture(self)
+
         state = self._generation_state(self.state())
         project = self.project()
         target_chapter = int(state.get("current_chapter") or 0) + 1
@@ -7445,6 +7460,8 @@ class FileProjectStore(
             ledger["chapter_direction"] = chapter_direction
             state["progression_ledger"] = ledger
         story = StoryState.model_validate(self._story_state_payload_for_direction(state, project, target_chapter))
+        if authority is not None:
+            story = opening_execution.bind_story_planning(self, story)
         # The workbench path: every project lives on disk under
         # ``self.root`` so the new modular pipeline can read
         # the legacy ``.webnovel/`` shape through
@@ -7475,7 +7492,10 @@ class FileProjectStore(
                 or state.get("story_id")
                 or self.root.name
             )
-            candidate = self._save_candidate_from_bundle(bundle, project_id=project_id)
+            with project_update_lock(self.root):
+                if authority is not None:
+                    opening_execution.verify(self, authority)
+                candidate = self._save_candidate_from_bundle(bundle, project_id=project_id, opening_authority=authority)
             return {
                 "schema_version": "file-project-candidate/v1",
                 "root": str(self.root),
@@ -7560,6 +7580,8 @@ class FileProjectStore(
             # alongside the chapter / state / project writes.
             self._apply_candidate_canon_delta(candidate)
             self._wrap_confirmation_in_transaction(candidate)
+            from packages.story_core.opening_build.execution import record_confirmation
+            record_confirmation(self, candidate)
         candidate.confirm()
         self.candidate_store.save(candidate)
         return {"schema_version": "file-project-candidate-confirm/v1", "candidate": candidate.to_dict()}
@@ -7578,6 +7600,7 @@ class FileProjectStore(
         return [
             self.webnovel_dir / "state.json",
             self.webnovel_dir / "project.json",
+            self.webnovel_dir / "opening_build.json",
             self.story_system_dir / "MASTER_SETTING.json",
         ]
 
@@ -7591,6 +7614,7 @@ class FileProjectStore(
         """
         return [
             self.story_system_dir / "chapters",
+            self.webnovel_dir / "opening_execution_receipts",
             self.story_system_dir / "reviews",
             self.story_system_dir / "continuity",
             self.story_system_dir / "commits",
@@ -8186,6 +8210,10 @@ class FileProjectStore(
         # cannot be generated from state that another same-project rewrite replaces.
         # This intentionally blocks same-project edits; locks for other roots are independent.
         from packages.story_core.engine import StoryEngine
+
+        from packages.story_core.opening_build.runtime import enabled
+        if enabled(self):
+            raise ValueError("opening_prose_operation_unsupported")
 
         if chapter_number < 1:
             raise ValueError("chapter_number_must_be_positive")

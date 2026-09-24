@@ -237,6 +237,14 @@ class ChapterPersistenceWorkflowMixin:
         A rewrite preserves the existing formal title. New chapters prefer
         the rolling detail and fall back to the compatible base outline.
         """
+        from packages.story_core.opening_build import runtime, execution
+        if runtime.enabled(self):
+            _plan, chapter, _volume, _contract = execution.planning_projection(self, chapter_number)
+            title = str(chapter.get("title") or "").strip()
+            if not title:
+                raise ValueError("opening_prose_chapter_title_missing")
+            return title
+
         if operation == "regenerate":
             formal = self._read_json(
                 self.story_system_dir / "chapters" / f"{chapter_number:04d}.json",

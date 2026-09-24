@@ -132,8 +132,11 @@ class ChapterArtifactStoreMixin:
         project_id: str,
         quality_report: dict[str, Any] | None = None,
         operation: str = "generate",
+        opening_authority: dict[str, Any] | None = None,
     ) -> CandidateDraft:
         submission_payload = self._bundle_to_dict(bundle)
+        if opening_authority is not None:
+            submission_payload["opening_authority"] = dict(opening_authority)
         updated_story = submission_payload.get("updated_story")
         if hasattr(updated_story, "model_dump"):
             submission_payload["updated_story"] = updated_story.model_dump(mode="json")

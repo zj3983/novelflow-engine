@@ -19,6 +19,7 @@ from packages.story_core.generation_quality import (
 from packages.story_core.models import StoryState
 from packages.story_core.outline_planning import CHAPTER_SOP_MODULE_ID
 from packages.story_core.persistence.project_locking import (
+    project_update_lock,
     with_project_update_lock as _with_project_update_lock,
 )
 from packages.story_core.prompt_call_log import prompt_call_recording
@@ -97,6 +98,13 @@ class ChapterGenerationWorkflowMixin:
     ) -> dict[str, Any]:
         from packages.story_core.engine import StoryEngine
 
+        from packages.story_core.opening_build import runtime as opening_runtime, execution as opening_execution
+        authority = None
+        if opening_runtime.enabled(self):
+            if persist:
+                raise ValueError("opening_candidate_confirmation_required")
+            authority = opening_execution.capture(self)
+
         state = self._generation_state(self.state())
         project = self.project()
         target_chapter = int(state.get("current_chapter") or 0) + 1
@@ -111,6 +119,8 @@ class ChapterGenerationWorkflowMixin:
             ledger["chapter_direction"] = chapter_direction
             state["progression_ledger"] = ledger
         story = StoryState.model_validate(self._story_state_payload_for_direction(state, project, target_chapter))
+        if authority is not None:
+            story = opening_execution.bind_story_planning(self, story)
         # The workbench path: every project lives on disk under
         # ``self.root`` so the new modular pipeline can read
         # the legacy ``.webnovel/`` shape through
@@ -141,7 +151,10 @@ class ChapterGenerationWorkflowMixin:
                 or state.get("story_id")
                 or self.root.name
             )
-            candidate = self._save_candidate_from_bundle(bundle, project_id=project_id)
+            with project_update_lock(self.root):
+                if authority is not None:
+                    opening_execution.verify(self, authority)
+                candidate = self._save_candidate_from_bundle(bundle, project_id=project_id, opening_authority=authority)
             return {
                 "schema_version": "file-project-candidate/v1",
                 "root": str(self.root),
@@ -173,6 +186,10 @@ class ChapterGenerationWorkflowMixin:
         orchestrator: Any | None = None,
     ) -> dict[str, Any]:
         """Adaptively polish one confirmed chapter into a pending candidate."""
+
+        from packages.story_core.opening_build.runtime import enabled
+        if enabled(self):
+            raise ValueError("opening_prose_operation_unsupported")
 
         from packages.story_core.genre_stages.length_prompts import expansion_ending_anchor
         from packages.story_core.orchestrator import (
@@ -1037,6 +1054,10 @@ class ChapterGenerationWorkflowMixin:
         # cannot be generated from state that another same-project rewrite replaces.
         # This intentionally blocks same-project edits; locks for other roots are independent.
         from packages.story_core.engine import StoryEngine
+
+        from packages.story_core.opening_build.runtime import enabled
+        if enabled(self):
+            raise ValueError("opening_prose_operation_unsupported")
 
         if chapter_number < 1:
             raise ValueError("chapter_number_must_be_positive")

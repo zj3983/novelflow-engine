@@ -209,6 +209,8 @@ class CandidateConfirmationStoreMixin:
             self._apply_candidate_canon_delta(candidate)
             self._sync_candidate_character_additions(candidate)
             self._wrap_confirmation_in_transaction(candidate)
+            from packages.story_core.opening_build.execution import record_confirmation
+            record_confirmation(self, candidate)
         candidate.confirm()
         self.candidate_store.save(candidate)
         return {"schema_version": "file-project-candidate-confirm/v1", "candidate": candidate.to_dict()}
@@ -227,6 +229,7 @@ class CandidateConfirmationStoreMixin:
         return [
             self.webnovel_dir / "state.json",
             self.webnovel_dir / "project.json",
+            self.webnovel_dir / "opening_build.json",
             self.story_system_dir / "MASTER_SETTING.json",
             self.story_system_dir / "chapter-index.json",
         ]
@@ -241,6 +244,7 @@ class CandidateConfirmationStoreMixin:
         """
         return [
             self.story_system_dir / "chapters",
+            self.webnovel_dir / "opening_execution_receipts",
             self.story_system_dir / "reviews",
             self.story_system_dir / "continuity",
             self.story_system_dir / "commits",

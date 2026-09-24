@@ -86,6 +86,32 @@ function graph(tasks: ReturnType<typeof task>[]) {
   };
 }
 
+test("首卷扩展需显式操作，正文确认后规划动作锁定", async ({ page }) => {
+  const currentGraph = { ...graph([task(0)]), opening_graph: true, opening_chapter_count: 3, opening_execution_started: false };
+  await routeProjectAndGraph(page, currentGraph);
+  let writes = 0;
+  await page.route(/\/build-graph\/opening\/volume-detail$/, async (route) => {
+    writes += 1;
+    expect(route.request().postDataJSON()).toEqual({ expected_graph_revision: 33 });
+    Object.assign(currentGraph, { opening_chapter_count: 50, graph_revision: 34 });
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(currentGraph) });
+  });
+  await page.goto(`/projects/${encodedId}/build`);
+  await expect(page.getByText(/细纲窗口：前 3 章/)).toBeVisible();
+  expect(writes).toBe(0);
+  await page.getByRole("button", { name: "补齐首卷细纲任务" }).click();
+  await expect(page.getByText(/细纲窗口：前 50 章/)).toBeVisible();
+  expect(writes).toBe(1);
+  await expect(page.getByRole("link", { name: "前往正文候选与审查" })).toHaveAttribute("href", `/projects/${encodedId}/write`);
+  Object.assign(currentGraph, { opening_execution_started: true, materialization_status: "in_use" });
+  await page.reload();
+  await expect(page.getByText("已用于正文，规划已锁定", { exact: true })).toBeVisible();
+  for (const name of ["同步作者输入", "补齐首卷细纲任务", "继续构建", "重建过期项", "运行下一任务"]) {
+    await expect(page.getByRole("button", { name, exact: true })).toBeDisabled();
+  }
+  expect(writes).toBe(1);
+});
+
 async function routeProjectAndGraph(page: Page, response: ReturnType<typeof graph>) {
   await page.route(`**/file-projects/${encodedId}`, async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
