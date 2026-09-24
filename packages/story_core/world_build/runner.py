@@ -86,6 +86,38 @@ def _unresolved_path_repair_scope() -> tuple[BuildDiagnostic, ...]:
     )
 
 
+def power_candidate_from_dependencies(
+    project: NovelProject, service: Any, progression_mode: str,
+) -> dict[str, Any]:
+    """Assemble the deterministic final task from committed power artifacts."""
+
+    payloads: dict[str, Mapping[str, Any]] = {}
+    for task_id in (
+        "power_system_foundation", "power_system_attributes", "power_system_paths",
+        "power_system_stages", "power_system_resources", "power_system_constraints",
+    ):
+        artifact = service.inspect_artifact(task_id)
+        if artifact is None or not isinstance(artifact.payload, Mapping):
+            raise BuildTaskStateError(
+                "build_dependencies_incomplete",
+                "power final task requires all committed power sections",
+                details={"task_id": "power_system_final", "dependency": task_id},
+            )
+        payloads[task_id] = artifact.payload
+    existing = project.world_blueprint.get("power_system") if isinstance(project.world_blueprint, Mapping) else None
+    return assemble_power_candidate(
+        foundation=payloads["power_system_foundation"],
+        attributes=payloads["power_system_attributes"],
+        paths=payloads["power_system_paths"],
+        stages=payloads["power_system_stages"],
+        resources=payloads["power_system_resources"],
+        constraints=payloads["power_system_constraints"],
+        project=project,
+        progression_mode=progression_mode,
+        existing_summary=existing if isinstance(existing, list) else None,
+    )
+
+
 class WorldBuildGraphRunner:
     """Execute the genre-scoped production graph for one file project."""
 
@@ -500,35 +532,7 @@ class WorldBuildGraphRunner:
         return True
 
     def _power_candidate_from_dependencies(self) -> dict[str, Any]:
-        payloads: dict[str, Mapping[str, Any]] = {}
-        for task_id in (
-            "power_system_foundation",
-            "power_system_attributes",
-            "power_system_paths",
-            "power_system_stages",
-            "power_system_resources",
-            "power_system_constraints",
-        ):
-            artifact = self.service.inspect_artifact(task_id)
-            if artifact is None or not isinstance(artifact.payload, Mapping):
-                raise BuildTaskStateError(
-                    "build_dependencies_incomplete",
-                    "power final task requires all committed power sections",
-                    details={"task_id": "power_system_final", "dependency": task_id},
-                )
-            payloads[task_id] = artifact.payload
-        existing = self.project.world_blueprint.get("power_system") if isinstance(self.project.world_blueprint, Mapping) else None
-        return assemble_power_candidate(
-            foundation=payloads["power_system_foundation"],
-            attributes=payloads["power_system_attributes"],
-            paths=payloads["power_system_paths"],
-            stages=payloads["power_system_stages"],
-            resources=payloads["power_system_resources"],
-            constraints=payloads["power_system_constraints"],
-            project=self.project,
-            progression_mode=self.power_progression_mode,
-            existing_summary=existing if isinstance(existing, list) else None,
-        )
+        return power_candidate_from_dependencies(self.project, self.service, self.power_progression_mode)
 
     @staticmethod
     def _merge_repair_patch(
@@ -955,6 +959,7 @@ class WorldBuildGraphRunner:
 
 
 __all__ = [
+    "power_candidate_from_dependencies",
     "WorldBuildGraphCancelled",
     "WorldBuildGraphFailure",
     "WorldBuildGraphRunner",

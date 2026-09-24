@@ -137,7 +137,7 @@ def test_build_workbench_preserves_formal_exception_states_and_diagnostics(monke
     assert body["tasks"][1]["dependencies"] == ["validation_failed"]
 
 
-def test_build_workbench_does_not_initialize_missing_graph_state(monkeypatch):
+def test_build_workbench_does_not_initialize_missing_graph_state(tmp_path, monkeypatch):
     task = BuildTaskDefinition(task_id="world_input", title="世界输入")
     graph_definition = BuildGraphDefinition(graph_id="novelflow-project-build", tasks=(task,))
     graph = SimpleNamespace(definition=graph_definition)
@@ -146,6 +146,7 @@ def test_build_workbench_does_not_initialize_missing_graph_state(monkeypatch):
         None,
         {},
     )
+    store.root = tmp_path
     monkeypatch.setattr(file_projects, "_store_for", lambda _project_id: store)
     monkeypatch.setattr(world_definition, "build_world_build_graph", lambda _project: graph)
 
@@ -155,6 +156,10 @@ def test_build_workbench_does_not_initialize_missing_graph_state(monkeypatch):
         validation = client.post(
             "/file-projects/p-readonly/build-graph/tasks/world_input/validate",
             json={"payload": {"value": "candidate"}},
+        )
+        orchestration_status = client.get("/file-projects/p-readonly/build-graph/orchestrations/current")
+        orchestration_start = client.post(
+            "/file-projects/p-readonly/build-graph/orchestrations", json={"mode": "continue"},
         )
 
     assert response.status_code == 200
@@ -170,3 +175,8 @@ def test_build_workbench_does_not_initialize_missing_graph_state(monkeypatch):
     assert detail.json()["detail"] == "build_graph_not_initialized"
     assert validation.status_code == 409
     assert validation.json()["detail"] == "build_graph_not_initialized"
+    assert orchestration_status.status_code == 200
+    assert orchestration_status.json() is None
+    assert orchestration_start.status_code == 409
+    assert orchestration_start.json()["detail"] == "build_graph_not_initialized"
+    assert not list(tmp_path.rglob("*"))

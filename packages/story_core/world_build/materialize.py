@@ -86,6 +86,23 @@ def _domain_hashes(project: NovelProject, graph: WorldBuildGraph) -> dict[str, s
     return {path: _json_hash(_path_value(project, path)) for path in paths}
 
 
+def materialized_domain_conflicts(
+    project: NovelProject, graph: WorldBuildGraph, marker: Mapping[str, Any] | None,
+) -> tuple[str, ...]:
+    """Find project fields edited since the last graph materialization."""
+
+    if not marker or marker.get("graph_id") != graph.definition.graph_id:
+        return ()
+    recorded = marker.get("domain_hashes")
+    if not isinstance(recorded, Mapping):
+        return ()
+    current = _domain_hashes(project, graph)
+    return tuple(sorted(
+        path for path, old_hash in recorded.items()
+        if path in current and old_hash != current[path]
+    ))
+
+
 def graph_artifact_revisions(service: Any, graph: WorldBuildGraph) -> dict[str, int]:
     state = service.inspect_graph()
     revisions: dict[str, int] = {}
@@ -403,6 +420,7 @@ __all__ = [
     "materialization_payload",
     "materialization_path",
     "materialize_project",
+    "materialized_domain_conflicts",
     "read_materialization",
     "reconcile_project_to_graph",
     "write_materialization_marker",
