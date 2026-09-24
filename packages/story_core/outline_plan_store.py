@@ -98,6 +98,8 @@ class OutlinePlanStoreMixin:
 
     @with_project_update_lock
     def update_project_outline(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from packages.story_core.opening_build.runtime import reject_legacy_downstream_edit
+        reject_legacy_downstream_edit(self, payload)
         outline_payload = dict(payload)
         outline_payload.pop("source", None)
         state = self._read_json(self.webnovel_dir / "state.json", {})
@@ -757,6 +759,8 @@ class OutlinePlanStoreMixin:
         mode: str,
         persist_chapter_window: bool = True,
     ) -> dict[str, Any]:
+        from packages.story_core.opening_build.runtime import reject_legacy_generation
+        reject_legacy_generation(self)
         validated = GeneratedOutlinePlan.model_validate(plan)
         if mode not in {"initial", "regenerate", "extend"}:
             raise ValueError("invalid_outline_planning_mode")
@@ -1030,6 +1034,8 @@ class OutlinePlanStoreMixin:
         approved layers.
         """
 
+        from packages.story_core.opening_build.runtime import reject_legacy_generation
+        reject_legacy_generation(self)
         if mode != "regenerate":
             raise ValueError("outline_foundation_requires_regenerate")
         validated = GeneratedOutlinePlan.model_validate(plan)
@@ -1129,6 +1135,8 @@ class OutlinePlanStoreMixin:
         persist_chapter_window: bool = True,
         foundation_only: bool = False,
     ) -> dict[str, Any]:
+        from packages.story_core.opening_build.runtime import reject_legacy_generation
+        reject_legacy_generation(self)
         if mode == "extend":
             readiness = self.outline_extension_readiness()
             if not readiness["ready"]:

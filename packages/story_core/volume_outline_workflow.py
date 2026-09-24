@@ -260,6 +260,8 @@ class VolumeOutlineWorkflowMixin:
         ``target_chapter=1`` with the whole-book length floor relaxed.
         """
 
+        from packages.story_core.opening_build.runtime import reject_legacy_generation
+        reject_legacy_generation(self)
         if not hasattr(generator, "generate_next_volume"):
             raise ValueError("next_volume_generator_required")
         state = dict(self._read_json(self.webnovel_dir / "state.json", {}) or {})
@@ -367,6 +369,8 @@ class VolumeOutlineWorkflowMixin:
     ) -> dict[str, Any]:
         """Generate every missing detail row in one volume, then publish once."""
 
+        from packages.story_core.opening_build.runtime import reject_legacy_generation
+        reject_legacy_generation(self)
         if not hasattr(generator, "generate_chapter_batch"):
             raise ValueError("volume_detail_generator_required")
         normalized_volume_id = str(volume_id or "").strip()
