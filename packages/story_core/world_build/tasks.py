@@ -342,9 +342,9 @@ def build_input_contract(
             continue
         value = bounded_json_projection(
             read_value(artifact.payload, owned_path, read_path),
-            chars=480,
-            items=16,
-            depth=5,
+            chars=1000 if str(spec.task.validator_id).startswith("opening.") else 480,
+            items=24 if str(spec.task.validator_id).startswith("opening.") else 16,
+            depth=9 if str(spec.task.validator_id).startswith("opening.") else 5,
         )
         reads.append(
             {
@@ -390,10 +390,18 @@ def build_input_contract(
         ),
         "output_schema": deepcopy(dict(spec.output_schema or {})),
     }
+    if str(spec.task.validator_id).startswith("opening."):
+        contract["schema_version"] = "opening-build-input/v1"
+        contract.pop("existing_candidate", None)
+        if len(json.dumps(contract, ensure_ascii=False)) > 160_000:
+            raise ValueError("opening_input_budget_exceeded")
+        return contract
     return bounded_json_projection(contract, chars=720, items=20, depth=6)
 
 
 def input_fingerprint(contract: Mapping[str, Any]) -> str:
+    if contract.get("schema_version") == "opening-build-input/v1":
+        return hashlib.sha256(json.dumps(contract, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
     return hashlib.sha256(_json_text(contract).encode("utf-8")).hexdigest()
 
 
@@ -537,7 +545,9 @@ def build_task_prompt(
 ) -> str:
     spec = graph.spec(task_id)
     output_schema = dict(spec.output_schema or {})
-    if repair_fields:
+    opening_task = str(spec.task.validator_id).startswith("opening.")
+    render = (lambda value: json.dumps(value, ensure_ascii=False, sort_keys=True)) if opening_task else _json_text
+    if repair_fields and not opening_task:
         output_schema = {
             field: output_schema.get(field, "JSON value")
             for field in repair_fields
@@ -548,9 +558,9 @@ def build_task_prompt(
         f"任务职责：{spec.instructions}",
         f"只允许写入：{', '.join(spec.task.owns)}",
         f"禁止写入：{', '.join(spec.task.forbidden_writes) or '无'}",
-        f"输出契约：{_json_text(output_schema)}",
+        f"输出契约：{render(output_schema)}",
         "输入只来自下面列出的已提交依赖 artifact；不得臆造未提供的事实。",
-        f"bounded input contract: {_json_text(contract)}",
+        f"bounded input contract: {render(contract)}",
     ]
     if task_id.startswith("power_system_"):
         lines.append(
@@ -572,7 +582,7 @@ def build_task_prompt(
             )
         lines.extend(
             [
-                f"当前候选：{_json_text(repair_candidate)}",
+                f"当前候选：{render(repair_candidate)}",
                 "诊断：" + _json_text([item.to_dict() for item in diagnostics]),
             ]
         )

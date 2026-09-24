@@ -27,6 +27,33 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test("完整开局图需要显式启用，刷新保留后端状态并支持同步作者输入", async ({ page }) => {
+  const currentGraph = { ...graph([]), initialized: false, opening_graph: false };
+  await routeProjectAndGraph(page, currentGraph);
+  let writes = 0;
+  await page.route(/\/build-graph\/opening(?:\/input)?$/, async (route) => {
+    writes += 1;
+    expect(route.request().method()).toBe("POST");
+    expect(route.request().postDataJSON()).toEqual({ expected_graph_revision: currentGraph.graph_revision });
+    Object.assign(currentGraph, {
+      initialized: true, opening_graph: true, graph_revision: currentGraph.graph_revision + 1,
+      pipeline_stage: "world_ready", materialization_status: "outdated",
+      tasks: [task(0, { task_id: "story_core", title: "故事核心", status: "ready", artifact_revision: null })],
+    });
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(currentGraph) });
+  });
+  await page.goto(`/projects/${encodedId}/build`);
+  await expect(page.getByRole("button", { name: "启用完整开局图" })).toBeVisible();
+  expect(writes).toBe(0);
+  await page.getByRole("button", { name: "启用完整开局图" }).click();
+  await expect(page.getByRole("heading", { name: "完整开局图已启用" })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("button", { name: "继续构建" })).toBeVisible();
+  expect(writes).toBe(1);
+  await page.getByRole("button", { name: "同步作者输入" }).click();
+  await expect.poll(() => writes).toBe(2);
+});
+
 function task(index: number, overrides: Record<string, unknown> = {}) {
   const taskId = `task_${String(index).padStart(2, "0")}`;
   return {

@@ -15,6 +15,7 @@ import {
   repairBuildWorkbenchTask,
   rerunBuildWorkbenchTask,
   startBuildOrchestration,
+  updateOpeningBuildGraph,
   validateBuildWorkbenchTask,
   type BuildOrchestrationJob,
   type BuildOrchestrationMode,
@@ -321,6 +322,23 @@ export default function BuildWorkbenchPage() {
   const [orchestration, setOrchestration] = useState<BuildOrchestrationJob | null>(null);
   const [orchestrationError, setOrchestrationError] = useState<string | null>(null);
   const [draftOpen, setDraftOpen] = useState(false);
+  const [openingBusy, setOpeningBusy] = useState(false);
+
+  const updateOpening = async () => {
+    if (!graph || draftOpen || openingBusy) return;
+    setOpeningBusy(true);
+    setOrchestrationError(null);
+    try {
+      const result = await updateOpeningBuildGraph(projectId, graph.graph_revision, !!graph.opening_graph);
+      setGraph(result);
+      setSelectedTaskId(result.tasks[0]?.task_id ?? null);
+      setDetailReload((current) => current + 1);
+    } catch (reason) {
+      setOrchestrationError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setOpeningBusy(false);
+    }
+  };
 
   const reloadGraph = async () => {
     const result = await fetchBuildWorkbench(projectId);
@@ -410,6 +428,16 @@ export default function BuildWorkbenchPage() {
       {loading ? <section className="ws-card" role="status">正在读取 Build Graph…</section> : null}
       {error ? <section className={`ws-card ${styles.error}`} role="alert">读取失败：{error}</section> : null}
 
+      {!loading && !error && graph ? <section className="ws-card" aria-label="完整开局构建">
+        <h2 className={styles.empty_title}>{graph.opening_graph ? "完整开局图已启用" : "构建故事到章节的完整开局"}</h2>
+        <p className="ws-card__hint">故事核心 → 角色与世界 → 关系 → 全书与分卷规划 → 事件链 → 前 3 章细纲与执行契约。</p>
+        <p className="ws-card__hint">{graph.opening_graph ? "在其他页面修改作者输入后，先同步输入，再继续构建。同步会使依赖任务过期。" : "适用于尚未写正文的项目。启用会保留旧产物历史，并将已有世界任务标为待重建。"}</p>
+        <button type="button" disabled={openingBusy || orchestrationBusy || draftOpen} onClick={() => void updateOpening()}>
+          {openingBusy ? "处理中…" : graph.opening_graph ? "同步作者输入" : "启用完整开局图"}
+        </button>
+        {orchestrationError && !graph.initialized ? <p role="alert">{orchestrationError}</p> : null}
+      </section> : null}
+
       {!loading && !error && graph && !graph.initialized ? (
         <section className="ws-card" aria-live="polite">
           <h2 className={styles.empty_title}>尚无正式 Build Graph 状态</h2>
@@ -439,7 +467,7 @@ export default function BuildWorkbenchPage() {
               <p>已完成任务：{orchestration.completed_task_ids.length ? orchestration.completed_task_ids.map((id) => graph.tasks.find((task) => task.task_id === id)?.title || id).join("、") : "暂无"}</p>
               {orchestration.failure_task_id ? <p>失败任务：{graph.tasks.find((task) => task.task_id === orchestration.failure_task_id)?.title || orchestration.failure_task_id} · {orchestration.error_code}</p> : null}
               {orchestration.next_task_id && orchestration.status === "completed" ? <p>下一任务：{graph.tasks.find((task) => task.task_id === orchestration.next_task_id)?.title || orchestration.next_task_id}</p> : null}
-              {orchestration.materialized ? <p>全部任务已就绪，世界设定已重新物化。</p> : null}
+              {orchestration.materialized ? <p>{graph.opening_graph ? "全部任务已就绪，世界、角色和前 3 章细纲已发布。" : "全部任务已就绪，世界设定已重新物化。"}</p> : null}
               {orchestration.diagnostics?.length ? <ul className={styles.diagnostics}>{orchestration.diagnostics.map((diagnostic, index) => (
                 <li key={`${diagnostic.code}-${diagnostic.path}-${index}`}><strong>{diagnostic.code}</strong><code>{diagnostic.path || "（未提供路径）"}</code><p>{diagnostic.message}</p></li>
               ))}</ul> : null}

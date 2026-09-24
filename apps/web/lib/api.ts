@@ -4402,6 +4402,7 @@ export type BuildWorkbenchTask = {
 export type BuildWorkbenchGraph = {
   schema_version: "build-workbench/v1";
   initialized: boolean;
+  opening_graph?: boolean;
   graph_id: string;
   graph_revision: number | null;
   pipeline_stage: string | null;
@@ -4454,6 +4455,16 @@ export async function startBuildOrchestration(
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ mode }),
+  });
+}
+
+export async function updateOpeningBuildGraph(
+  projectId: string, expectedGraphRevision: number | null, syncInput = false,
+): Promise<BuildWorkbenchGraph> {
+  return await fetchJson<BuildWorkbenchGraph>(`${fileProjectPath(projectId)}/build-graph/opening${syncInput ? "/input" : ""}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ expected_graph_revision: expectedGraphRevision }),
   });
 }
 

@@ -189,6 +189,11 @@ class BuildWorkbenchOrchestrationRequest(BaseModel):
     mode: Literal["continue", "rebuild_stale", "next"]
 
 
+class BuildWorkbenchOpeningRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    expected_graph_revision: int | None = Field(default=None, ge=0)
+
+
 class BookDissectionReferenceRequest(BaseModel):
     text: str
     genre: str = ""
@@ -444,6 +449,9 @@ def _project_world_revision(store: FileProjectStore) -> str:
     gets a different hash and the job is marked conflicted.
     """
 
+    from packages.story_core.opening_build.runtime import enabled, source_revision
+    if enabled(store):
+        return source_revision(store)
     if hasattr(store, "world_revision"):
         return str(store.world_revision())
     project = store.project() if hasattr(store, "project") else {}
@@ -904,6 +912,9 @@ def _start_world_build_job(project_id: str) -> dict[str, object]:
     store = _store_for(project_id)
     normalized_project_id = _strip_file_prefix(project_id)
     with _world_build_jobs_lock:
+        from packages.story_core.opening_build.runtime import enabled
+        if enabled(store):
+            raise HTTPException(status_code=409, detail="opening_build_use_workbench")
         if _has_active_build_orchestration_job(normalized_project_id):
             raise HTTPException(status_code=409, detail="build_orchestration_in_progress")
         active_job_id = _active_world_build_jobs.get(normalized_project_id)
@@ -2615,11 +2626,11 @@ def init_file_project_routes() -> APIRouter:
         return _start_world_build_job(project_id)
 
     def _build_workbench_context(project_id: str):
-        from packages.story_core.world_build.definition import build_world_build_graph
+        from packages.story_core.opening_build.runtime import graph_for, validators_for
 
         store = _store_for(project_id)
         project = store.project()
-        graph = build_world_build_graph(NovelProject.model_validate(project))
+        graph = graph_for(store, NovelProject.model_validate(project))
         build_store = store.build_graph_store()
         state = build_store.read_state()
         if state is None:
@@ -2634,11 +2645,11 @@ def init_file_project_routes() -> APIRouter:
 
         service = store.build_graph_service(
             graph.definition,
-            validators=make_world_validators(NovelProject.model_validate(project)),
+            validators=validators_for(store, NovelProject.model_validate(project)),
         )
         return store, project, graph, build_store, state, service
 
-    def _workbench_materialization_status(build_store, state) -> str:
+    def _workbench_materialization_status(build_store, state, project_store=None) -> str:
         snapshot_store = getattr(build_store, "snapshot_store", None)
         root = getattr(build_store, "root", None)
         if snapshot_store is None or root is None:
@@ -2646,6 +2657,10 @@ def init_file_project_routes() -> APIRouter:
         marker = snapshot_store.read_json(root / ".webnovel" / "build_graph_materialization.json", None)
         if not isinstance(marker, dict):
             return "not_materialized"
+        if project_store is not None:
+            from packages.story_core.opening_build.runtime import enabled, settings, source_revision
+            if enabled(project_store) and settings(project_store).get("source_revision") != source_revision(project_store):
+                return "outdated"
         if marker.get("graph_id") != state.graph_id:
             return "outdated"
         recorded = marker.get("artifact_revisions")
@@ -2671,9 +2686,25 @@ def init_file_project_routes() -> APIRouter:
         return "current"
 
     def _invalidate_workbench_readiness(store, project: dict[str, Any]) -> None:
+        from packages.story_core.opening_build.runtime import enabled, assert_unwritten
+        if enabled(store):
+            try:
+                assert_unwritten(store)
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
         if project.get("pipeline_stage") == "environment_ready":
             # Demote first so a crash can only leave a conservatively unready project.
             store.update_project({"pipeline_stage": "world_ready"})
+
+    def _workbench_before_commit(store, service, run, base_task_state, expected_project_revision):
+        # Called only under commit_run's project lock, before artifact persistence.
+        if expected_project_revision is not None and _project_world_revision(store) != expected_project_revision:
+            try:
+                service.conflict_run(run.run_id, preserve_task_state=base_task_state)
+            except BuildRunConflict:
+                pass
+            raise HTTPException(status_code=409, detail="project_world_changed")
+        _invalidate_workbench_readiness(store, store.project())
 
     def _call_workbench_model(store, task_id: str, prompt: str, max_tokens: int, *, operation: str):
         from packages.story_core.model_gateway import ModelRequest
@@ -2736,11 +2767,11 @@ def init_file_project_routes() -> APIRouter:
     def get_file_project_build_graph(project_id: str) -> dict[str, Any]:
         """Return a read-only projection of the persisted production Build Graph."""
 
-        from packages.story_core.world_build.definition import build_world_build_graph
+        from packages.story_core.opening_build.runtime import graph_for, enabled
 
         store = _store_for(project_id)
         project = store.project()
-        graph = build_world_build_graph(NovelProject.model_validate(project))
+        graph = graph_for(store, NovelProject.model_validate(project))
         build_store = store.build_graph_store()
         state = build_store.read_state()
         if state is None:
@@ -2788,12 +2819,37 @@ def init_file_project_routes() -> APIRouter:
         return {
             "schema_version": "build-workbench/v1",
             "initialized": True,
+            "opening_graph": enabled(store),
             "graph_id": state.graph_id,
             "graph_revision": state.graph_revision,
             "pipeline_stage": project.get("pipeline_stage"),
-            "materialization_status": _workbench_materialization_status(build_store, state),
+            "materialization_status": _workbench_materialization_status(build_store, state, store),
             "tasks": tasks,
         }
+
+    @router.post("/file-projects/{project_id}/build-graph/opening")
+    def activate_file_project_opening_graph(project_id: str, request: BuildWorkbenchOpeningRequest):
+        from packages.story_core.opening_build.runtime import activate
+        with _world_build_jobs_lock:
+            if _has_active_world_build_job(_strip_file_prefix(project_id)) or _has_active_build_orchestration_job(_strip_file_prefix(project_id)):
+                raise HTTPException(status_code=409, detail="build_run_in_progress")
+            try:
+                activate(_store_for(project_id), request.expected_graph_revision)
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return get_file_project_build_graph(project_id)
+
+    @router.post("/file-projects/{project_id}/build-graph/opening/input")
+    def sync_file_project_opening_input(project_id: str, request: BuildWorkbenchOpeningRequest):
+        from packages.story_core.opening_build.runtime import sync_input
+        with _world_build_jobs_lock:
+            if _has_active_world_build_job(_strip_file_prefix(project_id)) or _has_active_build_orchestration_job(_strip_file_prefix(project_id)):
+                raise HTTPException(status_code=409, detail="build_run_in_progress")
+            try:
+                sync_input(_store_for(project_id), request.expected_graph_revision)
+            except (ValueError, BuildGraphError) as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return get_file_project_build_graph(project_id)
 
     @router.get("/file-projects/{project_id}/build-graph/tasks/{task_id}")
     def get_file_project_build_graph_task(project_id: str, task_id: str) -> dict[str, Any]:
@@ -2819,7 +2875,7 @@ def init_file_project_routes() -> APIRouter:
             "owns": list(task.owns),
             "validation_status": task_state.validation_status,
             "diagnostics": [item.to_dict() for item in task_state.diagnostics],
-            "materialization_status": _workbench_materialization_status(build_store, state),
+            "materialization_status": _workbench_materialization_status(build_store, state, store),
             "materialization_marker": materialization,
         }
 
@@ -2905,7 +2961,7 @@ def init_file_project_routes() -> APIRouter:
             "disposition": result.disposition,
             "graph_revision": service.inspect_graph().graph_revision,
             "pipeline_stage": store.project().get("pipeline_stage"),
-            "materialization_status": _workbench_materialization_status(build_store, service.inspect_graph()),
+            "materialization_status": _workbench_materialization_status(build_store, service.inspect_graph(), store),
         }
 
     def _run_full_workbench_model_task(
@@ -2948,6 +3004,15 @@ def init_file_project_routes() -> APIRouter:
                     store, project, graph, build_store, state, service = _build_workbench_context(project_id)
                     if expected_graph_revision is not None and state.graph_revision != expected_graph_revision:
                         raise HTTPException(status_code=409, detail="build_graph_changed")
+                    from packages.story_core.opening_build.runtime import enabled
+                    if enabled(store):
+                        from packages.story_core.opening_build.runtime import assert_sources_current
+                        try:
+                            assert_sources_current(store)
+                        except ValueError as exc:
+                            raise HTTPException(status_code=409, detail=str(exc)) from exc
+                        if expected_project_revision is None:
+                            expected_project_revision = _project_world_revision(store)
                     if expected_project_revision is not None and _project_world_revision(store) != expected_project_revision:
                         raise HTTPException(status_code=409, detail="project_world_changed")
                     task = graph.definition.tasks_by_id.get(task_id)
@@ -3113,7 +3178,7 @@ def init_file_project_routes() -> APIRouter:
             "disposition": result.disposition,
             "graph_revision": final_state.graph_revision,
             "pipeline_stage": store.project().get("pipeline_stage"),
-            "materialization_status": _workbench_materialization_status(build_store, final_state),
+            "materialization_status": _workbench_materialization_status(build_store, final_state, store),
         }
 
     @router.post("/file-projects/{project_id}/build-graph/tasks/{task_id}/rerun")
@@ -3169,14 +3234,20 @@ def init_file_project_routes() -> APIRouter:
             candidate = legacy_payload
             source = "imported"
         elif spec.kind == "imported":
-            if task_id != "world_input":
+            from packages.story_core.opening_build.runtime import enabled, settings
+            if task_id == "opening_input" and enabled(store):
+                candidate = settings(store)["author_input"]
+            elif task_id == "world_input":
+                current = service.inspect_artifact(task_id)
+                previous = current.payload if current is not None and isinstance(current.payload, dict) else None
+                candidate = canonical_world_input(project_model, store=store, previous=previous)
+            else:
                 raise HTTPException(status_code=422, detail="build_imported_task_unknown")
-            current = service.inspect_artifact(task_id)
-            previous = current.payload if current is not None and isinstance(current.payload, dict) else None
-            candidate = canonical_world_input(project_model, store=store, previous=previous)
             source = "imported"
         elif spec.kind == "deterministic":
-            if task_id != "power_system_final":
+            from packages.story_core.opening_build.runtime import enabled, deterministic_candidate
+            opening_task = enabled(store) and task_id in {"world_input", "outline_execution_contract"}
+            if task_id != "power_system_final" and not opening_task:
                 raise HTTPException(status_code=422, detail="build_deterministic_task_unknown")
             with project_update_lock(store.root):
                 if service.inspect_graph().graph_revision != expected_graph_revision:
@@ -3197,7 +3268,10 @@ def init_file_project_routes() -> APIRouter:
                 )
                 raise
             try:
-                candidate = power_candidate_from_dependencies(project_model, service, graph.power_progression_mode)
+                candidate = (
+                    deterministic_candidate(store, task_id, project_model, graph) if opening_task else
+                    power_candidate_from_dependencies(project_model, service, graph.power_progression_mode)
+                )
                 validation = service.validate(task_id, candidate, requested_writes=spec.task.owns)
                 if not validation.passed:
                     service.fail_run(run.run_id, validation.diagnostics, preserve_task_state=task_state)
@@ -3308,13 +3382,17 @@ def init_file_project_routes() -> APIRouter:
                             task.status == "completed" for task in state.tasks.values()
                         )
                         if graph_clean:
-                            status = _workbench_materialization_status(build_store, state)
+                            status = _workbench_materialization_status(build_store, state, store)
                             if status != "current" or project.get("pipeline_stage") != "environment_ready":
-                                candidate = materialize_project(project_model, graph, service)
-                                store.commit_build_graph_materialization(
-                                    candidate, graph, service,
-                                    expected_project_revision=starting_revision,
-                                )
+                                from packages.story_core.opening_build.runtime import enabled, publish
+                                if enabled(store):
+                                    publish(store, graph, service, starting_revision)
+                                else:
+                                    candidate = materialize_project(project_model, graph, service)
+                                    store.commit_build_graph_materialization(
+                                        candidate, graph, service,
+                                        expected_project_revision=starting_revision,
+                                    )
                                 materialized = True
                             else:
                                 materialized = False
@@ -3401,6 +3479,11 @@ def init_file_project_routes() -> APIRouter:
             with project_update_lock(store.root):
                 _store, project, graph, _build_store, state, service = _build_workbench_context(project_id)
                 previous = _load_build_orchestration_job(store)
+                from packages.story_core.opening_build.runtime import assert_sources_current
+                try:
+                    assert_sources_current(store)
+                except ValueError as exc:
+                    raise HTTPException(status_code=409, detail=str(exc)) from exc
                 if previous is not None and previous.get("status") == "interrupted":
                     previous_task_id = str(previous.get("current_task_id") or "")
                     previous_run_id = str(previous.get("active_run_id") or "")
@@ -3511,6 +3594,7 @@ def init_file_project_routes() -> APIRouter:
         prompt = ""
         project_model = None
         contract = None
+        repair_project_revision = None
         # Phase A: the global job lock and project lock cover only admission,
         # immutable context capture, and persisted run ownership.
         with _world_build_jobs_lock:
@@ -3568,6 +3652,14 @@ def init_file_project_routes() -> APIRouter:
                             "details": {"task_id": task_id, "status": task_state.status},
                             "diagnostics": [],
                         })
+                    from packages.story_core.opening_build.runtime import enabled
+                    if enabled(store):
+                        from packages.story_core.opening_build.runtime import assert_sources_current
+                        try:
+                            assert_sources_current(store)
+                        except ValueError as exc:
+                            raise HTTPException(status_code=409, detail=str(exc)) from exc
+                        repair_project_revision = _project_world_revision(store)
                     contract = deepcopy(build_input_contract(project_model, graph, service, task_id))
                     repair_fields = repair_fields_for_diagnostics(graph.spec(task_id), diagnostics)
                     # A diagnostic that cannot map to a narrower field may use the
@@ -3691,7 +3783,7 @@ def init_file_project_routes() -> APIRouter:
                 model=str(getattr(response, "resolved_model", "") or getattr(response, "model", "") or "") or None,
                 prompt_call_id=call_id,
                 preserve_task_state_on_failure=base_task_state,
-                before_commit=lambda: _invalidate_workbench_readiness(store, store.project()),
+                before_commit=lambda: _workbench_before_commit(store, service, run, base_task_state, repair_project_revision),
             )
         except BuildRunConflict as exc:
             raise HTTPException(status_code=409, detail=exc.to_dict()) from exc
@@ -3710,7 +3802,7 @@ def init_file_project_routes() -> APIRouter:
             "disposition": result.disposition,
             "graph_revision": final_state.graph_revision,
             "pipeline_stage": store.project().get("pipeline_stage"),
-            "materialization_status": _workbench_materialization_status(build_store, final_state),
+            "materialization_status": _workbench_materialization_status(build_store, final_state, store),
         }
 
     @router.post("/file-projects/{project_id}/world-build-jobs")

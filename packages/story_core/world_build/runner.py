@@ -132,6 +132,9 @@ class WorldBuildGraphRunner:
     ) -> None:
         self.project = project.model_copy(deep=True)
         self.store = store
+        from packages.story_core.opening_build.runtime import enabled
+        if enabled(store):
+            raise ValueError("opening_build_use_workbench")
         previous_input: Mapping[str, Any] | None = None
         try:
             prior = self.store.build_artifact("world_input")
