@@ -119,6 +119,8 @@ class ChapterGenerationWorkflowMixin:
             ledger["chapter_direction"] = chapter_direction
             state["progression_ledger"] = ledger
         story = StoryState.model_validate(self._story_state_payload_for_direction(state, project, target_chapter))
+        if authority is not None:
+            story = opening_execution.bind_story_planning(self, story)
         # The workbench path: every project lives on disk under
         # ``self.root`` so the new modular pipeline can read
         # the legacy ``.webnovel/`` shape through

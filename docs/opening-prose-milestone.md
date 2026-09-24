@@ -24,3 +24,11 @@ Do not add a second graph scheduler, automatic prose acceptance, cross-volume pl
 - The legacy direct-persist generation, regeneration, and polishing paths reject Opening projects. This milestone supports new pending candidates and explicit confirmation, not rewriting accepted Opening prose.
 - Once prose is confirmed, planning/source drift stops continuation. In-place migration of a consumed plan and cross-volume continuation remain outside this milestone.
 - Synthetic acceptance covers a 50-chapter first-volume shape, first-three confirmation flow, and the actual modular Character/Director/Writer/Canon-review integration using injected test runtimes. It does not establish real-provider prose quality.
+
+## Iteration 1: bind consumed planning to Opening artifacts
+
+Opening generation now projects StoryState and Director planning directly from the committed, validated Opening artifacts. Existing canonical/rolling files cannot override the chapter, neighboring detail, volume, or book summary. The projected chapter contract is compared in full with the committed and materialized handoff. Runtime continuity and confirmed story state retain their existing readers.
+
+Immediately before Writer runs, its Director artifact contract and hook must equal the official handoff; mismatches fail before the provider. The source fingerprint additionally includes canonical outline/volume files, so changes during generation or before confirmation fail closed even though their planning overrides are ignored.
+
+Regression fixtures demonstrate the original canonical-first reader choosing an obsolete hook, then verify that each of chapters 1–3 delivers the official complete contract to Character, the persisted Director artifact, and Writer. Both canonical and rolling conflicts are covered, including nonempty must_not_write and payoff_contract. Separate tests cover drift during provider work/before confirmation and rejection of forged Director contracts before Writer calls.

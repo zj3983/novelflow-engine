@@ -14,6 +14,10 @@ from tests.story_core.test_candidate_confirmation_transaction import _long_body
 def prepared_store(tmp_path, *, complete_volume=True):
     store, graph, service = opening_store(tmp_path)
     payloads = opening_payloads()
+    for number in range(1, 4):
+        payloads[f"chapter_outline_{number}"]["chapter"].update(
+            must_not_write=[f"禁止第{number}章提前公开最终证人"],
+            payoff_contract={"need": "保住证据", "pressure": "封档逼近", "hidden_advantage": "旧账副本", "concrete_reward": f"取得第{number}份签名"})
     payloads["book_outline"]["overall"].update(core_ending_chapter=50, extension_ceiling_chapter=50, planned_length=50)
     arc = payloads["volume_plan"]["arcs"][0]
     arc["end_chapter"] = 50
@@ -191,26 +195,61 @@ def test_opening_canon_blocking_cannot_be_confirmed(tmp_path, accept_quality_war
     assert store.candidate_store.get(candidate.candidate_id).status == "pending"
 
 
-def test_materialized_handoff_reaches_actual_modular_pipeline(tmp_path, monkeypatch):
+@pytest.mark.parametrize("chapter_number", [1, 2, 3])
+@pytest.mark.parametrize("override_source", ["canonical", "rolling"])
+def test_materialized_handoff_reaches_actual_modular_pipeline(tmp_path, monkeypatch, chapter_number, override_source):
     from packages.story_core.orchestrator import StoryOrchestrator
     from packages.story_core.character_agent import RuleBasedCharacterProposalProvider
     from packages.story_core.agents.fact_extractor import FactExtractor
     from packages.story_core.agents import pipeline
     from tests.story_core.test_modular_main_flow import _StubDirectorRuntime, _StubWriterRuntime
     store = prepared_store(tmp_path)
+    # Persist the active cast explicitly; fake previous chapters do not run
+    # Canon extraction/promotion as the real modular pipeline would.
+    seed_state = store.state()
+    for character in seed_state["characters"]:
+        character["lifecycle_state"] = "active"
+    store.snapshot_store.replace_json_transaction({store.webnovel_dir / "state.json": seed_state})
+    stale = {"chapters": [{"number": number, "chapter_number": number, "hook": "旧规划钩子B",
+        "must_not_write": ["旧规划禁止项B"], "payoff_contract": {"concrete_reward": "旧奖励B"}} for number in range(1, 4)]}
+    path = store.story_system_dir / ("outline.json" if override_source == "canonical" else "outline-generation/rolling_outline.json")
+    store.snapshot_store.replace_json_transaction({path: stale})
+    from packages.story_core.context.director_context import build_director_context
+    from packages.story_core.agents.director.prompt import build_outline_execution_contract
+    # Reproduce the old canonical-first consumer independently of Opening binding.
+    raw = build_director_context(project=store.root, chapter_number=chapter_number)
+    assert build_outline_execution_contract(raw).planned_hook == "旧规划钩子B"
+    class PreviousEngine(FakeEngine):
+        def generate_next_chapter(self, story):
+            bundle = super().generate_next_chapter(story)
+            bundle.body = _long_body("林照")
+            bundle.updated_story = story.model_copy(update={"current_chapter": bundle.chapter_number}, deep=True)
+            return bundle
+    for _ in range(1, chapter_number):
+        previous = store.generate_next_chapter(engine=PreviousEngine(), persist=False)["candidate"]
+        store.confirm_candidate(previous["candidate_id"])
+    expected = store.build_artifact("outline_execution_contract")["payload"]["outline_execution_contract"][chapter_number - 1]
+    assert expected["must_not_write"] and expected["payoff_contract"]
     calls = []
     class CharacterAgent(RuleBasedCharacterProposalProvider):
         def propose_all(self, story):
+            assert story.outline_context["chapter"]["execution_contract"] == expected
             calls.append("character")
-            assert story.outline_context["chapter"]["execution_contract"]["chapter_number"] == 1
             return super().propose_all(story)
     class Review:
         def complete(self, request):
             calls.append("review")
             return {"issues": []}
     monkeypatch.setattr(pipeline, "_default_consistency_runtime", lambda _: Review())
+    build_request = pipeline._build_writer_request
+    def checked_request(**kwargs):
+        request = build_request(**kwargs)
+        assert request.director_artifact.outline_contract.model_dump(mode="json") == expected
+        calls.append("writer-contract")
+        return request
+    monkeypatch.setattr(pipeline, "_build_writer_request", checked_request)
     director = _StubDirectorRuntime()
-    writer = _StubWriterRuntime(_long_body("林照") + "\n" + opening_payloads()["chapter_outline_1"]["chapter"]["ending_hook"])
+    writer = _StubWriterRuntime(_long_body("林照") + "\n" + expected["planned_hook"])
     orchestrator = StoryOrchestrator(use_modular_agents=True, project_root=store.root)
     class Engine:
         def generate_next_chapter(self, story):
@@ -219,9 +258,54 @@ def test_materialized_handoff_reaches_actual_modular_pipeline(tmp_path, monkeypa
     result = store.generate_next_chapter(engine=Engine(), persist=False)
     candidate = store.candidate_store.get(result["candidate"]["candidate_id"])
     assert writer.calls == 1
-    assert "character" in calls and "review" in calls
+    assert "character" in calls and "review" in calls and "writer-contract" in calls
+    director_json = store.snapshot_store.read_json(store.story_system_dir / "director" / f"{chapter_number:04d}.json", {})
+    assert director_json["output"]["outline_contract"] == expected
     stages = {path.name for path in (store.story_system_dir / "workflow").glob("*/*.json")}
     assert {"character-intent.json", "director.json", "writer.json", "fact-extractor.json"}.issubset(stages)
     assert candidate.continuity_delta is not None
     assert candidate.submission_payload["quality_report"]["modular_pipeline"]["director_artifact_present"]
+    assert store.chapter_numbers() == list(range(1, chapter_number))
+
+
+@pytest.mark.parametrize("source", ["outline.json", "outline-generation/rolling_outline.json", "../.webnovel/outline.json"])
+@pytest.mark.parametrize("when", ["during_provider", "before_confirmation"])
+def test_planning_source_drift_invalidates_candidate(tmp_path, source, when):
+    store = prepared_store(tmp_path)
+    path = store.story_system_dir / source
+    def drift():
+        data = store.snapshot_store.read_json(path, {})
+        if source == "../.webnovel/outline.json":
+            data["chapters"][0]["ending_hook"] = "changed"
+        else:
+            data["drift_evidence"] = "changed"
+        store.snapshot_store.replace_json_transaction({path: data})
+    if when == "during_provider":
+        with pytest.raises(ValueError, match="opening_.*(conflict|changed)"):
+            store.generate_next_chapter(engine=FakeEngine(drift), persist=False)
+        assert not list((store.story_system_dir / "candidates").glob("cd-*.json"))
+    else:
+        candidate = store.generate_next_chapter(engine=FakeEngine(), persist=False)["candidate"]
+        drift()
+        with pytest.raises(ValueError, match="opening_.*(conflict|changed)"):
+            store.confirm_candidate(candidate["candidate_id"])
+        assert store.candidate_store.get(candidate["candidate_id"]).status == "pending"
+    assert store.chapter_numbers() == []
+
+
+@pytest.mark.parametrize("field,value", [
+    ("planned_hook", "非正式钩子"),
+    ("must_not_write", ["非正式禁止项"]),
+    ("payoff_contract", {"concrete_reward": "非正式奖励"}),
+])
+def test_writer_rejects_wrong_director_contract_before_provider(tmp_path, field, value):
+    from packages.story_core.agents import pipeline
+    from tests.story_core.test_modular_main_flow import _StubDirectorRuntime, _StubWriterRuntime
+    store = prepared_store(tmp_path)
+    result = pipeline.plan_director_artifact(project_root=store.root, chapter_number=1, runtime=_StubDirectorRuntime())
+    wrong = result.artifact.model_copy(update={"outline_contract": result.artifact.outline_contract.model_copy(update={field: value})})
+    writer = _StubWriterRuntime(_long_body("林照"))
+    with pytest.raises(ValueError, match="opening_prose_planning_contract_conflict"):
+        pipeline.run_writer(project_root=store.root, chapter_number=1, director_artifact=wrong, runtime=writer)
+    assert writer.calls == 0
     assert store.chapter_numbers() == []

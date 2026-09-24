@@ -2,6 +2,7 @@
 from copy import deepcopy
 import hashlib
 import json
+from types import SimpleNamespace
 
 from packages.story_core.models import NovelProject
 from packages.story_core.persistence.project_locking import project_update_lock
@@ -13,6 +14,8 @@ def source_fingerprint(store):
         "source_revision": runtime.source_revision(store),
         "state": store.snapshot_store.read_json(store.webnovel_dir / "state.json", {}),
         "rolling": store.snapshot_store.read_json(store.story_system_dir / "outline-generation" / "rolling_outline.json", None),
+        "canonical_outline": store.snapshot_store.read_json(store.story_system_dir / "outline.json", None),
+        "canonical_volume": store.snapshot_store.read_json(store.story_system_dir / "volume.json", None),
         "handoff": store.snapshot_store.read_json(store.webnovel_dir / "opening_execution_contracts.json", None),
     }
     for directory in (store.story_system_dir / "canon", store.chapters_dir):
@@ -21,6 +24,63 @@ def source_fingerprint(store):
                 if path.is_file():
                     values[str(path.relative_to(store.root))] = hashlib.sha256(path.read_bytes()).hexdigest()
     return hashlib.sha256(json.dumps(values, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def planning_projection(store, chapter_number):
+    """Project only committed Opening artifacts, never canonical/rolling overrides."""
+    from packages.story_core.agents.director.prompt import build_outline_execution_contract
+    plan = runtime.canonical_plan(store).outline.model_dump(mode="json")
+    handoff = store.build_graph_store().read_artifact("outline_execution_contract")
+    expected = next((item for item in (handoff.payload["outline_execution_contract"] if handoff else [])
+                     if item["chapter_number"] == chapter_number), None)
+    contract = build_outline_execution_contract(SimpleNamespace(
+        chapter_number=chapter_number, nearby_outline=plan["chapters"]))
+    if expected is None or contract is None or contract.model_dump(mode="json") != expected:
+        raise ValueError("opening_prose_planning_contract_conflict")
+    chapter = next(item for item in plan["chapters"] if item["chapter_number"] == chapter_number)
+    volume = next(item for item in plan["arcs"] if item["start_chapter"] <= chapter_number <= item["end_chapter"])
+    return plan, chapter, volume, deepcopy(expected)
+
+
+def bind_story_planning(store, story):
+    with project_update_lock(store.root):
+        plan, chapter, volume, contract = planning_projection(store, story.current_chapter + 1)
+        return story.model_copy(update={"outline_context": {
+            "overall": plan["overall"], "arc": volume,
+            "chapter": {**chapter, "execution_contract": contract},
+        }}, deep=True)
+
+
+def bind_director_planning(project_root, context):
+    from packages.story_core.file_project_store import FileProjectStore
+    store = FileProjectStore(project_root)
+    if not runtime.enabled(store):
+        return context
+    with project_update_lock(store.root):
+        authority = capture(store)
+        if authority["chapter_number"] != context.chapter_number:
+            raise ValueError("opening_prose_revision_conflict")
+        plan, _chapter, volume, _contract = planning_projection(store, context.chapter_number)
+        return context.model_copy(update={
+            "nearby_outline": [item for item in plan["chapters"] if abs(item["chapter_number"] - context.chapter_number) <= 2],
+            "volume": {**volume, "chapter_range": [volume["start_chapter"], volume["end_chapter"]]},
+            "book_outline_summary": str(plan["overall"].get("story") or ""),
+        }, deep=True)
+
+
+def verify_writer_planning(project_root, artifact):
+    """Reject a Director handoff that differs from the committed Opening contract."""
+    from packages.story_core.file_project_store import FileProjectStore
+    store = FileProjectStore(project_root)
+    if not runtime.enabled(store):
+        return
+    with project_update_lock(store.root):
+        authority = capture(store)
+        if artifact.chapter_number != authority["chapter_number"]:
+            raise ValueError("opening_prose_revision_conflict")
+        _plan, _chapter, _volume, expected = planning_projection(store, artifact.chapter_number)
+        if artifact.outline_contract is None or artifact.outline_contract.model_dump(mode="json") != expected or artifact.hook != expected["planned_hook"]:
+            raise ValueError("opening_prose_planning_contract_conflict")
 
 
 def capture(store):
@@ -47,6 +107,7 @@ def capture(store):
             raise ValueError("opening_prose_handoff_conflict")
         if not any(item.get("chapter_number") == target for item in handoff.payload["outline_execution_contract"]):
             raise ValueError("opening_prose_chapter_not_planned")
+        planning_projection(store, target)
         # Keep the established complete-volume requirement, including its
         # canonical chapter/rolling-outline checks, before any model call.
         store.require_volume_detail_for_prose(target)
