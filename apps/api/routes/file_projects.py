@@ -36,6 +36,7 @@ from packages.story_core.build_graph.contracts import (
     BuildGraphError,
     BuildRevisionConflict,
     BuildRunConflict,
+    BuildTaskStateError,
 )
 from packages.story_core.persistence.project_locking import project_update_lock
 from packages.story_core.opening_directions import LLMOpeningDirectionGenerator
@@ -165,6 +166,12 @@ class BuildWorkbenchArtifactCommitRequest(BaseModel):
 
     expected_revision: int = Field(ge=1)
     payload: dict[str, Any]
+
+
+class BuildWorkbenchRepairRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    expected_revision: int = Field(ge=1)
 
 
 class BookDissectionReferenceRequest(BaseModel):
@@ -823,6 +830,12 @@ def _start_world_build_job(project_id: str) -> dict[str, object]:
             active = _world_build_jobs.get(active_job_id)
             if active is not None and str(active.get("status")) in {"queued", "running"}:
                 return _world_build_job_response(active)
+        # AI repair owns the persisted graph run slot. Check under the same
+        # project lock used by repair so a WorldBuild job cannot start beside it.
+        with project_update_lock(store.root):
+            graph_state = store.build_graph_store().read_state()
+            if graph_state is not None and any(task.active_run_id for task in graph_state.tasks.values()):
+                raise HTTPException(status_code=409, detail="build_run_in_progress")
         now = _now_iso()
         job_id = f"wbg-{uuid4().hex}"
         job: dict[str, object] = {
@@ -2572,6 +2585,68 @@ def init_file_project_routes() -> APIRouter:
             return "outdated"
         return "current"
 
+    def _invalidate_workbench_readiness(store, project: dict[str, Any]) -> None:
+        if project.get("pipeline_stage") == "environment_ready":
+            # Demote first so a crash can only leave a conservatively unready project.
+            store.update_project({"pipeline_stage": "world_ready"})
+
+    def _call_workbench_repair_model(store, task_id: str, prompt: str, max_tokens: int):
+        from packages.story_core.model_gateway import ModelRequest
+
+        request = ModelRequest(
+            prompt=prompt,
+            system_prompt="You are a senior Chinese webnovel worldbuilding editor. Return JSON only.",
+            provider="",
+            model="",
+            operation=f"workbench_repair_{task_id}",
+            max_tokens=max_tokens,
+            json_mode=True,
+            metadata={"reasoning_effort": "low", "enable_thinking": False, "world_build_task": task_id, "stream": False},
+        )
+        recorder = None
+        call_id = None
+        try:
+            recorder = store.prompt_call_log()
+            settings = resolve_stage_runtime("planner")
+            call_id = recorder.start(
+                chapter_number=0,
+                stage="planner",
+                agent=request.operation,
+                user_prompt=request.prompt,
+                system_prompt=request.system_prompt,
+                provider=str(getattr(settings, "provider_id", "") or ""),
+                protocol=str(getattr(settings, "protocol", "") or ""),
+                model=str(getattr(settings, "model", "") or ""),
+                temperature=getattr(settings, "temperature", None),
+                requested_max_tokens=request.max_tokens,
+                json_mode=True,
+            )
+        except Exception:
+            recorder = None
+            call_id = None
+        try:
+            response = shuangwen_model_gateway.complete_stage("planner", request)
+        except Exception:
+            from packages.story_core.model_gateway import ModelResponse
+            response = ModelResponse.failure(request, "model_call_failed")
+        if recorder is not None and call_id:
+            try:
+                recorder.finish(
+                    call_id,
+                    status="success" if getattr(response, "ok", False) else "error",
+                    provider=str(getattr(response, "provider", "") or ""),
+                    model=str(getattr(response, "resolved_model", "") or getattr(response, "model", "") or ""),
+                    resolved_model=str(getattr(response, "resolved_model", "") or ""),
+                    output=str(getattr(response, "text", "") or "") if getattr(response, "ok", False) else "",
+                    error="model_call_failed" if not getattr(response, "ok", False) else "",
+                    temperature_omitted=bool(getattr(response, "temperature_omitted", False)),
+                    raw=getattr(response, "raw", None),
+                    usage=getattr(response, "usage", None),
+                )
+            except Exception:
+                pass
+        return response, call_id
+
     @router.get("/file-projects/{project_id}/build-graph")
     def get_file_project_build_graph(project_id: str) -> dict[str, Any]:
         """Return a read-only projection of the persisted production Build Graph."""
@@ -2638,7 +2713,7 @@ def init_file_project_routes() -> APIRouter:
     @router.get("/file-projects/{project_id}/build-graph/tasks/{task_id}")
     def get_file_project_build_graph_task(project_id: str, task_id: str) -> dict[str, Any]:
         try:
-            _store, _project, graph, build_store, state, _service = _build_workbench_context(project_id)
+            store, _project, graph, build_store, state, _service = _build_workbench_context(project_id)
         except BuildGraphError as exc:
             raise HTTPException(status_code=409, detail=exc.to_dict()) from exc
         task = graph.definition.tasks_by_id.get(task_id)
@@ -2649,7 +2724,7 @@ def init_file_project_routes() -> APIRouter:
         artifact = build_store.read_artifact(task_id, revision) if revision is not None else None
         if revision is not None and artifact is None:
             raise HTTPException(status_code=409, detail="build_graph_artifact_missing")
-        materialization = _store.build_graph_materialization()
+        materialization = store.build_graph_materialization()
         return {
             "task_id": task_id,
             "title": task.title,
@@ -2722,9 +2797,7 @@ def init_file_project_routes() -> APIRouter:
                     )
                     if not validation.passed:
                         raise HTTPException(status_code=422, detail=validation.to_dict())
-                    if project.get("pipeline_stage") == "environment_ready":
-                        # Demote first so a crash can only leave a conservatively unready project.
-                        store.update_project({"pipeline_stage": "world_ready"})
+                    _invalidate_workbench_readiness(store, project)
                     result = service.edit_artifact(
                         task_id,
                         request.payload,
@@ -2748,6 +2821,210 @@ def init_file_project_routes() -> APIRouter:
             "graph_revision": service.inspect_graph().graph_revision,
             "pipeline_stage": store.project().get("pipeline_stage"),
             "materialization_status": _workbench_materialization_status(build_store, service.inspect_graph()),
+        }
+
+    @router.post("/file-projects/{project_id}/build-graph/tasks/{task_id}/repair")
+    def repair_file_project_build_graph_task(
+        project_id: str,
+        task_id: str,
+        request: BuildWorkbenchRepairRequest,
+    ) -> dict[str, Any]:
+        from packages.story_core.world_build.power_repairs import (
+            merge_power_path_repair,
+            power_path_repair_scope,
+            raw_power_spec_from_artifacts,
+        )
+        from packages.story_core.world_build.tasks import (
+            build_input_contract,
+            build_power_path_repair_prompt,
+            build_task_prompt,
+            input_fingerprint,
+            merge_repair_patch,
+            parse_power_path_repair_payload,
+            parse_task_payload,
+            preserve_existing_non_power_values,
+            repair_fields_for_diagnostics,
+            run_read_projection,
+        )
+        from packages.story_core.world_build.validators import make_world_validators
+
+        normalized_project_id = _strip_file_prefix(project_id)
+        # Keep the same lock order as WorldBuild start and human commit. The persisted
+        # Build Graph active_run_id remains the per-task concurrency authority.
+        with _world_build_jobs_lock:
+            if _has_active_world_build_job(normalized_project_id):
+                raise HTTPException(status_code=409, detail="world_build_in_progress")
+            store = _store_for(project_id)
+            with project_update_lock(store.root):
+                try:
+                    store, project, graph, build_store, state, service = _build_workbench_context(project_id)
+                    task = graph.definition.tasks_by_id.get(task_id)
+                    if task is None:
+                        raise HTTPException(status_code=404, detail="build_task_not_found")
+                    if graph.spec(task_id).kind != "model":
+                        raise HTTPException(status_code=403, detail="task_not_ai_repairable")
+                    task_state = state.tasks[task_id]
+                    artifact = service.inspect_artifact(task_id)
+                    if artifact is None:
+                        raise HTTPException(status_code=403, detail="task_not_ai_repairable")
+                    if task_state.current_artifact_revision != request.expected_revision:
+                        raise BuildRevisionConflict(
+                            "build_revision_conflict",
+                            "artifact revision changed before AI repair started",
+                            details={
+                                "task_id": task_id,
+                                "expected_revision": request.expected_revision,
+                                "current_revision": task_state.current_artifact_revision,
+                            },
+                        )
+
+                    diagnostics = tuple(task_state.diagnostics)
+                    if not diagnostics:
+                        diagnostics = service.validate(
+                            task_id, artifact.payload, requested_writes=task.owns
+                        ).diagnostics
+                    if not diagnostics:
+                        diagnostics = (BuildDiagnostic(
+                            "repair.user_requested", "payload", "user requested a repair of the current artifact"
+                        ),)
+                    if task_state.active_run_id:
+                        raise HTTPException(status_code=409, detail={
+                            "code": "build_run_conflict",
+                            "message": "task already has an active Build Graph run",
+                            "details": {"task_id": task_id, "run_id": task_state.active_run_id},
+                            "diagnostics": [],
+                        })
+                    if task_state.status not in {"ready", "stale", "validation_failed", "completed"}:
+                        raise HTTPException(status_code=409, detail={
+                            "code": "build_run_conflict",
+                            "message": "task is not in a state that can start AI repair",
+                            "details": {"task_id": task_id, "status": task_state.status},
+                            "diagnostics": [],
+                        })
+                    # A started/failed run changes persisted task state and makes the
+                    # old materialization marker non-current. Demote first so every
+                    # observable intermediate state remains conservatively unready.
+                    _invalidate_workbench_readiness(store, project)
+                    contract = build_input_contract(
+                        NovelProject.model_validate(project), graph, service, task_id
+                    )
+                    run = service.start_run(
+                        task_id,
+                        input_fingerprint=input_fingerprint(contract),
+                        read_projection=run_read_projection(graph, task_id, contract),
+                        allow_completed_with_artifact=True,
+                    )
+                    repair_fields = repair_fields_for_diagnostics(graph.spec(task_id), diagnostics)
+                    # A diagnostic that cannot map to a narrower field may use the
+                    # task's complete declared output shape, never arbitrary keys.
+                    if repair_fields is None and graph.spec(task_id).output_fields:
+                        repair_fields = tuple(graph.spec(task_id).output_fields)
+                    path_scope = None
+                    if task_id == "power_system_paths":
+                        path_scope = power_path_repair_scope(
+                            artifact.payload,
+                            diagnostics,
+                            NovelProject.model_validate(project),
+                            raw_spec=raw_power_spec_from_artifacts(service),
+                            progression_mode=graph.power_progression_mode,
+                        )
+                        if not path_scope.has_mutations:
+                            blocked = (BuildDiagnostic(
+                                "task.repair_scope_unresolved", "paths",
+                                "current diagnostics do not identify a safe power path repair scope",
+                            ),)
+                            service.fail_run(run.run_id, blocked)
+                            raise HTTPException(status_code=422, detail={"passed": False, "diagnostics": [d.to_dict() for d in blocked]})
+                        prompt = build_power_path_repair_prompt(
+                            graph, task_id, contract, repair_candidate=artifact.payload,
+                            diagnostics=diagnostics, scope=path_scope,
+                        )
+                    else:
+                        prompt = build_task_prompt(
+                            graph, task_id, contract, repair_candidate=artifact.payload,
+                            diagnostics=diagnostics, repair_fields=repair_fields,
+                        )
+
+                    response, call_id = _call_workbench_repair_model(
+                        store, task_id, prompt, graph.spec(task_id).max_tokens
+                    )
+                    if not getattr(response, "ok", False):
+                        failure = (BuildDiagnostic(
+                            "model.repair_request_failed", f"tasks.{task_id}",
+                            "AI repair request failed; the current artifact was kept",
+                        ),)
+                        service.fail_run(run.run_id, failure)
+                        raise HTTPException(status_code=422, detail={"passed": False, "diagnostics": [d.to_dict() for d in failure]})
+                    if not call_id or not str(getattr(response, "provider", "") or "").strip() or not str(
+                        getattr(response, "resolved_model", "") or getattr(response, "model", "") or ""
+                    ).strip():
+                        failure = (BuildDiagnostic(
+                            "model.repair_provenance_missing", f"tasks.{task_id}",
+                            "AI repair response is missing required model provenance",
+                        ),)
+                        service.fail_run(run.run_id, failure)
+                        raise HTTPException(status_code=422, detail={"passed": False, "diagnostics": [d.to_dict() for d in failure]})
+
+                    if path_scope is not None:
+                        patch_payload, parse_diagnostics = parse_power_path_repair_payload(getattr(response, "text", ""))
+                        if patch_payload is None:
+                            candidate, candidate_diagnostics = None, parse_diagnostics
+                        else:
+                            candidate, candidate_diagnostics = merge_power_path_repair(artifact.payload, patch_payload, path_scope)
+                    else:
+                        patch_payload, parse_diagnostics = parse_task_payload(getattr(response, "text", ""), graph.spec(task_id).output_fields)
+                        if patch_payload is None:
+                            candidate, candidate_diagnostics = None, parse_diagnostics
+                        else:
+                            candidate, candidate_diagnostics = merge_repair_patch(artifact.payload, patch_payload, repair_fields)
+
+                    if candidate is not None and not candidate_diagnostics:
+                        candidate = preserve_existing_non_power_values(
+                            NovelProject.model_validate(project), task_id, candidate
+                        )
+                    if candidate is not None and not candidate_diagnostics:
+                        candidate_diagnostics = service.validate(task_id, candidate, requested_writes=task.owns).diagnostics
+                    if candidate is None or candidate_diagnostics:
+                        failure = tuple(candidate_diagnostics) or (BuildDiagnostic(
+                            "task.repair_failed", f"tasks.{task_id}", "repair candidate could not be validated"
+                        ),)
+                        service.fail_run(run.run_id, failure)
+                        raise HTTPException(status_code=422, detail={"passed": False, "diagnostics": [d.to_dict() for d in failure]})
+
+                    result = service.commit_run(
+                        run.run_id, candidate, requested_writes=task.owns, source="ai_repair",
+                        provider=str(getattr(response, "provider", "") or "") or None,
+                        model=str(getattr(response, "resolved_model", "") or getattr(response, "model", "") or "") or None,
+                        prompt_call_id=call_id,
+                    )
+                    final_state = service.inspect_graph()
+                except HTTPException:
+                    raise
+                except BuildRevisionConflict as exc:
+                    raise HTTPException(status_code=409, detail=exc.to_dict()) from exc
+                except BuildRunConflict as exc:
+                    raise HTTPException(status_code=409, detail=exc.to_dict()) from exc
+                except BuildTaskStateError as exc:
+                    if exc.code in {"build_run_active", "build_task_not_runnable"}:
+                        raise HTTPException(status_code=409, detail={
+                            "code": "build_run_conflict",
+                            "message": str(exc),
+                            "details": exc.details,
+                            "diagnostics": [],
+                        }) from exc
+                    raise HTTPException(status_code=409, detail=exc.to_dict()) from exc
+                except BuildGraphError as exc:
+                    raise HTTPException(status_code=422, detail=exc.to_dict()) from exc
+
+        return {
+            "task_id": task_id,
+            "task": final_state.tasks[task_id].to_dict(),
+            "artifact": result.artifact.to_dict() if result.artifact else None,
+            "validation": result.validation.to_dict(),
+            "disposition": result.disposition,
+            "graph_revision": final_state.graph_revision,
+            "pipeline_stage": store.project().get("pipeline_stage"),
+            "materialization_status": _workbench_materialization_status(build_store, final_state),
         }
 
     @router.post("/file-projects/{project_id}/world-build-jobs")

@@ -278,6 +278,7 @@ class BuildGraphService:
         *,
         input_fingerprint: str | None = None,
         read_projection: Mapping[str, Any] | None = None,
+        allow_completed_with_artifact: bool = False,
     ) -> BuildRun:
         task = self._task(task_id)
         with project_update_lock(self.store.root):
@@ -289,7 +290,10 @@ class BuildGraphService:
                     "task already has an active run",
                     details={"task_id": task.task_id, "run_id": current.active_run_id},
                 )
-            if current.status not in {"ready", "stale", "validation_failed"}:
+            runnable_statuses = {"ready", "stale", "validation_failed"}
+            if allow_completed_with_artifact and current.current_artifact_revision is not None:
+                runnable_statuses.add("completed")
+            if current.status not in runnable_statuses:
                 raise BuildTaskStateError(
                     "build_task_not_runnable",
                     "task must be ready, stale, or validation_failed before starting a run",

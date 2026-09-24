@@ -446,6 +446,54 @@ def repair_fields_for_diagnostics(
     return fields or None
 
 
+def merge_repair_patch(
+    base_candidate: Mapping[str, Any] | None,
+    repair_patch: Mapping[str, Any],
+    repair_fields: Sequence[str] | None,
+) -> tuple[dict[str, Any] | None, tuple[BuildDiagnostic, ...]]:
+    """Merge a focused repair response and reject writes outside its scope."""
+
+    if repair_fields is None:
+        return deepcopy(dict(repair_patch)), ()
+    allowed = set(repair_fields)
+    unexpected = sorted(set(repair_patch).difference(allowed))
+    if unexpected:
+        return None, (BuildDiagnostic(
+            "task.repair_out_of_scope", "payload",
+            "repair response contains fields outside the requested repair scope: " + ", ".join(unexpected),
+        ),)
+    missing = sorted(allowed.difference(repair_patch))
+    if missing:
+        return None, (BuildDiagnostic(
+            "task.repair_incomplete", "payload",
+            "repair response omitted required field(s): " + ", ".join(missing),
+        ),)
+    if not isinstance(base_candidate, Mapping):
+        return None, (BuildDiagnostic(
+            "task.repair_base_missing", "payload",
+            "field-scoped repair requires the original candidate payload",
+        ),)
+    merged = deepcopy(dict(base_candidate))
+    merged.update(deepcopy(dict(repair_patch)))
+    return merged, ()
+
+
+def preserve_existing_non_power_values(
+    project: NovelProject,
+    task_id: str,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Retain authoritative existing non-power values during task repair."""
+
+    if task_id.startswith("power_system_"):
+        return dict(payload)
+    merged = dict(payload)
+    for key, value in task_payload_from_project(project, task_id).items():
+        if value not in (None, "", [], {}):
+            merged[key] = deepcopy(value)
+    return merged
+
+
 def _power_final_field_for_diagnostic(code: str) -> str:
     """Map a routed final diagnostic to its owning section field."""
 
@@ -614,8 +662,10 @@ __all__ = [
     "build_task_prompt",
     "canonical_world_input",
     "input_fingerprint",
+    "merge_repair_patch",
     "parse_task_payload",
     "parse_power_path_repair_payload",
+    "preserve_existing_non_power_values",
     "repair_fields_for_diagnostics",
     "run_read_projection",
     "task_payload_from_project",

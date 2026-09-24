@@ -203,3 +203,58 @@ test("人工编辑先校验再保存，刷新后显示新 revision 与 stale 下
   await page.reload();
   await expect(page.getByText("r2 · 人工编辑", { exact: true })).toBeVisible();
 });
+
+test("AI 修复阻止覆盖本地草稿，并在成功后刷新后端 revision", async ({ page }) => {
+  let currentGraph = graph([
+    task(0, { task_id: "world_model", title: "世界规则", dependencies: [], reads: [], owns: ["world.rules"] }),
+  ]);
+  let repaired = false;
+  let repairAttempts = 0;
+  await page.route(`**/file-projects/${encodedId}`, async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
+  });
+  await page.route(`**/file-projects/${encodedId}/build-graph`, async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(currentGraph) });
+  });
+  await page.route(`**/file-projects/${encodedId}/build-graph/tasks/**`, async (route) => {
+    const request = route.request();
+    if (request.method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        task_id: "world_model", title: "世界规则", status: "completed", editable: true,
+        artifact: { revision: repaired ? 2 : 1, source: repaired ? "ai_repair" : "llm", payload: { label: repaired ? "Repaired" : "Initial" } },
+        owns: ["world.rules"], validation_status: "passed", diagnostics: [],
+        materialization_status: repaired ? "outdated" : "current", materialization_marker: null,
+      }) });
+    } else if (request.method() === "POST" && request.url().endsWith("/repair")) {
+      repairAttempts += 1;
+      if (repairAttempts === 1) {
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        await route.fulfill({ status: 422, contentType: "application/json", body: JSON.stringify({ detail: {
+          passed: false,
+          diagnostics: [{ code: "task.repair_out_of_scope", path: "payload", message: "修复响应包含未授权字段" }],
+        } }) });
+        return;
+      }
+      repaired = true;
+      currentGraph = { ...currentGraph, graph_revision: 34, pipeline_stage: "world_ready", materialization_status: "outdated",
+        tasks: currentGraph.tasks.map((item) => ({ ...item, artifact_revision: 2, artifact_source: "ai_repair" })) };
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        artifact: { revision: 2, source: "ai_repair", payload: { label: "Repaired" } }, pipeline_stage: "world_ready", materialization_status: "outdated",
+      }) });
+    } else await route.fallback();
+  });
+
+  await page.goto(`/projects/${encodedId}/build`);
+  await page.getByRole("button", { name: /世界规则/ }).click();
+  await page.getByRole("button", { name: "人工编辑" }).click();
+  await page.getByRole("textbox", { name: "Artifact JSON draft" }).fill('{"label":"unsaved"}');
+  await page.getByRole("button", { name: "AI 修复" }).click();
+  await expect(page.getByText("当前有未保存的 JSON 草稿。请先保存或取消草稿，再运行 AI 修复。", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "取消" }).click();
+  await page.getByRole("button", { name: "AI 修复" }).click();
+  await expect(page.getByRole("button", { name: "AI 修复中…", exact: true })).toBeDisabled();
+  await expect(page.getByText("task.repair_out_of_scope", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "AI 修复" }).click();
+  await expect(page.getByText("r2 · AI 修复", { exact: true })).toBeVisible();
+  await expect(page.getByText("旧物化结果已过期").first()).toBeVisible();
+});

@@ -35,8 +35,10 @@ from .tasks import (
     build_task_prompt,
     canonical_world_input,
     input_fingerprint,
+    merge_repair_patch,
     parse_power_path_repair_payload,
     parse_task_payload,
+    preserve_existing_non_power_values,
     repair_fields_for_diagnostics,
     run_read_projection,
     task_payload_from_project,
@@ -285,14 +287,7 @@ class WorldBuildGraphRunner:
     ) -> dict[str, Any]:
         """Keep existing non-power fields authoritative during completion."""
 
-        if task_id.startswith("power_system_"):
-            return dict(payload)
-        existing = task_payload_from_project(self.project, task_id)
-        merged = dict(payload)
-        for key, value in existing.items():
-            if value not in (None, "", [], {}):
-                merged[key] = deepcopy(value)
-        return merged
+        return preserve_existing_non_power_values(self.project, task_id, payload)
 
     # ------------------------------------------------------------------
     # Model and deterministic tasks
@@ -541,41 +536,9 @@ class WorldBuildGraphRunner:
         repair_patch: Mapping[str, Any],
         repair_fields: Sequence[str] | None,
     ) -> tuple[dict[str, Any] | None, tuple[BuildDiagnostic, ...]]:
-        """Merge a scoped repair without allowing it to rewrite other fields."""
+        """Shared pure merge contract also used by Workbench repair."""
 
-        if repair_fields is None:
-            return deepcopy(dict(repair_patch)), ()
-        allowed = set(repair_fields)
-        unexpected = sorted(set(repair_patch).difference(allowed))
-        if unexpected:
-            return None, (
-                BuildDiagnostic(
-                    "task.repair_out_of_scope",
-                    "payload",
-                    "repair response contains fields outside the requested repair scope: "
-                    + ", ".join(unexpected),
-                ),
-            )
-        missing = sorted(allowed.difference(repair_patch))
-        if missing:
-            return None, (
-                BuildDiagnostic(
-                    "task.repair_incomplete",
-                    "payload",
-                    "repair response omitted required field(s): " + ", ".join(missing),
-                ),
-            )
-        if not isinstance(base_candidate, Mapping):
-            return None, (
-                BuildDiagnostic(
-                    "task.repair_base_missing",
-                    "payload",
-                    "field-scoped repair requires the original candidate payload",
-                ),
-            )
-        merged = deepcopy(dict(base_candidate))
-        merged.update(deepcopy(dict(repair_patch)))
-        return merged, ()
+        return merge_repair_patch(base_candidate, repair_patch, repair_fields)
 
     def _run_deterministic(self, task_id: str) -> None:
         self._ensure_active(task_id)

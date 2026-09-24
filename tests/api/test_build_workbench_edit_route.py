@@ -20,7 +20,7 @@ def _synthetic_graph():
     specs = (
         WorldBuildTaskSpec(
             BuildTaskDefinition(task_id="world_model", title="世界规则", owns=("world.rules",), validator_id="valid_label"),
-            "model", ("world_rules",),
+            "model", ("label",),
         ),
         WorldBuildTaskSpec(
             BuildTaskDefinition(task_id="downstream_model", title="下游设定", dependencies=("world_model",), owns=("world.detail",)),
@@ -44,6 +44,9 @@ def _synthetic_graph():
         definition=definition,
         specs={spec.task.task_id: spec for spec in specs},
         spec=lambda task_id: {spec.task.task_id: spec for spec in specs}[task_id],
+        structured_power=False,
+        plugin_id=None,
+        power_progression_mode=None,
     )
 
 
@@ -182,6 +185,136 @@ def test_invalid_conflict_and_noneditable_commits_do_not_mutate(tmp_path, monkey
     assert marker_bytes != b""
 
 
+def test_workbench_ai_repair_commits_one_revision_and_stales_graph(tmp_path, monkeypatch):
+    store, _graph, service, marker_path, marker_bytes = _setup_project(tmp_path, monkeypatch)
+    calls = []
+
+    class Gateway:
+        def complete_stage(self, _stage, request):
+            calls.append(request)
+            return SimpleNamespace(
+                ok=True,
+                text='{"label":"Repaired"}',
+                provider="test-provider",
+                model="test-model",
+                resolved_model="test-model-resolved",
+            )
+
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", Gateway())
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.post(
+        "/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/repair",
+        json={"expected_revision": 1},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert len(calls) == 1
+    assert body["artifact"]["revision"] == 2
+    assert body["artifact"]["source"] == "ai_repair"
+    assert body["artifact"]["parent_revision"] == 1
+    assert body["artifact"]["provider"] == "test-provider"
+    assert body["artifact"]["model"] == "test-model-resolved"
+    assert body["artifact"]["prompt_call_id"]
+    assert "Initial" in calls[0].prompt
+    assert "Initial transitive" not in calls[0].prompt
+    assert "downstream_model" not in calls[0].prompt
+    assert body["pipeline_stage"] == "world_ready"
+    assert body["materialization_status"] == "outdated"
+    current = service.inspect_graph()
+    assert current.tasks["downstream_model"].status == "stale"
+    assert current.tasks["transitive_model"].status == "stale"
+    assert store.build_artifact("world_model", 1)["payload"] == {"label": "Initial"}
+    assert marker_path.read_bytes() == marker_bytes
+
+
+def test_workbench_ai_repair_revision_conflict_has_zero_model_calls(tmp_path, monkeypatch):
+    _store, _graph, service, _marker_path, _marker_bytes = _setup_project(tmp_path, monkeypatch)
+    service.edit_artifact("world_model", {"label": "Human"}, expected_revision=1, requested_writes=("world.rules",))
+    calls = []
+
+    class Gateway:
+        def complete_stage(self, *_args):
+            calls.append(1)
+            raise AssertionError("provider must not be called on revision conflict")
+
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", Gateway())
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/repair",
+        json={"expected_revision": 1},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "build_revision_conflict"
+    assert calls == []
+    assert service.inspect_graph().tasks["world_model"].current_artifact_revision == 2
+
+
+def test_workbench_ai_repair_failure_keeps_current_artifact_and_is_structured(tmp_path, monkeypatch):
+    store, _graph, service, _marker_path, _marker_bytes = _setup_project(tmp_path, monkeypatch, stage="world_ready")
+    calls = []
+
+    class Gateway:
+        def complete_stage(self, *_args):
+            calls.append(1)
+            return SimpleNamespace(ok=False, error="secret provider detail", text="", provider="", model="", resolved_model="")
+
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", Gateway())
+    before_stage = store.project()["pipeline_stage"]
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/repair",
+        json={"expected_revision": 1},
+    )
+    assert response.status_code == 422
+    assert len(calls) == 1
+    diagnostic = response.json()["detail"]["diagnostics"][0]
+    assert diagnostic["code"] == "model.repair_request_failed"
+    assert "secret" not in response.text
+    state = service.inspect_graph()
+    assert state.tasks["world_model"].current_artifact_revision == 1
+    assert state.tasks["world_model"].status == "validation_failed"
+    assert store.project()["pipeline_stage"] == before_stage
+
+
+def test_workbench_ai_repair_rejects_parse_and_scoped_out_of_scope_patch(tmp_path, monkeypatch):
+    _store, _graph, service, _marker_path, _marker_bytes = _setup_project(tmp_path, monkeypatch, stage="world_ready")
+    service.invalidate_task("world_model", (BuildDiagnostic("label_invalid", "label", "label needs repair"),))
+    responses = iter(("not-json", '{"label":"Repaired","unauthorized":"no"}'))
+    calls = []
+
+    class Gateway:
+        def complete_stage(self, _stage, _request):
+            calls.append(1)
+            return SimpleNamespace(ok=True, text=next(responses), provider="p", model="m", resolved_model="m")
+
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", Gateway())
+    client = TestClient(app, raise_server_exceptions=False)
+    for expected_code in ("task.invalid_json", "task.repair_out_of_scope"):
+        response = client.post(
+            "/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/repair",
+            json={"expected_revision": 1},
+        )
+        assert response.status_code == 422, response.text
+        assert response.json()["detail"]["diagnostics"][0]["code"] == expected_code
+        assert service.inspect_graph().tasks["world_model"].current_artifact_revision == 1
+    assert len(calls) == 2
+
+
+def test_world_build_start_is_rejected_while_build_graph_run_is_active(tmp_path, monkeypatch):
+    _store, _graph, service, _marker_path, _marker_bytes = _setup_project(tmp_path, monkeypatch, stage="world_ready")
+    service.invalidate_task("world_model", (BuildDiagnostic("label_invalid", "label", "label needs repair"),))
+    service.start_run("world_model")
+    repair = TestClient(app, raise_server_exceptions=False).post(
+        "/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/repair",
+        json={"expected_revision": 1},
+    )
+    assert repair.status_code == 409
+    assert repair.json()["detail"]["code"] == "build_run_conflict"
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/file-projects/p-synthetic-build-edit/world-build-jobs"
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "build_run_in_progress"
+
 def test_active_world_build_blocks_human_edit(tmp_path, monkeypatch):
     store, _graph, service, _marker_path, _marker_bytes = _setup_project(tmp_path, monkeypatch)
     monkeypatch.setitem(file_projects._active_world_build_jobs, "p-synthetic-build-edit", "job-active")
@@ -196,6 +329,12 @@ def test_active_world_build_blocks_human_edit(tmp_path, monkeypatch):
 
     assert response.status_code == 409
     assert response.json()["detail"] == "world_build_in_progress"
+    repair = client.post(
+        "/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/repair",
+        json={"expected_revision": 1},
+    )
+    assert repair.status_code == 409
+    assert repair.json()["detail"] == "world_build_in_progress"
     assert service.inspect_graph().to_dict() == before
     assert store.project()["pipeline_stage"] == "environment_ready"
 
