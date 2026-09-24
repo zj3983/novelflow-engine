@@ -16,6 +16,7 @@ def prepared_store(tmp_path, *, complete_volume=True):
     payloads = opening_payloads()
     for number in range(1, 4):
         payloads[f"chapter_outline_{number}"]["chapter"].update(
+            title=f"正式规划第{number}条线索",
             must_not_write=[f"禁止第{number}章提前公开最终证人"],
             payoff_contract={"need": "保住证据", "pressure": "封档逼近", "hidden_advantage": "旧账副本", "concrete_reward": f"取得第{number}份签名"})
     payloads["book_outline"]["overall"].update(core_ending_chapter=50, extension_ceiling_chapter=50, planned_length=50)
@@ -210,7 +211,7 @@ def test_materialized_handoff_reaches_actual_modular_pipeline(tmp_path, monkeypa
     for character in seed_state["characters"]:
         character["lifecycle_state"] = "active"
     store.snapshot_store.replace_json_transaction({store.webnovel_dir / "state.json": seed_state})
-    stale = {"chapters": [{"number": number, "chapter_number": number, "hook": "旧规划钩子B",
+    stale = {"chapters": [{"number": number, "chapter_number": number, "title": "旧规划标题B", "hook": "旧规划钩子B",
         "must_not_write": ["旧规划禁止项B"], "payoff_contract": {"concrete_reward": "旧奖励B"}} for number in range(1, 4)]}
     path = store.story_system_dir / ("outline.json" if override_source == "canonical" else "outline-generation/rolling_outline.json")
     store.snapshot_store.replace_json_transaction({path: stale})
@@ -266,6 +267,31 @@ def test_materialized_handoff_reaches_actual_modular_pipeline(tmp_path, monkeypa
     assert candidate.continuity_delta is not None
     assert candidate.submission_payload["quality_report"]["modular_pipeline"]["director_artifact_present"]
     assert store.chapter_numbers() == list(range(1, chapter_number))
+    official_title = store.build_artifact(f"chapter_outline_{chapter_number}")["payload"]["chapter"]["title"]
+    assert candidate.chapter_title == official_title
+    old_source = path.read_bytes()
+    marker_path = store.webnovel_dir / "build_graph_materialization.json"
+    marker = marker_path.read_bytes()
+    artifacts = {p: p.read_bytes() for p in store.build_graph_store().artifacts_dir.rglob("*.json")}
+    store.confirm_candidate(candidate.candidate_id)
+    persisted = store.snapshot_store.read_json(store.story_system_dir / "chapters" / f"{chapter_number:04d}.json", {})
+    assert persisted["chapter_title"] == official_title
+    assert persisted["chapter_summary"]["chapter_title"] == official_title
+    assert store._chapter_paths(chapter_number, official_title)["markdown"].exists()
+    assert not any("旧规划标题B" in p.name for p in store.chapters_dir.glob("*.md"))
+    assert path.read_bytes() == old_source
+    assert marker_path.read_bytes() == marker
+    assert {p: p.read_bytes() for p in store.build_graph_store().artifacts_dir.rglob("*.json")} == artifacts
+
+
+def test_missing_opening_title_never_falls_back_to_rolling_or_candidate(tmp_path, monkeypatch):
+    store = prepared_store(tmp_path)
+    path = store.story_system_dir / "outline-generation" / "rolling_outline.json"
+    store.snapshot_store.replace_json_transaction({path: {"chapters": [{"chapter_number": 1, "title": "旧标题"}]}})
+    monkeypatch.setattr(execution, "planning_projection", lambda *_: ({}, {"title": " "}, {}, {}))
+    with pytest.raises(ValueError, match="opening_prose_chapter_title_missing"):
+        store._authoritative_chapter_title(1, operation="generate", fallback_title="候选标题")
+    assert store.chapter_numbers() == []
 
 
 @pytest.mark.parametrize("source", ["outline.json", "outline-generation/rolling_outline.json", "../.webnovel/outline.json"])
