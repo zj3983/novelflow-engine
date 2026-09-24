@@ -4437,6 +4437,15 @@ export class BuildWorkbenchRepairError extends Error {
   }
 }
 
+export class BuildWorkbenchRerunError extends Error {
+  diagnostics: BuildWorkbenchDiagnostic[];
+  constructor(message: string, diagnostics: BuildWorkbenchDiagnostic[]) {
+    super(message);
+    this.name = "BuildWorkbenchRerunError";
+    this.diagnostics = diagnostics;
+  }
+}
+
 export async function fetchBuildWorkbench(projectId: string): Promise<BuildWorkbenchGraph> {
   return await tryFetchJson(`${fileProjectPath(projectId)}/build-graph`, {
     method: "GET",
@@ -4490,6 +4499,25 @@ export async function repairBuildWorkbenchTask(
     if (!Array.isArray(diagnostics)) return undefined;
     return new BuildWorkbenchRepairError(
       "AI 修复未完成，当前 artifact 保持不变",
+      diagnostics.filter((item): item is BuildWorkbenchDiagnostic => !!item && typeof item === "object"),
+    );
+  });
+}
+
+export async function rerunBuildWorkbenchTask(
+  projectId: string,
+  taskId: string,
+  expectedRevision: number,
+): Promise<{ artifact: BuildWorkbenchTaskDetail["artifact"]; pipeline_stage: string; materialization_status: string }> {
+  return await fetchJson<{ artifact: BuildWorkbenchTaskDetail["artifact"]; pipeline_stage: string; materialization_status: string }>(`${fileProjectPath(projectId)}/build-graph/tasks/${encodeURIComponent(taskId)}/rerun`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ expected_revision: expectedRevision }),
+  }, 1_800_000, (detail) => {
+    const diagnostics = detail.diagnostics;
+    if (!Array.isArray(diagnostics)) return undefined;
+    return new BuildWorkbenchRerunError(
+      "完整重跑未完成，当前 artifact 保持不变",
       diagnostics.filter((item): item is BuildWorkbenchDiagnostic => !!item && typeof item === "object"),
     );
   });

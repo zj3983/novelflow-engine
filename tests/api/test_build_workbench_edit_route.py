@@ -94,6 +94,110 @@ def _setup_project(tmp_path: Path, monkeypatch, *, stage="environment_ready"):
     return store, graph, service, marker_path, marker_bytes
 
 
+def _setup_materialized_non_power_project(tmp_path: Path, monkeypatch):
+    from packages.story_core.build_graph.definition import BuildGraphDefinition, BuildTaskDefinition
+    from packages.story_core.world_build.definition import WorldBuildTaskSpec
+
+    root = tmp_path / "synthetic-materialized-rerun"
+    (root / ".story-system").mkdir(parents=True)
+    (root / ".webnovel").mkdir()
+    (root / "chapters").mkdir()
+    old_blueprint = {
+        "economy_rules": ["OLD economy rule"],
+        "world_systems": {"law": "OLD system"},
+        "living_world": {"climate": "OLD climate"},
+        "faction_rules": ["OLD faction rule"],
+    }
+    project = {
+        "project_id": "p-synthetic-materialized-rerun",
+        "title": "Materialized Rerun Fixture",
+        "pipeline_stage": "environment_ready",
+        "world_blueprint": old_blueprint,
+    }
+    (root / ".story-system" / "MASTER_SETTING.json").write_text(
+        json.dumps({"schema_version": "story-system-master-setting/v1", "project": project}), encoding="utf-8"
+    )
+    (root / ".webnovel" / "project.json").write_text(json.dumps(project), encoding="utf-8")
+    (root / ".webnovel" / "state.json").write_text(json.dumps({"story_id": "s-synthetic-rerun", "current_chapter": 0}), encoding="utf-8")
+
+    specs = (
+        WorldBuildTaskSpec(
+            BuildTaskDefinition(task_id="world_input", title="根输入", owns=("build.root.seed",)),
+            "imported", ("seed",), output_schema={"seed": "string"},
+        ),
+        WorldBuildTaskSpec(
+            BuildTaskDefinition(
+                task_id="world_economy", title="经济规则", dependencies=("world_input",),
+                reads=("build.root.seed",), owns=("world.economy",), validator_id="valid_economy",
+            ),
+            "model", ("economy_rules",), output_schema={"economy_rules": "string[]"},
+        ),
+        WorldBuildTaskSpec(
+            BuildTaskDefinition(
+                task_id="downstream_model", title="下游摘要", dependencies=("world_economy",),
+                reads=("world.economy.economy_rules",), owns=("world.downstream",),
+            ),
+            "model", ("summary",), output_schema={"summary": "string"},
+        ),
+        WorldBuildTaskSpec(
+            BuildTaskDefinition(
+                task_id="world_society", title="社会规则", dependencies=("world_input",),
+                reads=("build.root.seed",),
+                owns=("world.society.systems", "world.society.living", "world.society.faction_rules"),
+                validator_id="valid_society",
+            ),
+            "model", ("world_systems", "living_world", "faction_rules"),
+            output_schema={"world_systems": "object", "living_world": "object", "faction_rules": "string[]"},
+        ),
+    )
+    definition = BuildGraphDefinition(graph_id="novelflow-project-build", tasks=tuple(spec.task for spec in specs))
+    graph = SimpleNamespace(
+        definition=definition,
+        specs={spec.task.task_id: spec for spec in specs},
+        spec=lambda task_id: {spec.task.task_id: spec for spec in specs}[task_id],
+        structured_power=False,
+        plugin_id=None,
+        power_progression_mode=None,
+    )
+
+    def valid_economy(payload):
+        return () if isinstance(payload.get("economy_rules"), list) and payload["economy_rules"] else (
+            BuildDiagnostic("economy.rules.required", "economy_rules", "economy rules are required"),
+        )
+
+    def valid_society(payload):
+        valid = (
+            isinstance(payload.get("world_systems"), dict)
+            and isinstance(payload.get("living_world"), dict)
+            and isinstance(payload.get("faction_rules"), list)
+        )
+        return () if valid else (BuildDiagnostic("society.required", "payload", "all society fields are required"),)
+
+    validators = {"valid_economy": valid_economy, "valid_society": valid_society}
+    store = FileProjectStore(root)
+    service = store.build_graph_service(definition, validators=validators)
+    service.commit_candidate("world_input", {"seed": "declared source seed"}, source="imported", requested_writes=("build.root.seed",))
+    service.commit_candidate("world_economy", {"economy_rules": ["OLD economy rule"]}, requested_writes=("world.economy",))
+    service.commit_candidate("downstream_model", {"summary": "old downstream"}, requested_writes=("world.downstream",))
+    service.commit_candidate(
+        "world_society",
+        {"world_systems": {"law": "OLD system"}, "living_world": {"climate": "OLD climate"}, "faction_rules": ["OLD faction rule"]},
+        requested_writes=("world.society.systems", "world.society.living", "world.society.faction_rules"),
+    )
+    marker = {
+        "schema_version": "build-graph-materialization/v1",
+        "graph_id": definition.graph_id,
+        "artifact_revisions": {task_id: 1 for task_id in definition.tasks_by_id},
+    }
+    marker_path = root / ".webnovel" / "build_graph_materialization.json"
+    marker_bytes = json.dumps(marker, ensure_ascii=False, indent=2).encode("utf-8")
+    marker_path.write_bytes(marker_bytes)
+    monkeypatch.setattr(file_projects, "_store_for", lambda _project_id: store)
+    monkeypatch.setattr(world_definition, "build_world_build_graph", lambda _project: graph)
+    monkeypatch.setattr(world_validators, "make_world_validators", lambda _project: validators)
+    return store, graph, service, marker_path, marker_bytes, old_blueprint
+
+
 def _setup_power_paths_project(tmp_path: Path, monkeypatch):
     root = tmp_path / "synthetic-power-project"
     (root / ".story-system").mkdir(parents=True)
@@ -302,6 +406,321 @@ def test_workbench_ai_repair_revision_conflict_has_zero_model_calls(tmp_path, mo
     assert response.json()["detail"]["code"] == "build_revision_conflict"
     assert calls == []
     assert service.inspect_graph().tasks["world_model"].current_artifact_revision == 2
+
+
+def test_workbench_rerun_regenerates_full_task_and_commits_through_build_graph(tmp_path, monkeypatch):
+    store, _graph, service, marker_path, marker_bytes = _setup_project(tmp_path, monkeypatch)
+    calls = []
+
+    class Gateway:
+        def complete_stage(self, _stage, request):
+            calls.append(request)
+            return SimpleNamespace(
+                ok=True,
+                text='{"label":"Regenerated"}',
+                provider="test-provider",
+                model="test-model",
+                resolved_model="test-model-resolved",
+            )
+
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", Gateway())
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.post(
+        "/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/rerun",
+        json={"expected_revision": 1},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert len(calls) == 1
+    assert "完整任务重跑" in calls[0].prompt
+    assert "REPAIR FIELDS" not in calls[0].prompt
+    assert "这是唯一一次 focused repair" not in calls[0].prompt
+    assert "当前候选" not in calls[0].prompt
+    assert body["artifact"]["revision"] == 2
+    assert body["artifact"]["source"] == "llm"
+    assert body["artifact"]["parent_revision"] == 1
+    assert body["artifact"]["provider"] == "test-provider"
+    assert body["artifact"]["model"] == "test-model-resolved"
+    assert body["artifact"]["prompt_call_id"]
+    assert body["pipeline_stage"] == "world_ready"
+    assert body["materialization_status"] == "outdated"
+    current = service.inspect_graph()
+    assert current.tasks["world_model"].current_artifact_revision == 2
+    assert current.tasks["downstream_model"].status == "stale"
+    assert current.tasks["transitive_model"].status == "stale"
+    assert store.build_artifact("world_model", 1)["payload"] == {"label": "Initial"}
+    assert store.build_artifact("world_model", 2)["payload"] == {"label": "Regenerated"}
+    assert marker_path.read_bytes() == marker_bytes
+
+
+def test_rerun_materialized_economy_uses_new_model_output_and_excludes_legacy_candidate(tmp_path, monkeypatch):
+    from packages.story_core.models import NovelProject
+    from packages.story_core.world_build.tasks import build_input_contract, input_fingerprint
+
+    store, graph, service, marker_path, marker_bytes, _old_blueprint = _setup_materialized_non_power_project(tmp_path, monkeypatch)
+    calls = []
+    run_fingerprints = []
+
+    class Gateway:
+        def complete_stage(self, _stage, request):
+            calls.append(request)
+            state = service.inspect_graph()
+            run = state.runs[state.tasks["world_economy"].active_run_id]
+            full_contract = build_input_contract(
+                NovelProject.model_validate(store.project()), graph, service, "world_economy"
+            )
+            full_contract.pop("existing_candidate", None)
+            run_fingerprints.append((run.input_fingerprint, input_fingerprint(full_contract)))
+            return SimpleNamespace(
+                ok=True,
+                text='{"economy_rules":["NEW economy rule"]}',
+                provider="test-provider",
+                model="test-model",
+                resolved_model="test-model",
+            )
+
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", Gateway())
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/file-projects/p-synthetic-materialized-rerun/build-graph/tasks/world_economy/rerun",
+        json={"expected_revision": 1},
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(calls) == 1
+    assert run_fingerprints[0][0] == run_fingerprints[0][1]
+    assert "existing_candidate" not in calls[0].prompt
+    assert "OLD economy rule" not in calls[0].prompt
+    assert "declared source seed" in calls[0].prompt
+    assert '{"economy_rules":"string[]"}' in calls[0].prompt
+    assert "REPAIR FIELDS" not in calls[0].prompt
+    assert "diagnostics" not in calls[0].prompt
+    body = response.json()
+    assert body["artifact"]["revision"] == 2
+    assert body["artifact"]["source"] == "llm"
+    assert body["artifact"]["payload"] == {"economy_rules": ["NEW economy rule"]}
+    assert store.build_artifact("world_economy", 1)["payload"] == {"economy_rules": ["OLD economy rule"]}
+    assert store.build_artifact("world_economy", 2)["payload"] == {"economy_rules": ["NEW economy rule"]}
+    assert service.inspect_graph().tasks["downstream_model"].status == "stale"
+    assert body["pipeline_stage"] == "world_ready"
+    assert body["materialization_status"] == "outdated"
+    assert marker_path.read_bytes() == marker_bytes
+
+
+def test_rerun_materialized_multi_field_society_keeps_full_new_candidate(tmp_path, monkeypatch):
+    store, _graph, service, _marker_path, _marker_bytes, _old_blueprint = _setup_materialized_non_power_project(tmp_path, monkeypatch)
+
+    class Gateway:
+        def complete_stage(self, _stage, request):
+            assert "existing_candidate" not in request.prompt
+            assert "OLD system" not in request.prompt
+            return SimpleNamespace(
+                ok=True,
+                text=json.dumps({
+                    "world_systems": {"law": "NEW system"},
+                    "living_world": {"climate": "NEW climate"},
+                    "faction_rules": ["NEW faction rule"],
+                }),
+                provider="test-provider",
+                model="test-model",
+                resolved_model="test-model",
+            )
+
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", Gateway())
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/file-projects/p-synthetic-materialized-rerun/build-graph/tasks/world_society/rerun",
+        json={"expected_revision": 1},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["artifact"]["payload"] == {
+        "world_systems": {"law": "NEW system"},
+        "living_world": {"climate": "NEW climate"},
+        "faction_rules": ["NEW faction rule"],
+    }
+    assert store.build_artifact("world_society", 1)["payload"] == {
+        "world_systems": {"law": "OLD system"},
+        "living_world": {"climate": "OLD climate"},
+        "faction_rules": ["OLD faction rule"],
+    }
+    assert service.inspect_graph().tasks["world_society"].current_artifact_revision == 2
+
+
+def test_workbench_rerun_conflict_and_failure_do_not_mutate_official_state(tmp_path, monkeypatch):
+    store, _graph, service, marker_path, marker_bytes = _setup_project(tmp_path, monkeypatch)
+    calls = []
+
+    class Gateway:
+        def complete_stage(self, *_args):
+            calls.append(1)
+            return SimpleNamespace(ok=False, error="private detail", text="", provider="", model="", resolved_model="")
+
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", Gateway())
+    client = TestClient(app, raise_server_exceptions=False)
+    conflict = client.post(
+        "/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/rerun",
+        json={"expected_revision": 2},
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["code"] == "build_revision_conflict"
+    assert calls == []
+
+    failed = client.post(
+        "/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/rerun",
+        json={"expected_revision": 1},
+    )
+    assert failed.status_code == 422
+    assert len(calls) == 1
+    assert failed.json()["detail"]["diagnostics"][0]["code"] == "model.rerun_request_failed"
+    current = service.inspect_graph()
+    assert current.tasks["world_model"].status == "completed"
+    assert current.tasks["world_model"].current_artifact_revision == 1
+    assert current.tasks["downstream_model"].status == "completed"
+    assert current.tasks["transitive_model"].status == "completed"
+    assert store.project()["pipeline_stage"] == "environment_ready"
+    assert client.get("/file-projects/p-synthetic-build-edit/build-graph").json()["materialization_status"] == "current"
+    assert store.build_artifact("world_model", 2) is None
+    assert marker_path.read_bytes() == marker_bytes
+
+
+@pytest.mark.parametrize(
+    ("response_text", "diagnostic_code"),
+    [("not-json", "task.invalid_json"), ('{"label":""}', "missing_label")],
+)
+def test_workbench_rerun_invalid_output_preserves_readiness_and_downstream(
+    tmp_path, monkeypatch, response_text, diagnostic_code
+):
+    store, _graph, service, marker_path, marker_bytes = _setup_project(tmp_path, monkeypatch)
+
+    class Gateway:
+        def complete_stage(self, *_args):
+            return SimpleNamespace(
+                ok=True,
+                text=response_text,
+                provider="test-provider",
+                model="test-model",
+                resolved_model="test-model",
+            )
+
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", Gateway())
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.post(
+        "/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/rerun",
+        json={"expected_revision": 1},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["diagnostics"][0]["code"] == diagnostic_code
+    current = service.inspect_graph()
+    assert current.tasks["world_model"].status == "completed"
+    assert current.tasks["world_model"].current_artifact_revision == 1
+    assert current.tasks["downstream_model"].status == "completed"
+    assert current.tasks["transitive_model"].status == "completed"
+    assert store.project()["pipeline_stage"] == "environment_ready"
+    assert client.get("/file-projects/p-synthetic-build-edit/build-graph").json()["materialization_status"] == "current"
+    assert store.build_artifact("world_model", 2) is None
+    assert marker_path.read_bytes() == marker_bytes
+
+
+def test_human_edit_can_supersede_blocked_rerun_without_global_lock(tmp_path, monkeypatch):
+    store, _graph, service, _marker_path, _marker_bytes = _setup_project(tmp_path, monkeypatch)
+    entered = Event()
+    release = Event()
+
+    class BlockingGateway:
+        def complete_stage(self, _stage, _request):
+            entered.set()
+            assert release.wait(10), "test did not release blocked model call"
+            return SimpleNamespace(
+                ok=True,
+                text='{"label":"Rerun loses"}',
+                provider="test-provider",
+                model="test-model",
+                resolved_model="test-model",
+            )
+
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", BlockingGateway())
+    client = TestClient(app, raise_server_exceptions=False)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        rerun_future = executor.submit(
+            client.post,
+            "/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/rerun",
+            json={"expected_revision": 1},
+        )
+        assert entered.wait(5), "task rerun did not reach provider call"
+        running_graph = client.get("/file-projects/p-synthetic-build-edit/build-graph").json()
+        assert running_graph["pipeline_stage"] == "environment_ready"
+        assert running_graph["materialization_status"] == "current"
+        assert running_graph["tasks"][0]["status"] == "running"
+        assert file_projects._world_build_jobs_lock.acquire(timeout=1)
+        file_projects._world_build_jobs_lock.release()
+
+        human = client.patch(
+            "/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/artifact",
+            json={"expected_revision": 1, "payload": {"label": "Human wins"}},
+        )
+        assert human.status_code == 200, human.text
+        assert human.json()["artifact"]["revision"] == 2
+        assert human.json()["artifact"]["source"] == "human"
+        release.set()
+        rerun = rerun_future.result(timeout=10)
+
+    assert rerun.status_code == 409
+    assert rerun.json()["detail"]["code"] == "build_run_conflict"
+    current = service.inspect_graph()
+    assert current.tasks["world_model"].current_artifact_revision == 2
+    assert store.build_artifact("world_model", 2)["payload"] == {"label": "Human wins"}
+    assert store.build_artifact("world_model", 3) is None
+
+
+def test_rerun_rejects_active_world_build_and_build_graph_run_before_provider(tmp_path, monkeypatch):
+    _store, _graph, service, _marker_path, _marker_bytes = _setup_project(tmp_path, monkeypatch)
+    calls = []
+
+    class Gateway:
+        def complete_stage(self, *_args):
+            calls.append(1)
+            raise AssertionError("provider must not be called for a conflicting run")
+
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", Gateway())
+    client = TestClient(app, raise_server_exceptions=False)
+    monkeypatch.setattr(file_projects, "_has_active_world_build_job", lambda _project_id: True)
+    world_build = client.post(
+        "/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/rerun",
+        json={"expected_revision": 1},
+    )
+    assert world_build.status_code == 409
+    assert world_build.json()["detail"] == "world_build_in_progress"
+
+    monkeypatch.setattr(file_projects, "_has_active_world_build_job", lambda _project_id: False)
+    service.start_run("world_model", allow_completed_with_artifact=True)
+    active_run = client.post(
+        "/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/rerun",
+        json={"expected_revision": 1},
+    )
+    assert active_run.status_code == 409
+    assert active_run.json()["detail"]["code"] == "build_run_conflict"
+    assert calls == []
+
+
+@pytest.mark.parametrize("task_id", ["world_input", "power_system_final"])
+def test_rerun_rejects_imported_and_deterministic_tasks(tmp_path, monkeypatch, task_id):
+    _store, _graph, _service, _marker_path, _marker_bytes = _setup_project(tmp_path, monkeypatch)
+    calls = []
+
+    class Gateway:
+        def complete_stage(self, *_args):
+            calls.append(1)
+            raise AssertionError("provider must not be called for a non-model task")
+
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", Gateway())
+    response = TestClient(app, raise_server_exceptions=False).post(
+        f"/file-projects/p-synthetic-build-edit/build-graph/tasks/{task_id}/rerun",
+        json={"expected_revision": 1},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "build_task_not_rerunnable"
+    assert calls == []
 
 
 def test_workbench_ai_repair_failure_keeps_current_artifact_and_is_structured(tmp_path, monkeypatch):

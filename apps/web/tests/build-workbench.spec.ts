@@ -258,3 +258,64 @@ test("AI 修复阻止覆盖本地草稿，并在成功后刷新后端 revision",
   await expect(page.getByText("r2 · AI 修复", { exact: true })).toBeVisible();
   await expect(page.getByText("旧物化结果已过期").first()).toBeVisible();
 });
+
+test("完整重跑发送当前 revision，成功后刷新完整产物并显示 stale 下游", async ({ page }) => {
+  let currentGraph = graph([
+    task(0, { task_id: "world_model", title: "世界规则", dependencies: [], reads: [], owns: ["world.rules"] }),
+    task(1, { task_id: "downstream_model", title: "下游设定", status: "completed", artifact_revision: 1 }),
+  ]);
+  let rerun = false;
+  let requestBody: Record<string, unknown> | null = null;
+  await page.route(`**/file-projects/${encodedId}`, async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
+  });
+  await page.route(`**/file-projects/${encodedId}/build-graph`, async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(currentGraph) });
+  });
+  await page.route(`**/file-projects/${encodedId}/build-graph/tasks/**`, async (route) => {
+    const request = route.request();
+    if (request.method() === "GET") {
+      const taskId = request.url().split("/build-graph/tasks/")[1];
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        task_id: taskId,
+        title: taskId,
+        status: "completed",
+        editable: taskId === "world_model",
+        artifact: taskId === "world_model"
+          ? { revision: rerun ? 2 : 1, source: "llm", payload: { label: rerun ? "Regenerated" : "Initial" } }
+          : { revision: 1, source: "llm", payload: { detail: "Downstream" } },
+        owns: ["world.rules"],
+        validation_status: "passed",
+        diagnostics: [],
+        materialization_status: rerun ? "outdated" : "current",
+        materialization_marker: { artifact_revisions: { world_model: 1 } },
+      }) });
+    } else if (request.method() === "POST" && request.url().endsWith("/rerun")) {
+      requestBody = request.postDataJSON() as Record<string, unknown>;
+      rerun = true;
+      currentGraph = {
+        ...currentGraph,
+        graph_revision: 34,
+        pipeline_stage: "world_ready",
+        materialization_status: "outdated",
+        tasks: currentGraph.tasks.map((item) => item.task_id === "world_model"
+          ? { ...item, artifact_revision: 2, artifact_source: "llm" }
+          : { ...item, status: "stale" }),
+      };
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        artifact: { revision: 2, source: "llm", payload: { label: "Regenerated" } },
+        pipeline_stage: "world_ready",
+        materialization_status: "outdated",
+      }) });
+    } else await route.fallback();
+  });
+
+  await page.goto(`/projects/${encodedId}/build`);
+  await page.getByRole("button", { name: /世界规则/ }).click();
+  await expect(page.getByRole("button", { name: "完整重跑" })).toBeVisible();
+  await expect(page.getByText("完整重生成此任务；成功后下游会标记为过期，不会自动重跑。", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "完整重跑" }).click();
+  await expect(page.getByText("r2 · AI 生成", { exact: true })).toBeVisible();
+  await expect(page.getByText("上游修改后，以下任务已过期")).toBeVisible();
+  expect(requestBody).toEqual({ expected_revision: 1 });
+});
