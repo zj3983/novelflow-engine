@@ -1,4 +1,6 @@
 import json
+from copy import deepcopy
+from time import monotonic, sleep
 import pytest
 from pathlib import Path
 from collections import Counter
@@ -16,6 +18,59 @@ from tests.api.test_build_workbench_edit_route import _wait_orchestration
 
 
 BASE = "/file-projects/generic_webnovel/build-graph"
+
+
+def test_expand_first_volume_and_continue_only_missing_tasks(tmp_path, monkeypatch):
+    from tests.story_core.test_opening_prose import prepared_store, FakeEngine
+    store = prepared_store(tmp_path, complete_volume=False)
+    monkeypatch.setattr(file_projects, "_store_for", lambda _: store)
+    client = TestClient(app)
+    before = tree(store)
+    initial = client.get(BASE).json()
+    assert initial["opening_chapter_count"] == 3
+    assert tree(store) == before
+    assert client.post(BASE + "/opening/volume-detail", json={"expected_graph_revision": 0}).status_code == 409
+    assert tree(store) == before
+    calls = []
+    def complete(_stage, request):
+        task_id = request.metadata["world_build_task"]
+        calls.append(task_id)
+        number = int(task_id.removeprefix("chapter_outline_"))
+        payload = deepcopy(opening_payloads()["chapter_outline_3"])
+        payload["chapter"].update(chapter_number=number, title=f"线索推进{number}")
+        return SimpleNamespace(ok=True, text=json.dumps(payload), provider="test", model="test", resolved_model="test")
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", SimpleNamespace(complete_stage=complete))
+    marker = store.build_graph_materialization()
+    first = store.build_artifact("chapter_outline_1")
+    response = client.post(BASE + "/opening/volume-detail", json={"expected_graph_revision": initial["graph_revision"]})
+    assert response.status_code == 200, response.text
+    assert response.json()["opening_chapter_count"] == 50
+    assert calls == []
+    assert store.build_graph_materialization() == marker
+    start = client.post(BASE + "/orchestrations", json={"mode": "continue"})
+    assert start.status_code == 200, start.text
+    deadline = monotonic() + 300
+    while True:
+        job = client.get(BASE + "/orchestrations/" + start.json()["job_id"]).json()
+        if job["status"] in {"completed", "failed", "conflicted", "interrupted"}:
+            break
+        assert monotonic() < deadline, job
+        sleep(0.1)
+    assert job["status"] == "completed", job
+    assert job["materialized"]
+    assert Counter(calls) == Counter({f"chapter_outline_{number}": 1 for number in range(4, 51)})
+    assert store.build_artifact("chapter_outline_1") == first
+    marker = store.build_graph_materialization()
+    candidate = store.generate_next_chapter(engine=FakeEngine(), persist=False)["candidate"]
+    store.confirm_candidate(candidate["candidate_id"])
+    before = tree(store)
+    visible = client.get(BASE).json()
+    assert visible["opening_execution_started"]
+    assert visible["materialization_status"] == "in_use"
+    assert client.get(BASE + "/tasks/story_core").json()["editable"] is False
+    assert tree(store) == before
+    assert store.build_graph_materialization() == marker
+    assert client.post(BASE + "/opening/volume-detail", json={"expected_graph_revision": visible["graph_revision"]}).status_code == 409
 
 
 def setup(tmp_path, monkeypatch):

@@ -4403,6 +4403,8 @@ export type BuildWorkbenchGraph = {
   schema_version: "build-workbench/v1";
   initialized: boolean;
   opening_graph?: boolean;
+  opening_chapter_count?: number | null;
+  opening_execution_started?: boolean;
   graph_id: string;
   graph_revision: number | null;
   pipeline_stage: string | null;
@@ -4464,6 +4466,13 @@ export async function updateOpeningBuildGraph(
   return await fetchJson<BuildWorkbenchGraph>(`${fileProjectPath(projectId)}/build-graph/opening${syncInput ? "/input" : ""}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
+    body: JSON.stringify({ expected_graph_revision: expectedGraphRevision }),
+  });
+}
+
+export async function extendOpeningVolume(projectId: string, expectedGraphRevision: number | null): Promise<BuildWorkbenchGraph> {
+  return await fetchJson<BuildWorkbenchGraph>(`${fileProjectPath(projectId)}/build-graph/opening/volume-detail`, {
+    method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ expected_graph_revision: expectedGraphRevision }),
   });
 }

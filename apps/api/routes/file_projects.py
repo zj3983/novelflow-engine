@@ -2650,6 +2650,7 @@ def init_file_project_routes() -> APIRouter:
         return store, project, graph, build_store, state, service
 
     def _workbench_materialization_status(build_store, state, project_store=None) -> str:
+        execution_started = False
         snapshot_store = getattr(build_store, "snapshot_store", None)
         root = getattr(build_store, "root", None)
         if snapshot_store is None or root is None:
@@ -2659,8 +2660,16 @@ def init_file_project_routes() -> APIRouter:
             return "not_materialized"
         if project_store is not None:
             from packages.story_core.opening_build.runtime import enabled, settings, source_revision
-            if enabled(project_store) and (settings(project_store).get("sync_pending") or settings(project_store).get("source_revision") != source_revision(project_store)):
-                return "outdated"
+            if enabled(project_store):
+                config = settings(project_store)
+                execution = config.get("execution")
+                if execution:
+                    from packages.story_core.opening_build.execution import source_fingerprint
+                    if execution.get("source_fingerprint") != source_fingerprint(project_store) or execution.get("graph_revision") != state.graph_revision:
+                        return "outdated"
+                    execution_started = True
+                elif config.get("sync_pending") or config.get("source_revision") != source_revision(project_store):
+                    return "outdated"
         if marker.get("graph_id") != state.graph_id:
             return "outdated"
         recorded = marker.get("artifact_revisions")
@@ -2683,7 +2692,7 @@ def init_file_project_routes() -> APIRouter:
             for task in state.tasks.values()
         ):
             return "outdated"
-        return "current"
+        return "in_use" if execution_started else "current"
 
     def _invalidate_workbench_readiness(store, project: dict[str, Any]) -> None:
         from packages.story_core.opening_build.runtime import enabled, assert_sources_current
@@ -2767,7 +2776,7 @@ def init_file_project_routes() -> APIRouter:
     def get_file_project_build_graph(project_id: str) -> dict[str, Any]:
         """Return a read-only projection of the persisted production Build Graph."""
 
-        from packages.story_core.opening_build.runtime import graph_for, enabled
+        from packages.story_core.opening_build.runtime import graph_for, enabled, settings
 
         store = _store_for(project_id)
         project = store.project()
@@ -2820,6 +2829,8 @@ def init_file_project_routes() -> APIRouter:
             "schema_version": "build-workbench/v1",
             "initialized": True,
             "opening_graph": enabled(store),
+            "opening_chapter_count": settings(store).get("chapter_count", 3) if enabled(store) else None,
+            "opening_execution_started": bool(settings(store).get("execution")) if enabled(store) else False,
             "graph_id": state.graph_id,
             "graph_revision": state.graph_revision,
             "pipeline_stage": project.get("pipeline_stage"),
@@ -2851,6 +2862,18 @@ def init_file_project_routes() -> APIRouter:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
         return get_file_project_build_graph(project_id)
 
+    @router.post("/file-projects/{project_id}/build-graph/opening/volume-detail")
+    def extend_file_project_opening_volume(project_id: str, request: BuildWorkbenchOpeningRequest):
+        from packages.story_core.opening_build.runtime import extend_first_volume
+        with _world_build_jobs_lock:
+            if _has_active_world_build_job(_strip_file_prefix(project_id)) or _has_active_build_orchestration_job(_strip_file_prefix(project_id)):
+                raise HTTPException(status_code=409, detail="build_run_in_progress")
+            try:
+                extend_first_volume(_store_for(project_id), request.expected_graph_revision)
+            except (ValueError, BuildGraphError) as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return get_file_project_build_graph(project_id)
+
     @router.get("/file-projects/{project_id}/build-graph/tasks/{task_id}")
     def get_file_project_build_graph_task(project_id: str, task_id: str) -> dict[str, Any]:
         try:
@@ -2866,11 +2889,13 @@ def init_file_project_routes() -> APIRouter:
         if revision is not None and artifact is None:
             raise HTTPException(status_code=409, detail="build_graph_artifact_missing")
         materialization = store.build_graph_materialization()
+        from packages.story_core.opening_build.runtime import enabled, settings
+        opening_execution_started = enabled(store) and bool(settings(store).get("execution"))
         return {
             "task_id": task_id,
             "title": task.title,
             "status": task_state.status,
-            "editable": graph.spec(task_id).kind == "model" and artifact is not None,
+            "editable": graph.spec(task_id).kind == "model" and artifact is not None and not opening_execution_started,
             "artifact": artifact.to_dict() if artifact else None,
             "owns": list(task.owns),
             "validation_status": task_state.validation_status,

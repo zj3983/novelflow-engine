@@ -16,6 +16,7 @@ import {
   rerunBuildWorkbenchTask,
   startBuildOrchestration,
   updateOpeningBuildGraph,
+  extendOpeningVolume,
   validateBuildWorkbenchTask,
   type BuildOrchestrationJob,
   type BuildOrchestrationMode,
@@ -324,12 +325,14 @@ export default function BuildWorkbenchPage() {
   const [draftOpen, setDraftOpen] = useState(false);
   const [openingBusy, setOpeningBusy] = useState(false);
 
-  const updateOpening = async () => {
+  const updateOpening = async (extendVolume = false) => {
     if (!graph || draftOpen || openingBusy) return;
     setOpeningBusy(true);
     setOrchestrationError(null);
     try {
-      const result = await updateOpeningBuildGraph(projectId, graph.graph_revision, !!graph.opening_graph);
+      const result = extendVolume
+        ? await extendOpeningVolume(projectId, graph.graph_revision)
+        : await updateOpeningBuildGraph(projectId, graph.graph_revision, !!graph.opening_graph);
       setGraph(result);
       setSelectedTaskId(result.tasks[0]?.task_id ?? null);
       setDetailReload((current) => current + 1);
@@ -432,9 +435,15 @@ export default function BuildWorkbenchPage() {
         <h2 className={styles.empty_title}>{graph.opening_graph ? "完整开局图已启用" : "构建故事到章节的完整开局"}</h2>
         <p className="ws-card__hint">故事核心 → 角色与世界 → 关系 → 全书与分卷规划 → 事件链 → 前 3 章细纲与执行契约。</p>
         <p className="ws-card__hint">{graph.opening_graph ? "在其他页面修改作者输入后，先同步输入，再继续构建。同步会使依赖任务过期。" : "适用于尚未写正文的项目。启用会保留旧产物历史，并将已有世界任务标为待重建。"}</p>
-        <button type="button" disabled={openingBusy || orchestrationBusy || draftOpen} onClick={() => void updateOpening()}>
+        <button type="button" disabled={openingBusy || orchestrationBusy || draftOpen || graph.opening_execution_started} onClick={() => void updateOpening()}>
           {openingBusy ? "处理中…" : graph.opening_graph ? "同步作者输入" : "启用完整开局图"}
         </button>
+        {graph.opening_graph ? <>
+          <p className="ws-card__hint">细纲窗口：前 {graph.opening_chapter_count ?? 3} 章。开始正文前需补齐首卷细纲，再点击继续构建；不会自动生成或确认正文。</p>
+          <button type="button" disabled={openingBusy || orchestrationBusy || draftOpen || graph.opening_execution_started || graph.tasks.some((task) => task.status !== "completed")} onClick={() => void updateOpening(true)}>补齐首卷细纲任务</button>
+          <a href={`/projects/${encodedProjectId}/write`}>前往正文候选与审查</a>
+          {graph.opening_execution_started ? <p>正文已开始，开局规划已锁定。后续章节沿用该规划和已确认的故事状态。</p> : null}
+        </> : null}
         {orchestrationError && !graph.initialized ? <p role="alert">{orchestrationError}</p> : null}
       </section> : null}
 
@@ -451,14 +460,14 @@ export default function BuildWorkbenchPage() {
             <div><span>Pipeline stage</span><strong>{graph.pipeline_stage || "未知"}</strong></div>
             <div><span>Graph revision</span><strong>{graph.graph_revision === null ? "—" : graph.graph_revision}</strong></div>
             <div><span>任务进度</span><strong>{completedCount} / {graph.tasks.length} 已完成</strong></div>
-            <div><span>物化状态</span><strong>{graph.materialization_status === "outdated" ? "旧物化结果已过期" : graph.materialization_status === "current" ? "当前" : "未物化"}</strong></div>
+            <div><span>物化状态</span><strong>{graph.materialization_status === "in_use" ? "已用于正文，规划已锁定" : graph.materialization_status === "outdated" ? "旧物化结果已过期" : graph.materialization_status === "current" ? "当前" : "未物化"}</strong></div>
           </section>
 
           <section className={`ws-card ${styles.orchestration}`} aria-label="构建操作">
             <div className={styles.orchestration_actions}>
-              <button type="button" disabled={orchestrationBusy} onClick={() => void runOrchestration("continue")}>继续构建</button>
-              <button type="button" disabled={orchestrationBusy || !graph.tasks.some((task) => task.status === "stale")} onClick={() => void runOrchestration("rebuild_stale")}>重建过期项</button>
-              <button type="button" disabled={orchestrationBusy} onClick={() => void runOrchestration("next")}>运行下一任务</button>
+              <button type="button" disabled={orchestrationBusy || openingBusy || graph.opening_execution_started} onClick={() => void runOrchestration("continue")}>继续构建</button>
+              <button type="button" disabled={orchestrationBusy || openingBusy || graph.opening_execution_started || !graph.tasks.some((task) => task.status === "stale")} onClick={() => void runOrchestration("rebuild_stale")}>重建过期项</button>
+              <button type="button" disabled={orchestrationBusy || openingBusy || graph.opening_execution_started} onClick={() => void runOrchestration("next")}>运行下一任务</button>
             </div>
             {orchestrationError ? <p role="alert" className={styles.edit_error}>{orchestrationError}</p> : null}
             {orchestration ? <div className={styles.orchestration_progress} aria-live="polite">
@@ -467,7 +476,7 @@ export default function BuildWorkbenchPage() {
               <p>已完成任务：{orchestration.completed_task_ids.length ? orchestration.completed_task_ids.map((id) => graph.tasks.find((task) => task.task_id === id)?.title || id).join("、") : "暂无"}</p>
               {orchestration.failure_task_id ? <p>失败任务：{graph.tasks.find((task) => task.task_id === orchestration.failure_task_id)?.title || orchestration.failure_task_id} · {orchestration.error_code}</p> : null}
               {orchestration.next_task_id && orchestration.status === "completed" ? <p>下一任务：{graph.tasks.find((task) => task.task_id === orchestration.next_task_id)?.title || orchestration.next_task_id}</p> : null}
-              {orchestration.materialized ? <p>{graph.opening_graph ? "全部任务已就绪，世界、角色和前 3 章细纲已发布。" : "全部任务已就绪，世界设定已重新物化。"}</p> : null}
+              {orchestration.materialized ? <p>{graph.opening_graph ? `全部任务已就绪，世界、角色和前 ${graph.opening_chapter_count ?? 3} 章细纲已发布。` : "全部任务已就绪，世界设定已重新物化。"}</p> : null}
               {orchestration.diagnostics?.length ? <ul className={styles.diagnostics}>{orchestration.diagnostics.map((diagnostic, index) => (
                 <li key={`${diagnostic.code}-${diagnostic.path}-${index}`}><strong>{diagnostic.code}</strong><code>{diagnostic.path || "（未提供路径）"}</code><p>{diagnostic.message}</p></li>
               ))}</ul> : null}
