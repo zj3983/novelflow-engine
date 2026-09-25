@@ -5,12 +5,14 @@ import { safeDecodeURIComponent } from "../../../lib/routing";
 
 type Props = {
   children: ReactNode;
-  params: { id: string };
+  params: Promise<{ id: string }>;
 };
 
-export default function ProjectWorkspaceLayout({ children, params }: Props) {
+export default async function ProjectWorkspaceLayout({ children, params }: Props) {
+  const { id } = await params;
+
   return (
-    <ProjectWorkspaceProvider projectId={safeDecodeURIComponent(params.id)}>
+    <ProjectWorkspaceProvider projectId={safeDecodeURIComponent(id)}>
       {children}
     </ProjectWorkspaceProvider>
   );
