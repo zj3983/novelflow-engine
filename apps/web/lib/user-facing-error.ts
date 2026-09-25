@@ -38,6 +38,7 @@ const ERROR_MESSAGES: Array<[string, string]> = [
   ["outline_not_found", "还没有大纲，请先生成或补充大纲。"],
   ["candidate_not_found", "没有找到这份候选稿，可能已经处理过。"],
   ["candidate_not_pending", "这份候选稿已经处理过，不能重复操作。"],
+  ["candidate_hard_blocked", "Canon Review 阻断了这份候选稿，尚未提交。请按阻断项修订后重新生成。"],
   ["candidate_confirmation_required", "有一章需要人工确认，请打开候选稿。"],
   ["recovery_confirmation_required", "任务恢复状态不明确，请检查正文和候选稿。"],
   ["continuous_generation_job_not_found", "没有找到这次连续生产任务，可能已被清理。"],

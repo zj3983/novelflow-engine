@@ -17,6 +17,7 @@ import {
   confirmFileProjectCandidate,
   discardFileProjectCandidate,
   fetchFileProjectCandidates,
+  fetchBuildWorkbench,
   fetchGenerationJob,
   fetchProjectWritingPacket,
   fetchVolumeWorkflow,
@@ -25,6 +26,7 @@ import {
   startGenerationJob,
   type ChapterIndexEntry,
   type CandidateDraft,
+  type BuildWorkbenchGraph,
   type CodexWritingPacket,
   type GenerationJobStep,
   type VolumeWorkflowResponse,
@@ -43,6 +45,54 @@ function WritingProgressRow({ status, href }: { status: string; href: string }) 
   );
 }
 
+function OpeningBuildGuide({
+  href,
+  loading,
+  error,
+  graph,
+  status,
+  volumeRange,
+}: {
+  href: string;
+  loading: boolean;
+  error: string;
+  graph: BuildWorkbenchGraph | null;
+  status: string | undefined;
+  volumeRange: [number, number] | null | undefined;
+}) {
+  let instruction = "请在开书构建页继续构建，完成并发布正式章节细纲后，正文候选入口才会开放。";
+  if (loading) {
+    instruction = "正在确认完整开局图状态。请前往开书构建页检查构建任务；Opening Graph 的规划与细纲必须在那里完成。";
+  } else if (error) {
+    instruction = "暂时无法读取 Build Graph。请前往开书构建页确认正式构建状态，避免进入旧大纲生成链。";
+  } else if (status === "volume_missing") {
+    instruction = graph?.opening_next_volume_available
+      ? "Opening Graph 已启用：先在开书构建页点击“扩展下一卷细纲任务”，再点击“继续构建”，直到正式规划和细纲全部发布。"
+      : "Opening Graph 已启用：请在开书构建页检查已发布的正式规划；出现“扩展下一卷细纲任务”后，先扩展规划，再点击“继续构建”。";
+  } else if (status === "volume_plan_ready") {
+    instruction = "Opening Graph 已启用：正式规划已就绪，请在开书构建页点击“继续构建”，发布本卷完整细纲后再生成正文候选。";
+  } else if (status === "detail_partial") {
+    instruction = graph?.opening_execution_started
+      ? "Opening Graph 已启用：请在开书构建页点击“继续构建”，补完当前卷正式细纲后再生成正文候选。"
+      : "Opening Graph 已启用：请在开书构建页完成首卷细纲任务；若尚未创建首卷任务，先点击“补齐首卷细纲任务”，再点击“继续构建”。";
+  } else if (status === "volume_detail_pending") {
+    instruction = "Opening Graph 的下一卷规划扩展中。请在开书构建页点击“继续构建”，直到正式细纲全部发布。";
+  }
+
+  const rangeLabel = volumeRange
+    ? `当前卷范围：第 ${volumeRange[0]}–${volumeRange[1]} 章。`
+    : "";
+  return (
+    <section className="ws-card" aria-label="Opening Graph 构建入口">
+      <p className="ws-card__title">请在开书构建中完成正式规划</p>
+      <p className="ws-card__hint">{instruction}</p>
+      {rangeLabel ? <p className="ws-card__hint">{rangeLabel}</p> : null}
+      {error ? <p className="ws-error">Build Graph 状态读取失败：{error}</p> : null}
+      <Link className="ws-btn ws-btn--sm ws-btn--primary" href={href}>前往开书构建</Link>
+    </section>
+  );
+}
+
 function CandidatePanel({
   candidate,
   action,
@@ -56,7 +106,67 @@ function CandidatePanel({
   onForceConfirm: () => void;
   onDiscard: () => void;
 }) {
-  const hasQualityWarnings = candidate.quality_report?.ok === false;
+  const qualityReport = asRecord(candidate.quality_report) ?? {};
+  const writingReview = asRecord(qualityReport.writing_review) ?? {};
+  const reviewResult = asRecord(qualityReport.review_result) ?? {};
+  const simplifiedReview = asRecord(qualityReport.simplified_review) ?? {};
+  const modularPipeline = asRecord(qualityReport.modular_pipeline) ?? {};
+  const canonSnapshot = asRecord(
+    modularPipeline.canon_review_snapshot ?? qualityReport.canon_review_snapshot,
+  );
+  const canonPreflight = asRecord(
+    modularPipeline.canon_preflight ?? qualityReport.canon_preflight,
+  );
+  const persistedBlocking = asArray(writingReview.blocking);
+  const persistedWarnings = asArray(writingReview.warnings);
+  const reviewIssues = asArray(reviewResult.issues).length
+    ? asArray(reviewResult.issues)
+    : asArray(qualityReport.issues);
+  const blockingFindings = normalizeReviewFindings(
+    persistedBlocking.length
+      ? persistedBlocking
+      : reviewIssues.filter((item) => asRecord(item)?.blocking === true),
+    true,
+  );
+  const warningFindings = normalizeReviewFindings(
+    persistedWarnings.length
+      ? persistedWarnings
+      : reviewIssues.filter((item) => asRecord(item)?.blocking !== true),
+    false,
+  );
+  const reviewStatus = typeof writingReview.status === "string"
+    ? writingReview.status
+    : typeof reviewResult.status === "string"
+      ? reviewResult.status
+      : typeof simplifiedReview.status === "string"
+        ? simplifiedReview.status
+        : "";
+  const reviewBlocked = blockingFindings.length > 0
+    || writingReview.status === "blocked"
+    || reviewResult.status === "blocked"
+    || simplifiedReview.status === "blocked";
+  const reviewStatusLabel = reviewBlocked
+    ? "存在阻断项"
+    : reviewStatus === "passed"
+      ? "通过"
+      : reviewStatus === "warning" || reviewStatus === "needs_revision" || warningFindings.length > 0
+        ? "有警告或修改建议"
+        : "未提供 / 未核验";
+  const reviewSummary = typeof reviewResult.summary === "string"
+    ? reviewResult.summary
+    : typeof qualityReport.quality_warning === "object"
+      ? asRecord(qualityReport.quality_warning)?.summary
+      : undefined;
+  const hasQualityWarnings = qualityReport.ok === false
+    && !reviewBlocked
+    && (
+      warningFindings.length > 0
+      || reviewStatus === "warning"
+      || reviewStatus === "needs_revision"
+      || asRecord(qualityReport.quality_warning) !== null
+      || simplifiedReview.status === "warning"
+      || simplifiedReview.status === "needs_revision"
+    );
   return (
     <section className="ws-card" aria-label="候选稿">
       <div className="ws-section-head">
@@ -80,12 +190,138 @@ function CandidatePanel({
           </button>
         </div>
       </div>
-      <article className="ws-reader__body" style={{ maxHeight: 360, overflow: "auto" }}>
-        {candidate.body.split(/\n{2,}/).slice(0, 12).map((paragraph, index) => (
+      <section className="ws-card" aria-label="候选稿审查结果">
+        <div className="ws-section-head">
+          <div>
+            <p className="ws-card__title">候选审查与 Canon 状态</p>
+            <p className="ws-card__hint">正文审查状态：{reviewStatusLabel}</p>
+          </div>
+        </div>
+        {typeof reviewSummary === "string" && reviewSummary.trim() ? (
+          <p className="ws-card__hint">{reviewSummary}</p>
+        ) : null}
+        {reviewBlocked ? (
+          <details open>
+            <summary>阻断项（{Math.max(blockingFindings.length, reviewBlocked ? 1 : 0)}）</summary>
+            {blockingFindings.length > 0 ? (
+              <ul className="ws-plain-list">
+                {blockingFindings.map((finding) => <ReviewFindingItem key={finding.key} finding={finding} />)}
+              </ul>
+            ) : <p className="ws-card__hint">审查标记为阻断，但未提供明细。</p>}
+          </details>
+        ) : null}
+        {warningFindings.length > 0 ? (
+          <details open>
+            <summary>警告与修改建议（{warningFindings.length}）</summary>
+            <ul className="ws-plain-list">
+              {warningFindings.map((finding) => <ReviewFindingItem key={finding.key} finding={finding} />)}
+            </ul>
+          </details>
+        ) : null}
+        {reviewStatus === "" && blockingFindings.length === 0 && warningFindings.length === 0 ? (
+          <p className="ws-card__hint">最终审查结果未提供 / 未核验。Canon 预检只记录实体准备状态，不代表事实审稿通过。</p>
+        ) : null}
+        <section aria-label="Canon 审查快照">
+          <p className="ws-card__title">Canon 状态快照</p>
+          {canonSnapshot ? (
+            <dl className="ws-simple-grid">
+              <div className="ws-simple-item"><strong>截至章节</strong><span>{displayAuditValue(canonSnapshot.as_of_chapter)}</span></div>
+              <div className="ws-simple-item"><strong>状态来源</strong><span>{displayAuditValue(canonSnapshot.state_source)}</span></div>
+              <div className="ws-simple-item"><strong>有界状态可用</strong><span>{displayAuditValue(canonSnapshot.bounded_state_available)}</span></div>
+            </dl>
+          ) : <p className="ws-card__hint">Canon 状态快照未提供 / 未核验。</p>}
+        </section>
+        <section aria-label="Canon 实体预检">
+          <p className="ws-card__title">Canon 实体预检</p>
+          <p className="ws-card__hint">预检只说明实体准备情况，不等同于 Canon Review 通过。</p>
+          {canonPreflight ? (
+            <dl className="ws-simple-grid">
+              <div className="ws-simple-item"><strong>请求实体</strong><span>{displayAuditValue(canonPreflight.requested)}</span></div>
+              <div className="ws-simple-item"><strong>已准备</strong><span>{displayAuditValue(canonPreflight.prepared)}</span></div>
+              <div className="ws-simple-item"><strong>缺失</strong><span>{displayAuditValue(canonPreflight.missing)}</span></div>
+            </dl>
+          ) : <p className="ws-card__hint">Canon 实体预检未提供 / 未核验。</p>}
+        </section>
+      </section>
+      <article className="ws-reader__body" style={{ maxHeight: 520, overflow: "auto" }} aria-label="候选稿完整正文">
+        {candidate.body.split(/\n{2,}/).map((paragraph, index) => (
           <p key={index}>{paragraph}</p>
         ))}
       </article>
     </section>
+  );
+}
+
+type ReviewFindingView = {
+  key: string;
+  code: string;
+  message: string;
+  suggestion: string;
+  source: string;
+  evidence: string;
+  details: Array<[string, string]>;
+  blocking: boolean;
+};
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function displayAuditValue(value: unknown): string {
+  if (typeof value === "string" && value.trim()) return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "boolean") return value ? "是" : "否";
+  if (Array.isArray(value)) {
+    return value.length ? value.map((item) => displayAuditValue(item)).join("、") : "无";
+  }
+  if (asRecord(value)) {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return "未提供 / 未核验";
+    }
+  }
+  return "未提供 / 未核验";
+}
+
+function normalizeReviewFindings(items: unknown[], blocking: boolean): ReviewFindingView[] {
+  return items.flatMap((item, index) => {
+    const record = asRecord(item);
+    const code = typeof record?.code === "string" ? record.code : "";
+    const message = typeof record?.message === "string"
+      ? record.message
+      : typeof item === "string" ? item : "";
+    const suggestion = typeof record?.suggestion === "string" ? record.suggestion : "";
+    const source = typeof record?.source === "string" ? record.source : "";
+    const evidence = typeof record?.evidence === "string" ? record.evidence : "";
+    if (!message && !code) return [];
+    const identity = [code, message, source].join("|");
+    const details = record
+      ? Object.entries(record)
+        .filter(([name]) => !["code", "message", "suggestion", "source", "evidence", "blocking"].includes(name))
+        .map(([name, value]) => [name, displayAuditValue(value)] as [string, string])
+      : [];
+    return [{ key: `${identity}-${index}`, code, message: message || code, suggestion, source, evidence, details, blocking }];
+  });
+}
+
+function ReviewFindingItem({ finding }: { finding: ReviewFindingView }) {
+  return (
+    <li>
+      <strong>{finding.code ? `${finding.code}：` : ""}</strong>{finding.message}
+      {finding.source ? <span className="ws-card__hint"> 来源：{finding.source}</span> : null}
+      {finding.evidence ? <p className="ws-card__hint">依据：{finding.evidence}</p> : null}
+      {finding.suggestion ? <p className="ws-card__hint">建议：{finding.suggestion}</p> : null}
+      {finding.details.map(([name, value]) => (
+        <p className="ws-card__hint" key={name}>{name}：{value}</p>
+      ))}
+    </li>
   );
 }
 
@@ -151,6 +387,9 @@ export default function WritePage() {
   const [volumeWorkflow, setVolumeWorkflow] = useState<VolumeWorkflowResponse | null>(null);
   const [volumeWorkflowLoading, setVolumeWorkflowLoading] = useState(true);
   const [volumeWorkflowError, setVolumeWorkflowError] = useState("");
+  const [buildGraph, setBuildGraph] = useState<BuildWorkbenchGraph | null>(null);
+  const [buildGraphLoading, setBuildGraphLoading] = useState(true);
+  const [buildGraphError, setBuildGraphError] = useState("");
   const [copyStatus, setCopyStatus] = useState<CopyStatus>("idle");
   const [pendingCandidate, setPendingCandidate] = useState<CandidateDraft | null>(null);
   const [nextPendingCandidate, setNextPendingCandidate] = useState<CandidateDraft | null>(null);
@@ -220,6 +459,13 @@ export default function WritePage() {
   const safePage = Math.min(page, totalPages);
   const visibleBundles = filteredBundles.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
   const isFileProject = projectId.startsWith("file:") || project?.storage_source === "file";
+  const openingBuildHref = `/projects/${encodedProjectId}/build`;
+  const openingGraphActive = buildGraph?.opening_graph === true;
+  const useBuildRouteForPlanning = openingGraphActive || buildGraphLoading || Boolean(buildGraphError);
+  const continuousGenerationAllowed = isFileProject
+    && !buildGraphLoading
+    && !buildGraphError
+    && !openingGraphActive;
   const canRegenerate = Boolean(
     chapter &&
       isFileProject &&
@@ -229,6 +475,37 @@ export default function WritePage() {
   const generationTargetId = isFileProject ? projectId : story?.story_id;
   const canGenerateNext = Boolean(generationTargetId);
   const nextChapterNumber = (story?.current_chapter ?? 0) + 1;
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!isFileProject || !projectId) {
+      setBuildGraph(null);
+      setBuildGraphLoading(false);
+      setBuildGraphError("");
+      return;
+    }
+    setBuildGraphLoading(true);
+    setBuildGraphError("");
+    fetchBuildWorkbench(projectId)
+      .then((graph) => {
+        if (!cancelled) {
+          setBuildGraph(graph);
+          setBuildGraphError("");
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setBuildGraph(null);
+          setBuildGraphError(err instanceof Error ? err.message : String(err));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setBuildGraphLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isFileProject, projectId, refreshVersion]);
 
   useEffect(() => {
     let cancelled = false;
@@ -339,8 +616,10 @@ export default function WritePage() {
   const rollingFill = nextWritingPacket?.rolling_fill ?? null;
   const nextChapterNeedsOutline = isFileProject
     && (volumeWorkflowLoading || Boolean(volumeWorkflowError) || volumeWorkflow?.status !== "detail_complete");
+  const rollingOutlineNeedsBuild = useBuildRouteForPlanning
+    && (rollingFill?.status === "missing" || rollingFill?.status === "failed");
   const continuousGeneration = useContinuousGeneration({
-    enabled: isFileProject,
+    enabled: continuousGenerationAllowed,
     projectId,
     encodedProjectId,
     nextChapterNumber,
@@ -458,6 +737,10 @@ export default function WritePage() {
   async function handleGenerateNextChapter() {
     if (!generationTargetId || !canGenerateNext) return;
     if (nextChapterNeedsOutline) {
+      if (useBuildRouteForPlanning) {
+        router.push(openingBuildHref);
+        return;
+      }
       const reason = volumeWorkflow?.status === "volume_missing"
         ? "volume_missing"
         : "volume_detail_required";
@@ -506,6 +789,10 @@ export default function WritePage() {
           || detail.includes("volume_detail_incomplete")
         )
       ) {
+        if (useBuildRouteForPlanning) {
+          router.push(openingBuildHref);
+          return;
+        }
         const needsVolume = detail.includes("next_volume_required");
         router.push(
           `/projects/${encodedProjectId}/outline?tab=${needsVolume ? "arcs" : "chapters"}&chapter=${nextChapterNumber}&reason=${needsVolume ? "volume_missing" : "volume_detail_required"}`,
@@ -748,7 +1035,7 @@ export default function WritePage() {
                 onForceConfirm={() => void handleConfirmCandidate(true)}
               />
             ) : null}
-            {nextWritingPacket && rollingFill ? (
+            {nextWritingPacket && rollingFill && !rollingOutlineNeedsBuild ? (
               <RollingOutlineCard
                 chapterNumber={nextChapterNumber}
                 status={rollingFill.status}
@@ -759,7 +1046,17 @@ export default function WritePage() {
                 outlineHref={`/projects/${encodedProjectId}/outline?tab=chapters&chapter=${nextChapterNumber}`}
               />
             ) : null}
-            {isFileProject ? (
+            {nextWritingPacket && rollingFill && rollingOutlineNeedsBuild && !nextChapterNeedsOutline ? (
+              <OpeningBuildGuide
+                href={openingBuildHref}
+                loading={buildGraphLoading}
+                error={buildGraphError}
+                graph={buildGraph}
+                status={volumeWorkflow?.status}
+                volumeRange={volumeWorkflow?.volume_range}
+              />
+            ) : null}
+            {continuousGenerationAllowed ? (
               <ContinuousGenerationPanel
                 action={continuousGeneration.action}
                 active={continuousGeneration.active}
@@ -775,7 +1072,25 @@ export default function WritePage() {
                 onStop={() => void continuousGeneration.stop()}
               />
             ) : null}
+            {isFileProject && buildGraphError && !nextChapterNeedsOutline ? (
+              <section className="ws-card" role="alert">
+                <p className="ws-card__title">无法确认完整开局图状态</p>
+                <p className="ws-card__hint">连续生成入口已收起。请在开书构建页检查正式构建状态。</p>
+                <p className="ws-error">Build Graph 状态读取失败：{buildGraphError}</p>
+                <Link className="ws-btn ws-btn--sm ws-btn--primary" href={openingBuildHref}>前往开书构建</Link>
+              </section>
+            ) : null}
             {isFileProject && (volumeWorkflowLoading || volumeWorkflowError || (volumeWorkflow && volumeWorkflow.status !== "detail_complete")) ? (
+              useBuildRouteForPlanning ? (
+                <OpeningBuildGuide
+                  href={openingBuildHref}
+                  loading={buildGraphLoading}
+                  error={buildGraphError}
+                  graph={buildGraph}
+                  status={volumeWorkflow?.status}
+                  volumeRange={volumeWorkflow?.volume_range}
+                />
+              ) : (
               <section className="ws-card" aria-label="下一章准备状态">
                 <p className="ws-card__title">第 {nextChapterNumber} 章还不能生成</p>
                 <p className="ws-card__hint">
@@ -798,6 +1113,7 @@ export default function WritePage() {
                   </Link>
                 ) : null}
               </section>
+              )
             ) : null}
             {temporaryGuidance ? (
               <section className="ws-card">
@@ -875,6 +1191,16 @@ export default function WritePage() {
             {generatingNext ? "生成中..." : "生成第一章"}
           </button>
           {isFileProject && (volumeWorkflowLoading || volumeWorkflowError || (volumeWorkflow && volumeWorkflow.status !== "detail_complete")) ? (
+            useBuildRouteForPlanning ? (
+              <OpeningBuildGuide
+                href={openingBuildHref}
+                loading={buildGraphLoading}
+                error={buildGraphError}
+                graph={buildGraph}
+                status={volumeWorkflow?.status}
+                volumeRange={volumeWorkflow?.volume_range}
+              />
+            ) : (
             <section className="ws-card" aria-label="第一章准备状态">
               <p className="ws-card__hint">
                 {volumeWorkflowLoading
@@ -892,6 +1218,7 @@ export default function WritePage() {
                 </Link>
               ) : null}
             </section>
+            )
           ) : null}
           {(generatingNext || generationSteps.length > 0) ? (
             <WritingProgressRow
@@ -899,7 +1226,7 @@ export default function WritePage() {
               href={`/projects/${encodedProjectId}/log`}
             />
           ) : null}
-          {regenerateError ? <p className="ws-error">任务失败：{regenerateError}</p> : null}
+          {regenerateError ? <p className="ws-error">任务失败：{userFacingErrorMessage(regenerateError)}</p> : null}
           {pendingCandidate ? (
             <CandidatePanel
               candidate={pendingCandidate}

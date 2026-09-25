@@ -958,6 +958,23 @@ async function routeCurrentFileProject(
     }
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(project) });
   });
+  // This shared fixture represents the legacy file-project workflow unless a
+  // test overrides the route with an Opening Graph response.
+  await page.route(`**/file-projects/${encodedId}/build-graph`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        schema_version: "build-workbench/v1",
+        initialized: false,
+        opening_graph: false,
+        graph_id: "",
+        graph_revision: null,
+        pipeline_stage: null,
+        tasks: [],
+      }),
+    });
+  });
   await page.route(`**/file-stories/${encodedId}/overview`, async (route) => {
     options.calls?.push(new URL(route.request().url()).pathname);
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(overview) });

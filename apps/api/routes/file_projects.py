@@ -1191,6 +1191,8 @@ def _raise_file_project_error(exc: ValueError) -> None:
             "next_volume_required:",
             "volume_detail_required:",
             "volume_detail_incomplete:",
+            "opening_candidate_confirmation_required",
+            "opening_prose_operation_unsupported",
         )
     ):
         raise HTTPException(status_code=409, detail=detail) from exc
@@ -1267,6 +1269,17 @@ def _run_continuous_generation_job(job_id: str, project_id: str) -> None:
     store = _store_for(project_id)
     story_id = _story_id_for(store)
     try:
+        from packages.story_core.opening_build.runtime import enabled as opening_enabled
+
+        if opening_enabled(store):
+            _continuous_job_store(store).update(
+                job_id,
+                status="stopped",
+                phase="stopped",
+                stop_reason="opening_continuous_generation_unsupported",
+                progress="Opening Graph 项目需要逐章人工确认，连续生成已停止",
+            )
+            return
         ContinuousGenerationRunner().run(
             job_id,
             project_store=store,
@@ -1472,6 +1485,14 @@ def _run_file_generation_job(
     try:
         store = _store_for(project_id)
         with generation_progress(report_progress):
+            from packages.story_core.opening_build.runtime import enabled as opening_enabled
+
+            opening_active = opening_enabled(store)
+            if opening_active and (
+                operation in {"polish", "expand"}
+                or (isinstance(chapter_number, int) and chapter_number > 0)
+            ):
+                raise ValueError("opening_prose_operation_unsupported")
             if operation == "polish":
                 if not isinstance(chapter_number, int) or chapter_number < 1:
                     raise ValueError("chapter_number_required_for_polish")
@@ -1486,8 +1507,8 @@ def _run_file_generation_job(
                     if isinstance(chapter_number, int) and chapter_number > 0
                     else store.generate_next_chapter(
                     chapter_direction_id=chapter_direction_id,
-                    persist=True,
-                    accept_quality_warnings=True,
+                    persist=not opening_active,
+                    accept_quality_warnings=not opening_active,
                 )
                 )
     except Exception as exc:  # pragma: no cover - background safety net
@@ -1855,6 +1876,12 @@ def start_file_generation_job(
     execution_chapter_number = (
         target_chapter if job_operation in {"polish", "regenerate"} else None
     )
+    from packages.story_core.opening_build.runtime import enabled as opening_enabled
+
+    if opening_enabled(store) and (
+        operation in {"polish", "expand"} or targets_existing_chapter
+    ):
+        raise HTTPException(status_code=409, detail="opening_prose_operation_unsupported")
     requires_new_chapter_outline = (
         operation not in {"polish", "expand"} and not targets_existing_chapter
     )
@@ -1891,6 +1918,10 @@ def start_file_generation_job(
     chapter_direction_id = payload.chapter_direction_id if payload else None
     submit_loaded_job = False
     with _file_generation_jobs_lock:
+        if opening_enabled(store) and (
+            operation in {"polish", "expand"} or targets_existing_chapter
+        ):
+            raise HTTPException(status_code=409, detail="opening_prose_operation_unsupported")
         if reserved_job_id:
             reserved = _file_generation_jobs.get(reserved_job_id)
             if reserved is not None:
@@ -2016,6 +2047,13 @@ def start_continuous_generation_job(
     store = _store_for(project_id)
     story_id = _story_id_for(store)
     with _file_generation_jobs_lock:
+        from packages.story_core.opening_build.runtime import enabled as opening_enabled
+
+        if opening_enabled(store):
+            raise HTTPException(
+                status_code=409,
+                detail="opening_continuous_generation_unsupported",
+            )
         if _normal_generation_active_locked(store) or _continuous_generation_active_locked(
             store
         ):
@@ -2059,6 +2097,26 @@ def _load_continuous_generation_job_for_route(
             detail="continuous_generation_job_not_found",
         )
     story_id = _story_id_for(store)
+    from packages.story_core.opening_build.runtime import enabled as opening_enabled
+
+    if opening_enabled(store):
+        job_id_value = str(job.get("job_id") or "")
+        if str(job.get("status") or "") in CONTINUOUS_ACTIVE_STATUSES:
+            job = jobs.update(
+                job_id_value,
+                status="stopped",
+                phase="stopped",
+                stop_reason="opening_continuous_generation_unsupported",
+                progress="Opening Graph 项目需要逐章人工确认，连续生成已停止",
+            )
+        with _file_generation_jobs_lock:
+            for key, active_id in list(_active_continuous_generation_jobs.items()):
+                if active_id == job_id_value and (
+                    key == story_id
+                    or _strip_file_prefix(key) == _strip_file_prefix(story_id)
+                ):
+                    _active_continuous_generation_jobs.pop(key, None)
+        return job
     with _file_generation_jobs_lock:
         registered_job_id = _active_job_for_story(
             _active_continuous_generation_jobs,
@@ -3021,13 +3079,20 @@ def init_file_project_routes() -> APIRouter:
     @router.post("/file-projects/{project_id}/build-graph/opening")
     def activate_file_project_opening_graph(project_id: str, request: BuildWorkbenchOpeningRequest):
         from packages.story_core.opening_build.runtime import activate
-        with _world_build_jobs_lock:
-            if _has_active_world_build_job(_strip_file_prefix(project_id)) or _has_active_build_orchestration_job(_strip_file_prefix(project_id)):
-                raise HTTPException(status_code=409, detail="build_run_in_progress")
-            try:
-                activate(_store_for(project_id), request.expected_graph_revision)
-            except ValueError as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
+        store = _store_for(project_id)
+        # Serialize Opening activation with generation job creation. A queued
+        # prose worker must not become a confirmed-chapter writer after the
+        # project crosses the manual-confirmation boundary.
+        with _file_generation_jobs_lock:
+            if _normal_generation_active_locked(store) or _continuous_generation_active_locked(store):
+                raise HTTPException(status_code=409, detail="project_generation_in_progress")
+            with _world_build_jobs_lock:
+                if _has_active_world_build_job(_strip_file_prefix(project_id)) or _has_active_build_orchestration_job(_strip_file_prefix(project_id)):
+                    raise HTTPException(status_code=409, detail="build_run_in_progress")
+                try:
+                    activate(store, request.expected_graph_revision)
+                except ValueError as exc:
+                    raise HTTPException(status_code=409, detail=str(exc)) from exc
         return get_file_project_build_graph(project_id)
 
     @router.post("/file-projects/{project_id}/build-graph/opening/input")
