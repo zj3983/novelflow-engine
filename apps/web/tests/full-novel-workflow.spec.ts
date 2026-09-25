@@ -1,4 +1,4 @@
-import { expect, test, type Route, type TestInfo } from "@playwright/test";
+import { expect, test, type Page, type Route, type TestInfo } from "@playwright/test";
 
 const projectId = "file:p-full-novel-workflow";
 const encodedId = encodeURIComponent(projectId);
@@ -315,7 +315,7 @@ async function installSyntheticFileProject(page: Page, options: FixtureOptions =
     }
     if (path === `${projectPrefix}/build-graph/orchestrations` && method === "POST") {
       orchestrationCount += 1;
-      const tasks = (graphState.tasks as Array<Record<string, unknown>>).map((task) => ({ ...task, status: "completed", artifact_revision: 1, artifact_source: "synthetic", validation_status: "passed" }));
+      const tasks: Array<Record<string, unknown>> = (graphState.tasks as Array<Record<string, unknown>>).map((task) => ({ ...task, status: "completed", artifact_revision: 1, artifact_source: "synthetic", validation_status: "passed" }));
       const pendingNextVolume = graphState.opening_planning_pending === true;
       if (pendingNextVolume) {
         nextVolumePublished = true;
@@ -554,19 +554,19 @@ test("新书从开局方向进入 Build，人工确认后跨卷继续候选审�
   await expect(page.getByRole("button", { name: "生成第一章" })).toBeEnabled();
   await expect(page.getByLabel("连续生产")).toHaveCount(0);
   await page.getByRole("button", { name: "生成第一章" }).click();
-  await expect(page.getByLabel("候选稿")).toBeVisible();
+  await expect(page.getByLabel("候选稿", { exact: true })).toBeVisible();
   expect(fixture.generationRequests).toEqual([1]);
 
-  const candidatePanel = page.getByLabel("候选稿");
+  const candidatePanel = page.getByLabel("候选稿", { exact: true });
   await expect(candidatePanel).toContainText("第1段：雨水沿着档案袋边缘");
   await expect(candidatePanel).toContainText("第十三段是全文末段标记");
   const review = page.getByLabel("候选稿审查结果");
   await expect(review).toContainText("正文审查状态：有警告或修改建议");
   await expect(review.getByLabel("Canon 审查快照")).toContainText("0");
   await expect(review.getByLabel("Canon 审查快照")).toContainText("continuity_snapshot");
-  await expect(review.getByLabel("Canon 审查快照")).toContainText("bounded_state_available");
+  await expect(review.getByLabel("Canon 审查快照")).toContainText("有界状态可用");
   await expect(review.getByLabel("Canon 实体预检")).toContainText("债主身份");
-  await expect(review.getByLabel("Canon 实体预检")).toContainText("prepared");
+  await expect(review.getByLabel("Canon 实体预检")).toContainText("已准备");
   await page.screenshot({ path: testInfo.outputPath("candidate-review.png"), fullPage: true });
 
   await page.getByRole("button", { name: "确认提交" }).click();
@@ -588,10 +588,8 @@ test("新书从开局方向进入 Build，人工确认后跨卷继续候选审�
   await page.getByRole("link", { name: "前往正文候选与审查" }).click();
   await expect(page.getByRole("button", { name: "生成下一章" })).toBeEnabled();
   await page.getByRole("button", { name: "生成下一章" }).click();
-  await expect(page.getByLabel("下一章候选稿已保留")).toContainText("第 51 章候选稿已经生成并保留");
-  await page.getByRole("link", { name: "查看第 51 章候选稿" }).click();
   await expect(page).toHaveURL(new RegExp(`${encodedId}/write\\?chapter=51$`));
-  await expect(page.getByLabel("候选稿")).toContainText("第十三段是全文末段标记");
+  await expect(page.getByLabel("候选稿", { exact: true })).toContainText("第十三段是全文末段标记");
   await expect(page.getByLabel("候选稿审查结果").getByLabel("Canon 审查快照")).toContainText("50");
   expect(fixture.generationRequests).toEqual([1, 51]);
   expect(nextVolumeState(fixture.graph)).toBe("published");
@@ -608,7 +606,7 @@ test("Canon hard blocker 的强制确认被拒绝且候选保留", async ({ page
   const fixture = await installSyntheticFileProject(page, { initialChapter: 1, initialCandidate: blockedCandidate });
   await page.goto(`${projectPath}/write?chapter=1`);
 
-  const candidatePanel = page.getByLabel("候选稿");
+  const candidatePanel = page.getByLabel("候选稿", { exact: true });
   await expect(candidatePanel).toBeVisible();
   const review = page.getByLabel("候选稿审查结果");
   await expect(review).toContainText("canon.hard_blocker");
@@ -618,6 +616,6 @@ test("Canon hard blocker 的强制确认被拒绝且候选保留", async ({ page
 
   await expect.poll(() => fixture.confirmationRequests).toEqual(["normal"]);
   await expect(candidatePanel).toBeVisible();
-  await expect(page.getByText("candidate_hard_blocked")).toBeVisible();
-  expect(fixture.confirmationRequests).not.toContain("normal");
+  await expect(page.getByText(/Canon Review 阻断了这份候选稿/)).toBeVisible();
+  expect(fixture.confirmationRequests).toEqual(["normal"]);
 });

@@ -240,6 +240,7 @@ npm run test:e2e
 - [部署说明](docs/deployment.md)
 - [架构说明](docs/architecture.md)
 - [开发与生成链路说明](docs/development-notes.md)
+- [新建小说到跨卷续写操作流程](docs/first-novel-workbench-journey.md)
 - [Agent 自动化框架](docs/agent-automation-framework.md)
 - [插件化 Roadmap](docs/pluginization-roadmap.md)
 - [Codex 插件架构](docs/codex-plugin-architecture.md)

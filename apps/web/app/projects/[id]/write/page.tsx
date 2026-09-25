@@ -1226,7 +1226,7 @@ export default function WritePage() {
               href={`/projects/${encodedProjectId}/log`}
             />
           ) : null}
-          {regenerateError ? <p className="ws-error">任务失败：{regenerateError}</p> : null}
+          {regenerateError ? <p className="ws-error">任务失败：{userFacingErrorMessage(regenerateError)}</p> : null}
           {pendingCandidate ? (
             <CandidatePanel
               candidate={pendingCandidate}
