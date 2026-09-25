@@ -181,6 +181,7 @@ class PromptCallLog:
                 "finish_reason",
                 "usage",
                 "json_diagnostic",
+                "preflight_report",
                 "error",
                 "genre_stage_profile",
                 "genre_stage_modules",
@@ -284,6 +285,7 @@ class PromptCallLog:
         resolved_model: str = "",
         raw: Any = None,
         usage: Mapping[str, Any] | None = None,
+        preflight_report: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload = self.get(call_id)
         output_text = str(output or "")
@@ -326,6 +328,10 @@ class PromptCallLog:
         payload["temperature_omitted"] = bool(temperature_omitted)
         if temperature_omitted:
             payload["temperature"] = None
+        if isinstance(preflight_report, Mapping):
+            # The shared gateway report contains only safe identity and token
+            # counts, never prompt text or credentials.
+            payload["preflight_report"] = dict(preflight_report)
         _atomic_write(self._detail_path(call_id), payload)
         self._append_event(payload)
         return payload
@@ -375,6 +381,7 @@ class PromptCallLog:
                         "finish_reason",
                         "usage",
                         "json_diagnostic",
+                        "preflight_report",
                         "error",
                         "genre_stage_profile",
                         "genre_stage_modules",

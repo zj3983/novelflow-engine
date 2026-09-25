@@ -174,6 +174,63 @@ async function routeProjectAndGraph(page: Page, response: ReturnType<typeof grap
   return () => reads;
 }
 
+test("模型预检展示服务端结果，且预览不启动任务执行", async ({ page }) => {
+  const currentGraph = graph([
+    task(0, { task_id: "world_model", title: "世界规则", dependencies: [], reads: [], owns: ["world.rules"] }),
+  ]);
+  await routeProjectAndGraph(page, currentGraph);
+  let preflightCalls = 0;
+  let executionCalls = 0;
+  await page.route(`**/file-projects/${encodedId}/build-graph/tasks/**`, async (route) => {
+    const request = route.request();
+    if (request.method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        task_id: "world_model", title: "世界规则", status: "completed", editable: true,
+        artifact: { revision: 1, source: "llm", payload: { label: "Initial" } },
+        owns: ["world.rules"], validation_status: "passed", diagnostics: [],
+        materialization_status: "current", materialization_marker: null,
+      }) });
+    } else if (request.url().endsWith("/preflight")) {
+      preflightCalls += 1;
+      expect(request.postDataJSON()).toEqual({ expected_revision: 1, operation: "rerun" });
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        task_id: "world_model", operation: "rerun", preflight_report: {
+          status: preflightCalls === 1 ? "READY" : "BLOCKED",
+          reason: preflightCalls === 1 ? "within_context_limit" : "max_output_limit_not_enforceable_by_adapter",
+          provider: "provider-x",
+          protocol: "codex_cli", requested_model: "model-y", resolved_model: null,
+          estimates: { required_input_tokens: 241, optional_input_tokens: 0, reserved_output_tokens: 1024, safety_margin_tokens: 128 },
+          output_budget: preflightCalls === 1
+            ? { policy: "best_effort", mode: "estimate_only", enforced: false, requested_tokens: 1024, estimated_tokens: 1024, uncertainty: "实际响应可能超过预算估算值。" }
+            : { policy: "required", mode: "blocked_unenforceable", enforced: false, requested_tokens: 1024, estimated_tokens: 1024, uncertainty: "此请求要求 provider 强制执行输出上限。" },
+          estimate_method: "utf8_bytes_div3_v1", capabilities: { json_mode: { state: "unknown", source: "unknown" } },
+          output_enforcement: { state: "unsupported", source: "repository_adapter_contract", method: "cli_has_no_per_request_output_limit" },
+          limits: {}, effective_preflight_guards: {}, unknown_capability_policy: "continue_bounded_without_claiming_support",
+          unknown_limit_policy: { action: "bounded_legacy_compatibility_guard" }, adjustments: [], repair_actions: [],
+        },
+      }) });
+    } else {
+      executionCalls += 1;
+      await route.fallback();
+    }
+  });
+
+  await page.goto(`/projects/${encodedId}/build`);
+  await page.getByRole("button", { name: /世界规则/ }).click();
+  await page.getByRole("button", { name: "预检完整重跑" }).click();
+  await expect(page.getByText("模型预检：READY · within_context_limit", { exact: true })).toBeVisible();
+  await expect(page.getByText(/utf8_bytes_div3_v1/)).toBeVisible();
+  await expect(page.getByText(/当前协议无法强制执行输出预算/)).toBeVisible();
+  await page.getByText("能力来源、限额和兼容策略").click();
+  await expect(page.getByText(/output_budget/)).toBeVisible();
+  await expect(page.getByText(/output_enforcement/)).toBeVisible();
+  await page.getByRole("button", { name: "预检完整重跑" }).click();
+  await expect(page.getByText(/模型预检：BLOCKED/)).toBeVisible();
+  await expect(page.getByText(/此请求要求执行输出硬上限.*模型调用已在执行前阻断/)).toBeVisible();
+  expect(preflightCalls).toBe(2);
+  expect(executionCalls).toBe(0);
+});
+
 test("15 个完成任务显示正式状态、来源和版本，刷新后仍从后端读取", async ({ page }) => {
   const fixtureGraph = graph(Array.from({ length: 15 }, (_, index) => task(index)));
   const readCount = await routeProjectAndGraph(page, fixtureGraph);
@@ -341,13 +398,13 @@ test("AI 修复阻止覆盖本地草稿，并在成功后刷新后端 revision",
   await page.getByRole("button", { name: /世界规则/ }).click();
   await page.getByRole("button", { name: "人工编辑" }).click();
   await page.getByRole("textbox", { name: "Artifact JSON draft" }).fill('{"label":"unsaved"}');
-  await page.getByRole("button", { name: "AI 修复" }).click();
+  await page.getByRole("button", { name: "AI 修复", exact: true }).click();
   await expect(page.getByText("当前有未保存的 JSON 草稿。请先保存或取消草稿，再运行 AI 修复。", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "取消" }).click();
-  await page.getByRole("button", { name: "AI 修复" }).click();
+  await page.getByRole("button", { name: "AI 修复", exact: true }).click();
   await expect(page.getByRole("button", { name: "AI 修复中…", exact: true })).toBeDisabled();
   await expect(page.getByText("task.repair_out_of_scope", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "AI 修复" }).click();
+  await page.getByRole("button", { name: "AI 修复", exact: true }).click();
   await expect(page.getByText("r2 · AI 修复", { exact: true })).toBeVisible();
   await expect(page.getByText("旧物化结果已过期").first()).toBeVisible();
 });
@@ -405,9 +462,9 @@ test("完整重跑发送当前 revision，成功后刷新完整产物并显示 s
 
   await page.goto(`/projects/${encodedId}/build`);
   await page.getByRole("button", { name: /世界规则/ }).click();
-  await expect(page.getByRole("button", { name: "完整重跑" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "完整重跑", exact: true })).toBeVisible();
   await expect(page.getByText("完整重生成此任务；成功后下游会标记为过期，不会自动重跑。", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "完整重跑" }).click();
+  await page.getByRole("button", { name: "完整重跑", exact: true }).click();
   await expect(page.getByText("r2 · AI 生成", { exact: true })).toBeVisible();
   await expect(page.getByText("上游修改后，以下任务已过期")).toBeVisible();
   expect(requestBody).toEqual({ expected_revision: 1 });

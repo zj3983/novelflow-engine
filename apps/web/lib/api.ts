@@ -84,6 +84,7 @@ export type RuntimeProviderAccount = {
   base_url: string;
   custom_models: string[];
   codex_command: string;
+  model_capabilities: Record<string, Record<string, unknown>>;
 };
 
 export type RuntimeStageBinding = { provider_id: string; model: string };
@@ -2539,8 +2540,8 @@ export function createDefaultRuntimeSettings(): RuntimeSettings {
   return {
     schema_version: "runtime-config/v2",
     accounts: {
-      codexcli: { api_key: "", base_url: "", custom_models: [], codex_command: "codex" },
-      antigravity: { api_key: "", base_url: "", custom_models: [], codex_command: "agy" },
+      codexcli: { api_key: "", base_url: "", custom_models: [], codex_command: "codex", model_capabilities: {} },
+      antigravity: { api_key: "", base_url: "", custom_models: [], codex_command: "agy", model_capabilities: {} },
     },
     stages: {
       planner: { provider_id: "codexcli", model: "gpt-5-codex" },
@@ -2635,11 +2636,15 @@ function updateRuntimeForChapter(
 }
 
 function normalizeRuntimeAccount(value: Partial<RuntimeProviderAccount> | undefined): RuntimeProviderAccount {
+  const modelCapabilities = value?.model_capabilities;
   return {
     api_key: typeof value?.api_key === "string" ? value.api_key : "",
     base_url: typeof value?.base_url === "string" ? value.base_url : "",
     custom_models: Array.isArray(value?.custom_models) ? value.custom_models.filter((model): model is string => typeof model === "string") : [],
     codex_command: typeof value?.codex_command === "string" ? value.codex_command : "",
+    model_capabilities: modelCapabilities && typeof modelCapabilities === "object" && !Array.isArray(modelCapabilities)
+      ? modelCapabilities as Record<string, Record<string, unknown>>
+      : {},
   };
 }
 
@@ -4381,6 +4386,7 @@ export type BuildWorkbenchDiagnostic = {
   path: string;
   message: string;
   severity?: "warning" | "blocking" | string;
+  details?: Record<string, unknown>;
 };
 
 export type BuildWorkbenchTask = {
@@ -4397,6 +4403,7 @@ export type BuildWorkbenchTask = {
   provider: string | null;
   model: string | null;
   prompt_call_id: string | null;
+  preflight_report?: Record<string, unknown> | null;
 };
 
 export type BuildWorkbenchGraph = {
@@ -4425,6 +4432,7 @@ export type BuildWorkbenchTaskDetail = {
   owns: string[];
   validation_status: string;
   diagnostics: BuildWorkbenchDiagnostic[];
+  preflight_report?: Record<string, unknown> | null;
   materialization_status: string;
   materialization_marker: Record<string, unknown> | null;
 };
@@ -4433,6 +4441,12 @@ export type BuildWorkbenchValidation = {
   passed: boolean;
   disposition: string;
   diagnostics: BuildWorkbenchDiagnostic[];
+};
+
+export type BuildWorkbenchPreflightResult = {
+  task_id: string;
+  operation: "rerun" | "repair";
+  preflight_report: Record<string, unknown>;
 };
 
 export type BuildOrchestrationMode = "continue" | "rebuild_stale" | "next";
@@ -4574,6 +4588,19 @@ export async function repairBuildWorkbenchTask(
       diagnostics.filter((item): item is BuildWorkbenchDiagnostic => !!item && typeof item === "object"),
     );
   });
+}
+
+export async function preflightBuildWorkbenchTask(
+  projectId: string,
+  taskId: string,
+  expectedRevision: number,
+  operation: "rerun" | "repair",
+): Promise<BuildWorkbenchPreflightResult> {
+  return await tryFetchJson(`${fileProjectPath(projectId)}/build-graph/tasks/${encodeURIComponent(taskId)}/preflight`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ expected_revision: expectedRevision, operation }),
+  }) as BuildWorkbenchPreflightResult;
 }
 
 export async function rerunBuildWorkbenchTask(

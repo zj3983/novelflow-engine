@@ -2,6 +2,7 @@ import json
 import io
 import socket
 import urllib.error
+from pathlib import Path
 
 import pytest
 
@@ -367,12 +368,61 @@ def test_codex_cli_adapter_reuses_existing_provider(monkeypatch):
     )
     adapter = CodexCLIAdapter(command="codex-custom")
 
-    response = adapter.complete(request(provider="codexcli"))
+    response = adapter.complete(request(provider="codexcli", max_tokens=None))
 
     assert captured["command"] == "codex-custom"
     assert captured["payload"]["messages"][1]["content"] == "Write it"
+    assert "max_tokens" not in captured["payload"]
     assert response.ok and response.text == "from cli"
     assert response.raw["Authorization"] == "[REDACTED]"
+
+
+def test_codex_cli_adapter_fails_closed_when_output_limit_is_requested(monkeypatch):
+    calls = []
+
+    def unexpected_call(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("Codex CLI must not run without an enforceable output limit")
+
+    monkeypatch.setattr(
+        "packages.story_core.codex_cli_provider.post_json_via_codex_cli",
+        unexpected_call,
+    )
+
+    response = CodexCLIAdapter().complete(
+        request(
+            provider="codexcli",
+            max_tokens=128,
+            output_limit_requirement="required",
+        )
+    )
+
+    assert not response.ok
+    assert response.error == "max_output_limit_not_enforceable"
+    assert calls == []
+
+
+def test_codex_cli_command_rejects_output_limit_before_running(monkeypatch):
+    from packages.story_core import codex_cli_provider
+
+    calls = []
+    monkeypatch.setattr(
+        codex_cli_provider.subprocess,
+        "run",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(ValueError, match="max_output_limit_not_enforceable"):
+        codex_cli_provider.post_json_via_codex_cli(
+            {
+                "model": "gpt-test",
+                "max_tokens": 128,
+                "messages": [{"role": "user", "content": "Write"}],
+            },
+            command="fake-codex",
+        )
+
+    assert calls == []
 
 
 def test_antigravity_cli_adapter_uses_its_own_provider(monkeypatch):
@@ -388,11 +438,84 @@ def test_antigravity_cli_adapter_uses_its_own_provider(monkeypatch):
     )
     adapter = AntigravityCLIAdapter(command="agy-custom")
 
-    response = adapter.complete(request(provider="antigravity", json_mode=True))
+    response = adapter.complete(request(provider="antigravity", json_mode=True, max_tokens=None))
 
     assert captured["command"] == "agy-custom"
     assert captured["payload"]["response_format"] == {"type": "json_object"}
     assert response.ok and response.text == "from antigravity"
+
+
+def test_antigravity_cli_adapter_fails_closed_when_output_limit_is_requested(monkeypatch):
+    calls = []
+
+    def unexpected_call(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("Antigravity CLI command must not run without a hard output limit")
+
+    monkeypatch.setattr(
+        "packages.story_core.antigravity_cli_provider.post_json_via_antigravity_cli",
+        unexpected_call,
+    )
+
+    response = AntigravityCLIAdapter().complete(
+        request(
+            provider="antigravity",
+            max_tokens=128,
+            output_limit_requirement="required",
+        )
+    )
+
+    assert not response.ok
+    assert response.error == "max_output_limit_not_enforceable"
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("adapter", "provider", "monkeypatch_path"),
+    [
+        (CodexCLIAdapter(), "codexcli", "packages.story_core.codex_cli_provider.post_json_via_codex_cli"),
+        (AntigravityCLIAdapter(), "antigravity", "packages.story_core.antigravity_cli_provider.post_json_via_antigravity_cli"),
+    ],
+)
+def test_cli_adapters_continue_best_effort_output_estimates_without_payload_cap(
+    monkeypatch, adapter, provider, monkeypatch_path
+):
+    captured = {}
+
+    def fake_cli(payload, *, command, config):
+        captured.update(payload=payload, command=command)
+        return {"choices": [{"message": {"content": "estimate-only result"}}]}
+
+    monkeypatch.setattr(monkeypatch_path, fake_cli)
+    response = adapter.complete(
+        request(provider=provider, max_tokens=128, output_limit_requirement="best_effort")
+    )
+
+    assert response.ok
+    assert captured["payload"].get("max_tokens") is None
+
+
+def test_antigravity_cli_command_rejects_output_limit_before_running(monkeypatch):
+    from packages.story_core import antigravity_cli_provider
+
+    calls = []
+    monkeypatch.setattr(
+        antigravity_cli_provider,
+        "_run",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(ValueError, match="max_output_limit_not_enforceable"):
+        antigravity_cli_provider.post_json_via_antigravity_cli(
+            {
+                "model": "gemini-test",
+                "max_tokens": 128,
+                "messages": [{"role": "user", "content": "Write"}],
+            },
+            command="fake-agy",
+        )
+
+    assert calls == []
 
 
 @pytest.mark.parametrize(
@@ -561,6 +684,9 @@ def test_runtime_gateway_contains_resolver_errors_without_leaking_details():
     response = RuntimeModelGateway(runtime_resolver=resolver).complete_stage("planner", request())
 
     assert response.ok is False
-    assert response.error == "unsupported_protocol"
+    assert response.error == "runtime_configuration_unavailable"
+    assert response.preflight_report["status"] == "BLOCKED"
+    assert response.preflight_report["reason"] == "runtime_configuration_unavailable"
     assert "secret-token" not in response.error
     assert "secret-token" not in json.dumps(response.raw)
+    assert "secret-token" not in json.dumps(response.preflight_report)

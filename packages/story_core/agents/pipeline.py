@@ -112,6 +112,7 @@ from packages.story_core.context.writer_context import (
 )
 from packages.story_core.continuity.delta import ContinuityDelta
 from packages.story_core.models import StoryState
+from packages.story_core.model_gateway.preflight import ModelPreflightBlockedError
 from packages.story_core.skill_packs import resolve_enabled_skill_module_ids
 
 
@@ -360,6 +361,8 @@ def _character_intents_for_context(
     fallback_source = ""
     try:
         proposals = planner.propose_all(selected_story)
+    except ModelPreflightBlockedError:
+        raise
     except Exception:
         try:
             proposals = planner.rule_provider.propose_all(selected_story)
@@ -885,6 +888,8 @@ def run_writer(
                 canon_snapshot=canon_review_snapshot,
             )
             consistency_findings.extend(model_findings)
+        except ModelPreflightBlockedError:
+            raise
         except Exception:
             # Defensive double-belt: a runtime failure must remain visible as
             # an unverified advisory finding even if it escapes the focused

@@ -108,6 +108,7 @@ class _ResolvedCall:
 
     request: ModelRequest
     protocol: str
+    settings: Any | None = None
 
 
 def _resolve_stage_settings(stage: str) -> Any | None:
@@ -132,7 +133,12 @@ def _resolve_stage_settings(stage: str) -> Any | None:
         return None
 
 
-def translate_request(request: Any, *, stage: str) -> ModelRequest:
+def translate_request(
+    request: Any,
+    *,
+    stage: str,
+    settings: Any | None = None,
+) -> ModelRequest:
     """Translate a lightweight request into a real
     :class:`ModelRequest` addressed at ``stage``.
 
@@ -144,7 +150,8 @@ def translate_request(request: Any, *, stage: str) -> ModelRequest:
     A complete :class:`ModelRequest` retains its prompt contract;
     stage settings remain authoritative for provider and model.
     """
-    settings = _resolve_stage_settings(stage)
+    if settings is None:
+        settings = _resolve_stage_settings(stage)
     provider, model, _protocol, temperature = _settings_provider_model(settings)
     if isinstance(request, ModelRequest):
         return ModelRequest(
@@ -161,8 +168,10 @@ def translate_request(request: Any, *, stage: str) -> ModelRequest:
             ),
             metadata=dict(request.metadata or {}),
             max_tokens=request.max_tokens,
+            output_limit_requirement=request.output_limit_requirement,
             json_mode=request.json_mode,
             timeout_seconds=request.timeout_seconds,
+            optional_input_messages=request.optional_input_messages,
         )
     prompt, metadata = _request_prompt_and_metadata(request)
     operation = _resolve_operation(metadata, stage)
@@ -173,6 +182,16 @@ def translate_request(request: Any, *, stage: str) -> ModelRequest:
         operation=operation,
         temperature=temperature,
         metadata=metadata,
+        output_limit_requirement=(
+            "required"
+            if metadata.get("output_limit_requirement") == "required"
+            else "best_effort"
+        ),
+        optional_input_messages=tuple(
+            metadata.get("preflight_optional_message_indexes", ())
+            if isinstance(metadata.get("preflight_optional_message_indexes", ()), (list, tuple))
+            else ()
+        ),
     )
 
 
@@ -185,8 +204,8 @@ def resolve_call(request: Any, *, stage: str) -> _ResolvedCall:
     """
     settings = _resolve_stage_settings(stage)
     _provider, _model, protocol, _temperature = _settings_provider_model(settings)
-    translated = translate_request(request, stage=stage)
-    return _ResolvedCall(request=translated, protocol=protocol)
+    translated = translate_request(request, stage=stage, settings=settings)
+    return _ResolvedCall(request=translated, protocol=protocol, settings=settings)
 
 
 def _response_text(response: Any) -> str:
@@ -272,7 +291,10 @@ def call_with_logging(
     )
 
     try:
-        response = gateway.complete_stage(stage, model_request)
+        if resolved.settings is not None and callable(getattr(gateway, "complete_resolved", None)):
+            response = gateway.complete_resolved(resolved.settings, model_request)
+        else:
+            response = gateway.complete_stage(stage, model_request)
     except Exception as exc:
         finish_prompt_call(
             call_id,
@@ -306,6 +328,7 @@ def call_with_logging(
         temperature_omitted=bool(getattr(response, "temperature_omitted", False)),
         raw=getattr(response, "raw", None),
         usage=getattr(response, "usage", None),
+        preflight_report=getattr(response, "preflight_report", None),
     )
     return response, model_request.provider, model_request.model, protocol
 

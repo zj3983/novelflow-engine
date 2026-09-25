@@ -12,6 +12,7 @@ from packages.story_core.agent_base import (
     compact_text,
 )
 from packages.story_core.model_gateway import ModelRequest, ModelResponse, normalize_model_error
+from packages.story_core.model_gateway.preflight import ModelPreflightBlockedError
 from packages.story_core.models import CharacterProposal, CharacterState, StoryState, default_fast_model_name
 
 
@@ -314,6 +315,17 @@ class OpenAICharacterProposalProvider(BaseOpenAIProvider):
             metadata={"chapter_number": chapter_number},
         )
         response = self.complete(request)
+        preflight_report = getattr(response, "preflight_report", {})
+        if (
+            not response.ok
+            and response.error in {
+                "model_preflight_blocked",
+                "model_preflight_split_required",
+            }
+            and isinstance(preflight_report, dict)
+            and preflight_report.get("status") in {"BLOCKED", "SPLIT"}
+        ):
+            raise ModelPreflightBlockedError(preflight_report)
         parsed = _parse_json_text(response.text) if response.ok else None
         if parsed is None:
             if response.ok:
@@ -475,6 +487,8 @@ class CharacterAgent:
         if story.agent_settings.mode == "LLM-assisted":
             try:
                 llm_proposals = self.llm_provider.propose_all(story)
+            except ModelPreflightBlockedError:
+                raise
             except Exception:
                 llm_proposals = []
             if llm_proposals:

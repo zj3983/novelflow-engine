@@ -26,6 +26,7 @@ function accountFor(value: RuntimeSettings, provider: RuntimeProviderDefinition)
     base_url: provider.default_base_url,
     custom_models: [],
     codex_command: provider.protocol === "codex_cli" ? "codex" : provider.protocol === "antigravity_cli" ? "agy" : "",
+    model_capabilities: {},
   };
 }
 
@@ -37,6 +38,8 @@ export function ProviderAccountsCard({ value, providers, statuses, disabled, onC
   const [discoveredModels, setDiscoveredModels] = useState<RuntimeDiscoveredModel[]>([]);
   const [discoveryState, setDiscoveryState] = useState<"idle" | "loading" | "error">("idle");
   const [discoveryMessage, setDiscoveryMessage] = useState("");
+  const [capabilitiesJson, setCapabilitiesJson] = useState("{}");
+  const [capabilitiesError, setCapabilitiesError] = useState("");
   const selected = providers.find((provider) => provider.provider_id === selectedId) ?? providers[0];
   const account = selected ? accountFor(value, selected) : null;
   const status = statuses[selectedId] ?? { state: "idle", message: "" };
@@ -58,6 +61,11 @@ export function ProviderAccountsCard({ value, providers, statuses, disabled, onC
     setDiscoveryMessage("");
   }, [selectedId, disabled]);
 
+  useEffect(() => {
+    setCapabilitiesJson(JSON.stringify(value.accounts[selectedId]?.model_capabilities ?? {}, null, 2));
+    setCapabilitiesError("");
+  }, [selectedId, value.accounts[selectedId]?.model_capabilities]);
+
   const selectedModels = useMemo(() => {
     if (!selected || !account) return [];
     return Array.from(new Set([...selected.planner_models, ...selected.writer_models, ...account.custom_models]));
@@ -71,6 +79,19 @@ export function ProviderAccountsCard({ value, providers, statuses, disabled, onC
       ...value,
       accounts: { ...value.accounts, [selected.provider_id]: { ...activeAccount, ...patch } },
     });
+  }
+
+  function saveModelCapabilities() {
+    try {
+      const parsed: unknown = JSON.parse(capabilitiesJson);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("顶层必须是 JSON 对象");
+      }
+      updateAccount({ model_capabilities: parsed as Record<string, Record<string, unknown>> });
+      setCapabilitiesError("");
+    } catch (error) {
+      setCapabilitiesError(error instanceof Error ? error.message : "JSON 格式无效");
+    }
   }
 
   async function toggleKey() {
@@ -187,6 +208,24 @@ export function ProviderAccountsCard({ value, providers, statuses, disabled, onC
             <label htmlFor="provider-custom-models">自定义模型</label>
             <input id="provider-custom-models" aria-label={`${selected.name} 自定义模型`} className="text-input" value={account.custom_models.join(", ")} disabled={disabled} placeholder="多个模型用逗号分隔" onChange={(event) => updateAccount({ custom_models: event.target.value.split(/[,，]/).map((item) => item.trim()).filter(Boolean) })} />
             <small className="field-help">当前可选模型：{selectedModels.join("、") || "请添加自定义模型"}</small>
+          </div>
+
+          <div className="field">
+            <label htmlFor="provider-model-capabilities">模型能力与限额声明</label>
+            <textarea
+              id="provider-model-capabilities"
+              aria-label="模型能力与限额声明"
+              className="text-input"
+              rows={8}
+              value={capabilitiesJson}
+              disabled={disabled}
+              onChange={(event) => setCapabilitiesJson(event.target.value)}
+              onBlur={saveModelCapabilities}
+            />
+            <small className="field-help">
+              按精确模型名填写用户声明，例如 {`{"my-model":{"capabilities":{"json_mode":"supported"},"limits":{"input_token_limit":64000,"context_window":65536,"max_output_tokens":8192}}}`}。声明会标记为 user_declared；未知项不会视为已验证。
+            </small>
+            {capabilitiesError ? <p className="field-error" role="alert">能力声明未保存：{capabilitiesError}</p> : null}
           </div>
 
           <div className="provider-model-catalog">

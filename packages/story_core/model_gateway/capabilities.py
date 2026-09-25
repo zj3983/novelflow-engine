@@ -105,17 +105,21 @@ def normalize_base_url(base_url: str | None) -> str:
     raw = str(base_url or "").strip()
     if not raw:
         return ""
-    fallback = raw.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+
+    def invalid_identity() -> str:
+        digest = hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[:24]
+        return f"invalid://sha256/{digest}"
+
     try:
         parsed = urlsplit(raw if "://" in raw else f"//{raw}")
         hostname = (parsed.hostname or "").lower().rstrip(".")
         if not hostname:
-            return fallback
+            return invalid_identity()
         host = f"[{hostname}]" if ":" in hostname and not hostname.startswith("[") else hostname
-        try:
-            port = parsed.port
-        except ValueError:
-            return fallback
+        # Accessing .port validates syntax and the 0..65535 range.  Never
+        # return the raw authority when validation fails: it may contain URL
+        # userinfo that must not reach capability cache files or diagnostics.
+        port = parsed.port
         scheme = parsed.scheme.lower()
         if port is not None and not (
             (scheme == "http" and port == 80)
@@ -125,7 +129,36 @@ def normalize_base_url(base_url: str | None) -> str:
         path = parsed.path.rstrip("/")
         return urlunsplit((scheme, host, path, "", "")).rstrip("/")
     except ValueError:
-        return fallback
+        return invalid_identity()
+
+
+def safe_base_url_for_diagnostics(base_url: str | None) -> str:
+    """Serialize endpoint identity without ever exposing userinfo or query data.
+
+    This is intentionally independent from the capability cache normalizer so
+    reports remain safe even when handed an old or malformed cached identity.
+    """
+
+    raw = str(base_url or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlsplit(raw if "://" in raw else f"//{raw}")
+        hostname = (parsed.hostname or "").lower().rstrip(".")
+        if not hostname:
+            return "invalid endpoint (redacted)"
+        port = parsed.port
+        host = f"[{hostname}]" if ":" in hostname and not hostname.startswith("[") else hostname
+        scheme = parsed.scheme.lower()
+        if port is not None and not (
+            (scheme == "http" and port == 80)
+            or (scheme == "https" and port == 443)
+        ):
+            host = f"{host}:{port}"
+        path = parsed.path.rstrip("/")
+        return urlunsplit((scheme, host, path, "", "")).rstrip("/")
+    except ValueError:
+        return "invalid endpoint (redacted)"
 
 
 @dataclass(frozen=True)
@@ -465,7 +498,7 @@ class ModelProfile:
 
     def effective_limit(self, name: str = "context_window") -> int | None:
         record = self.limits.get(name) or CapabilityRecord.unknown()
-        if record.state == "unsupported" or record.value is None:
+        if record.state != "supported" or record.value is None:
             return None
         try:
             value = int(record.value)
@@ -742,7 +775,25 @@ def _select_records(
             if not _timestamp_is_expired(record.provenance.expires_at)
         ]
         if not active:
-            selected[name] = CapabilityRecord.unknown()
+            expired = [
+                record
+                for record in candidates
+                if _timestamp_is_expired(record.provenance.expires_at)
+            ]
+            if expired:
+                previous = max(
+                    enumerate(expired),
+                    key=lambda item: (
+                        _SOURCE_PRIORITY.get(item[1].provenance.source, 0),
+                        item[1].provenance.verified_at or "",
+                        -item[0],
+                    ),
+                )[1]
+                # Keep the old source and expiry visible for diagnostics, but
+                # never let expired evidence continue to authorize a request.
+                selected[name] = replace(previous, state="unknown")
+            else:
+                selected[name] = CapabilityRecord.unknown()
             continue
         selected[name] = max(
             enumerate(active),
@@ -975,6 +1026,9 @@ class ContextPreflightResult:
     safety_margin: int
     context_limit: int | None
     reason: str
+    input_limit: int | None = None
+    max_output_limit: int | None = None
+    estimated_input: int = 0
 
     @property
     def safe(self) -> bool:
@@ -1014,6 +1068,8 @@ def preflight_context(
     safety_margin: int = 0,
     model_effective_limit: int | CapabilityRecord | ModelProfile | None = None,
     context_limit: int | CapabilityRecord | ModelProfile | None = None,
+    input_limit: int | CapabilityRecord | ModelProfile | None = None,
+    max_output_limit: int | CapabilityRecord | ModelProfile | None = None,
     allow_split: bool = True,
 ) -> ContextPreflightResult:
     """Classify a request without treating an unknown context as safe."""
@@ -1025,15 +1081,48 @@ def preflight_context(
     limit = _coerce_context_limit(
         model_effective_limit if model_effective_limit is not None else context_limit
     )
+    resolved_input_limit = _coerce_context_limit(input_limit)
+    resolved_output_limit = _coerce_context_limit(max_output_limit)
+    estimated_input = required + optional
     result_args = dict(
         estimated_required_input=required,
         estimated_optional_input=optional,
         reserved_output=output,
         safety_margin=margin,
         context_limit=limit,
+        input_limit=resolved_input_limit,
+        max_output_limit=resolved_output_limit,
+        estimated_input=estimated_input,
     )
     if min(required, optional, output, margin) < 0:
         return ContextPreflightResult(status="BLOCKED", reason="negative_budget", **result_args)
+    if resolved_output_limit is not None and output > resolved_output_limit:
+        return ContextPreflightResult(
+            status="BLOCKED", reason="max_output_limit_exceeded", **result_args
+        )
+    if resolved_input_limit is not None:
+        required_input = required + margin
+        total_input = required + optional + margin
+        if required_input > resolved_input_limit:
+            if allow_split and required <= resolved_input_limit:
+                return ContextPreflightResult(
+                    status="SPLIT", reason="required_input_exceeds_safety_budget", **result_args
+                )
+            return ContextPreflightResult(
+                status="BLOCKED", reason="required_input_over_limit", **result_args
+            )
+        if total_input > resolved_input_limit:
+            if optional > 0:
+                return ContextPreflightResult(
+                    status="COMPACT", reason="optional_input_over_input_limit", **result_args
+                )
+            if allow_split and required <= resolved_input_limit:
+                return ContextPreflightResult(
+                    status="SPLIT", reason="input_exceeds_safety_budget", **result_args
+                )
+            return ContextPreflightResult(
+                status="BLOCKED", reason="input_over_limit", **result_args
+            )
     if limit is None:
         return ContextPreflightResult(
             status="COMPACT",
@@ -1087,4 +1176,5 @@ __all__ = [
     "provider_capability_catalog",
     "resolve_effective_streaming",
     "resolve_model_profile",
+    "safe_base_url_for_diagnostics",
 ]

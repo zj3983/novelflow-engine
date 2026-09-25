@@ -32,6 +32,7 @@ from packages.story_core.runtime_config import (
     StageRuntimeSettings,
     get_runtime_configuration,
     set_runtime_configuration,
+    _strip_model_display_name,
 )
 
 
@@ -170,15 +171,17 @@ def _resolve_candidate_stage_runtime(
 ) -> StageRuntimeSettings:
     binding = getattr(configuration.stages, stage)
     definition, account = _validated_provider_account(configuration, binding.provider_id)
+    model = _strip_model_display_name(binding.model)
     return StageRuntimeSettings(
         provider_id=binding.provider_id,
         protocol=definition.protocol,
-        model=binding.model,
+        model=model,
         api_key=account.api_key,
         base_url=account.base_url.rstrip("/"),
         codex_command=account.codex_command,
         temperature=configuration.temperature,
         new_character_policy=configuration.new_character_policy,
+        user_declared_capabilities=dict(account.model_capabilities.get(model, {})),
     )
 
 
@@ -200,6 +203,7 @@ def _resolve_candidate_provider_runtime(
         codex_command=account.codex_command,
         temperature=configuration.temperature,
         new_character_policy=configuration.new_character_policy,
+        user_declared_capabilities=dict(account.model_capabilities.get(model, {})),
     )
 
 

@@ -132,6 +132,7 @@ class BuildDiagnostic:
     path: str
     message: str
     severity: DiagnosticSeverity = "blocking"
+    details: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not str(self.code).strip():
@@ -141,14 +142,18 @@ class BuildDiagnostic:
         object.__setattr__(self, "code", str(self.code).strip())
         object.__setattr__(self, "path", str(self.path or "").strip())
         object.__setattr__(self, "message", str(self.message or "").strip())
+        object.__setattr__(self, "details", deepcopy(dict(self.details or {})))
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "code": self.code,
             "path": self.path,
             "message": self.message,
             "severity": self.severity,
         }
+        if self.details:
+            payload["details"] = deepcopy(dict(self.details))
+        return payload
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "BuildDiagnostic":
@@ -157,6 +162,7 @@ class BuildDiagnostic:
             path=str(value.get("path") or ""),
             message=str(value.get("message") or ""),
             severity=str(value.get("severity") or "blocking"),  # type: ignore[arg-type]
+            details=value.get("details") if isinstance(value.get("details"), Mapping) else {},
         )
 
 

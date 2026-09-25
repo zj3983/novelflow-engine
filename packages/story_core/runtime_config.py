@@ -9,7 +9,7 @@ import tempfile
 from copy import deepcopy
 from pathlib import Path
 from threading import RLock
-from typing import Callable, Literal
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -112,6 +112,9 @@ class ProviderAccount(_StrictModel):
     base_url: str = ""
     custom_models: list[str] = Field(default_factory=list)
     codex_command: str = ""
+    # Optional user-declared evidence keyed by the exact requested model.
+    # It is separate from provider metadata and runtime observations.
+    model_capabilities: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class StageBinding(_StrictModel):
@@ -210,6 +213,7 @@ class StageRuntimeSettings(_StrictModel):
     codex_command: str = ""
     temperature: float = 0.7
     new_character_policy: NewCharacterPolicy = "Director review"
+    user_declared_capabilities: dict[str, Any] = Field(default_factory=dict)
 
     @property
     def provider(self) -> str:
@@ -557,15 +561,17 @@ def resolve_stage_runtime(stage: RuntimeStageInput) -> StageRuntimeSettings:
     binding = getattr(configuration.stages, resolved_stage)
     account = configuration.accounts[binding.provider_id]
     definition = provider_definition(binding.provider_id)
+    model = _strip_model_display_name(binding.model)
     return StageRuntimeSettings(
         provider_id=binding.provider_id,
         protocol=definition.protocol,
-        model=_strip_model_display_name(binding.model),
+        model=model,
         api_key=account.api_key,
         base_url=account.base_url.rstrip("/"),
         codex_command=account.codex_command,
         temperature=configuration.temperature,
         new_character_policy=configuration.new_character_policy,
+        user_declared_capabilities=dict(account.model_capabilities.get(model, {})),
     )
 
 

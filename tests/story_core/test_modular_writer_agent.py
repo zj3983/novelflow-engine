@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -888,6 +889,74 @@ def test_gateway_writer_runtime_translates_lightweight_request(
     assert request.provider == "openai"
     assert request.model == "gpt-4o-mini"
     assert request.operation == "writer"
+
+
+def test_default_codex_cli_writer_business_path_uses_estimate_only_output_budget(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from packages.story_core import codex_cli_provider, runtime_config
+    from packages.story_core.model_gateway import (
+        ModelCapabilityResolver,
+        ModelCapabilityStore,
+        RuntimeModelGateway,
+    )
+    from packages.story_core.runtime_config import RuntimeConfiguration
+
+    configuration = RuntimeConfiguration()
+    monkeypatch.setattr(runtime_config, "_runtime_configuration", configuration)
+    monkeypatch.setattr(runtime_config, "_runtime_configuration_error", None)
+    assert configuration.stages.planner.provider_id == "codexcli"
+    assert configuration.stages.writer.provider_id == "codexcli"
+    assert runtime_config.resolve_stage_runtime("writer").protocol == "codex_cli"
+
+    cli_calls = []
+
+    def fake_cli(payload, *, command, config):
+        cli_calls.append({"payload": payload, "command": command})
+        return {
+            "choices": [{"message": {"content": "林照起身，沿溪流走出密林。"}}],
+            "model": "writer-model",
+        }
+
+    monkeypatch.setattr(codex_cli_provider, "post_json_via_codex_cli", fake_cli)
+
+    class CapturingGateway(RuntimeModelGateway):
+        response = None
+
+        def complete_resolved(self, settings, request):
+            self.response = super().complete_resolved(settings, request)
+            return self.response
+
+    gateway = CapturingGateway(
+        capability_resolver=ModelCapabilityResolver(
+            store=ModelCapabilityStore(tmp_path / "default-writer-capabilities.json")
+        )
+    )
+    writer_runtime = GatewayWriterRuntime(gateway)
+    result = WriterAgent(runtime=writer_runtime).run(_writer_request())
+
+    assert result.body == "林照起身，沿溪流走出密林。"
+    assert len(cli_calls) == 1
+    assert "max_tokens" not in cli_calls[0]["payload"]
+    assert gateway.response.ok
+    report = gateway.response.preflight_report
+    assert report["status"] == "READY"
+    assert report["provider"] == "codexcli"
+    assert report["output_enforcement"]["state"] == "unsupported"
+    assert report["output_budget"]["mode"] == "estimate_only"
+    assert report["output_budget"]["enforced"] is False
+    assert report["output_budget"]["estimated_tokens"] > 0
+
+    hard_request = writer_runtime.complete(
+        SimpleNamespace(
+            prompt="this task requires a strict output cap",
+            stage="writer",
+            metadata={"agent": "writer", "output_limit_requirement": "required"},
+        )
+    )
+    assert not hard_request.ok
+    assert hard_request.preflight_report["reason"] == "max_output_limit_not_enforceable_by_adapter"
+    assert len(cli_calls) == 1
 
 
 def test_writer_runtime_protocol_accepts_custom_runtime() -> None:

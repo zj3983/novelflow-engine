@@ -80,6 +80,9 @@ def _runtime_gateway_for_legacy_injection(
             base_url=runtime.base_url or "http://legacy-injected.invalid",
             codex_command=runtime.codex_command,
             temperature=runtime.temperature,
+            user_declared_capabilities=dict(
+                getattr(runtime, "user_declared_capabilities", {}) or {}
+            ),
         )
 
     def transport(*, url: str, payload: dict[str, Any], headers: dict[str, str], config: Any) -> dict[str, Any]:

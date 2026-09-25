@@ -30,6 +30,48 @@ def test_generator_constructor_does_not_accept_legacy_strategy_resolver():
     assert "strategy_resolver" not in inspect.signature(LLMOpeningDirectionGenerator).parameters
 
 
+def test_opening_direction_generation_is_blocked_by_the_shared_model_preflight(tmp_path):
+    from packages.story_core.model_gateway import (
+        ModelCapabilityResolver,
+        ModelCapabilityStore,
+        RuntimeModelGateway,
+    )
+
+    settings = StageRuntimeSettings(
+        provider_id="openai",
+        protocol="openai_compatible",
+        model="opening-model",
+        api_key="test-secret",
+        base_url="https://api.example/v1",
+        temperature=0,
+        user_declared_capabilities={
+            "capabilities": {"json_mode": "unsupported"},
+            "limits": {
+                "input_token_limit": 32_000,
+                "context_window": 36_000,
+                "max_output_tokens": 4_000,
+            },
+        },
+    )
+    resolved_stages = []
+    provider_calls = []
+    gateway = RuntimeModelGateway(
+        runtime_resolver=lambda stage: resolved_stages.append(stage) or settings,
+        capability_resolver=ModelCapabilityResolver(
+            store=ModelCapabilityStore(tmp_path / "capabilities.json")
+        ),
+        transport=lambda **call: provider_calls.append(call) or {},
+    )
+
+    with pytest.raises(ValueError, match="^opening_direction_generation_failed$"):
+        LLMOpeningDirectionGenerator(model_gateway=gateway).generate(
+            OpeningBrief(novel_type_id="urban", idea="A locked terminal shows a real-world name.")
+        )
+
+    assert resolved_stages == ["planner"]
+    assert provider_calls == []
+
+
 _AUTO_TROPE = object()
 
 

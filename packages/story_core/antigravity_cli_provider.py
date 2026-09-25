@@ -112,6 +112,8 @@ def post_json_via_antigravity_cli(
     config: RetryConfig | None = None,
 ) -> dict[str, Any]:
     cfg = config or RetryConfig()
+    if payload.get("max_tokens") is not None:
+        raise ValueError("max_output_limit_not_enforceable")
     model = str(payload.get("model") or "").strip()
     if "\t" in model:
         model = model.split("\t")[0].strip()

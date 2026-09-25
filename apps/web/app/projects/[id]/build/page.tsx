@@ -12,6 +12,7 @@ import {
   fetchBuildWorkbench,
   fetchBuildWorkbenchTask,
   fetchCurrentBuildOrchestration,
+  preflightBuildWorkbenchTask,
   repairBuildWorkbenchTask,
   rerunBuildWorkbenchTask,
   startBuildOrchestration,
@@ -61,6 +62,44 @@ function ValueList({ values }: { values: string[] }) {
     : <p className={styles.empty_value}>无</p>;
 }
 
+function PreflightPanel({ report }: { report?: Record<string, unknown> | null }) {
+  if (!report) return null;
+  const estimate = (report.estimates ?? {}) as Record<string, unknown>;
+  const outputBudget = (report.output_budget ?? {}) as Record<string, unknown>;
+  const outputBudgetMode = String(outputBudget.mode ?? "");
+  return (
+    <section className={styles.preflight_report} aria-label="模型预检结果">
+      <strong>模型预检：{String(report.status ?? "unknown")} · {String(report.reason ?? "")}</strong>
+      <p>
+        {String(report.provider ?? "provider unknown")} / {String(report.protocol ?? "protocol unknown")} · requested {String(report.requested_model ?? "model unknown")}
+        {report.resolved_model ? ` · resolved ${String(report.resolved_model)}` : ""}
+      </p>
+      <p>
+        输入估算：必要 {String(estimate.required_input_tokens ?? "?")} + optional {String(estimate.optional_input_tokens ?? "?")} tokens；
+        输出预留 {String(estimate.reserved_output_tokens ?? "?")}，安全余量 {String(estimate.safety_margin_tokens ?? "?")}。
+        方法 {String(report.estimate_method ?? "unknown")}（估算值，不是精确 tokenizer 结果）。
+      </p>
+      {(outputBudgetMode === "estimate_only" || outputBudgetMode === "estimate_only_unverified") && (
+        <p role="note">{outputBudgetMode === "estimate_only" ? "当前协议无法强制执行输出预算" : "当前协议的输出预算执行能力尚未验证"}；{String(outputBudget.estimated_tokens ?? estimate.reserved_output_tokens ?? "?")} tokens 仅供估算；{String(outputBudget.uncertainty ?? "实际输出可能超过该预算。")}</p>
+      )}
+      {outputBudgetMode === "blocked_unenforceable" && (
+        <p role="alert">此请求要求执行输出硬上限，当前协议无法保证；模型调用已在执行前阻断。</p>
+      )}
+      <details>
+        <summary>能力来源、限额和兼容策略</summary>
+        <pre>{JSON.stringify({ capabilities: report.capabilities, limits: report.limits, guards: report.effective_preflight_guards, output_budget: report.output_budget, output_enforcement: report.output_enforcement, pre_compaction_estimates: report.pre_compaction_estimates, unknown_capability_policy: report.unknown_capability_policy, unknown_limit_policy: report.unknown_limit_policy, adjustments: report.adjustments, repair_actions: report.repair_actions }, null, 2)}</pre>
+      </details>
+    </section>
+  );
+}
+
+function DiagnosticPreflight({ details }: { details?: Record<string, unknown> }) {
+  const report = details?.preflight;
+  return report && typeof report === "object" && !Array.isArray(report)
+    ? <PreflightPanel report={report as Record<string, unknown>} />
+    : null;
+}
+
 function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved, onDraftChange, orchestrationBusy }: {
   task: BuildWorkbenchTask;
   graph: BuildWorkbenchGraph;
@@ -84,6 +123,9 @@ function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved, onDra
   const [rerunBusy, setRerunBusy] = useState(false);
   const [rerunDiagnostics, setRerunDiagnostics] = useState<BuildWorkbenchTaskDetail["diagnostics"]>([]);
   const [rerunError, setRerunError] = useState<string | null>(null);
+  const [preflightBusy, setPreflightBusy] = useState(false);
+  const [preflightReport, setPreflightReport] = useState<Record<string, unknown> | null>(null);
+  const [preflightError, setPreflightError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -94,6 +136,8 @@ function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved, onDra
     setEditError(null);
     setRerunError(null);
     setRerunDiagnostics([]);
+    setPreflightReport(null);
+    setPreflightError(null);
     fetchBuildWorkbenchTask(projectId, task.task_id)
       .then((result) => {
         if (!active) return;
@@ -191,6 +235,30 @@ function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved, onDra
     }
   };
 
+  const previewModelRequest = async (operation: "rerun" | "repair") => {
+    if (!detail?.artifact) return;
+    if (editorOpen) {
+      setPreflightError("当前有未保存的 JSON 草稿。请先保存或取消草稿，再预检正式 artifact 对应的请求。");
+      return;
+    }
+    setPreflightBusy(true);
+    setPreflightError(null);
+    try {
+      const result = await preflightBuildWorkbenchTask(
+        projectId,
+        task.task_id,
+        detail.artifact.revision,
+        operation,
+      );
+      setPreflightReport(result.preflight_report);
+    } catch (reason) {
+      setPreflightReport(null);
+      setPreflightError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setPreflightBusy(false);
+    }
+  };
+
   return (
     <section className={`ws-card ${styles.detail}`} aria-labelledby="build-task-detail-title">
       <div className={styles.detail_head}>
@@ -207,6 +275,7 @@ function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved, onDra
         <div><span>产物来源</span><strong>{detail?.artifact ? SOURCE_LABELS[detail.artifact.source] ?? detail.artifact.source : source}</strong></div>
         <div><span>校验状态</span><strong>{task.validation_status}</strong></div>
       </div>
+      <PreflightPanel report={preflightReport ?? detail?.preflight_report ?? task.preflight_report} />
 
       {detail?.editable && !editorOpen ? <button type="button" className={styles.edit_button} onClick={() => {
         setDraft(JSON.stringify(detail.artifact?.payload ?? {}, null, 2));
@@ -215,6 +284,16 @@ function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved, onDra
         setEditorOpen(true);
         onDraftChange(true);
       }} disabled={orchestrationBusy}>人工编辑</button> : null}
+      {detail?.editable ? <div className={styles.preflight_actions}>
+        <button type="button" className={styles.edit_button} disabled={preflightBusy || repairBusy || rerunBusy || busy || orchestrationBusy} onClick={() => void previewModelRequest("repair")}>
+          {preflightBusy ? "正在预检…" : "预检 AI 修复"}
+        </button>
+        <button type="button" className={styles.edit_button} disabled={preflightBusy || repairBusy || rerunBusy || busy || orchestrationBusy} onClick={() => void previewModelRequest("rerun")}>
+          {preflightBusy ? "正在预检…" : "预检完整重跑"}
+        </button>
+      </div> : null}
+      {preflightError ? <p className={styles.edit_error} role="alert">模型预检失败：{preflightError}</p> : null}
+      {detail?.editable ? <p className={styles.empty_value}>预检只在本地解析配置和输入，不调用 provider；开始执行时会重新读取配置并重新计算。</p> : null}
       {detail?.editable ? <button type="button" className={styles.edit_button} disabled={repairBusy || rerunBusy || busy || orchestrationBusy} onClick={() => void repairArtifact()}>
         {repairBusy ? "AI 修复中…" : "AI 修复"}
       </button> : null}
@@ -225,13 +304,13 @@ function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved, onDra
       {repairError ? <div className={styles.validation_fail} role="alert">
         <strong>{repairError}</strong>
         {repairDiagnostics.length ? <ul className={styles.diagnostics}>{repairDiagnostics.map((diagnostic, index) => (
-          <li key={`${diagnostic.code}-${diagnostic.path}-${index}`}><strong>{diagnostic.code}</strong><code>{diagnostic.path || "（未提供路径）"}</code><p>{diagnostic.message}</p></li>
+          <li key={`${diagnostic.code}-${diagnostic.path}-${index}`}><strong>{diagnostic.code}</strong><code>{diagnostic.path || "（未提供路径）"}</code><p>{diagnostic.message}</p><DiagnosticPreflight details={diagnostic.details} /></li>
         ))}</ul> : null}
       </div> : null}
       {rerunError ? <div className={styles.validation_fail} role="alert">
         <strong>{rerunError}</strong>
         {rerunDiagnostics.length ? <ul className={styles.diagnostics}>{rerunDiagnostics.map((diagnostic, index) => (
-          <li key={`${diagnostic.code}-${diagnostic.path}-${index}`}><strong>{diagnostic.code}</strong><code>{diagnostic.path || "（未提供路径）"}</code><p>{diagnostic.message}</p></li>
+          <li key={`${diagnostic.code}-${diagnostic.path}-${index}`}><strong>{diagnostic.code}</strong><code>{diagnostic.path || "（未提供路径）"}</code><p>{diagnostic.message}</p><DiagnosticPreflight details={diagnostic.details} /></li>
         ))}</ul> : null}
       </div> : null}
       {editorOpen ? (
@@ -294,6 +373,7 @@ function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved, onDra
                 <strong>{diagnostic.code}</strong>
                 <code>{diagnostic.path || "（未提供路径）"}</code>
                 <p>{diagnostic.message}</p>
+                <DiagnosticPreflight details={diagnostic.details} />
               </li>
             ))}
           </ul>

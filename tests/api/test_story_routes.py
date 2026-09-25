@@ -32,12 +32,14 @@ def _runtime_configuration(*, provider="openai"):
                 "base_url": "",
                 "custom_models": [],
                 "codex_command": "codex-test",
+                "model_capabilities": {},
             },
             "openai": {
                 "api_key": "sk-test",
                 "base_url": "https://api.test.example/v1",
                 "custom_models": [],
                 "codex_command": "",
+                "model_capabilities": {},
             },
         },
         "stages": {

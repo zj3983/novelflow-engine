@@ -485,6 +485,8 @@ class CodexCLIAdapter(_Adapter):
         self.command = command or "codex"
 
     def complete(self, request: ModelRequest) -> ModelResponse:
+        if request.output_limit_requirement == "required":
+            return ModelResponse.failure(request, "max_output_limit_not_enforceable")
         from packages.story_core.codex_cli_provider import post_json_via_codex_cli
 
         payload: dict[str, Any] = {
@@ -516,6 +518,8 @@ class AntigravityCLIAdapter(_Adapter):
         self.command = command or "agy"
 
     def complete(self, request: ModelRequest) -> ModelResponse:
+        if request.output_limit_requirement == "required":
+            return ModelResponse.failure(request, "max_output_limit_not_enforceable")
         from packages.story_core.antigravity_cli_provider import post_json_via_antigravity_cli
 
         payload: dict[str, Any] = {

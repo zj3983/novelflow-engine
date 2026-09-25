@@ -327,7 +327,13 @@ class WorldBuildGraphRunner:
     # ------------------------------------------------------------------
     # Model and deterministic tasks
     # ------------------------------------------------------------------
-    def _prompt_log_start(self, request: ModelRequest) -> tuple[PromptCallLog | None, str | None]:
+    def _prompt_log_start(
+        self, request: ModelRequest
+    ) -> tuple[PromptCallLog | None, str | None, Any | None]:
+        try:
+            settings_snapshot = resolve_stage_runtime("planner")
+        except Exception:
+            settings_snapshot = None
         recorder: PromptCallLog | None = None
         try:
             candidate = self.store.prompt_call_log()
@@ -336,16 +342,11 @@ class WorldBuildGraphRunner:
         except Exception:
             recorder = None
         if recorder is None:
-            return None, None
-        try:
-            settings = resolve_stage_runtime("planner")
-            provider = str(getattr(settings, "provider_id", "") or "")
-            protocol = str(getattr(settings, "protocol", "") or "")
-            model = str(getattr(settings, "model", "") or "")
-            temperature = getattr(settings, "temperature", None)
-        except Exception:
-            provider = protocol = model = ""
-            temperature = None
+            return None, None, settings_snapshot
+        provider = str(getattr(settings_snapshot, "provider_id", "") or "")
+        protocol = str(getattr(settings_snapshot, "protocol", "") or "")
+        model = str(getattr(settings_snapshot, "model", "") or "")
+        temperature = getattr(settings_snapshot, "temperature", None)
         try:
             call_id = recorder.start(
                 chapter_number=0,
@@ -361,8 +362,8 @@ class WorldBuildGraphRunner:
                 json_mode=request.json_mode,
             )
         except Exception:
-            return recorder, None
-        return recorder, call_id
+            return recorder, None, settings_snapshot
+        return recorder, call_id, settings_snapshot
 
     @staticmethod
     def _prompt_log_finish(
@@ -384,6 +385,7 @@ class WorldBuildGraphRunner:
                 temperature_omitted=bool(getattr(response, "temperature_omitted", False)),
                 raw=getattr(response, "raw", None),
                 usage=getattr(response, "usage", None),
+                preflight_report=getattr(response, "preflight_report", None),
             )
         except Exception:
             pass
@@ -405,9 +407,12 @@ class WorldBuildGraphRunner:
                 "stream": False,
             },
         )
-        recorder, call_id = self._prompt_log_start(request)
+        recorder, call_id, settings_snapshot = self._prompt_log_start(request)
         try:
-            response = self.gateway.complete_stage("planner", request)
+            if settings_snapshot is not None and callable(getattr(self.gateway, "complete_resolved", None)):
+                response = self.gateway.complete_resolved(settings_snapshot, request)
+            else:
+                response = self.gateway.complete_stage("planner", request)
         except Exception:
             class FailedResponse:
                 ok = False
@@ -666,11 +671,23 @@ class WorldBuildGraphRunner:
             response, call_id = self._call_model(task_id, prompt)
             self._ensure_active(task_id, run_id=run.run_id)
             if not getattr(response, "ok", False):
+                preflight = getattr(response, "preflight_report", None)
+                is_preflight = (
+                    isinstance(preflight, Mapping)
+                    and preflight.get("status") in {"BLOCKED", "SPLIT"}
+                )
                 diagnostics = (
                     BuildDiagnostic(
+                        f"model.preflight_{str(preflight.get('status')).lower()}"
+                        if is_preflight else
                         "model.repair_request_failed" if final_repair else "model.request_failed",
                         f"tasks.{task_id}",
-                        "focused repair request failed" if final_repair else "model request failed",
+                        (
+                            f"model preflight {preflight.get('status')}: {preflight.get('reason')}"
+                            if is_preflight else
+                            "focused repair request failed" if final_repair else "model request failed"
+                        ),
+                        details={"preflight": dict(preflight)} if is_preflight else {},
                     ),
                 )
                 self.service.fail_run(run.run_id, diagnostics)

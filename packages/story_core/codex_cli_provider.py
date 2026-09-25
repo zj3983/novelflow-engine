@@ -148,10 +148,12 @@ def post_json_via_codex_cli(
     config: RetryConfig | None = None,
 ) -> dict:
     cfg = config or RetryConfig()
-    prompt = _build_prompt(payload)
     model = str(payload.get("model") or "").strip()
     if not model:
         raise ValueError("codexcli_model_required")
+    if payload.get("max_tokens") is not None:
+        raise ValueError("max_output_limit_not_enforceable")
+    prompt = _build_prompt(payload)
     command = command or "codex"
 
     with tempfile.TemporaryDirectory(prefix="novel_codexcli_") as temp_dir:

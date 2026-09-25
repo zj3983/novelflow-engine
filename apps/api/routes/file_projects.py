@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime, timezone
 from hashlib import sha256
 import inspect
@@ -10,7 +11,7 @@ import re
 import shutil
 from pathlib import Path
 from threading import RLock, Lock
-from typing import Annotated, Any, Callable, Literal
+from typing import Annotated, Any, Callable, Literal, Mapping
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Path as ApiPath, Request, Response, status
@@ -175,6 +176,13 @@ class BuildWorkbenchRepairRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     expected_revision: int = Field(ge=1)
+
+
+class BuildWorkbenchPreflightRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    expected_revision: int = Field(ge=1)
+    operation: Literal["rerun", "repair"]
 
 
 class BuildWorkbenchRerunRequest(BaseModel):
@@ -2652,6 +2660,17 @@ def init_file_project_routes() -> APIRouter:
         )
         return store, project, graph, build_store, state, service
 
+    def _workbench_preflight_for_artifact(store, artifact):
+        call_id = str(getattr(artifact, "prompt_call_id", "") or "")
+        if not call_id:
+            return None
+        try:
+            record = store.prompt_call_log().get(call_id)
+        except Exception:
+            return None
+        report = record.get("preflight_report") if isinstance(record, Mapping) else None
+        return dict(report) if isinstance(report, Mapping) else None
+
     def _workbench_materialization_status(build_store, state, project_store=None) -> str:
         execution_started = False
         snapshot_store = getattr(build_store, "snapshot_store", None)
@@ -2739,33 +2758,23 @@ def init_file_project_routes() -> APIRouter:
         _invalidate_workbench_readiness(store, store.project())
 
     def _call_workbench_model(store, task_id: str, prompt: str, max_tokens: int, *, operation: str):
-        from packages.story_core.model_gateway import ModelRequest
-
-        request = ModelRequest(
-            prompt=prompt,
-            system_prompt="You are a senior Chinese webnovel worldbuilding editor. Return JSON only.",
-            provider="",
-            model="",
-            operation=f"workbench_{operation}_{task_id}",
-            max_tokens=max_tokens,
-            json_mode=True,
-            metadata={"reasoning_effort": "low", "enable_thinking": False, "world_build_task": task_id, "stream": False},
-        )
+        request = _workbench_model_request(task_id, prompt, max_tokens, operation=operation)
         recorder = None
         call_id = None
+        settings_snapshot = None
         try:
             recorder = store.prompt_call_log()
-            settings = resolve_stage_runtime("planner")
+            settings_snapshot = resolve_stage_runtime("planner")
             call_id = recorder.start(
                 chapter_number=0,
                 stage="planner",
                 agent=request.operation,
                 user_prompt=request.prompt,
                 system_prompt=request.system_prompt,
-                provider=str(getattr(settings, "provider_id", "") or ""),
-                protocol=str(getattr(settings, "protocol", "") or ""),
-                model=str(getattr(settings, "model", "") or ""),
-                temperature=getattr(settings, "temperature", None),
+                provider=str(getattr(settings_snapshot, "provider_id", "") or ""),
+                protocol=str(getattr(settings_snapshot, "protocol", "") or ""),
+                model=str(getattr(settings_snapshot, "model", "") or ""),
+                temperature=getattr(settings_snapshot, "temperature", None),
                 requested_max_tokens=request.max_tokens,
                 json_mode=True,
             )
@@ -2773,7 +2782,22 @@ def init_file_project_routes() -> APIRouter:
             recorder = None
             call_id = None
         try:
-            response = shuangwen_model_gateway.complete_stage("planner", request)
+            if settings_snapshot is None:
+                from packages.story_core.model_gateway import ModelResponse
+
+                response = replace(
+                    ModelResponse.failure(request, "runtime_configuration_unavailable"),
+                    preflight_report={
+                        "schema_version": "model-preflight/v1",
+                        "status": "BLOCKED",
+                        "reason": "runtime_configuration_unavailable",
+                        "repair_actions": ["检查该阶段的 provider、模型和连接配置后重试。"],
+                    },
+                )
+            elif callable(getattr(shuangwen_model_gateway, "complete_resolved", None)):
+                response = shuangwen_model_gateway.complete_resolved(settings_snapshot, request)
+            else:
+                response = shuangwen_model_gateway.complete_stage("planner", request)
         except Exception:
             from packages.story_core.model_gateway import ModelResponse
             response = ModelResponse.failure(request, "model_call_failed")
@@ -2786,14 +2810,129 @@ def init_file_project_routes() -> APIRouter:
                     model=str(getattr(response, "resolved_model", "") or getattr(response, "model", "") or ""),
                     resolved_model=str(getattr(response, "resolved_model", "") or ""),
                     output=str(getattr(response, "text", "") or "") if getattr(response, "ok", False) else "",
-                    error="model_call_failed" if not getattr(response, "ok", False) else "",
+                    error=str(getattr(response, "error", "") or "model_call_failed") if not getattr(response, "ok", False) else "",
                     temperature_omitted=bool(getattr(response, "temperature_omitted", False)),
                     raw=getattr(response, "raw", None),
                     usage=getattr(response, "usage", None),
+                    preflight_report=getattr(response, "preflight_report", None),
                 )
             except Exception:
                 pass
         return response, call_id
+
+    def _workbench_model_request(task_id: str, prompt: str, max_tokens: int, *, operation: str):
+        from packages.story_core.model_gateway import ModelRequest
+
+        return ModelRequest(
+            prompt=prompt,
+            system_prompt="You are a senior Chinese webnovel worldbuilding editor. Return JSON only.",
+            provider="",
+            model="",
+            operation=f"workbench_{operation}_{task_id}",
+            max_tokens=max_tokens,
+            json_mode=True,
+            metadata={"reasoning_effort": "low", "enable_thinking": False, "world_build_task": task_id, "stream": False},
+        )
+
+    def _preflight_workbench_model(task_id: str, prompt: str, max_tokens: int, *, operation: str):
+        request = _workbench_model_request(task_id, prompt, max_tokens, operation=operation)
+        settings_snapshot = resolve_stage_runtime("planner")
+        if callable(getattr(shuangwen_model_gateway, "preflight_resolved", None)):
+            return shuangwen_model_gateway.preflight_resolved(settings_snapshot, request)
+        if callable(getattr(shuangwen_model_gateway, "preflight_stage", None)):
+            return shuangwen_model_gateway.preflight_stage(
+                "planner", request, runtime_settings=settings_snapshot
+            )
+        raise RuntimeError("model_preflight_unavailable")
+
+    def _build_workbench_repair_prompt(store, project, graph, service, task_id: str, task_state, artifact):
+        from copy import deepcopy
+
+        from packages.story_core.world_build.power_repairs import (
+            power_path_repair_scope,
+            raw_power_spec_from_artifacts,
+        )
+        from packages.story_core.world_build.tasks import (
+            build_input_contract,
+            build_power_path_repair_prompt,
+            build_task_prompt,
+            repair_fields_for_diagnostics,
+        )
+
+        project_model = NovelProject.model_validate(project)
+        artifact = deepcopy(artifact)
+        diagnostics = tuple(task_state.diagnostics)
+        if not diagnostics:
+            diagnostics = service.validate(
+                task_id, artifact.payload, requested_writes=graph.definition.tasks_by_id[task_id].owns
+            ).diagnostics
+        if not diagnostics:
+            diagnostics = (BuildDiagnostic(
+                "repair.user_requested", "payload", "user requested a repair of the current artifact"
+            ),)
+        contract = deepcopy(build_input_contract(project_model, graph, service, task_id))
+        repair_fields = repair_fields_for_diagnostics(graph.spec(task_id), diagnostics)
+        if repair_fields is None and graph.spec(task_id).output_fields:
+            repair_fields = tuple(graph.spec(task_id).output_fields)
+        path_scope = None
+        if task_id == "power_system_paths":
+            path_scope = power_path_repair_scope(
+                artifact.payload,
+                diagnostics,
+                project_model,
+                raw_spec=raw_power_spec_from_artifacts(service),
+                progression_mode=graph.power_progression_mode,
+            )
+            if not path_scope.has_mutations:
+                diagnostics = (BuildDiagnostic(
+                    "task.repair_scope_unresolved", "paths",
+                    "current diagnostics do not identify a safe power path repair scope",
+                ),)
+                prompt = ""
+            else:
+                prompt = build_power_path_repair_prompt(
+                    graph, task_id, contract, repair_candidate=artifact.payload,
+                    diagnostics=diagnostics, scope=path_scope,
+                )
+        else:
+            prompt = build_task_prompt(
+                graph, task_id, contract, repair_candidate=artifact.payload,
+                diagnostics=diagnostics, repair_fields=repair_fields,
+            )
+        return {
+            "project_model": project_model,
+            "artifact": artifact,
+            "diagnostics": diagnostics,
+            "contract": contract,
+            "repair_fields": repair_fields,
+            "path_scope": path_scope,
+            "prompt": prompt,
+        }
+
+    def _workbench_model_failure_diagnostic(operation: str, task_id: str, response: Any) -> BuildDiagnostic:
+        report = getattr(response, "preflight_report", None)
+        if isinstance(report, dict) and report.get("status") in {"BLOCKED", "SPLIT"}:
+            status = str(report.get("status")).lower()
+            reason = str(report.get("reason") or "request_not_ready")
+            messages = {
+                "required_capability_unsupported": "所选模型明确不支持此任务的必需输出能力；正式结果保持不变。",
+                "context_limit_unknown_or_optional_context_not_declared": "上下文限额未知，且请求没有可安全裁减的 optional 输入；正式结果保持不变。",
+                "required_context_over_limit": "必要上下文超过模型限额；必要事实和执行契约未被裁减。",
+                "input_over_limit": "必要输入超过模型输入限额；必要事实和执行契约未被裁减。",
+                "max_output_limit_exceeded": "任务要求的输出预算超过模型输出限额；正式结果保持不变。",
+            }
+            return BuildDiagnostic(
+                f"model.preflight_{status}",
+                f"tasks.{task_id}",
+                messages.get(reason, f"模型预检未通过（{reason}）；正式结果保持不变。"),
+                details={"preflight": report},
+            )
+        return BuildDiagnostic(
+            f"model.{operation}_request_failed",
+            f"tasks.{task_id}",
+            "model request failed; the current artifact was kept",
+            details={"preflight": report} if isinstance(report, dict) else {},
+        )
 
     @router.get("/file-projects/{project_id}/build-graph")
     def get_file_project_build_graph(project_id: str) -> dict[str, Any]:
@@ -2845,6 +2984,7 @@ def init_file_project_routes() -> APIRouter:
                     "provider": artifact.provider if artifact else None,
                     "model": artifact.model if artifact else None,
                     "prompt_call_id": artifact.prompt_call_id if artifact else None,
+                    "preflight_report": _workbench_preflight_for_artifact(store, artifact) if artifact else None,
                 }
             )
 
@@ -2953,6 +3093,7 @@ def init_file_project_routes() -> APIRouter:
             "owns": list(task.owns),
             "validation_status": task_state.validation_status,
             "diagnostics": [item.to_dict() for item in task_state.diagnostics],
+            "preflight_report": _workbench_preflight_for_artifact(store, artifact) if artifact else None,
             "materialization_status": _workbench_materialization_status(build_store, state, store),
             "materialization_marker": materialization,
         }
@@ -3043,6 +3184,51 @@ def init_file_project_routes() -> APIRouter:
             "materialization_status": _workbench_materialization_status(build_store, service.inspect_graph(), store),
         }
 
+    def _build_workbench_rerun_prompt(store, project, graph, service, task_id: str, *, require_existing: bool):
+        from copy import deepcopy
+
+        from packages.story_core.opening_build.runtime import enabled, settings
+        from packages.story_core.world_build.tasks import build_input_contract, build_task_prompt
+
+        project_model = NovelProject.model_validate(project)
+        rerun_contract = deepcopy(build_input_contract(project_model, graph, service, task_id))
+        # Full rerun consumes declared reads and the complete output contract,
+        # never the legacy projection of its own task.
+        rerun_contract.pop("existing_candidate", None)
+        if enabled(store) and settings(store).get("pending_extension"):
+            from packages.story_core.world_build.tasks import bounded_json_projection
+
+            confirmed = store.state()
+
+            def recent(key: str, count: int):
+                value = confirmed.get(key) or []
+                return value[-count:] if isinstance(value, list) else value
+
+            confirmed_context = {
+                "current_chapter": confirmed.get("current_chapter", 0),
+                "current_focus": confirmed.get("current_focus", ""),
+                "chapter_summaries": recent("chapter_summaries", 3),
+                "continuity_facts": recent("continuity_facts", 32),
+                "timeline": recent("timeline", 12),
+                "foreshadowing": recent("foreshadowing", 12),
+                "characters": confirmed.get("characters", []),
+                "world_facts": confirmed.get("world_facts", []),
+                "world_snapshot": confirmed.get("world_snapshot", {}),
+            }
+            rerun_contract["confirmed_through"] = confirmed.get("current_chapter", 0)
+            rerun_contract["confirmed_state"] = bounded_json_projection(
+                confirmed_context, chars=8000, items=48, depth=6
+            )
+            rerun_contract["confirmed_canon"] = bounded_json_projection(
+                store._candidate_canon_view(), chars=4000, items=32, depth=5
+            )
+        prompt = build_task_prompt(graph, task_id, rerun_contract) + (
+            "\n这是一次完整任务重跑。请按完整输出契约重新生成本任务的全部输出字段；不要只返回局部 patch。"
+            if require_existing else
+            "\n请按完整输出契约生成本任务的全部输出字段；不要只返回局部 patch。"
+        )
+        return prompt, rerun_contract
+
     def _run_full_workbench_model_task(
         project_id: str,
         task_id: str,
@@ -3055,11 +3241,7 @@ def init_file_project_routes() -> APIRouter:
         expected_graph_revision: int | None = None,
         expected_project_revision: str | None = None,
     ) -> dict[str, Any]:
-        from copy import deepcopy
-
         from packages.story_core.world_build.tasks import (
-            build_input_contract,
-            build_task_prompt,
             input_fingerprint,
             parse_task_payload,
             run_read_projection,
@@ -3083,7 +3265,7 @@ def init_file_project_routes() -> APIRouter:
                     store, project, graph, build_store, state, service = _build_workbench_context(project_id)
                     if expected_graph_revision is not None and state.graph_revision != expected_graph_revision:
                         raise HTTPException(status_code=409, detail="build_graph_changed")
-                    from packages.story_core.opening_build.runtime import enabled, settings
+                    from packages.story_core.opening_build.runtime import enabled
                     _assert_workbench_planning_task_writable(store, task_id)
                     if enabled(store):
                         if expected_project_revision is None:
@@ -3125,35 +3307,9 @@ def init_file_project_routes() -> APIRouter:
                         })
 
                     base_task_state = task_state
-                    project_model = NovelProject.model_validate(project)
-                    rerun_contract = deepcopy(build_input_contract(project_model, graph, service, task_id))
-                    # Full rerun consumes declared reads and the complete output
-                    # contract, never the legacy projection of its own task.
-                    rerun_contract.pop("existing_candidate", None)
-                    if enabled(store) and settings(store).get("pending_extension"):
-                        from packages.story_core.world_build.tasks import bounded_json_projection
-                        confirmed = store.state()
-                        def recent(key: str, count: int):
-                            value = confirmed.get(key) or []
-                            return value[-count:] if isinstance(value, list) else value
-                        confirmed_context = {
-                            "current_chapter": confirmed.get("current_chapter", 0),
-                            "current_focus": confirmed.get("current_focus", ""),
-                            "chapter_summaries": recent("chapter_summaries", 3),
-                            "continuity_facts": recent("continuity_facts", 32),
-                            "timeline": recent("timeline", 12),
-                            "foreshadowing": recent("foreshadowing", 12),
-                            "characters": confirmed.get("characters", []),
-                            "world_facts": confirmed.get("world_facts", []),
-                            "world_snapshot": confirmed.get("world_snapshot", {}),
-                        }
-                        rerun_contract["confirmed_through"] = confirmed.get("current_chapter", 0)
-                        rerun_contract["confirmed_state"] = bounded_json_projection(confirmed_context, chars=8000, items=48, depth=6)
-                        rerun_contract["confirmed_canon"] = bounded_json_projection(store._candidate_canon_view(), chars=4000, items=32, depth=5)
-                    prompt = build_task_prompt(graph, task_id, rerun_contract) + (
-                        "\n这是一次完整任务重跑。请按完整输出契约重新生成本任务的全部输出字段；不要只返回局部 patch。"
-                        if require_existing else
-                        "\n请按完整输出契约生成本任务的全部输出字段；不要只返回局部 patch。"
+                    prompt, rerun_contract = _build_workbench_rerun_prompt(
+                        store, project, graph, service, task_id,
+                        require_existing=require_existing,
                     )
                     run = service.start_run(
                         task_id,
@@ -3210,10 +3366,7 @@ def init_file_project_routes() -> APIRouter:
             store, task_id, prompt, graph.spec(task_id).max_tokens, operation=operation
         )
         if not getattr(response, "ok", False):
-            fail_rerun((BuildDiagnostic(
-                f"model.{operation}_request_failed", f"tasks.{task_id}",
-                "full task generation failed; the current artifact was kept",
-            ),))
+            fail_rerun((_workbench_model_failure_diagnostic(operation, task_id, response),))
         if not call_id or not str(getattr(response, "provider", "") or "").strip() or not str(
             getattr(response, "resolved_model", "") or getattr(response, "model", "") or ""
         ).strip():
@@ -3274,6 +3427,7 @@ def init_file_project_routes() -> APIRouter:
             "graph_revision": final_state.graph_revision,
             "pipeline_stage": store.project().get("pipeline_stage"),
             "materialization_status": _workbench_materialization_status(build_store, final_state, store),
+            "preflight_report": dict(getattr(response, "preflight_report", {}) or {}),
         }
 
     @router.post("/file-projects/{project_id}/build-graph/tasks/{task_id}/rerun")
@@ -3668,26 +3822,17 @@ def init_file_project_routes() -> APIRouter:
         task_id: str,
         request: BuildWorkbenchRepairRequest,
     ) -> dict[str, Any]:
-        from copy import deepcopy
-
         from packages.story_core.world_build.power_repairs import (
             merge_power_path_repair,
-            power_path_repair_scope,
-            raw_power_spec_from_artifacts,
         )
         from packages.story_core.world_build.tasks import (
-            build_input_contract,
-            build_power_path_repair_prompt,
-            build_task_prompt,
             input_fingerprint,
             merge_repair_patch,
             parse_power_path_repair_payload,
             parse_task_payload,
             preserve_existing_non_power_values,
-            repair_fields_for_diagnostics,
             run_read_projection,
         )
-        from packages.story_core.world_build.validators import make_world_validators
 
         normalized_project_id = _strip_file_prefix(project_id)
         run = None
@@ -3731,17 +3876,6 @@ def init_file_project_routes() -> APIRouter:
                         )
 
                     base_task_state = task_state
-                    project_model = NovelProject.model_validate(project)
-                    artifact = deepcopy(artifact)
-                    diagnostics = tuple(task_state.diagnostics)
-                    if not diagnostics:
-                        diagnostics = service.validate(
-                            task_id, artifact.payload, requested_writes=task.owns
-                        ).diagnostics
-                    if not diagnostics:
-                        diagnostics = (BuildDiagnostic(
-                            "repair.user_requested", "payload", "user requested a repair of the current artifact"
-                        ),)
                     if task_state.active_run_id:
                         raise HTTPException(status_code=409, detail={
                             "code": "build_run_conflict",
@@ -3764,36 +3898,16 @@ def init_file_project_routes() -> APIRouter:
                         except ValueError as exc:
                             raise HTTPException(status_code=409, detail=str(exc)) from exc
                         repair_project_revision = _project_world_revision(store)
-                    contract = deepcopy(build_input_contract(project_model, graph, service, task_id))
-                    repair_fields = repair_fields_for_diagnostics(graph.spec(task_id), diagnostics)
-                    # A diagnostic that cannot map to a narrower field may use the
-                    # task's complete declared output shape, never arbitrary keys.
-                    if repair_fields is None and graph.spec(task_id).output_fields:
-                        repair_fields = tuple(graph.spec(task_id).output_fields)
-                    path_scope = None
-                    if task_id == "power_system_paths":
-                        path_scope = power_path_repair_scope(
-                            artifact.payload,
-                            diagnostics,
-                            NovelProject.model_validate(project),
-                            raw_spec=raw_power_spec_from_artifacts(service),
-                            progression_mode=graph.power_progression_mode,
-                        )
-                        if not path_scope.has_mutations:
-                            diagnostics = (BuildDiagnostic(
-                                "task.repair_scope_unresolved", "paths",
-                                "current diagnostics do not identify a safe power path repair scope",
-                            ),)
-                        else:
-                            prompt = build_power_path_repair_prompt(
-                                graph, task_id, contract, repair_candidate=artifact.payload,
-                                diagnostics=diagnostics, scope=path_scope,
-                            )
-                    else:
-                        prompt = build_task_prompt(
-                            graph, task_id, contract, repair_candidate=artifact.payload,
-                            diagnostics=diagnostics, repair_fields=repair_fields,
-                        )
+                    repair_request = _build_workbench_repair_prompt(
+                        store, project, graph, service, task_id, task_state, artifact
+                    )
+                    project_model = repair_request["project_model"]
+                    artifact = repair_request["artifact"]
+                    diagnostics = repair_request["diagnostics"]
+                    contract = repair_request["contract"]
+                    repair_fields = repair_request["repair_fields"]
+                    path_scope = repair_request["path_scope"]
+                    prompt = repair_request["prompt"]
                     run = service.start_run(
                         task_id,
                         input_fingerprint=input_fingerprint(contract),
@@ -3839,10 +3953,7 @@ def init_file_project_routes() -> APIRouter:
             store, task_id, prompt, graph.spec(task_id).max_tokens, operation="repair"
         )
         if not getattr(response, "ok", False):
-            fail_repair((BuildDiagnostic(
-                "model.repair_request_failed", f"tasks.{task_id}",
-                "AI repair request failed; the current artifact was kept",
-            ),))
+            fail_repair((_workbench_model_failure_diagnostic("repair", task_id, response),))
         if not call_id or not str(getattr(response, "provider", "") or "").strip() or not str(
             getattr(response, "resolved_model", "") or getattr(response, "model", "") or ""
         ).strip():
@@ -3907,7 +4018,114 @@ def init_file_project_routes() -> APIRouter:
             "graph_revision": final_state.graph_revision,
             "pipeline_stage": store.project().get("pipeline_stage"),
             "materialization_status": _workbench_materialization_status(build_store, final_state, store),
+            "preflight_report": dict(getattr(response, "preflight_report", {}) or {}),
         }
+
+    @router.post("/file-projects/{project_id}/build-graph/tasks/{task_id}/preflight")
+    def preflight_file_project_build_graph_task(
+        project_id: str,
+        task_id: str,
+        request: BuildWorkbenchPreflightRequest,
+    ) -> dict[str, Any]:
+        """Preview the server-assembled task request without a provider call."""
+
+        prompt = ""
+        max_tokens = 0
+        operation = request.operation
+        preview_store = _store_for(project_id)
+        with project_update_lock(preview_store.root):
+            try:
+                store, project, graph, _build_store, state, service = _build_workbench_context(project_id)
+                task = graph.definition.tasks_by_id.get(task_id)
+                if task is None:
+                    raise HTTPException(status_code=404, detail="build_task_not_found")
+                if graph.spec(task_id).kind != "model":
+                    raise HTTPException(status_code=403, detail="build_task_not_rerunnable")
+                task_state = state.tasks[task_id]
+                if task_state.current_artifact_revision != request.expected_revision:
+                    raise BuildRevisionConflict(
+                        "build_revision_conflict",
+                        "artifact revision changed before model preflight",
+                        details={
+                            "task_id": task_id,
+                            "expected_revision": request.expected_revision,
+                            "current_revision": task_state.current_artifact_revision,
+                        },
+                    )
+                if task_state.active_run_id:
+                    raise HTTPException(status_code=409, detail={
+                        "code": "build_run_conflict",
+                        "message": "task already has an active Build Graph run",
+                        "details": {"task_id": task_id, "run_id": task_state.active_run_id},
+                        "diagnostics": [],
+                    })
+                if task_state.status not in {"ready", "stale", "validation_failed", "completed"}:
+                    raise HTTPException(status_code=409, detail={
+                        "code": "build_run_conflict",
+                        "message": "task is not in a state that can be previewed",
+                        "details": {"task_id": task_id, "status": task_state.status},
+                        "diagnostics": [],
+                    })
+                artifact = service.inspect_artifact(task_id)
+                if artifact is None:
+                    raise HTTPException(status_code=403, detail="build_task_not_rerunnable")
+                if operation == "rerun":
+                    _assert_workbench_planning_task_writable(store, task_id)
+                    prompt, _contract = _build_workbench_rerun_prompt(
+                        store, project, graph, service, task_id, require_existing=True
+                    )
+                else:
+                    from packages.story_core.opening_build.runtime import enabled, assert_sources_current
+
+                    if enabled(store):
+                        try:
+                            assert_sources_current(store)
+                        except ValueError as exc:
+                            raise HTTPException(status_code=409, detail=str(exc)) from exc
+                    repair_request = _build_workbench_repair_prompt(
+                        store, project, graph, service, task_id, task_state, artifact
+                    )
+                    if (
+                        task_id == "power_system_paths"
+                        and repair_request["path_scope"] is not None
+                        and not repair_request["path_scope"].has_mutations
+                    ):
+                        return {
+                            "task_id": task_id,
+                            "operation": operation,
+                            "preflight_report": {
+                                "schema_version": "model-preflight/v1",
+                                "status": "BLOCKED",
+                                "reason": "repair_scope_unresolved",
+                                "repair_actions": ["先修正或补充可定位到安全字段的诊断，再运行 AI 修复。"],
+                            },
+                        }
+                    prompt = repair_request["prompt"]
+                max_tokens = graph.spec(task_id).max_tokens
+            except HTTPException:
+                raise
+            except BuildRevisionConflict as exc:
+                raise HTTPException(status_code=409, detail=exc.to_dict()) from exc
+            except BuildRunConflict as exc:
+                raise HTTPException(status_code=409, detail=exc.to_dict()) from exc
+            except BuildGraphError as exc:
+                raise HTTPException(status_code=422, detail=exc.to_dict()) from exc
+
+        try:
+            plan = _preflight_workbench_model(
+                task_id, prompt, max_tokens, operation=operation
+            )
+            report = dict(plan.report)
+        except Exception as exc:
+            report = {
+                "schema_version": "model-preflight/v1",
+                "status": "BLOCKED",
+                "reason": "runtime_configuration_unavailable"
+                if isinstance(exc, (RuntimeError, ValueError))
+                else "preflight_unavailable",
+                "repair_actions": ["检查运行配置后重新预检；此预览没有调用 provider。"],
+            }
+        return {"task_id": task_id, "operation": operation, "preflight_report": report}
 
     @router.post("/file-projects/{project_id}/world-build-jobs")
     def start_file_project_world_build_job(project_id: str) -> dict[str, object]:

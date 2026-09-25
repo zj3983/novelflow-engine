@@ -22,7 +22,13 @@ from packages.story_core.runtime_config import StageRuntimeSettings
 CONTENT = "请保持角色动机一致，并让结尾形成悬念。"
 
 
-def runtime(*, provider="openai", api_key="secret", model="planner-model") -> StageRuntimeSettings:
+def runtime(
+    *,
+    provider="openai",
+    api_key="secret",
+    model="planner-model",
+    user_declared_capabilities=None,
+) -> StageRuntimeSettings:
     return StageRuntimeSettings(
         provider_id=provider,
         protocol="codex_cli" if provider == "codexcli" else "openai_compatible",
@@ -31,6 +37,7 @@ def runtime(*, provider="openai", api_key="secret", model="planner-model") -> St
         base_url="https://llm.example/v1",
         codex_command="codex-test",
         temperature=0.25,
+        user_declared_capabilities=user_declared_capabilities or {},
     )
 
 
@@ -360,7 +367,15 @@ def test_deep_audit_accepts_bounded_local_result_from_thousands_of_headings():
 
     result = DeepPromptAuditor(
         post_json=lambda *args, **kwargs: calls.append((args, kwargs)) or response([]),
-        runtime_resolver=lambda stage: runtime(),
+        runtime_resolver=lambda stage: runtime(
+            user_declared_capabilities={
+                "limits": {
+                    "input_token_limit": 128_000,
+                    "context_window": 140_000,
+                    "max_output_tokens": 4_096,
+                }
+            }
+        ),
         clock=lambda: 1.0,
     ).analyze(content=content, local_result=local)
 
