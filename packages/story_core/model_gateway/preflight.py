@@ -18,6 +18,7 @@ from .capabilities import (
     ContextPreflightResult,
     ModelProfile,
     preflight_context,
+    safe_base_url_for_diagnostics,
 )
 from .contracts import ModelRequest
 
@@ -149,6 +150,29 @@ def _required_capabilities(request: ModelRequest) -> tuple[str, ...]:
     return tuple(dict.fromkeys(item for item in values if item))
 
 
+def _output_enforcement(protocol: str) -> dict[str, str]:
+    """Describe the adapter boundary that enforces the planned output cap."""
+
+    methods = {
+        "openai_compatible": "max_tokens_request_field",
+        "anthropic": "max_tokens_request_field",
+        "gemini": "generation_config_max_output_tokens",
+    }
+    if protocol in methods:
+        return {
+            "state": "supported",
+            "source": "repository_adapter_contract",
+            "method": methods[protocol],
+        }
+    if protocol in {"codex_cli", "antigravity_cli"}:
+        return {
+            "state": "unsupported",
+            "source": "repository_adapter_contract",
+            "method": "cli_has_no_per_request_output_limit",
+        }
+    return {"state": "unknown", "source": "unknown", "method": "unknown"}
+
+
 def _context_result(
     request: ModelRequest,
     profile: ModelProfile,
@@ -224,6 +248,7 @@ def preflight_request(
     now = now or datetime.now(timezone.utc).isoformat()
     identity = profile.identity
     required = _required_capabilities(request)
+    output_enforcement = _output_enforcement(profile.identity.protocol)
     capability_names = set(KNOWN_CAPABILITIES)
     capability_names.update(required)
     if request.temperature is not None:
@@ -288,38 +313,78 @@ def preflight_request(
     elif unsupported:
         status = "BLOCKED"
         reason = "required_capability_unsupported"
+    output_record = _record(profile, "max_output_tokens")
+    output_cap = (
+        _positive_limit(output_record.value)
+        if output_record.state == "supported"
+        else UNKNOWN_OUTPUT_GUARD_TOKENS
+    )
+    output_limit_exceeded = (
+        request.max_tokens is not None and int(request.max_tokens) > output_cap
+    )
+    if not input_errors and not unsupported and output_limit_exceeded:
+        status = "BLOCKED"
+        reason = (
+            "max_output_limit_exceeded"
+            if output_record.state == "supported"
+            else "requested_output_over_unknown_compatibility_guard"
+        )
+    elif (
+        not input_errors
+        and not unsupported
+        and output_enforcement["state"] != "supported"
+    ):
+        status = "BLOCKED"
+        reason = (
+            "max_output_limit_not_enforceable_by_adapter"
+            if output_enforcement["state"] == "unsupported"
+            else "max_output_limit_enforcement_unknown"
+        )
 
     compacted_indexes: tuple[int, ...] = ()
     recheck_status: str | None = None
-    if status == "COMPACT" and effective.optional_input_messages:
-        compacted_indexes = tuple(effective.optional_input_messages)
+    pre_compaction_estimates = dict(estimates)
+    hard_blocker = bool(
+        input_errors
+        or unsupported
+        or output_limit_exceeded
+        or output_enforcement["state"] != "supported"
+    )
+    if (
+        not hard_blocker
+        and status in {"COMPACT", "SPLIT", "BLOCKED"}
+        and effective.optional_input_messages
+    ):
+        candidate_indexes = tuple(effective.optional_input_messages)
         compacted = _compact_optional_messages(effective)
         compact_result, compact_limits, compact_estimates, compact_errors = _context_result(
             compacted, profile, allow_split=allow_split, now=now
         )
-        effective_limits = compact_limits
-        estimates = compact_estimates
-        effective = compacted
         recheck_status = compact_result.status
         if compact_result.status == "READY" and not compact_errors:
             status = "COMPACT"
             reason = "optional_context_compacted_and_rechecked"
-        else:
-            status = compact_result.status
-            reason = compact_result.reason if not compact_errors else compact_errors[0]
-        if compact_errors:
+            compacted_indexes = candidate_indexes
+            effective = compacted
+            effective_limits = compact_limits
+            estimates = compact_estimates
+            adjustments.append({
+                "parameter": "optional_input_messages",
+                "action": "removed_and_rechecked",
+                "reason": "context_budget_compaction",
+            })
+        elif compact_errors:
             status = "BLOCKED"
+            reason = compact_errors[0]
         elif compact_result.status == "COMPACT":
-            # A second COMPACT means the request still cannot be established as
-            # safe after its declared optional messages were removed.
+            # A second COMPACT means the declared optional messages were not
+            # enough to establish a safe request. Keep the original request.
             status = "BLOCKED"
             reason = "optional_compaction_did_not_resolve_budget"
-        adjustments.append({
-            "parameter": "optional_input_messages",
-            "action": "removed_and_rechecked",
-            "reason": "context_budget_compaction",
-        })
-    elif status == "COMPACT":
+        else:
+            status = compact_result.status
+            reason = compact_result.reason
+    elif status == "COMPACT" and not effective.optional_input_messages:
         # A required-only request cannot be compacted safely. Do not turn the
         # legacy unknown-limit state into silent truncation or provider failure.
         status = "BLOCKED"
@@ -334,24 +399,17 @@ def preflight_request(
             "reason": "unknown_output_request_bound",
         })
 
-    if request.max_tokens is not None:
-        output_record = _record(profile, "max_output_tokens")
-        output_cap = (
-            _positive_limit(output_record.value)
-            if output_record.state == "supported"
-            else UNKNOWN_OUTPUT_GUARD_TOKENS
-        )
-        if int(request.max_tokens) > output_cap:
-            status = "BLOCKED"
-            reason = (
-                "max_output_limit_exceeded"
-                if output_record.state == "supported"
-                else "requested_output_over_unknown_compatibility_guard"
-            )
-
     if unsupported:
         repair_actions = [
             "选择明确支持所需能力的模型，或修正该 provider/model 的能力声明；任务的结构化输出要求不会被移除。"
+        ]
+    elif reason == "max_output_limit_not_enforceable_by_adapter":
+        repair_actions = [
+            "切换到能够执行 max_tokens 硬上限的协议，或升级当前 CLI adapter 以提供可验证的输出限制。"
+        ]
+    elif reason == "max_output_limit_enforcement_unknown":
+        repair_actions = [
+            "为当前协议配置经过验证的 max_tokens 执行方式；未验证前不能按预算调用模型。"
         ]
     elif status == "SPLIT":
         repair_actions = [
@@ -373,13 +431,18 @@ def preflight_request(
         "reason": reason,
         "provider": identity.provider_id,
         "protocol": identity.protocol,
-        "normalized_base_url": identity.normalized_base_url,
+        "normalized_base_url": safe_base_url_for_diagnostics(
+            identity.normalized_base_url
+        ),
         "requested_model": identity.requested_model,
         "resolved_model": identity.resolved_model,
         "capabilities": capability_report,
         "limits": limit_report,
         "effective_preflight_guards": effective_limits,
         "estimates": estimates,
+        "pre_compaction_estimates": (
+            pre_compaction_estimates if compacted_indexes else None
+        ),
         "estimate_method": TOKEN_ESTIMATE_METHOD,
         "estimate_is_exact_tokenization": False,
         "safety_margin": {
@@ -400,6 +463,7 @@ def preflight_request(
             "context_tokens": UNKNOWN_CONTEXT_GUARD_TOKENS,
             "max_output_tokens": UNKNOWN_OUTPUT_GUARD_TOKENS,
         },
+        "output_enforcement": output_enforcement,
         "compacted_optional_message_indexes": list(compacted_indexes),
         "adjustments": adjustments,
         "repair_actions": repair_actions,

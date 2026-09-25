@@ -361,6 +361,8 @@ def _character_intents_for_context(
     fallback_source = ""
     try:
         proposals = planner.propose_all(selected_story)
+    except ModelPreflightBlockedError:
+        raise
     except Exception:
         try:
             proposals = planner.rule_provider.propose_all(selected_story)

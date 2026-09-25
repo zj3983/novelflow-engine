@@ -15,6 +15,7 @@ from packages.story_core.model_gateway import (
     ModelRequest,
     RuntimeModelGateway,
     effective_streaming,
+    normalize_base_url,
     preflight_context,
 )
 from packages.story_core.runtime_config import StageRuntimeSettings, load_runtime_configuration
@@ -51,6 +52,24 @@ def test_same_model_on_different_base_urls_has_different_identity_and_profile(tm
     assert second.identity.normalized_base_url == "https://two.example/v1"
     assert first.identity.cache_key != second.identity.cache_key
     assert first.identity != second.identity
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://demo:TEST_SECRET@example.invalid:bad/v1?token=QUERY_SECRET",
+        "https://demo:TEST_SECRET@example.invalid:99999/v1?token=QUERY_SECRET",
+        "https://demo:TEST_SECRET@[broken.example/v1?token=QUERY_SECRET",
+    ],
+)
+def test_malformed_base_url_identity_never_keeps_credentials_or_query(base_url):
+    normalized = normalize_base_url(base_url)
+
+    assert "TEST_SECRET" not in normalized
+    assert "demo:" not in normalized
+    assert "QUERY_SECRET" not in normalized
+    assert "token=" not in normalized
+    assert normalized
 
 
 def test_capability_states_and_profile_round_trip():
@@ -674,6 +693,205 @@ def test_optional_messages_compact_and_recheck_without_removing_required_contrac
     assert response.preflight_report["compacted_optional_message_indexes"] == [1]
     assert response.preflight_report["estimates"]["optional_input_tokens"] == 0
     assert "该字段不会与 messages 重复发送" not in str(response.preflight_report)
+
+
+def test_large_optional_message_recomputes_required_only_safety_margin(tmp_path):
+    sent = []
+    settings = _preflight_settings(
+        {
+            "limits": {
+                "input_token_limit": 1_000,
+                "context_window": 1_000,
+                "max_output_tokens": 256,
+            }
+        }
+    )
+    gateway = RuntimeModelGateway(
+        runtime_resolver=lambda _stage: settings,
+        capability_resolver=ModelCapabilityResolver(
+            store=ModelCapabilityStore(tmp_path / "capabilities.json")
+        ),
+        transport=lambda **call: sent.append(call)
+        or {"choices": [{"message": {"content": "ok"}}]},
+    )
+
+    response = gateway.complete_stage(
+        "planner",
+        ModelRequest(
+            prompt="unused legacy prompt",
+            provider="",
+            model="",
+            operation="large-optional-compaction",
+            messages=(
+                {"role": "user", "content": "required contract and facts"},
+                {"role": "user", "content": "x" * 30_000},
+            ),
+            max_tokens=128,
+            optional_input_messages=(1,),
+        ),
+    )
+
+    assert response.ok
+    assert response.preflight_report["status"] == "COMPACT"
+    assert response.preflight_report["recheck_status"] == "READY"
+    assert response.preflight_report["estimates"]["safety_margin_tokens"] == 128
+    assert response.preflight_report["estimates"]["optional_input_tokens"] == 0
+    assert len(sent) == 1
+    actual_messages = sent[0]["payload"]["messages"]
+    assert len(actual_messages) == 1
+    assert "required contract and facts" in actual_messages[0]["content"]
+    assert all("x" * 100 not in item["content"] for item in actual_messages)
+
+
+def test_unsupported_required_capability_does_not_trigger_optional_compaction(tmp_path):
+    sent = []
+    settings = _preflight_settings(
+        {
+            "capabilities": {"json_mode": "unsupported"},
+            "limits": {
+                "input_token_limit": 1_000,
+                "context_window": 1_000,
+                "max_output_tokens": 256,
+            },
+        }
+    )
+    gateway = RuntimeModelGateway(
+        runtime_resolver=lambda _stage: settings,
+        capability_resolver=ModelCapabilityResolver(
+            store=ModelCapabilityStore(tmp_path / "capabilities.json")
+        ),
+        transport=lambda **call: sent.append(call) or {},
+    )
+
+    response = gateway.complete_stage(
+        "planner",
+        ModelRequest(
+            prompt="unused legacy prompt",
+            provider="",
+            model="",
+            operation="unsupported-with-optional-context",
+            messages=(
+                {"role": "user", "content": "required"},
+                {"role": "user", "content": "x" * 30_000},
+            ),
+            max_tokens=128,
+            json_mode=True,
+            optional_input_messages=(1,),
+        ),
+    )
+
+    assert not response.ok
+    assert response.preflight_report["reason"] == "required_capability_unsupported"
+    assert response.preflight_report["compacted_optional_message_indexes"] == []
+    assert sent == []
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://demo:TEST_SECRET@example.invalid:bad/v1?token=QUERY_SECRET",
+        "https://demo:TEST_SECRET@example.invalid:99999/v1?token=QUERY_SECRET",
+        "https://demo:TEST_SECRET@[broken.example/v1?token=QUERY_SECRET",
+    ],
+)
+def test_malformed_endpoint_is_safe_in_preview_execution_and_prompt_log(
+    tmp_path, monkeypatch, base_url
+):
+    from packages.story_core.agents import _runtime_common
+    from packages.story_core.agents._runtime_common import call_with_logging
+    from packages.story_core.prompt_call_log import PromptCallLog, prompt_call_recording
+
+    settings = _preflight_settings({}, base_url=base_url)
+    settings.api_key = "AUTHORIZATION_SECRET"
+    transport_calls = []
+
+    def failing_transport(**call):
+        transport_calls.append(call)
+        raise ValueError("synthetic transport failure")
+
+    gateway = RuntimeModelGateway(
+        runtime_resolver=lambda _stage: settings,
+        capability_resolver=ModelCapabilityResolver(
+            store=ModelCapabilityStore(tmp_path / "capabilities.json")
+        ),
+        transport=failing_transport,
+    )
+    request = ModelRequest(
+        prompt="short safe test prompt",
+        provider="",
+        model="",
+        operation="malformed-endpoint-test",
+        max_tokens=128,
+    )
+
+    preview = gateway.preflight_stage("planner", request)
+    response = gateway.complete_stage("planner", request)
+    log = PromptCallLog(tmp_path / "logs", project_id="file:malformed-endpoint")
+    monkeypatch.setattr(
+        _runtime_common, "_resolve_stage_settings", lambda _stage: settings
+    )
+    with prompt_call_recording(log):
+        logged_response, *_ = call_with_logging(
+            gateway=gateway, stage="planner", request=request
+        )
+
+    serialized = json.dumps(
+        {
+            "preview": preview.report,
+            "response": response.__dict__,
+            "logged_response": logged_response.__dict__,
+            "prompt_log": log.get(log.list()[0]["call_id"]),
+        },
+        ensure_ascii=False,
+        default=str,
+    )
+    for secret in ("demo:", "TEST_SECRET", "QUERY_SECRET", "AUTHORIZATION_SECRET", "Authorization"):
+        assert secret not in serialized
+    assert not response.ok
+    assert not logged_response.ok
+    assert transport_calls == []
+
+
+def test_cli_output_limit_enforcement_is_reported_by_shared_preflight(tmp_path):
+    from packages.story_core.runtime_config import StageRuntimeSettings
+
+    codex = StageRuntimeSettings(
+        provider_id="codexcli",
+        protocol="codex_cli",
+        model="gpt-5-codex",
+        codex_command="codex",
+    )
+    antigravity = StageRuntimeSettings(
+        provider_id="antigravity",
+        protocol="antigravity_cli",
+        model="gemini-3.1-pro-high",
+        codex_command="agy",
+    )
+    resolver = ModelCapabilityResolver(
+        store=ModelCapabilityStore(tmp_path / "capabilities.json")
+    )
+
+    codex_plan = RuntimeModelGateway(
+        runtime_resolver=lambda _stage: codex,
+        capability_resolver=resolver,
+    ).preflight_stage(
+        "planner",
+        ModelRequest(prompt="bounded request", provider="", model="", operation="cli-test"),
+    )
+    antigravity_plan = RuntimeModelGateway(
+        runtime_resolver=lambda _stage: antigravity,
+        capability_resolver=resolver,
+    ).preflight_stage(
+        "planner",
+        ModelRequest(prompt="bounded request", provider="", model="", operation="cli-test"),
+    )
+
+    assert codex_plan.report["status"] == "BLOCKED"
+    assert codex_plan.report["reason"] == "max_output_limit_not_enforceable_by_adapter"
+    assert codex_plan.report["output_enforcement"]["state"] == "unsupported"
+    assert antigravity_plan.report["status"] == "BLOCKED"
+    assert antigravity_plan.report["reason"] == "max_output_limit_not_enforceable_by_adapter"
+    assert antigravity_plan.report["output_enforcement"]["state"] == "unsupported"
 
 
 @pytest.mark.parametrize(

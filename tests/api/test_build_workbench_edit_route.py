@@ -1626,6 +1626,72 @@ def test_workbench_request_preflight_is_local_and_does_not_create_a_run(
     assert "test-secret" not in response.text
 
 
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://demo:TEST_SECRET@example.invalid:bad/v1?token=QUERY_SECRET",
+        "https://demo:TEST_SECRET@example.invalid:99999/v1?token=QUERY_SECRET",
+        "https://demo:TEST_SECRET@[broken.example/v1?token=QUERY_SECRET",
+    ],
+)
+def test_workbench_preview_and_execution_error_redact_malformed_endpoint(
+    tmp_path, monkeypatch, base_url
+):
+    from packages.story_core.model_gateway import (
+        ModelCapabilityResolver,
+        ModelCapabilityStore,
+        RuntimeModelGateway,
+    )
+    from packages.story_core.runtime_config import StageRuntimeSettings
+
+    store, _graph, service, marker_path, marker_bytes = _setup_project(tmp_path, monkeypatch)
+    provider_calls = []
+    settings = StageRuntimeSettings(
+        provider_id="openai",
+        protocol="openai_compatible",
+        model="preview-model",
+        api_key="AUTHORIZATION_SECRET",
+        base_url=base_url,
+        user_declared_capabilities={},
+    )
+    gateway = RuntimeModelGateway(
+        capability_resolver=ModelCapabilityResolver(
+            store=ModelCapabilityStore(tmp_path / "capabilities.json")
+        ),
+        transport=lambda **call: provider_calls.append(call) or {},
+    )
+    monkeypatch.setattr(file_projects, "resolve_stage_runtime", lambda _stage: settings)
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", gateway)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    preview = client.post(
+        "/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/preflight",
+        json={"expected_revision": 1, "operation": "rerun"},
+    )
+    assert preview.status_code == 200, preview.text
+    execution = client.post(
+        "/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/rerun",
+        json={"expected_revision": 1},
+    )
+    assert execution.status_code == 422, execution.text
+
+    for response in (preview, execution):
+        for secret in (
+            "demo:",
+            "TEST_SECRET",
+            "QUERY_SECRET",
+            "AUTHORIZATION_SECRET",
+            "Authorization",
+        ):
+            assert secret not in response.text
+    assert provider_calls == []
+    graph = service.inspect_graph()
+    assert graph.tasks["world_model"].active_run_id is None
+    assert graph.tasks["world_model"].current_artifact_revision == 1
+    assert store.build_artifact("world_model", 1)["payload"] == {"label": "Initial"}
+    assert marker_path.read_bytes() == marker_bytes
+
+
 @pytest.mark.parametrize("operation", ["rerun", "repair"])
 def test_workbench_model_operation_uses_the_preflighted_runtime_gateway(
     tmp_path, monkeypatch, operation

@@ -199,6 +199,7 @@ test("模型预检展示服务端结果，且预览不启动任务执行", async
           protocol: "openai_compatible", requested_model: "model-y", resolved_model: null,
           estimates: { required_input_tokens: 241, optional_input_tokens: 0, reserved_output_tokens: 1024, safety_margin_tokens: 128 },
           estimate_method: "utf8_bytes_div3_v1", capabilities: { json_mode: { state: "unknown", source: "unknown" } },
+          output_enforcement: { state: "supported", source: "repository_adapter_contract", method: "max_tokens_request_field" },
           limits: {}, effective_preflight_guards: {}, unknown_capability_policy: "continue_bounded_without_claiming_support",
           unknown_limit_policy: { action: "bounded_legacy_compatibility_guard" }, adjustments: [], repair_actions: [],
         },
@@ -214,6 +215,8 @@ test("模型预检展示服务端结果，且预览不启动任务执行", async
   await page.getByRole("button", { name: "预检完整重跑" }).click();
   await expect(page.getByText("模型预检：READY · within_context_limit", { exact: true })).toBeVisible();
   await expect(page.getByText(/utf8_bytes_div3_v1/)).toBeVisible();
+  await page.getByText("能力来源、限额和兼容策略").click();
+  await expect(page.getByText(/output_enforcement/)).toBeVisible();
   expect(preflightCalls).toBe(1);
   expect(executionCalls).toBe(0);
 });

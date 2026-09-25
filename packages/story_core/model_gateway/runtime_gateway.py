@@ -110,6 +110,14 @@ class RuntimeModelGateway:
             report["status"] = "BLOCKED"
             report["reason"] = "unsupported_protocol"
             report["repair_actions"] = ["核对所选 provider 与协议配置。"]
+        elif not definition.protocol.endswith("_cli") and not _valid_http_base_url(
+            str(getattr(settings, "base_url", "") or "")
+        ):
+            report["status"] = "BLOCKED"
+            report["reason"] = "invalid_base_url"
+            report["repair_actions"] = [
+                "为所选 provider 配置有效的 HTTP(S) base URL，不要把认证信息放入 URL。"
+            ]
         if profile_error:
             report["capability_resolution"] = {
                 "status": "unknown",
@@ -325,6 +333,12 @@ class RuntimeModelGateway:
 def _valid_http_base_url(value: str) -> bool:
     try:
         parsed = urlsplit(value.strip())
-        return parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+        hostname = parsed.hostname
+        port = parsed.port  # validates malformed and out-of-range ports
+        return (
+            parsed.scheme in {"http", "https"}
+            and bool(hostname)
+            and (port is None or 1 <= port <= 65535)
+        )
     except (AttributeError, ValueError):
         return False

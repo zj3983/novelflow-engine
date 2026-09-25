@@ -105,17 +105,21 @@ def normalize_base_url(base_url: str | None) -> str:
     raw = str(base_url or "").strip()
     if not raw:
         return ""
-    fallback = raw.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+
+    def invalid_identity() -> str:
+        digest = hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[:24]
+        return f"invalid://sha256/{digest}"
+
     try:
         parsed = urlsplit(raw if "://" in raw else f"//{raw}")
         hostname = (parsed.hostname or "").lower().rstrip(".")
         if not hostname:
-            return fallback
+            return invalid_identity()
         host = f"[{hostname}]" if ":" in hostname and not hostname.startswith("[") else hostname
-        try:
-            port = parsed.port
-        except ValueError:
-            return fallback
+        # Accessing .port validates syntax and the 0..65535 range.  Never
+        # return the raw authority when validation fails: it may contain URL
+        # userinfo that must not reach capability cache files or diagnostics.
+        port = parsed.port
         scheme = parsed.scheme.lower()
         if port is not None and not (
             (scheme == "http" and port == 80)
@@ -125,7 +129,36 @@ def normalize_base_url(base_url: str | None) -> str:
         path = parsed.path.rstrip("/")
         return urlunsplit((scheme, host, path, "", "")).rstrip("/")
     except ValueError:
-        return fallback
+        return invalid_identity()
+
+
+def safe_base_url_for_diagnostics(base_url: str | None) -> str:
+    """Serialize endpoint identity without ever exposing userinfo or query data.
+
+    This is intentionally independent from the capability cache normalizer so
+    reports remain safe even when handed an old or malformed cached identity.
+    """
+
+    raw = str(base_url or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlsplit(raw if "://" in raw else f"//{raw}")
+        hostname = (parsed.hostname or "").lower().rstrip(".")
+        if not hostname:
+            return "invalid endpoint (redacted)"
+        port = parsed.port
+        host = f"[{hostname}]" if ":" in hostname and not hostname.startswith("[") else hostname
+        scheme = parsed.scheme.lower()
+        if port is not None and not (
+            (scheme == "http" and port == 80)
+            or (scheme == "https" and port == 443)
+        ):
+            host = f"{host}:{port}"
+        path = parsed.path.rstrip("/")
+        return urlunsplit((scheme, host, path, "", "")).rstrip("/")
+    except ValueError:
+        return "invalid endpoint (redacted)"
 
 
 @dataclass(frozen=True)
@@ -1143,4 +1176,5 @@ __all__ = [
     "provider_capability_catalog",
     "resolve_effective_streaming",
     "resolve_model_profile",
+    "safe_base_url_for_diagnostics",
 ]

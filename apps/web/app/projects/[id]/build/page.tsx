@@ -79,7 +79,7 @@ function PreflightPanel({ report }: { report?: Record<string, unknown> | null })
       </p>
       <details>
         <summary>能力来源、限额和兼容策略</summary>
-        <pre>{JSON.stringify({ capabilities: report.capabilities, limits: report.limits, guards: report.effective_preflight_guards, unknown_capability_policy: report.unknown_capability_policy, unknown_limit_policy: report.unknown_limit_policy, adjustments: report.adjustments, repair_actions: report.repair_actions }, null, 2)}</pre>
+        <pre>{JSON.stringify({ capabilities: report.capabilities, limits: report.limits, guards: report.effective_preflight_guards, output_enforcement: report.output_enforcement, pre_compaction_estimates: report.pre_compaction_estimates, unknown_capability_policy: report.unknown_capability_policy, unknown_limit_policy: report.unknown_limit_policy, adjustments: report.adjustments, repair_actions: report.repair_actions }, null, 2)}</pre>
       </details>
     </section>
   );

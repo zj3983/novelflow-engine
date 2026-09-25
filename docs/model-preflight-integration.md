@@ -16,7 +16,11 @@ adapter. It does not add a router, scheduler, discovery cache, or remote probe.
 The profile identity is the tuple of provider, protocol, normalized base URL,
 requested model, and resolved model when known. URL normalization removes
 userinfo, query parameters, fragments, and trailing slashes before identity or
-diagnostic storage. Runtime observations, provider metadata, official catalog
+diagnostic storage. If endpoint parsing fails, the cache identity uses an
+opaque digest; diagnostics independently allowlist URL components and return a
+redacted invalid-endpoint label rather than echoing the malformed authority.
+Execution preview blocks malformed HTTP(S) endpoints before a provider adapter
+is constructed. Runtime observations, provider metadata, official catalog
 entries, and user declarations keep their own provenance. Expired records
 remain visible as expired evidence but resolve to `unknown` and cannot authorize
 a request. When an adapter returns a different resolved model, the response
@@ -31,6 +35,15 @@ mark whole message indexes as optional; only those whole messages can be
 removed by `COMPACT`, followed by a fresh estimate. The Workbench currently
 marks no prompt content optional, so it will not trim its task contract or
 Canon/context facts to force a request through.
+
+An initial budget classification can be `COMPACT`, `SPLIT`, or `BLOCKED` when
+the full optional context and its margin do not fit. If the request has valid
+optional indexes and no hard capability, input-shape, output-limit, or adapter
+enforcement blocker, preflight removes only those marked messages and
+re-estimates the resulting request. It records both pre- and post-compaction
+estimates. The compacted request is used only if this second check is `READY`;
+otherwise the original request remains unexecuted and the report preserves the
+blocking or split reason.
 
 When optional messages are removed and the second estimate passes, the report
 keeps `status: COMPACT` and records `recheck_status: READY`; execution then uses
@@ -49,10 +62,22 @@ method and margin next to required input, optional input, and reserved output.
 When a configured output reservation is absent, the request receives a bounded
 4,096-token output reservation. Unknown input and context limits use separate
 32,768-token compatibility guards; an unknown maximum output uses a 16,384-token
-guard. The actual request is bounded to the output reservation. These guards
+guard. For protocols with a supported output-enforcement method, the actual
+request is bounded to the output reservation. These guards
 allow old configurations to continue with a visible compatibility policy; they
 are not claims about the provider's real limits. Configure exact limits under
 the provider account's per-model capability declaration when available.
+
+The report also states how the adapter enforces the reserved output limit.
+HTTP adapters send their native output-limit field. Neither current CLI adapter
+exposes a verifiable per-request output cap; requests routed through Codex CLI
+or Antigravity CLI are blocked with
+`max_output_limit_not_enforceable_by_adapter`, and both adapter/helper
+boundaries reject a capped request before launching the CLI. Unknown
+enforcement is also blocked. Existing configurations with unknown capabilities
+or token limits still use the bounded compatibility guards; a CLI configuration
+needs a protocol with an enforceable output limit before model-backed work can
+continue.
 
 Unknown optional capabilities keep the existing request behavior and are
 reported as unknown; a known unsupported optional parameter may be adjusted
@@ -99,11 +124,15 @@ Consistency/Canon Review runtime adapters. Deterministic work, manual artifact
 edits, and candidate confirmation do not call the model gateway and therefore
 do not probe capabilities.
 
-A BLOCKED or SPLIT Canon Review preflight is propagated as a task failure. It
-does not become the older advisory `consistency.unavailable` finding; the
-writer bundle is not published, FactExtractor does not run, and the caller can
-correct the provider/model limits and retry. Other review transport failures
-retain their existing advisory behavior because they are not evidence of a
+A BLOCKED or SPLIT Character or Canon Review preflight is propagated as a task
+failure through the provider, agent, and pipeline fallback boundaries. It does
+not become a rule-generated Character proposal or the older advisory
+`consistency.unavailable` finding. The downstream Director/Writer/FactExtractor
+and candidate publication do not run after a Character rejection; after a
+Canon Review rejection the writer bundle is not published and FactExtractor
+does not run. Correcting the provider/model configuration permits a retry.
+Other model transport failures retain their existing advisory fallback
+behavior because they are not evidence of a hard preflight rejection or a
 Canon contradiction.
 
 Prompt-call logs and API diagnostics store the safe preflight report, not the

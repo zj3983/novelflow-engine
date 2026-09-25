@@ -751,6 +751,185 @@ def test_consistency_preflight_block_stops_before_fact_extraction_or_candidate_a
     assert not (tmp_path / ".story-system" / "candidates").exists()
 
 
+def test_character_preflight_block_stops_pipeline_and_corrected_config_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from packages.story_core.character_agent import (
+        CharacterAgent,
+        OpenAICharacterProposalProvider,
+    )
+    from packages.story_core.model_gateway import (
+        ModelCapabilityResolver,
+        ModelCapabilityStore,
+        RuntimeModelGateway,
+    )
+    from packages.story_core.runtime_config import StageRuntimeSettings
+
+    _seed_legacy_project(tmp_path, with_outline=False)
+    accepted_candidate = tmp_path / ".story-system" / "candidates" / "accepted.json"
+    accepted_candidate.parent.mkdir(parents=True, exist_ok=True)
+    accepted_bytes = b'{"accepted":true}'
+    accepted_candidate.write_bytes(accepted_bytes)
+
+    story = StoryState(
+        story_id="character-preflight-retry",
+        outline="林昭上山寻找避雨处。",
+        genre="玄幻",
+        style="克制自然",
+        current_chapter=0,
+        outline_context={"chapter": {"chapter_number": 1, "cast": ["林昭"]}},
+        characters=[CharacterState(name="林昭", role="protagonist")],
+    )
+    settings = StageRuntimeSettings(
+        provider_id="openai",
+        protocol="openai_compatible",
+        model="character-model",
+        api_key="test-secret",
+        base_url="https://api.example/v1",
+        temperature=0,
+        user_declared_capabilities={
+            "capabilities": {"json_mode": "unsupported"},
+            "limits": {
+                "input_token_limit": 32_000,
+                "context_window": 36_000,
+                "max_output_tokens": 4_000,
+            },
+        },
+    )
+    provider_calls: list[dict[str, Any]] = []
+
+    def transport(**call: Any) -> dict[str, Any]:
+        provider_calls.append(call)
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"proposals":[{"name":"林昭","goal":"找到避雨处",'
+                            '"emotion":"警惕","action":"沿山道观察", "priority":4}]}'
+                        )
+                    }
+                }
+            ],
+            "model": "character-model",
+        }
+
+    gateway = RuntimeModelGateway(
+        runtime_resolver=lambda _stage: settings,
+        capability_resolver=ModelCapabilityResolver(
+            store=ModelCapabilityStore(tmp_path / "capabilities.json")
+        ),
+        transport=transport,
+    )
+    monkeypatch.setattr(
+        "packages.story_core.agents._runtime_common._resolve_stage_settings",
+        lambda _stage: settings,
+    )
+
+    class RuleSpy:
+        calls = 0
+
+        def propose_all(self, _story: StoryState) -> list[Any]:
+            self.calls += 1
+            return []
+
+    class CountingFacts:
+        calls = 0
+
+        def extract(self, context: Any) -> ContinuityDelta:
+            self.calls += 1
+            return ContinuityDelta(chapter_number=context.chapter_number)
+
+    rules = RuleSpy()
+    director = _StubDirectorRuntime()
+    writer = _StubWriterRuntime()
+    facts = CountingFacts()
+    workflow_store = WorkflowArtifactStore(tmp_path)
+    character_agent = CharacterAgent(
+        llm_provider=OpenAICharacterProposalProvider(model_gateway=gateway),
+        rule_provider=rules,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ModelPreflightBlockedError) as blocked:
+        run_modular_pipeline(
+            project_root=tmp_path,
+            chapter_number=1,
+            story=story,
+            character_agent=character_agent,
+            director_runtime=director,
+            writer_runtime=writer,
+            fact_extractor=facts,
+            consistency_runtime=_EmptyConsistencyRuntime(),
+            workflow_store=workflow_store,
+            job_id="character-preflight-blocked",
+        )
+
+    assert blocked.value.report["reason"] == "required_capability_unsupported"
+    assert provider_calls == []
+    assert rules.calls == 0
+    assert director.calls == []
+    assert writer.calls == []
+    assert facts.calls == 0
+    assert workflow_store.read_stage("character-preflight-blocked", "character-intent") is None
+    assert workflow_store.read_stage("character-preflight-blocked", "director") is None
+    assert workflow_store.read_stage("character-preflight-blocked", "writer") is None
+    assert workflow_store.read_stage("character-preflight-blocked", "fact-extractor") is None
+    assert accepted_candidate.read_bytes() == accepted_bytes
+    assert list(accepted_candidate.parent.iterdir()) == [accepted_candidate]
+
+    settings.user_declared_capabilities["capabilities"]["json_mode"] = "supported"
+    bundle = run_modular_pipeline(
+        project_root=tmp_path,
+        chapter_number=1,
+        story=story,
+        character_agent=character_agent,
+        director_runtime=director,
+        writer_runtime=writer,
+        fact_extractor=facts,
+        consistency_runtime=_EmptyConsistencyRuntime(),
+        workflow_store=workflow_store,
+        job_id="character-preflight-retried",
+    )
+
+    assert len(provider_calls) == 1
+    assert rules.calls == 0
+    assert len(director.calls) == 1
+    assert len(writer.calls) == 1
+    assert facts.calls == 1
+    assert "人物当前意图" in director.calls[0].prompt
+    assert "找到避雨处" in director.calls[0].prompt
+    assert accepted_candidate.read_bytes() == accepted_bytes
+
+
+def test_character_preflight_block_does_not_disable_explicit_rule_mode():
+    from packages.story_core.character_agent import CharacterAgent
+    from packages.story_core.models import CharacterProposal
+
+    story = StoryState(
+        story_id="explicit-character-rule-mode",
+        outline="上山。",
+        genre="玄幻",
+        style="自然",
+        characters=[CharacterState(name="林昭", role="protagonist")],
+    )
+    story.agent_settings.mode = "Rule-based"  # type: ignore[assignment]
+
+    class NeverCallLLM:
+        def propose_all(self, _story: StoryState) -> list[Any]:
+            raise AssertionError("explicit rule mode must not call the model provider")
+
+    class Rules:
+        def propose_all(self, _story: StoryState) -> list[Any]:
+            return [CharacterProposal(name="林昭", goal="观察山路")]
+
+    agent = CharacterAgent(llm_provider=NeverCallLLM(), rule_provider=Rules())  # type: ignore[arg-type]
+
+    proposals = agent.propose_all(story)
+
+    assert [proposal.name for proposal in proposals] == ["林昭"]
+    assert agent.last_result_source == "rule_fallback"
+
+
 def test_orchestrator_wires_director_writer_and_fact_extractor(tmp_path: Path):
     """The orchestrator's modular entry point calls all three new agents.
 
@@ -808,6 +987,7 @@ def test_orchestrator_wires_director_writer_and_fact_extractor(tmp_path: Path):
             chapter_number=1,
             director_runtime=director_runtime,
             writer_runtime=writer_runtime,
+            consistency_runtime=_EmptyConsistencyRuntime(),
             fact_extractor=fact_extractor,
             canon_registry=canon_registry,
         )
@@ -888,6 +1068,7 @@ def test_modular_pipeline_threads_explicit_skill_module_ids_to_writer(tmp_path: 
         chapter_number=1,
         director_runtime=_StubDirectorRuntime(),
         writer_runtime=writer_runtime,
+        consistency_runtime=_EmptyConsistencyRuntime(),
     )
 
     writer_call = writer_runtime.calls[0]
@@ -940,6 +1121,7 @@ def test_modular_pipeline_preserves_absent_vs_explicit_empty_module_selection(
         chapter_number=1,
         director_runtime=_StubDirectorRuntime(),
         writer_runtime=writer_runtime,
+        consistency_runtime=_EmptyConsistencyRuntime(),
     )
 
     assert writer_runtime.calls[0].metadata["loaded_skill_module_ids"] == expected_ids
@@ -962,6 +1144,7 @@ def test_orchestrator_modular_path_works_without_legacy_project(tmp_path: Path):
         chapter_number=2,
         director_runtime=director_runtime,
         writer_runtime=writer_runtime,
+        consistency_runtime=_EmptyConsistencyRuntime(),
     )
 
     assert isinstance(bundle, ModularChapterBundle)
@@ -1005,6 +1188,7 @@ def test_orchestrator_writes_per_stage_artifacts_to_workflow_store(tmp_path: Pat
         chapter_number=1,
         director_runtime=director_runtime,
         writer_runtime=writer_runtime,
+        consistency_runtime=_EmptyConsistencyRuntime(),
         job_id=job_id,
     )
 
@@ -1352,6 +1536,7 @@ def test_modular_orchestrator_carries_continuity_delta_onto_legacy_bundle(
         project_root=project_root,
         director_runtime=director_runtime,
         writer_runtime=writer_runtime,
+        consistency_runtime=_EmptyConsistencyRuntime(),
     )
     assert isinstance(legacy_bundle, ChapterBundle)
     # The new ``continuity_delta`` field is set; legacy code that
