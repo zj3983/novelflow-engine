@@ -1,6 +1,7 @@
 """Synthetic first-to-second volume planning and prose acceptance."""
 from copy import deepcopy
 from collections import Counter
+import hashlib
 import json
 from time import monotonic, sleep
 from types import SimpleNamespace
@@ -74,6 +75,36 @@ def _confirm_through(store, target):
         store.confirm_candidate(candidate["candidate_id"])
         assert store.state()["current_chapter"] == number
     return engine
+
+
+def _project_file_hashes(store):
+    return {path.relative_to(store.root): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in store.root.rglob("*") if path.is_file()}
+
+
+def _assert_consumed_patches_rejected(store, client, base):
+    project = NovelProject.model_validate(store.project())
+    graph = runtime.graph_for(store, project)
+    service = store.build_graph_service(graph.definition, validators=runtime.validators_for(store, project))
+    before = _project_file_hashes(store)
+    for task_id in ("story_core", "chapter_outline_1", "chapter_outline_50"):
+        artifact = store.build_graph_store().read_artifact(task_id)
+        candidate = deepcopy(artifact.payload)
+        if task_id == "story_core":
+            candidate["story_core"]["main_conflict"] = "作者调整为公开记录的归属争议"
+        else:
+            candidate["chapter"]["title"] = "已消费章节的新标题"
+        assert candidate != artifact.payload
+        validation = service.validate(task_id, candidate, requested_writes=graph.spec(task_id).task.owns)
+        assert validation.passed, validation.to_dict()
+        response = client.patch(base + f"/tasks/{task_id}/artifact", json={
+            "expected_revision": artifact.revision, "payload": candidate,
+        })
+        assert response.status_code == 403, response.text
+        assert response.json()["detail"] == "opening_consumed_planning_locked"
+        # Includes graph/current revisions, immutable history, published planning,
+        # project readiness, prose, receipts, and archived release evidence.
+        assert _project_file_hashes(store) == before
 
 
 def _confirm_second_volume_modular(store, monkeypatch):
@@ -180,6 +211,7 @@ def test_next_volume_requires_confirmed_boundary_and_preserves_old_release(tmp_p
     with pytest.raises(ValueError, match="opening_prose_not_ready|volume_detail_required"):
         store.generate_next_chapter(engine=gated_engine, persist=False)
     assert gated_engine.calls == 0
+    _assert_consumed_patches_rejected(store, client, base)
 
     calls = []
     fail_once = True
@@ -245,6 +277,18 @@ def test_next_volume_requires_confirmed_boundary_and_preserves_old_release(tmp_p
     assert runtime.settings(store).get("pending_extension")
     assert (store.webnovel_dir / "build_graph_materialization.json").read_bytes() == original_marker
     assert (store.webnovel_dir / "outline.json").read_bytes() == original_outline
+    # A valid human edit to an accepted future task remains supported. It must
+    # survive the same release retry, without regenerating completed model tasks.
+    future = store.build_graph_store().read_artifact("chapter_outline_60")
+    changed_future = deepcopy(future.payload)
+    changed_future["chapter"]["title"] = "人工修订的第二卷结尾"
+    edited = client.patch(base + "/tasks/chapter_outline_60/artifact", json={
+        "expected_revision": future.revision, "payload": changed_future,
+    })
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["artifact"]["revision"] == future.revision + 1
+    assert edited.json()["artifact"]["source"] == "human"
+    assert store.build_graph_store().read_artifact("chapter_outline_60", future.revision) == future
     completed = run("continue")
     assert completed["status"] == "completed", completed
     assert completed["materialized"]
@@ -261,6 +305,10 @@ def test_next_volume_requires_confirmed_boundary_and_preserves_old_release(tmp_p
     assert (store.webnovel_dir / "state.json").read_bytes() == original_state_bytes
     assert "pending_extension" not in runtime.settings(store)
     assert runtime.settings(store)["plan_versions"][-1]["start_chapter"] == 51
+    assert store.build_artifact("chapter_outline_60")["payload"] == changed_future
+    released_outline = store.snapshot_store.read_json(store.webnovel_dir / "outline.json", {})
+    assert next(chapter for chapter in released_outline["chapters"]
+                if chapter["chapter_number"] == 60)["title"] == changed_future["chapter"]["title"]
     assert (store.webnovel_dir / "opening_plan_versions" / "v1" / "build_graph_materialization.json").exists()
     assert (store.webnovel_dir / "opening_plan_versions" / "v1" / "build_graph_materialization.json").read_bytes() == original_marker
     assert (store.webnovel_dir / "opening_plan_versions" / "v2" / "build_graph_materialization.json").exists()

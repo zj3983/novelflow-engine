@@ -2697,6 +2697,26 @@ def init_file_project_routes() -> APIRouter:
             return "outdated"
         return "in_use" if execution_started else "current"
 
+    def _assert_workbench_planning_task_writable(store, task_id: str) -> None:
+        # Call under project_update_lock, before a run or artifact can be written.
+        from packages.story_core.opening_build.runtime import enabled, settings, assert_planning_sources_current
+
+        if not enabled(store):
+            return
+        config = settings(store)
+        if config.get("execution"):
+            pending = config.get("pending_extension") or {}
+            future_tasks = {
+                f"chapter_outline_{number}"
+                for number in range(pending.get("start_chapter", 1), pending.get("end_chapter", 0) + 1)
+            }
+            if task_id not in future_tasks:
+                raise HTTPException(status_code=403, detail="opening_consumed_planning_locked")
+        try:
+            assert_planning_sources_current(store)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     def _invalidate_workbench_readiness(store, project: dict[str, Any]) -> None:
         from packages.story_core.opening_build.runtime import enabled, assert_planning_sources_current
         if enabled(store):
@@ -2977,6 +2997,7 @@ def init_file_project_routes() -> APIRouter:
                         raise HTTPException(status_code=404, detail="build_task_not_found")
                     if graph.spec(task_id).kind != "model":
                         raise HTTPException(status_code=403, detail="build_task_not_editable")
+                    _assert_workbench_planning_task_writable(store, task_id)
                     task_state = state.tasks[task_id]
                     current_revision = task_state.current_artifact_revision
                     if current_revision != request.expected_revision:
@@ -3063,17 +3084,8 @@ def init_file_project_routes() -> APIRouter:
                     if expected_graph_revision is not None and state.graph_revision != expected_graph_revision:
                         raise HTTPException(status_code=409, detail="build_graph_changed")
                     from packages.story_core.opening_build.runtime import enabled, settings
+                    _assert_workbench_planning_task_writable(store, task_id)
                     if enabled(store):
-                        from packages.story_core.opening_build.runtime import assert_planning_sources_current
-                        try:
-                            assert_planning_sources_current(store)
-                        except ValueError as exc:
-                            raise HTTPException(status_code=409, detail=str(exc)) from exc
-                        if settings(store).get("execution"):
-                            pending = settings(store).get("pending_extension") or {}
-                            number = int(task_id.rsplit("_", 1)[1]) if task_id.startswith("chapter_outline_") else 0
-                            if not pending or not pending["start_chapter"] <= number <= pending["end_chapter"]:
-                                raise HTTPException(status_code=403, detail="opening_consumed_planning_locked")
                         if expected_project_revision is None:
                             expected_project_revision = _project_world_revision(store)
                     if expected_project_revision is not None and _project_world_revision(store) != expected_project_revision:
