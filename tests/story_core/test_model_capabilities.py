@@ -2,6 +2,8 @@ import io
 import json
 import urllib.error
 
+import pytest
+
 from packages.story_core.model_gateway import (
     CapabilityObservation,
     CapabilityProvenance,
@@ -526,3 +528,340 @@ def test_capability_cache_does_not_persist_secret_url_query_or_authorization(tmp
     assert "another-secret" not in persisted
     assert "Authorization" not in persisted
     assert "api_key" not in persisted
+
+
+def _preflight_settings(capabilities=None, *, model="alias-model", base_url="https://one.example/v1"):
+    return StageRuntimeSettings(
+        provider_id="custom_openai",
+        protocol="openai_compatible",
+        model=model,
+        api_key="test-secret",
+        base_url=base_url,
+        temperature=0.7,
+        user_declared_capabilities=dict(capabilities or {}),
+    )
+
+
+def test_gateway_preflights_the_actual_request_once_with_one_runtime_snapshot(tmp_path):
+    settings = _preflight_settings({"limits": {
+        "input_token_limit": 16_000,
+        "context_window": 20_000,
+        "max_output_tokens": 2_000,
+    }})
+    resolved_stages = []
+    sent = []
+
+    def transport(**call):
+        sent.append(call)
+        return {
+            "choices": [{"message": {"content": "ok"}}],
+            "model": "backend-model-v1",
+        }
+
+    gateway = RuntimeModelGateway(
+        runtime_resolver=lambda stage: resolved_stages.append(stage) or settings,
+        capability_resolver=ModelCapabilityResolver(
+            store=ModelCapabilityStore(tmp_path / "capabilities.json")
+        ),
+        transport=transport,
+    )
+    response = gateway.complete_stage(
+        "planner",
+        ModelRequest(
+            prompt="必要任务契约",
+            provider="ignored-provider",
+            model="ignored-model",
+            operation="preflight-snapshot",
+            max_tokens=512,
+        ),
+    )
+
+    assert response.ok
+    assert resolved_stages == ["planner"]
+    assert sent[0]["payload"]["model"] == "alias-model"
+    assert response.preflight_report["status"] == "READY"
+    assert response.preflight_report["recheck_status"] is None
+    assert response.preflight_report["provider"] == "custom_openai"
+    assert response.preflight_report["requested_model"] == "alias-model"
+    assert response.preflight_report["resolved_model"] == "backend-model-v1"
+    assert response.preflight_report["resolved_model_changed"] is True
+    assert response.preflight_report["estimate_method"] == "utf8_bytes_div3_v1"
+    assert response.preflight_report["estimate_is_exact_tokenization"] is False
+    assert response.preflight_report["limits"]["context_window"]["source"] == "user_declared"
+
+
+def test_known_unsupported_structured_output_blocks_before_provider_call(tmp_path):
+    sent = []
+    settings = _preflight_settings({
+        "capabilities": {"json_mode": "unsupported"},
+        "limits": {
+            "input_token_limit": 16_000,
+            "context_window": 20_000,
+            "max_output_tokens": 2_000,
+        },
+    })
+    gateway = RuntimeModelGateway(
+        runtime_resolver=lambda _stage: settings,
+        capability_resolver=ModelCapabilityResolver(
+            store=ModelCapabilityStore(tmp_path / "capabilities.json")
+        ),
+        transport=lambda **call: sent.append(call) or {},
+    )
+
+    response = gateway.complete_stage(
+        "planner",
+        ModelRequest(
+            prompt="只输出完整结构化结果",
+            provider="",
+            model="",
+            operation="required-json",
+            max_tokens=512,
+            json_mode=True,
+        ),
+    )
+
+    assert not response.ok
+    assert response.error == "model_preflight_blocked"
+    assert response.preflight_report["status"] == "BLOCKED"
+    assert response.preflight_report["reason"] == "required_capability_unsupported"
+    assert response.preflight_report["capabilities"]["json_mode"]["source"] == "user_declared"
+    assert sent == []
+
+
+def test_optional_messages_compact_and_recheck_without_removing_required_contract(tmp_path):
+    sent = []
+    settings = _preflight_settings({"limits": {
+        "input_token_limit": 1_000,
+        "context_window": 1_000,
+        "max_output_tokens": 256,
+    }})
+
+    def transport(**call):
+        sent.append(call)
+        return {"choices": [{"message": {"content": "ok"}}], "model": "actual"}
+
+    gateway = RuntimeModelGateway(
+        runtime_resolver=lambda _stage: settings,
+        capability_resolver=ModelCapabilityResolver(
+            store=ModelCapabilityStore(tmp_path / "capabilities.json")
+        ),
+        transport=transport,
+    )
+    response = gateway.complete_stage(
+        "planner",
+        ModelRequest(
+            prompt="该字段不会与 messages 重复发送",
+            provider="",
+            model="",
+            operation="optional-compaction",
+            system_prompt="must_not_write 是硬约束，必须保留。",
+            messages=(
+                {"role": "user", "content": "必要事实和完整执行契约"},
+                {"role": "user", "content": "OPTIONAL_CONTEXT_SECRET " + "x" * 6_000},
+            ),
+            max_tokens=128,
+            optional_input_messages=(1,),
+        ),
+    )
+
+    assert response.ok
+    actual_messages = sent[0]["payload"]["messages"]
+    assert "must_not_write" in actual_messages[0]["content"]
+    assert "必要事实和完整执行契约" in actual_messages[1]["content"]
+    assert all("OPTIONAL_CONTEXT_SECRET" not in item["content"] for item in actual_messages)
+    assert response.preflight_report["status"] == "COMPACT"
+    assert response.preflight_report["recheck_status"] == "READY"
+    assert response.preflight_report["compacted_optional_message_indexes"] == [1]
+    assert response.preflight_report["estimates"]["optional_input_tokens"] == 0
+    assert "该字段不会与 messages 重复发送" not in str(response.preflight_report)
+
+
+@pytest.mark.parametrize(
+    ("limits", "prompt", "max_tokens", "reason"),
+    [
+        (
+            {"input_token_limit": 100, "context_window": 50_000, "max_output_tokens": 2_000},
+            "required input " + "x" * 1_200,
+            128,
+            "required_input_over_limit",
+        ),
+        (
+            {"input_token_limit": 50_000, "context_window": 500, "max_output_tokens": 2_000},
+            "required context " + "x" * 1_200,
+            128,
+            "required_context_over_limit",
+        ),
+        (
+            {"input_token_limit": 50_000, "context_window": 50_000, "max_output_tokens": 64},
+            "small request",
+            128,
+            "max_output_limit_exceeded",
+        ),
+    ],
+)
+def test_preflight_checks_input_context_and_output_limits_separately(
+    tmp_path, limits, prompt, max_tokens, reason
+):
+    sent = []
+    settings = _preflight_settings({"limits": limits})
+    gateway = RuntimeModelGateway(
+        runtime_resolver=lambda _stage: settings,
+        capability_resolver=ModelCapabilityResolver(
+            store=ModelCapabilityStore(tmp_path / "capabilities.json")
+        ),
+        transport=lambda **call: sent.append(call) or {},
+    )
+
+    response = gateway.complete_stage(
+        "planner",
+        ModelRequest(
+            prompt=prompt,
+            provider="",
+            model="",
+            operation=reason,
+            max_tokens=max_tokens,
+        ),
+    )
+
+    assert response.preflight_report["status"] == "BLOCKED"
+    assert response.preflight_report["reason"] == reason
+    for name, value in limits.items():
+        assert response.preflight_report["limits"][name]["value"] == value
+    assert sent == []
+
+
+def test_unknown_or_expired_evidence_is_visible_but_never_claimed_verified(tmp_path):
+    sent = []
+    settings = _preflight_settings(model="unknown-model")
+    resolver = ModelCapabilityResolver(
+        store=ModelCapabilityStore(tmp_path / "capabilities.json"),
+        catalog={
+            ("custom_openai", "openai_compatible", "unknown-model"): {
+                "capabilities": {
+                    "temperature": {
+                        "state": "supported",
+                        "provenance": {
+                            "source": "official_catalog",
+                            "expires_at": "2020-01-01T00:00:00+00:00",
+                        },
+                    }
+                }
+            }
+        },
+    )
+    gateway = RuntimeModelGateway(
+        runtime_resolver=lambda _stage: settings,
+        capability_resolver=resolver,
+        transport=lambda **call: sent.append(call) or {
+            "choices": [{"message": {"content": "ok"}}],
+            "model": "resolved-unknown-model",
+        },
+    )
+    response = gateway.complete_stage(
+        "planner",
+        ModelRequest(prompt="small request", provider="", model="", operation="unknown"),
+    )
+
+    assert response.ok
+    assert len(sent) == 1
+    temperature = response.preflight_report["capabilities"]["temperature"]
+    assert temperature["state"] == "unknown"
+    assert temperature["source"] == "official_catalog"
+    assert temperature["expired"] is True
+    assert response.preflight_report["unknown_limit_policy"]["action"] == "bounded_legacy_compatibility_guard"
+    assert response.preflight_report["resolved_model"] == "resolved-unknown-model"
+
+
+def test_preflight_preview_is_local_and_does_not_call_provider(tmp_path):
+    sent = []
+    settings = _preflight_settings()
+    gateway = RuntimeModelGateway(
+        runtime_resolver=lambda _stage: settings,
+        capability_resolver=ModelCapabilityResolver(
+            store=ModelCapabilityStore(tmp_path / "capabilities.json")
+        ),
+        transport=lambda **call: sent.append(call) or {},
+    )
+
+    plan = gateway.preflight_stage(
+        "writer",
+        ModelRequest(prompt="preview only", provider="", model="", operation="preview"),
+    )
+
+    assert plan.report["status"] == "READY"
+    assert plan.report["requested_model"] == "alias-model"
+    assert sent == []
+
+
+def test_character_director_writer_and_canon_review_share_runtime_preflight(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from packages.story_core import runtime_config
+    from packages.story_core.agents.consistency.runtime import GatewayConsistencyRuntime
+    from packages.story_core.agents.director.runtime import GatewayDirectorRuntime
+    from packages.story_core.agents.writer.runtime import GatewayWriterRuntime
+    from packages.story_core.character_agent import OpenAICharacterProposalProvider
+
+    resolved_stages = []
+    provider_calls = []
+    settings_by_stage = {
+        stage: StageRuntimeSettings(
+            provider_id="openai",
+            protocol="openai_compatible",
+            model=f"{stage}-model",
+            api_key="test-secret",
+            base_url="https://api.example/v1",
+            temperature=0,
+            user_declared_capabilities={
+                "limits": {
+                    "input_token_limit": 32_000,
+                    "context_window": 36_000,
+                    "max_output_tokens": 4_000,
+                }
+            },
+        )
+        for stage in ("planner", "director", "writer", "consistency")
+    }
+
+    def resolve(stage):
+        resolved_stages.append(stage)
+        return settings_by_stage[stage]
+
+    def transport(**call):
+        provider_calls.append(call)
+        return {
+            "choices": [{"message": {"content": "ok"}}],
+            "model": "resolved-body-model",
+        }
+
+    monkeypatch.setattr(runtime_config, "resolve_stage_runtime", resolve)
+    gateway = RuntimeModelGateway(
+        transport=transport,
+        capability_resolver=ModelCapabilityResolver(
+            store=ModelCapabilityStore(tmp_path / "capabilities.json")
+        ),
+    )
+    requests = [
+        OpenAICharacterProposalProvider(gateway).complete(
+            ModelRequest(prompt="character request", provider="", model="", operation="character")
+        ),
+        GatewayDirectorRuntime(gateway).complete(
+            SimpleNamespace(prompt="director request", stage="director", metadata={"agent": "director"})
+        ),
+        GatewayWriterRuntime(gateway).complete(
+            SimpleNamespace(prompt="writer request", stage="writer", metadata={"agent": "writer"})
+        ),
+        GatewayConsistencyRuntime(gateway).complete(
+            SimpleNamespace(prompt="canon review request", stage="consistency", metadata={"agent": "consistency"})
+        ),
+    ]
+
+    assert all(response.ok for response in requests)
+    assert all(response.preflight_report["status"] == "READY" for response in requests)
+    assert [call["payload"]["model"] for call in provider_calls] == [
+        "planner-model", "director-model", "writer-model", "consistency-model"
+    ]
+    assert resolved_stages == ["planner", "director", "writer", "consistency"]
+    assert len(provider_calls) == 4

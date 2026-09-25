@@ -561,6 +561,9 @@ def test_runtime_gateway_contains_resolver_errors_without_leaking_details():
     response = RuntimeModelGateway(runtime_resolver=resolver).complete_stage("planner", request())
 
     assert response.ok is False
-    assert response.error == "unsupported_protocol"
+    assert response.error == "runtime_configuration_unavailable"
+    assert response.preflight_report["status"] == "BLOCKED"
+    assert response.preflight_report["reason"] == "runtime_configuration_unavailable"
     assert "secret-token" not in response.error
     assert "secret-token" not in json.dumps(response.raw)
+    assert "secret-token" not in json.dumps(response.preflight_report)

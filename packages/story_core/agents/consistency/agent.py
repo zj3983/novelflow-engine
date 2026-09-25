@@ -16,6 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from packages.story_core.model_gateway.preflight import ModelPreflightBlockedError
+
 from ..contracts import DirectorArtifact
 
 
@@ -498,6 +500,14 @@ class FocusedConsistencyAgent:
                     blocking=False,
                 )
             ]
+        preflight_report = getattr(response, "preflight_report", None)
+        if isinstance(preflight_report, dict) and str(
+            preflight_report.get("status") or ""
+        ) in {"BLOCKED", "SPLIT"}:
+            # A known preflight rejection is a task execution failure, not an
+            # advisory "review unavailable" result. The orchestrator must stop
+            # before FactExtractor or candidate persistence can run.
+            raise ModelPreflightBlockedError(preflight_report)
         if getattr(response, "ok", True) is False:
             error = str(getattr(response, "error", "") or "model_call_failed")
             return [

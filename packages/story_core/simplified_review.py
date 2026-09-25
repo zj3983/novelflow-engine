@@ -33,6 +33,7 @@ def project_review_result_dict(payload: dict[str, Any], *, issue_limit: int = 3)
 
 def user_facing_generation_error(exc: Exception) -> str:
     from packages.story_core.file_project_store import ChapterQualityError
+    from packages.story_core.model_gateway.preflight import ModelPreflightBlockedError
 
     text = str(exc or "").strip()
     if isinstance(exc, ChapterQualityError):
@@ -52,6 +53,16 @@ def user_facing_generation_error(exc: Exception) -> str:
         summary = f"：{'、'.join(parts)}" if parts else ""
         advice = f"建议：{suggestion}" if suggestion else "建议：修正后重试生成。"
         return f"章节质量检查未通过{summary}。{advice}本章未保存，可直接重试。"
+    if isinstance(exc, ModelPreflightBlockedError):
+        report = exc.report
+        reason = str(report.get("reason") or "能力或预算检查未通过")
+        actions = report.get("repair_actions")
+        action = (
+            str(actions[0]).strip()
+            if isinstance(actions, list) and actions and str(actions[0]).strip()
+            else "检查当前阶段的 provider、模型能力声明和上下文限额后重试。"
+        )
+        return f"模型预检阻断（{reason}），未生成或保存本章。修复：{action}"
     if "Missing OPENAI_API_KEY" in text or "api_key" in text.lower() and "missing" in text.lower():
         return "模型 API Key 未配置，请先在设置页完成配置后重试。"
     if "模型 HTTP" in text or "model_request_failed" in text:

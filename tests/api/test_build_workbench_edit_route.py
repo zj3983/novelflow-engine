@@ -1572,3 +1572,185 @@ def test_rebuild_stale_reports_blocked_upstream_instead_of_success(tmp_path, mon
     assert service.inspect_graph().tasks["downstream_model"].status == "stale"
     assert store.project()["pipeline_stage"] == "environment_ready"
     assert marker_path.read_bytes() == marker_bytes
+
+
+@pytest.mark.parametrize("operation", ["rerun", "repair"])
+def test_workbench_request_preflight_is_local_and_does_not_create_a_run(
+    tmp_path, monkeypatch, operation
+):
+    from packages.story_core.model_gateway import (
+        ModelCapabilityResolver,
+        ModelCapabilityStore,
+        RuntimeModelGateway,
+    )
+    from packages.story_core.runtime_config import StageRuntimeSettings
+
+    store, _graph, service, _marker_path, _marker_bytes = _setup_project(tmp_path, monkeypatch)
+    provider_calls = []
+    settings = StageRuntimeSettings(
+        provider_id="openai",
+        protocol="openai_compatible",
+        model="preview-model",
+        api_key="test-secret",
+        base_url="https://api.example/v1",
+        user_declared_capabilities={},
+    )
+    gateway = RuntimeModelGateway(
+        capability_resolver=ModelCapabilityResolver(
+            store=ModelCapabilityStore(tmp_path / "capabilities.json")
+        ),
+        transport=lambda **call: provider_calls.append(call) or {},
+    )
+    monkeypatch.setattr(file_projects, "resolve_stage_runtime", lambda _stage: settings)
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", gateway)
+    before = service.inspect_graph()
+    before_runs = set(before.runs)
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/preflight",
+        json={"expected_revision": 1, "operation": operation},
+    )
+
+    assert response.status_code == 200, response.text
+    report = response.json()["preflight_report"]
+    assert report["status"] == "READY"
+    assert report["provider"] == "openai"
+    assert report["requested_model"] == "preview-model"
+    assert report["estimate_is_exact_tokenization"] is False
+    assert provider_calls == []
+    after = service.inspect_graph()
+    assert set(after.runs) == before_runs
+    assert after.tasks["world_model"].active_run_id is None
+    assert after.tasks["world_model"].current_artifact_revision == 1
+    assert store.build_artifact("world_model", 1)["payload"] == {"label": "Initial"}
+    assert "test-secret" not in response.text
+
+
+@pytest.mark.parametrize("operation", ["rerun", "repair"])
+def test_workbench_model_operation_uses_the_preflighted_runtime_gateway(
+    tmp_path, monkeypatch, operation
+):
+    from packages.story_core.model_gateway import (
+        ModelCapabilityResolver,
+        ModelCapabilityStore,
+        RuntimeModelGateway,
+    )
+    from packages.story_core.runtime_config import StageRuntimeSettings
+
+    _store, _graph, service, _marker_path, _marker_bytes = _setup_project(tmp_path, monkeypatch)
+    provider_calls = []
+    settings = StageRuntimeSettings(
+        provider_id="openai",
+        protocol="openai_compatible",
+        model="requested-model",
+        api_key="test-secret",
+        base_url="https://api.example/v1",
+        temperature=0,
+        user_declared_capabilities={
+            "capabilities": {"json_mode": "supported"},
+            "limits": {
+                "input_token_limit": 30_000,
+                "context_window": 32_000,
+                "max_output_tokens": 4_000,
+            },
+        },
+    )
+
+    def transport(**call):
+        provider_calls.append(call)
+        return {
+            "choices": [{"message": {"content": '{"label":"Generated"}'}}],
+            "model": "resolved-model",
+        }
+
+    gateway = RuntimeModelGateway(
+        capability_resolver=ModelCapabilityResolver(
+            store=ModelCapabilityStore(tmp_path / "capabilities.json")
+        ),
+        transport=transport,
+    )
+    monkeypatch.setattr(file_projects, "resolve_stage_runtime", lambda _stage: settings)
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", gateway)
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        f"/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/{operation}",
+        json={"expected_revision": 1},
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(provider_calls) == 1
+    report = response.json()["preflight_report"]
+    assert report["status"] == "READY"
+    assert report["provider"] == "openai"
+    assert report["requested_model"] == "requested-model"
+    assert report["resolved_model"] == "resolved-model"
+    assert report["capabilities"]["json_mode"]["source"] == "user_declared"
+    assert service.inspect_graph().tasks["world_model"].active_run_id is None
+    assert service.inspect_artifact("world_model").revision == 2
+
+
+def test_workbench_preflight_failure_cleans_run_and_config_retry_succeeds(tmp_path, monkeypatch):
+    from packages.story_core.model_gateway import (
+        ModelCapabilityResolver,
+        ModelCapabilityStore,
+        RuntimeModelGateway,
+    )
+    from packages.story_core.runtime_config import StageRuntimeSettings
+
+    store, _graph, service, marker_path, marker_bytes = _setup_project(tmp_path, monkeypatch)
+    provider_calls = []
+    settings = StageRuntimeSettings(
+        provider_id="openai",
+        protocol="openai_compatible",
+        model="requested-model",
+        api_key="test-secret",
+        base_url="https://api.example/v1",
+        temperature=0,
+        user_declared_capabilities={
+            "capabilities": {"json_mode": "unsupported"},
+            "limits": {
+                "input_token_limit": 30_000,
+                "context_window": 32_000,
+                "max_output_tokens": 4_000,
+            },
+        },
+    )
+    gateway = RuntimeModelGateway(
+        capability_resolver=ModelCapabilityResolver(
+            store=ModelCapabilityStore(tmp_path / "capabilities.json")
+        ),
+        transport=lambda **call: provider_calls.append(call) or {
+            "choices": [{"message": {"content": '{"label":"Recovered"}'}}],
+            "model": "resolved-model",
+        },
+    )
+    monkeypatch.setattr(file_projects, "resolve_stage_runtime", lambda _stage: settings)
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", gateway)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    blocked = client.post(
+        "/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/rerun",
+        json={"expected_revision": 1},
+    )
+    assert blocked.status_code == 422
+    assert provider_calls == []
+    assert blocked.json()["detail"]["diagnostics"][0]["details"]["preflight"]["reason"] == "required_capability_unsupported"
+    after_block = service.inspect_graph()
+    assert after_block.tasks["world_model"].status == "completed"
+    assert after_block.tasks["world_model"].current_artifact_revision == 1
+    assert after_block.tasks["world_model"].active_run_id is None
+    assert after_block.tasks["downstream_model"].status == "completed"
+    assert store.build_artifact("world_model", 1)["payload"] == {"label": "Initial"}
+    assert store.build_artifact("world_model", 2) is None
+    assert marker_path.read_bytes() == marker_bytes
+
+    settings.user_declared_capabilities["capabilities"]["json_mode"] = "supported"
+    retried = client.post(
+        "/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/rerun",
+        json={"expected_revision": 1},
+    )
+    assert retried.status_code == 200, retried.text
+    assert len(provider_calls) == 1
+    assert retried.json()["preflight_report"]["status"] == "READY"
+    assert service.inspect_graph().tasks["world_model"].active_run_id is None
+    assert service.inspect_artifact("world_model").payload == {"label": "Recovered"}

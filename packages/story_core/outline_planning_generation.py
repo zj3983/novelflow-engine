@@ -4,6 +4,7 @@ import json
 import os
 import re
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -308,16 +309,24 @@ def validate_next_volume(
     return volume
 
 
+@dataclass(frozen=True)
+class _RuntimeGatewayBinding:
+    gateway: RuntimeModelGateway
+    prepare_settings: Callable[[StageRuntimeSettings], StageRuntimeSettings]
+
+
 def _runtime_gateway_for_legacy_injection(
     post_json: Callable[..., dict[str, Any]],
     runtime_resolver: Callable[[str], StageRuntimeSettings],
-) -> RuntimeModelGateway:
+) -> _RuntimeGatewayBinding:
     if post_json is post_json_with_retry:
-        return RuntimeModelGateway(runtime_resolver=runtime_resolver)
+        return _RuntimeGatewayBinding(
+            gateway=RuntimeModelGateway(runtime_resolver=runtime_resolver),
+            prepare_settings=lambda runtime: runtime,
+        )
     active: dict[str, Any] = {}
 
-    def compatible_runtime(stage: str) -> StageRuntimeSettings:
-        runtime = runtime_resolver(stage)
+    def prepare_settings(runtime: StageRuntimeSettings) -> StageRuntimeSettings:
         active["runtime"] = runtime
         provider = str(getattr(runtime, "provider_id", getattr(runtime, "provider", "")))
         protocol = getattr(runtime, "protocol", "openai_compatible")
@@ -331,7 +340,13 @@ def _runtime_gateway_for_legacy_injection(
             base_url=runtime.base_url or "http://legacy-injected.invalid",
             codex_command=runtime.codex_command,
             temperature=runtime.temperature,
+            user_declared_capabilities=dict(
+                getattr(runtime, "user_declared_capabilities", {}) or {}
+            ),
         )
+
+    def compatible_runtime(stage: str) -> StageRuntimeSettings:
+        return prepare_settings(runtime_resolver(stage))
 
     def transport(*, url: str, payload: dict[str, Any], headers: dict[str, str], config: Any) -> dict[str, Any]:
         runtime = active["runtime"]
@@ -346,7 +361,10 @@ def _runtime_gateway_for_legacy_injection(
             codex_command=runtime.codex_command,
         )
 
-    return RuntimeModelGateway(runtime_resolver=compatible_runtime, transport=transport)
+    return _RuntimeGatewayBinding(
+        gateway=RuntimeModelGateway(runtime_resolver=compatible_runtime, transport=transport),
+        prepare_settings=prepare_settings,
+    )
 
 
 def _outline_planning_timeout_seconds() -> int | None:
@@ -360,22 +378,24 @@ def _complete_payload(
     payload: dict[str, Any],
     *,
     operation: str,
+    runtime_settings: StageRuntimeSettings | None = None,
 ) -> dict[str, Any]:
-    response = gateway.complete_stage(
-        "planner",
-        ModelRequest(
-            prompt="",
-            messages=tuple(payload.get("messages", ())),
-            provider="",
-            model="",
-            operation=operation,
-            temperature=payload.get("temperature"),
-            max_tokens=payload.get("max_tokens"),
-            json_mode=payload.get("response_format") == {"type": "json_object"},
-            timeout_seconds=_outline_planning_timeout_seconds(),
-            metadata={"stream": get_outline_planning_settings().stream},
-        ),
+    request = ModelRequest(
+        prompt="",
+        messages=tuple(payload.get("messages", ())),
+        provider="",
+        model="",
+        operation=operation,
+        temperature=payload.get("temperature"),
+        max_tokens=payload.get("max_tokens"),
+        json_mode=payload.get("response_format") == {"type": "json_object"},
+        timeout_seconds=_outline_planning_timeout_seconds(),
+        metadata={"stream": get_outline_planning_settings().stream},
     )
+    if runtime_settings is not None and callable(getattr(gateway, "complete_resolved", None)):
+        response = gateway.complete_resolved(runtime_settings, request)
+    else:
+        response = gateway.complete_stage("planner", request)
     if not response.ok:
         raise ValueError(response.error or "model_call_failed")
     return {"choices": [{"message": {"content": response.text}}]}
@@ -987,17 +1007,14 @@ class LLMOutlinePlanningGenerator:
         runtime_resolver: Callable[[str], StageRuntimeSettings] = resolve_stage_runtime,
         model_gateway: RuntimeModelGateway | None = None,
     ) -> None:
-        runtime_cache: dict[str, StageRuntimeSettings] = {}
-
-        def cached_runtime_resolver(stage: str) -> StageRuntimeSettings:
-            if stage not in runtime_cache:
-                runtime_cache[stage] = runtime_resolver(stage)
-            return runtime_cache[stage]
-
-        self._runtime_resolver = cached_runtime_resolver
-        self._model_gateway = model_gateway or _runtime_gateway_for_legacy_injection(
-            post_json, cached_runtime_resolver
-        )
+        self._runtime_resolver = runtime_resolver
+        if model_gateway is None:
+            binding = _runtime_gateway_for_legacy_injection(post_json, runtime_resolver)
+            self._model_gateway = binding.gateway
+            self._prepare_gateway_settings = binding.prepare_settings
+        else:
+            self._model_gateway = model_gateway
+            self._prepare_gateway_settings = lambda runtime: runtime
 
     def generate_next_volume(
         self,
@@ -1110,6 +1127,7 @@ class LLMOutlinePlanningGenerator:
             self._model_gateway,
             payload,
             operation="outline_planning_next_volume",
+            runtime_settings=self._prepare_gateway_settings(runtime),
         )
         data = parse_json_message_content(response)
         if data is None:
@@ -1224,6 +1242,7 @@ class LLMOutlinePlanningGenerator:
             self._model_gateway,
             payload,
             operation="outline_planning_volume_characters",
+            runtime_settings=self._prepare_gateway_settings(runtime),
         )
         data = parse_json_message_content(response)
         if data is None:
@@ -1497,6 +1516,7 @@ class LLMOutlinePlanningGenerator:
                 self._model_gateway,
                 payload,
                 operation=operation,
+                runtime_settings=self._prepare_gateway_settings(runtime),
             )
             data = parse_json_message_content(response)
             if data is None:
@@ -1603,6 +1623,7 @@ class LLMOutlinePlanningGenerator:
                 self._model_gateway,
                 payload,
                 operation="outline_planning_chapter_title_repair",
+                runtime_settings=self._prepare_gateway_settings(runtime),
             )
             data = parse_json_message_content(response)
             title_rows = data.get("titles") if isinstance(data, dict) else None
@@ -2125,6 +2146,7 @@ class LLMOutlinePlanningGenerator:
                             self._model_gateway,
                             request_payload,
                             operation=f"outline_planning_{phase}",
+                            runtime_settings=self._prepare_gateway_settings(runtime),
                         )
                         data = parse_json_message_content(response)
                         if data is not None and not attribute_allocation_enabled:
@@ -2175,7 +2197,12 @@ class LLMOutlinePlanningGenerator:
                                         },
                                     ],
                                 }
-                                response = _complete_payload(self._model_gateway, retry_payload, operation=f"outline_planning_{phase}_retry_failed_characters")
+                                response = _complete_payload(
+                                    self._model_gateway,
+                                    retry_payload,
+                                    operation=f"outline_planning_{phase}_retry_failed_characters",
+                                    runtime_settings=self._prepare_gateway_settings(runtime),
+                                )
                                 repaired = parse_json_message_content(response)
                                 if repaired is None:
                                     raise ValueError(invalid_json_error)
@@ -2195,7 +2222,12 @@ class LLMOutlinePlanningGenerator:
                                         },
                                     ],
                                 }
-                                response = _complete_payload(self._model_gateway, retry_payload, operation=f"outline_planning_{phase}_retry")
+                                response = _complete_payload(
+                                    self._model_gateway,
+                                    retry_payload,
+                                    operation=f"outline_planning_{phase}_retry",
+                                    runtime_settings=self._prepare_gateway_settings(runtime),
+                                )
                                 data = parse_json_message_content(response)
                                 if data is None:
                                     raise ValueError(invalid_json_error)
@@ -2673,6 +2705,7 @@ class LLMOutlinePlanningGenerator:
                         self._model_gateway,
                         payload,
                         operation="outline_planning",
+                        runtime_settings=self._prepare_gateway_settings(runtime),
                     )
                     parsed = parse_direct_outline(response)
                 except Exception as exc:
@@ -2692,7 +2725,12 @@ class LLMOutlinePlanningGenerator:
                                 {"role": "user", "content": json.dumps({"failed_characters": failed_rows, "locked_characters": locked_rows, "validation_error": validation_error, "output_schema": GeneratedCharacterCardRepair.model_json_schema()}, ensure_ascii=False)},
                             ],
                         }
-                        repair_response = _complete_payload(self._model_gateway, repair_payload, operation="outline_planning_retry_failed_characters")
+                        repair_response = _complete_payload(
+                            self._model_gateway,
+                            repair_payload,
+                            operation="outline_planning_retry_failed_characters",
+                            runtime_settings=self._prepare_gateway_settings(runtime),
+                        )
                         repaired = parse_json_message_content(repair_response)
                         if repaired is None:
                             raise ValueError("invalid_character_repair_json")
@@ -2724,7 +2762,12 @@ class LLMOutlinePlanningGenerator:
                                 {"role": "system", "content": ("The previous JSON failed schema or chapter-title validation. Correct only the reported problems, then return the complete JSON object again without markdown or commentary. Validation error: " f"{validation_error}")},
                             ],
                         }
-                        response = _complete_payload(self._model_gateway, retry_payload, operation="outline_planning_retry")
+                        response = _complete_payload(
+                            self._model_gateway,
+                            retry_payload,
+                            operation="outline_planning_retry",
+                            runtime_settings=self._prepare_gateway_settings(runtime),
+                        )
                         parsed = parse_direct_outline(response)
             if not chapter_contracts_enabled:
                 _drop_disabled_chapter_contracts(parsed)

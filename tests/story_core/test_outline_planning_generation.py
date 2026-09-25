@@ -536,6 +536,77 @@ def test_generate_next_volume_uses_complete_committed_context() -> None:
     assert "chapters" not in captured["output_schema"].get("properties", {})
 
 
+def test_next_volume_planning_preflights_with_one_fresh_runtime_snapshot_per_call(tmp_path):
+    from packages.story_core.model_gateway import (
+        ModelCapabilityResolver,
+        ModelCapabilityStore,
+        RuntimeModelGateway,
+    )
+
+    snapshots = [
+        StageRuntimeSettings(
+            provider_id="openai",
+            protocol="openai_compatible",
+            model=model,
+            base_url="https://api.example/v1",
+            api_key="test-secret",
+            temperature=0.2,
+        )
+        for model in ("volume-model-v1", "volume-model-v2")
+    ]
+    resolved_stages = []
+    provider_calls = []
+    preflight_reports = []
+
+    def resolve(stage):
+        resolved_stages.append(stage)
+        return snapshots[len(resolved_stages) - 1]
+
+    def transport(**call):
+        provider_calls.append(call)
+        return {
+            "choices": [{"message": {"content": json.dumps(_next_volume_arc())}}],
+            "model": f"resolved:{call['payload']['model']}",
+        }
+
+    gateway = RuntimeModelGateway(
+        transport=transport,
+        capability_resolver=ModelCapabilityResolver(
+            store=ModelCapabilityStore(tmp_path / "capabilities.json")
+        ),
+    )
+    complete_resolved = gateway.complete_resolved
+
+    def capture_preflight(settings, request):
+        response = complete_resolved(settings, request)
+        preflight_reports.append(response.preflight_report)
+        return response
+
+    gateway.complete_resolved = capture_preflight  # type: ignore[method-assign]
+    generator = LLMOutlinePlanningGenerator(
+        runtime_resolver=resolve,
+        model_gateway=gateway,
+    )
+    brief = _next_volume_brief()
+    previous = brief.existing_outline["arcs"][-1]
+
+    first = generator.generate_next_volume(brief, previous_volume=previous)
+    second = generator.generate_next_volume(brief, previous_volume=previous)
+
+    assert isinstance(first, ArcOutline) and isinstance(second, ArcOutline)
+    assert resolved_stages == ["planner", "planner"]
+    assert [call["payload"]["model"] for call in provider_calls] == [
+        "volume-model-v1", "volume-model-v2"
+    ]
+    assert [report["requested_model"] for report in preflight_reports] == [
+        "volume-model-v1", "volume-model-v2"
+    ]
+    assert [report["resolved_model"] for report in preflight_reports] == [
+        "resolved:volume-model-v1", "resolved:volume-model-v2"
+    ]
+    assert all(report["status"] == "READY" for report in preflight_reports)
+
+
 @pytest.mark.parametrize(
     ("mutation", "error"),
     [

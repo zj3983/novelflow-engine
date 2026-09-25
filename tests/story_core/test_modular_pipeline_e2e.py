@@ -51,6 +51,7 @@ from packages.story_core.context.writer_context import WriterContext
 from packages.story_core.generation_progress import generation_progress
 from packages.story_core.orchestrator import StoryOrchestrator
 from packages.story_core.models import CharacterState, StoryState
+from packages.story_core.model_gateway.preflight import ModelPreflightBlockedError
 from packages.story_core.persistence.workflow_artifact_store import WorkflowArtifactStore
 
 
@@ -699,6 +700,55 @@ def test_double_character_failure_records_empty_source_and_director_continues(tm
     assert record is not None
     assert record.result_source == "empty"
     assert "proposals=0" in record.output_summary
+
+
+def test_consistency_preflight_block_stops_before_fact_extraction_or_candidate_artifacts(
+    tmp_path: Path,
+) -> None:
+    _seed_legacy_project(tmp_path, with_outline=False)
+
+    class BlockedConsistencyRuntime:
+        def complete(self, request: Any) -> Any:
+            class Response:
+                ok = False
+                error = "model_preflight_blocked"
+                preflight_report = {
+                    "schema_version": "model-preflight/v1",
+                    "status": "BLOCKED",
+                    "reason": "required_capability_unsupported",
+                    "repair_actions": [
+                        "选择明确支持所需能力的模型，然后重新检查。"
+                    ],
+                }
+
+            return Response()
+
+    class NeverExtract:
+        calls = 0
+
+        def extract(self, context: Any) -> ContinuityDelta:
+            self.calls += 1
+            raise AssertionError("FactExtractor must not run after a blocked review")
+
+    extractor = NeverExtract()
+    workflow_store = WorkflowArtifactStore(tmp_path)
+    with pytest.raises(ModelPreflightBlockedError) as blocked:
+        run_modular_pipeline(
+            project_root=tmp_path,
+            chapter_number=1,
+            director_runtime=_StubDirectorRuntime(),
+            writer_runtime=_StubWriterRuntime(),
+            fact_extractor=extractor,
+            consistency_runtime=BlockedConsistencyRuntime(),
+            workflow_store=workflow_store,
+            job_id="preflight-blocked-consistency",
+        )
+
+    assert blocked.value.report["reason"] == "required_capability_unsupported"
+    assert extractor.calls == 0
+    assert workflow_store.read_stage("preflight-blocked-consistency", "writer") is None
+    assert workflow_store.read_stage("preflight-blocked-consistency", "fact-extractor") is None
+    assert not (tmp_path / ".story-system" / "candidates").exists()
 
 
 def test_orchestrator_wires_director_writer_and_fact_extractor(tmp_path: Path):

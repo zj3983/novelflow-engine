@@ -31,6 +31,7 @@ from .provider_adapters import (
     OpenAICompatibleAdapter,
 )
 from .runtime_gateway import RuntimeModelGateway
+from .preflight import ModelPreflightPlan, preflight_request
 
 __all__ = [
     "BUILTIN_PROVIDER_IDS",
@@ -47,6 +48,7 @@ __all__ = [
     "ModelCapabilityStore",
     "ModelIdentity",
     "ModelProfile",
+    "ModelPreflightPlan",
     "ModelRequest",
     "ModelResponse",
     "ProviderDefinition",
@@ -58,6 +60,7 @@ __all__ = [
     "normalize_base_url",
     "normalize_model_error",
     "preflight_context",
+    "preflight_request",
     "provider_definition",
     "provider_id_for_base_url",
     "resolve_model_profile",

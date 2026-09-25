@@ -19,6 +19,10 @@ class ModelRequest:
     json_mode: bool = False
     timeout_seconds: int | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    # Zero-based indexes into ``messages`` whose contents are explicitly
+    # optional context. They may be removed only by the shared preflight
+    # compaction path; the system prompt and legacy ``prompt`` are required.
+    optional_input_messages: tuple[int, ...] = ()
 
     def normalized_messages(self) -> tuple[dict[str, Any], ...]:
         """Return a chat-style representation while preserving legacy prompts."""
@@ -46,6 +50,7 @@ class ModelResponse:
     raw: Any = None
     temperature_omitted: bool = False
     resolved_model: str = ""
+    preflight_report: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
     def success(

@@ -248,6 +248,14 @@
 .diagnostics code { margin-top: 4px; color: var(--ws-ink-muted); font-size: 11px; }
 .diagnostics p { margin: 7px 0 0; font-size: 13px; line-height: 1.55; }
 
+.preflight_report { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--ws-line); border-radius: 8px; background: rgba(255,255,255,.72); color: var(--ws-ink); }
+.preflight_actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.preflight_report > strong { color: var(--ws-ink); }
+.preflight_report p { margin: 6px 0; color: var(--ws-ink-muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.preflight_report details { margin-top: 7px; font-size: 12px; }
+.preflight_report summary { cursor: pointer; font-weight: 700; }
+.preflight_report pre { max-height: 360px; overflow: auto; margin: 8px 0 0; padding: 9px; border-radius: 6px; background: rgba(20,28,42,.06); white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
 .provenance {
   display: grid;
   grid-template-columns: minmax(85px, auto) minmax(0, 1fr);

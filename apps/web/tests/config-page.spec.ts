@@ -82,11 +82,25 @@ test("/config uses provider accounts and exactly two stage bindings", async ({ p
   await expect(page.getByText(/状态提取跟随剧情规划/)).toBeVisible();
   await expect(page.getByText(/记忆模型/)).toHaveCount(0);
 
+  await page.getByRole("button", { name: "OpenAI 未配置", exact: true }).click();
+  const declaredCapabilities = JSON.stringify({
+    "gpt-5": {
+      capabilities: { json_mode: "supported" },
+      limits: { input_token_limit: 64000, context_window: 65536, max_output_tokens: 8192 },
+    },
+  }, null, 2);
+  await page.getByLabel("模型能力与限额声明").fill(declaredCapabilities);
+  await page.getByLabel("模型能力与限额声明").press("Tab");
+  await expect(page.getByLabel("模型能力与限额声明")).toHaveValue(declaredCapabilities);
   await page.getByLabel("正文写作模型").selectOption("deepseek-novel");
   await page.getByRole("button", { name: "统一保存" }).click();
   await expect.poll(() => saved).not.toBeNull();
   expect(saved.schema_version).toBe("runtime-config/v2");
   expect(saved.stages.writer).toEqual({ provider_id: "deepseek", model: "deepseek-novel" });
+  expect(saved.accounts.openai.model_capabilities["gpt-5"]).toEqual({
+    capabilities: { json_mode: "supported" },
+    limits: { input_token_limit: 64000, context_window: 65536, max_output_tokens: 8192 },
+  });
   expect(saved.providers).toBeUndefined();
   expect(saved.provider).toBeUndefined();
 });

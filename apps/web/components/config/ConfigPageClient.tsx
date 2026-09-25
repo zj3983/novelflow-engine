@@ -82,6 +82,7 @@ function addMissingProviderAccounts(settings: RuntimeSettings, providers: Runtim
         base_url: provider.default_base_url,
         custom_models: [],
         codex_command: provider.protocol === "codex_cli" ? "codex" : provider.protocol === "antigravity_cli" ? "agy" : "",
+        model_capabilities: {},
       };
     }
   }
@@ -119,7 +120,7 @@ export function ConfigPageClient() {
 
   async function testProvider(providerId: string, modelOverride?: string) {
     const provider = providers.find((item) => item.provider_id === providerId);
-    const account = settings.accounts[providerId] ?? (provider ? { api_key: "", base_url: provider.default_base_url, custom_models: [], codex_command: provider.protocol === "codex_cli" ? "codex" : provider.protocol === "antigravity_cli" ? "agy" : "" } : null);
+    const account = settings.accounts[providerId] ?? (provider ? { api_key: "", base_url: provider.default_base_url, custom_models: [], codex_command: provider.protocol === "codex_cli" ? "codex" : provider.protocol === "antigravity_cli" ? "agy" : "", model_capabilities: {} } : null);
     if (!provider || !account) return;
     const currentStage = (["planner", "writer"] as const).find((stage) => settings.stages[stage].provider_id === providerId) ?? "planner";
     const model = modelOverride || (settings.stages[currentStage].provider_id === providerId
