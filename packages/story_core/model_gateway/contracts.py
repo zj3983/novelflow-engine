@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Protocol, runtime_checkable
+from typing import Any, Literal, Mapping, Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -23,6 +23,16 @@ class ModelRequest:
     # optional context. They may be removed only by the shared preflight
     # compaction path; the system prompt and legacy ``prompt`` are required.
     optional_input_messages: tuple[int, ...] = ()
+    # ``best_effort`` preserves legacy callers that use max_tokens as a
+    # planning budget. Adapters enforce it when they can; protocols without a
+    # verifiable output cap may continue and must report estimate-only mode.
+    # ``required`` makes an executable provider-side cap part of the request
+    # contract, so preflight blocks protocols that cannot enforce one.
+    output_limit_requirement: Literal["best_effort", "required"] = "best_effort"
+
+    def __post_init__(self) -> None:
+        if self.output_limit_requirement not in ("best_effort", "required"):
+            raise ValueError("invalid_output_limit_requirement")
 
     def normalized_messages(self) -> tuple[dict[str, Any], ...]:
         """Return a chat-style representation while preserving legacy prompts."""

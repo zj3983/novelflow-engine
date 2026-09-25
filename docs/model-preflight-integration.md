@@ -38,8 +38,8 @@ Canon/context facts to force a request through.
 
 An initial budget classification can be `COMPACT`, `SPLIT`, or `BLOCKED` when
 the full optional context and its margin do not fit. If the request has valid
-optional indexes and no hard capability, input-shape, output-limit, or adapter
-enforcement blocker, preflight removes only those marked messages and
+optional indexes and no hard capability, input-shape, output-limit, or required
+adapter-enforcement blocker, preflight removes only those marked messages and
 re-estimates the resulting request. It records both pre- and post-compaction
 estimates. The compacted request is used only if this second check is `READY`;
 otherwise the original request remains unexecuted and the report preserves the
@@ -63,21 +63,29 @@ When a configured output reservation is absent, the request receives a bounded
 4,096-token output reservation. Unknown input and context limits use separate
 32,768-token compatibility guards; an unknown maximum output uses a 16,384-token
 guard. For protocols with a supported output-enforcement method, the actual
-request is bounded to the output reservation. These guards
-allow old configurations to continue with a visible compatibility policy; they
-are not claims about the provider's real limits. Configure exact limits under
-the provider account's per-model capability declaration when available.
+request carries the output reservation as its native cap. These guards allow
+old configurations to continue with a visible compatibility policy; they are
+not claims about the provider's real limits. Configure exact limits under the
+provider account's per-model capability declaration when available.
 
-The report also states how the adapter enforces the reserved output limit.
-HTTP adapters send their native output-limit field. Neither current CLI adapter
-exposes a verifiable per-request output cap; requests routed through Codex CLI
-or Antigravity CLI are blocked with
-`max_output_limit_not_enforceable_by_adapter`, and both adapter/helper
-boundaries reject a capped request before launching the CLI. Unknown
-enforcement is also blocked. Existing configurations with unknown capabilities
-or token limits still use the bounded compatibility guards; a CLI configuration
-needs a protocol with an enforceable output limit before model-backed work can
-continue.
+`ModelRequest.output_limit_requirement` separates an output estimate from an
+explicit hard requirement. It defaults to `best_effort`, preserving the
+existing planner/writer CLI bindings and older callers. HTTP adapters continue
+to send the native output-limit field in both modes. The current Codex CLI and
+Antigravity CLI adapters expose no verifiable per-request output cap: for
+`best_effort`, they may execute without that payload field while the report
+retains `output_enforcement.state: unsupported` and marks
+`output_budget.mode: estimate_only`, including the estimate and a warning that
+the actual response may exceed it. This is not a strict output-budget pass;
+the generated response is not truncated afterward to imitate a hard cap.
+Setting `output_limit_requirement: required` makes a provider-enforced cap part
+of the request contract; preflight then blocks both CLI protocols before
+adapter creation, and the adapters independently reject a direct required-mode
+call. Unknown enforcement follows the same split: best-effort continues with an
+explicit `estimate_only_unverified` report, while required mode blocks.
+Existing configurations with unknown capabilities or token limits still use
+the bounded compatibility guards. The Workbench displays the estimate-only
+warning in the preflight panel and in stored diagnostics.
 
 Unknown optional capabilities keep the existing request behavior and are
 reported as unknown; a known unsupported optional parameter may be adjusted

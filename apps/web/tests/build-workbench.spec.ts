@@ -195,11 +195,16 @@ test("模型预检展示服务端结果，且预览不启动任务执行", async
       expect(request.postDataJSON()).toEqual({ expected_revision: 1, operation: "rerun" });
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
         task_id: "world_model", operation: "rerun", preflight_report: {
-          status: "READY", reason: "within_context_limit", provider: "provider-x",
-          protocol: "openai_compatible", requested_model: "model-y", resolved_model: null,
+          status: preflightCalls === 1 ? "READY" : "BLOCKED",
+          reason: preflightCalls === 1 ? "within_context_limit" : "max_output_limit_not_enforceable_by_adapter",
+          provider: "provider-x",
+          protocol: "codex_cli", requested_model: "model-y", resolved_model: null,
           estimates: { required_input_tokens: 241, optional_input_tokens: 0, reserved_output_tokens: 1024, safety_margin_tokens: 128 },
+          output_budget: preflightCalls === 1
+            ? { policy: "best_effort", mode: "estimate_only", enforced: false, requested_tokens: 1024, estimated_tokens: 1024, uncertainty: "实际响应可能超过预算估算值。" }
+            : { policy: "required", mode: "blocked_unenforceable", enforced: false, requested_tokens: 1024, estimated_tokens: 1024, uncertainty: "此请求要求 provider 强制执行输出上限。" },
           estimate_method: "utf8_bytes_div3_v1", capabilities: { json_mode: { state: "unknown", source: "unknown" } },
-          output_enforcement: { state: "supported", source: "repository_adapter_contract", method: "max_tokens_request_field" },
+          output_enforcement: { state: "unsupported", source: "repository_adapter_contract", method: "cli_has_no_per_request_output_limit" },
           limits: {}, effective_preflight_guards: {}, unknown_capability_policy: "continue_bounded_without_claiming_support",
           unknown_limit_policy: { action: "bounded_legacy_compatibility_guard" }, adjustments: [], repair_actions: [],
         },
@@ -215,9 +220,14 @@ test("模型预检展示服务端结果，且预览不启动任务执行", async
   await page.getByRole("button", { name: "预检完整重跑" }).click();
   await expect(page.getByText("模型预检：READY · within_context_limit", { exact: true })).toBeVisible();
   await expect(page.getByText(/utf8_bytes_div3_v1/)).toBeVisible();
+  await expect(page.getByText(/当前协议无法强制执行输出预算/)).toBeVisible();
   await page.getByText("能力来源、限额和兼容策略").click();
+  await expect(page.getByText(/output_budget/)).toBeVisible();
   await expect(page.getByText(/output_enforcement/)).toBeVisible();
-  expect(preflightCalls).toBe(1);
+  await page.getByRole("button", { name: "预检完整重跑" }).click();
+  await expect(page.getByText(/模型预检：BLOCKED/)).toBeVisible();
+  await expect(page.getByText(/此请求要求执行输出硬上限.*模型调用已在执行前阻断/)).toBeVisible();
+  expect(preflightCalls).toBe(2);
   expect(executionCalls).toBe(0);
 });
 

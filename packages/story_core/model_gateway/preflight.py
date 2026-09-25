@@ -332,6 +332,7 @@ def preflight_request(
     elif (
         not input_errors
         and not unsupported
+        and request.output_limit_requirement == "required"
         and output_enforcement["state"] != "supported"
     ):
         status = "BLOCKED"
@@ -348,7 +349,10 @@ def preflight_request(
         input_errors
         or unsupported
         or output_limit_exceeded
-        or output_enforcement["state"] != "supported"
+        or (
+            request.output_limit_requirement == "required"
+            and output_enforcement["state"] != "supported"
+        )
     )
     if (
         not hard_blocker
@@ -424,6 +428,19 @@ def preflight_request(
     unknown_limits = [
         name for name, record in limit_report.items() if record["state"] != "supported"
     ]
+    output_budget_enforced = output_enforcement["state"] == "supported"
+    if output_budget_enforced:
+        output_budget_mode = "enforced"
+        output_budget_uncertainty = ""
+    elif request.output_limit_requirement == "required":
+        output_budget_mode = "blocked_unenforceable"
+        output_budget_uncertainty = "此请求要求 provider 强制执行输出上限。"
+    elif output_enforcement["state"] == "unsupported":
+        output_budget_mode = "estimate_only"
+        output_budget_uncertainty = "实际响应可能超过预算估算值。"
+    else:
+        output_budget_mode = "estimate_only_unverified"
+        output_budget_uncertainty = "输出限额执行能力尚未验证，实际响应可能超过预算估算值。"
     report: dict[str, Any] = {
         "schema_version": "model-preflight/v1",
         "status": status,
@@ -464,6 +481,14 @@ def preflight_request(
             "max_output_tokens": UNKNOWN_OUTPUT_GUARD_TOKENS,
         },
         "output_enforcement": output_enforcement,
+        "output_budget": {
+            "policy": request.output_limit_requirement,
+            "mode": output_budget_mode,
+            "enforced": output_budget_enforced,
+            "requested_tokens": request.max_tokens,
+            "estimated_tokens": estimates["reserved_output_tokens"],
+            "uncertainty": output_budget_uncertainty,
+        },
         "compacted_optional_message_indexes": list(compacted_indexes),
         "adjustments": adjustments,
         "repair_actions": repair_actions,

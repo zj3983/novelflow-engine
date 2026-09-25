@@ -606,6 +606,7 @@ def test_gateway_preflights_the_actual_request_once_with_one_runtime_snapshot(tm
     assert response.preflight_report["resolved_model_changed"] is True
     assert response.preflight_report["estimate_method"] == "utf8_bytes_div3_v1"
     assert response.preflight_report["estimate_is_exact_tokenization"] is False
+    assert sent[0]["payload"]["max_tokens"] == 512
     assert response.preflight_report["limits"]["context_window"]["source"] == "user_declared"
 
 
@@ -886,12 +887,132 @@ def test_cli_output_limit_enforcement_is_reported_by_shared_preflight(tmp_path):
         ModelRequest(prompt="bounded request", provider="", model="", operation="cli-test"),
     )
 
-    assert codex_plan.report["status"] == "BLOCKED"
-    assert codex_plan.report["reason"] == "max_output_limit_not_enforceable_by_adapter"
+    assert codex_plan.report["status"] == "READY"
+    assert codex_plan.report["reason"] == "within_context_limit"
     assert codex_plan.report["output_enforcement"]["state"] == "unsupported"
-    assert antigravity_plan.report["status"] == "BLOCKED"
-    assert antigravity_plan.report["reason"] == "max_output_limit_not_enforceable_by_adapter"
+    assert codex_plan.report["output_budget"]["mode"] == "estimate_only"
+    assert codex_plan.report["output_budget"]["enforced"] is False
+    assert codex_plan.report["output_budget"]["estimated_tokens"] > 0
+    assert antigravity_plan.report["status"] == "READY"
+    assert antigravity_plan.report["reason"] == "within_context_limit"
     assert antigravity_plan.report["output_enforcement"]["state"] == "unsupported"
+    assert antigravity_plan.report["output_budget"]["mode"] == "estimate_only"
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "protocol", "model", "command", "provider_module"),
+    [
+        ("codexcli", "codex_cli", "gpt-5-codex", "codex-test", "codex_cli_provider"),
+        ("antigravity", "antigravity_cli", "gemini-3.1-pro-high", "agy-test", "antigravity_cli_provider"),
+    ],
+)
+def test_cli_gateway_executes_estimate_only_requests_without_sending_output_cap(
+    tmp_path, monkeypatch, provider_id, protocol, model, command, provider_module
+):
+    from packages.story_core import codex_cli_provider, antigravity_cli_provider
+    from packages.story_core.runtime_config import RuntimeConfiguration
+
+    settings = StageRuntimeSettings(
+        provider_id=provider_id,
+        protocol=protocol,
+        model=model,
+        codex_command=command,
+    )
+    calls = []
+
+    def fake_cli(payload, *, command, config):
+        calls.append({"payload": payload, "command": command, "config": config})
+        return {"choices": [{"message": {"content": "cli-result"}}], "model": model}
+
+    module = codex_cli_provider if provider_module == "codex_cli_provider" else antigravity_cli_provider
+    function_name = (
+        "post_json_via_codex_cli"
+        if provider_module == "codex_cli_provider"
+        else "post_json_via_antigravity_cli"
+    )
+    monkeypatch.setattr(module, function_name, fake_cli)
+    default_config = RuntimeConfiguration()
+    assert default_config.stages.planner.provider_id == "codexcli"
+    assert default_config.stages.writer.provider_id == "codexcli"
+
+    gateway = RuntimeModelGateway(
+        runtime_resolver=lambda _stage: settings,
+        capability_resolver=ModelCapabilityResolver(
+            store=ModelCapabilityStore(tmp_path / f"{provider_id}-capabilities.json")
+        ),
+    )
+    response = gateway.complete_stage(
+        "writer",
+        ModelRequest(
+            prompt="short request",
+            provider="",
+            model="",
+            operation="writer",
+            max_tokens=None,
+        ),
+    )
+
+    assert response.ok
+    assert calls[0]["command"] == command
+    assert "max_tokens" not in calls[0]["payload"]
+    assert response.preflight_report["status"] == "READY"
+    assert response.preflight_report["output_enforcement"]["state"] == "unsupported"
+    assert response.preflight_report["output_budget"]["mode"] == "estimate_only"
+    assert response.preflight_report["output_budget"]["enforced"] is False
+    assert response.preflight_report["output_budget"]["estimated_tokens"] > 0
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "protocol", "model"),
+    [
+        ("codexcli", "codex_cli", "gpt-5-codex"),
+        ("antigravity", "antigravity_cli", "gemini-3.1-pro-high"),
+    ],
+)
+def test_cli_gateway_blocks_explicit_hard_output_limit_before_adapter(
+    tmp_path, monkeypatch, provider_id, protocol, model
+):
+    settings = StageRuntimeSettings(
+        provider_id=provider_id,
+        protocol=protocol,
+        model=model,
+        codex_command="injected-cli",
+    )
+    calls = []
+    monkeypatch.setattr(
+        "packages.story_core.codex_cli_provider.post_json_via_codex_cli",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        "packages.story_core.antigravity_cli_provider.post_json_via_antigravity_cli",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    gateway = RuntimeModelGateway(
+        runtime_resolver=lambda _stage: settings,
+        capability_resolver=ModelCapabilityResolver(
+            store=ModelCapabilityStore(tmp_path / f"{provider_id}-capabilities.json")
+        ),
+    )
+
+    response = gateway.complete_stage(
+        "writer",
+        ModelRequest(
+            prompt="short request",
+            provider="",
+            model="",
+            operation="writer",
+            max_tokens=128,
+            output_limit_requirement="required",
+        ),
+    )
+
+    assert not response.ok
+    assert response.preflight_report["status"] == "BLOCKED"
+    assert response.preflight_report["reason"] == "max_output_limit_not_enforceable_by_adapter"
+    assert response.preflight_report["output_enforcement"]["state"] == "unsupported"
+    assert response.preflight_report["output_budget"]["policy"] == "required"
+    assert response.preflight_report["output_budget"]["mode"] == "blocked_unenforceable"
+    assert calls == []
 
 
 @pytest.mark.parametrize(

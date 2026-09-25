@@ -1755,6 +1755,67 @@ def test_workbench_model_operation_uses_the_preflighted_runtime_gateway(
     assert service.inspect_artifact("world_model").revision == 2
 
 
+def test_default_planner_cli_build_workbench_rerun_keeps_estimated_output_budget(
+    tmp_path, monkeypatch
+):
+    from packages.story_core import codex_cli_provider, runtime_config
+    from packages.story_core.model_gateway import (
+        ModelCapabilityResolver,
+        ModelCapabilityStore,
+        RuntimeModelGateway,
+    )
+    from packages.story_core.runtime_config import RuntimeConfiguration
+
+    store, _graph, service, _marker_path, _marker_bytes = _setup_project(tmp_path, monkeypatch)
+    configuration = RuntimeConfiguration()
+    monkeypatch.setattr(runtime_config, "_runtime_configuration", configuration)
+    monkeypatch.setattr(runtime_config, "_runtime_configuration_error", None)
+    assert configuration.stages.planner.provider_id == "codexcli"
+    assert configuration.stages.writer.provider_id == "codexcli"
+    planner_settings = runtime_config.resolve_stage_runtime("planner")
+    assert planner_settings.protocol == "codex_cli"
+
+    cli_calls = []
+
+    def fake_cli(payload, *, command, config):
+        cli_calls.append({"payload": payload, "command": command})
+        return {
+            "choices": [{"message": {"content": '{"label":"CLI compatible"}'}}],
+            "model": planner_settings.model,
+        }
+
+    monkeypatch.setattr(codex_cli_provider, "post_json_via_codex_cli", fake_cli)
+    gateway = RuntimeModelGateway(
+        capability_resolver=ModelCapabilityResolver(
+            store=ModelCapabilityStore(tmp_path / "default-planner-capabilities.json")
+        )
+    )
+    monkeypatch.setattr(file_projects, "resolve_stage_runtime", runtime_config.resolve_stage_runtime)
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", gateway)
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/file-projects/p-synthetic-build-edit/build-graph/tasks/world_model/rerun",
+        json={"expected_revision": 1},
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(cli_calls) == 1
+    assert "max_tokens" not in cli_calls[0]["payload"]
+    report = response.json()["preflight_report"]
+    assert report["status"] == "READY"
+    assert report["provider"] == "codexcli"
+    assert report["protocol"] == "codex_cli"
+    assert report["output_enforcement"]["state"] == "unsupported"
+    assert report["output_budget"]["mode"] == "estimate_only"
+    assert report["output_budget"]["enforced"] is False
+    assert report["output_budget"]["requested_tokens"] is not None
+    assert report["output_budget"]["estimated_tokens"] == report["output_budget"]["requested_tokens"]
+    assert "可能超过" in report["output_budget"]["uncertainty"]
+    assert service.inspect_graph().tasks["world_model"].active_run_id is None
+    assert service.inspect_artifact("world_model").revision == 2
+    assert service.inspect_artifact("world_model").payload == {"label": "CLI compatible"}
+
+
 def test_workbench_preflight_failure_cleans_run_and_config_retry_succeeds(tmp_path, monkeypatch):
     from packages.story_core.model_gateway import (
         ModelCapabilityResolver,

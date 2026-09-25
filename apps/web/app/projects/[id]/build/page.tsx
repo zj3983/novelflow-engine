@@ -65,6 +65,8 @@ function ValueList({ values }: { values: string[] }) {
 function PreflightPanel({ report }: { report?: Record<string, unknown> | null }) {
   if (!report) return null;
   const estimate = (report.estimates ?? {}) as Record<string, unknown>;
+  const outputBudget = (report.output_budget ?? {}) as Record<string, unknown>;
+  const outputBudgetMode = String(outputBudget.mode ?? "");
   return (
     <section className={styles.preflight_report} aria-label="模型预检结果">
       <strong>模型预检：{String(report.status ?? "unknown")} · {String(report.reason ?? "")}</strong>
@@ -77,9 +79,15 @@ function PreflightPanel({ report }: { report?: Record<string, unknown> | null })
         输出预留 {String(estimate.reserved_output_tokens ?? "?")}，安全余量 {String(estimate.safety_margin_tokens ?? "?")}。
         方法 {String(report.estimate_method ?? "unknown")}（估算值，不是精确 tokenizer 结果）。
       </p>
+      {(outputBudgetMode === "estimate_only" || outputBudgetMode === "estimate_only_unverified") && (
+        <p role="note">{outputBudgetMode === "estimate_only" ? "当前协议无法强制执行输出预算" : "当前协议的输出预算执行能力尚未验证"}；{String(outputBudget.estimated_tokens ?? estimate.reserved_output_tokens ?? "?")} tokens 仅供估算；{String(outputBudget.uncertainty ?? "实际输出可能超过该预算。")}</p>
+      )}
+      {outputBudgetMode === "blocked_unenforceable" && (
+        <p role="alert">此请求要求执行输出硬上限，当前协议无法保证；模型调用已在执行前阻断。</p>
+      )}
       <details>
         <summary>能力来源、限额和兼容策略</summary>
-        <pre>{JSON.stringify({ capabilities: report.capabilities, limits: report.limits, guards: report.effective_preflight_guards, output_enforcement: report.output_enforcement, pre_compaction_estimates: report.pre_compaction_estimates, unknown_capability_policy: report.unknown_capability_policy, unknown_limit_policy: report.unknown_limit_policy, adjustments: report.adjustments, repair_actions: report.repair_actions }, null, 2)}</pre>
+        <pre>{JSON.stringify({ capabilities: report.capabilities, limits: report.limits, guards: report.effective_preflight_guards, output_budget: report.output_budget, output_enforcement: report.output_enforcement, pre_compaction_estimates: report.pre_compaction_estimates, unknown_capability_policy: report.unknown_capability_policy, unknown_limit_policy: report.unknown_limit_policy, adjustments: report.adjustments, repair_actions: report.repair_actions }, null, 2)}</pre>
       </details>
     </section>
   );

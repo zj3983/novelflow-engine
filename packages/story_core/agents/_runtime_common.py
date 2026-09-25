@@ -168,6 +168,7 @@ def translate_request(
             ),
             metadata=dict(request.metadata or {}),
             max_tokens=request.max_tokens,
+            output_limit_requirement=request.output_limit_requirement,
             json_mode=request.json_mode,
             timeout_seconds=request.timeout_seconds,
             optional_input_messages=request.optional_input_messages,
@@ -181,6 +182,11 @@ def translate_request(
         operation=operation,
         temperature=temperature,
         metadata=metadata,
+        output_limit_requirement=(
+            "required"
+            if metadata.get("output_limit_requirement") == "required"
+            else "best_effort"
+        ),
         optional_input_messages=tuple(
             metadata.get("preflight_optional_message_indexes", ())
             if isinstance(metadata.get("preflight_optional_message_indexes", ()), (list, tuple))

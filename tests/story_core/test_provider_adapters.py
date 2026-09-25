@@ -389,7 +389,13 @@ def test_codex_cli_adapter_fails_closed_when_output_limit_is_requested(monkeypat
         unexpected_call,
     )
 
-    response = CodexCLIAdapter().complete(request(provider="codexcli", max_tokens=128))
+    response = CodexCLIAdapter().complete(
+        request(
+            provider="codexcli",
+            max_tokens=128,
+            output_limit_requirement="required",
+        )
+    )
 
     assert not response.ok
     assert response.error == "max_output_limit_not_enforceable"
@@ -452,12 +458,41 @@ def test_antigravity_cli_adapter_fails_closed_when_output_limit_is_requested(mon
     )
 
     response = AntigravityCLIAdapter().complete(
-        request(provider="antigravity", max_tokens=128)
+        request(
+            provider="antigravity",
+            max_tokens=128,
+            output_limit_requirement="required",
+        )
     )
 
     assert not response.ok
     assert response.error == "max_output_limit_not_enforceable"
     assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("adapter", "provider", "monkeypatch_path"),
+    [
+        (CodexCLIAdapter(), "codexcli", "packages.story_core.codex_cli_provider.post_json_via_codex_cli"),
+        (AntigravityCLIAdapter(), "antigravity", "packages.story_core.antigravity_cli_provider.post_json_via_antigravity_cli"),
+    ],
+)
+def test_cli_adapters_continue_best_effort_output_estimates_without_payload_cap(
+    monkeypatch, adapter, provider, monkeypatch_path
+):
+    captured = {}
+
+    def fake_cli(payload, *, command, config):
+        captured.update(payload=payload, command=command)
+        return {"choices": [{"message": {"content": "estimate-only result"}}]}
+
+    monkeypatch.setattr(monkeypatch_path, fake_cli)
+    response = adapter.complete(
+        request(provider=provider, max_tokens=128, output_limit_requirement="best_effort")
+    )
+
+    assert response.ok
+    assert captured["payload"].get("max_tokens") is None
 
 
 def test_antigravity_cli_command_rejects_output_limit_before_running(monkeypatch):
