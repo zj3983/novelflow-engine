@@ -449,8 +449,11 @@ def _project_world_revision(store: FileProjectStore) -> str:
     gets a different hash and the job is marked conflicted.
     """
 
-    from packages.story_core.opening_build.runtime import enabled, source_revision
+    from packages.story_core.opening_build.runtime import enabled, settings, source_revision
     if enabled(store):
+        if settings(store).get("execution"):
+            from packages.story_core.opening_build.execution import source_fingerprint
+            return source_fingerprint(store)
         return source_revision(store)
     if hasattr(store, "world_revision"):
         return str(store.world_revision())
@@ -2694,11 +2697,31 @@ def init_file_project_routes() -> APIRouter:
             return "outdated"
         return "in_use" if execution_started else "current"
 
+    def _assert_workbench_planning_task_writable(store, task_id: str) -> None:
+        # Call under project_update_lock, before a run or artifact can be written.
+        from packages.story_core.opening_build.runtime import enabled, settings, assert_planning_sources_current
+
+        if not enabled(store):
+            return
+        config = settings(store)
+        if config.get("execution"):
+            pending = config.get("pending_extension") or {}
+            future_tasks = {
+                f"chapter_outline_{number}"
+                for number in range(pending.get("start_chapter", 1), pending.get("end_chapter", 0) + 1)
+            }
+            if task_id not in future_tasks:
+                raise HTTPException(status_code=403, detail="opening_consumed_planning_locked")
+        try:
+            assert_planning_sources_current(store)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     def _invalidate_workbench_readiness(store, project: dict[str, Any]) -> None:
-        from packages.story_core.opening_build.runtime import enabled, assert_sources_current
+        from packages.story_core.opening_build.runtime import enabled, assert_planning_sources_current
         if enabled(store):
             try:
-                assert_sources_current(store)
+                assert_planning_sources_current(store)
             except ValueError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
         if project.get("pipeline_stage") == "environment_ready":
@@ -2825,16 +2848,33 @@ def init_file_project_routes() -> APIRouter:
                 }
             )
 
+        opening_config = settings(store) if enabled(store) else {}
+        confirmed_through = int(store.state().get("current_chapter") or 0) if opening_config.get("execution") else 0
+        published_outline = store.snapshot_store.read_json(store.webnovel_dir / "outline.json", {}) if opening_config else {}
+        materialization_status = _workbench_materialization_status(build_store, state, store)
+        next_volume_available = bool(
+            opening_config.get("execution") and not opening_config.get("pending_extension")
+            and materialization_status == "in_use"
+            and confirmed_through == opening_config.get("chapter_count")
+            and any(arc.get("start_chapter") == confirmed_through + 1 for arc in published_outline.get("arcs", []))
+        )
         return {
             "schema_version": "build-workbench/v1",
             "initialized": True,
             "opening_graph": enabled(store),
             "opening_chapter_count": settings(store).get("chapter_count", 3) if enabled(store) else None,
             "opening_execution_started": bool(settings(store).get("execution")) if enabled(store) else False,
+            "opening_planning_pending": bool(settings(store).get("pending_extension")) if enabled(store) else False,
+            "opening_plan_versions": [
+                {key: version[key] for key in ("version", "start_chapter", "end_chapter", "graph_revision")}
+                for version in opening_config.get("plan_versions", [])
+            ],
+            "opening_confirmed_through": confirmed_through,
+            "opening_next_volume_available": next_volume_available,
             "graph_id": state.graph_id,
             "graph_revision": state.graph_revision,
             "pipeline_stage": project.get("pipeline_stage"),
-            "materialization_status": _workbench_materialization_status(build_store, state, store),
+            "materialization_status": materialization_status,
             "tasks": tasks,
         }
 
@@ -2870,6 +2910,19 @@ def init_file_project_routes() -> APIRouter:
                 raise HTTPException(status_code=409, detail="build_run_in_progress")
             try:
                 extend_first_volume(_store_for(project_id), request.expected_graph_revision)
+            except (ValueError, BuildGraphError) as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return get_file_project_build_graph(project_id)
+
+    @router.post("/file-projects/{project_id}/build-graph/opening/next-volume")
+    def extend_file_project_next_volume(project_id: str, request: BuildWorkbenchOpeningRequest):
+        from packages.story_core.opening_build.runtime import extend_next_volume
+
+        with _world_build_jobs_lock:
+            if _has_active_world_build_job(_strip_file_prefix(project_id)) or _has_active_build_orchestration_job(_strip_file_prefix(project_id)):
+                raise HTTPException(status_code=409, detail="build_run_in_progress")
+            try:
+                extend_next_volume(_store_for(project_id), request.expected_graph_revision)
             except (ValueError, BuildGraphError) as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
         return get_file_project_build_graph(project_id)
@@ -2944,6 +2997,7 @@ def init_file_project_routes() -> APIRouter:
                         raise HTTPException(status_code=404, detail="build_task_not_found")
                     if graph.spec(task_id).kind != "model":
                         raise HTTPException(status_code=403, detail="build_task_not_editable")
+                    _assert_workbench_planning_task_writable(store, task_id)
                     task_state = state.tasks[task_id]
                     current_revision = task_state.current_artifact_revision
                     if current_revision != request.expected_revision:
@@ -3029,13 +3083,9 @@ def init_file_project_routes() -> APIRouter:
                     store, project, graph, build_store, state, service = _build_workbench_context(project_id)
                     if expected_graph_revision is not None and state.graph_revision != expected_graph_revision:
                         raise HTTPException(status_code=409, detail="build_graph_changed")
-                    from packages.story_core.opening_build.runtime import enabled
+                    from packages.story_core.opening_build.runtime import enabled, settings
+                    _assert_workbench_planning_task_writable(store, task_id)
                     if enabled(store):
-                        from packages.story_core.opening_build.runtime import assert_sources_current
-                        try:
-                            assert_sources_current(store)
-                        except ValueError as exc:
-                            raise HTTPException(status_code=409, detail=str(exc)) from exc
                         if expected_project_revision is None:
                             expected_project_revision = _project_world_revision(store)
                     if expected_project_revision is not None and _project_world_revision(store) != expected_project_revision:
@@ -3080,6 +3130,26 @@ def init_file_project_routes() -> APIRouter:
                     # Full rerun consumes declared reads and the complete output
                     # contract, never the legacy projection of its own task.
                     rerun_contract.pop("existing_candidate", None)
+                    if enabled(store) and settings(store).get("pending_extension"):
+                        from packages.story_core.world_build.tasks import bounded_json_projection
+                        confirmed = store.state()
+                        def recent(key: str, count: int):
+                            value = confirmed.get(key) or []
+                            return value[-count:] if isinstance(value, list) else value
+                        confirmed_context = {
+                            "current_chapter": confirmed.get("current_chapter", 0),
+                            "current_focus": confirmed.get("current_focus", ""),
+                            "chapter_summaries": recent("chapter_summaries", 3),
+                            "continuity_facts": recent("continuity_facts", 32),
+                            "timeline": recent("timeline", 12),
+                            "foreshadowing": recent("foreshadowing", 12),
+                            "characters": confirmed.get("characters", []),
+                            "world_facts": confirmed.get("world_facts", []),
+                            "world_snapshot": confirmed.get("world_snapshot", {}),
+                        }
+                        rerun_contract["confirmed_through"] = confirmed.get("current_chapter", 0)
+                        rerun_contract["confirmed_state"] = bounded_json_projection(confirmed_context, chars=8000, items=48, depth=6)
+                        rerun_contract["confirmed_canon"] = bounded_json_projection(store._candidate_canon_view(), chars=4000, items=32, depth=5)
                     prompt = build_task_prompt(graph, task_id, rerun_contract) + (
                         "\n这是一次完整任务重跑。请按完整输出契约重新生成本任务的全部输出字段；不要只返回局部 patch。"
                         if require_existing else
@@ -3393,7 +3463,12 @@ def init_file_project_routes() -> APIRouter:
                     if _project_world_revision(store) != starting_revision:
                         raise HTTPException(status_code=409, detail="project_world_changed")
                     project_model = NovelProject.model_validate(project)
-                    conflicts = materialized_domain_conflicts(
+                    from packages.story_core.opening_build.runtime import enabled, settings
+                    # Confirmed prose legitimately advances current_arc. During
+                    # a versioned future extension, the captured confirmed-state
+                    # fingerprint is the source guard; the old world marker is
+                    # retained as historical evidence, not a live author-edit gate.
+                    conflicts = () if enabled(store) and settings(store).get("pending_extension") else materialized_domain_conflicts(
                         project_model, graph, store.build_graph_materialization(),
                     )
                     if conflicts:
@@ -3409,9 +3484,12 @@ def init_file_project_routes() -> APIRouter:
                         if graph_clean:
                             status = _workbench_materialization_status(build_store, state, store)
                             if status != "current" or project.get("pipeline_stage") != "environment_ready":
-                                from packages.story_core.opening_build.runtime import enabled, publish
+                                from packages.story_core.opening_build.runtime import enabled, settings, publish, publish_next_volume
                                 if enabled(store):
-                                    publish(store, graph, service, starting_revision)
+                                    if settings(store).get("pending_extension"):
+                                        publish_next_volume(store, graph, service, starting_revision)
+                                    else:
+                                        publish(store, graph, service, starting_revision)
                                 else:
                                     candidate = materialize_project(project_model, graph, service)
                                     store.commit_build_graph_materialization(
@@ -3504,9 +3582,9 @@ def init_file_project_routes() -> APIRouter:
             with project_update_lock(store.root):
                 _store, project, graph, _build_store, state, service = _build_workbench_context(project_id)
                 previous = _load_build_orchestration_job(store)
-                from packages.story_core.opening_build.runtime import assert_sources_current
+                from packages.story_core.opening_build.runtime import assert_planning_sources_current
                 try:
-                    assert_sources_current(store)
+                    assert_planning_sources_current(store)
                 except ValueError as exc:
                     raise HTTPException(status_code=409, detail=str(exc)) from exc
                 if previous is not None and previous.get("status") == "interrupted":
@@ -3526,7 +3604,8 @@ def init_file_project_routes() -> APIRouter:
                         _persist_build_orchestration_job({**previous, "_project_root": str(store.root)})
                 if any(task.active_run_id for task in state.tasks.values()):
                     raise HTTPException(status_code=409, detail="build_run_in_progress")
-                conflicts = materialized_domain_conflicts(
+                from packages.story_core.opening_build.runtime import enabled, settings
+                conflicts = () if enabled(store) and settings(store).get("pending_extension") else materialized_domain_conflicts(
                     NovelProject.model_validate(project), graph, store.build_graph_materialization(),
                 )
                 if conflicts:

@@ -9,14 +9,14 @@ from packages.story_core.persistence.project_locking import project_update_lock
 from . import runtime
 
 
-def source_fingerprint(store):
+def source_fingerprint(store, *, project=None, outline=None, handoff=None):
     values = {
-        "source_revision": runtime.source_revision(store),
+        "source_revision": runtime.source_revision(store, project=project, outline=outline),
         "state": store.snapshot_store.read_json(store.webnovel_dir / "state.json", {}),
         "rolling": store.snapshot_store.read_json(store.story_system_dir / "outline-generation" / "rolling_outline.json", None),
         "canonical_outline": store.snapshot_store.read_json(store.story_system_dir / "outline.json", None),
         "canonical_volume": store.snapshot_store.read_json(store.story_system_dir / "volume.json", None),
-        "handoff": store.snapshot_store.read_json(store.webnovel_dir / "opening_execution_contracts.json", None),
+        "handoff": handoff if handoff is not None else store.snapshot_store.read_json(store.webnovel_dir / "opening_execution_contracts.json", None),
     }
     for directory in (store.story_system_dir / "canon", store.chapters_dir):
         if directory.exists():
@@ -87,7 +87,7 @@ def capture(store):
     """Short admission lock. Model work must happen after this returns."""
     with project_update_lock(store.root):
         config = runtime.settings(store)
-        if not config or config.get("sync_pending"):
+        if not config or config.get("sync_pending") or config.get("pending_extension"):
             raise ValueError("opening_prose_not_ready")
         state_data = store.snapshot_store.read_json(store.webnovel_dir / "state.json", {})
         target = int(state_data.get("current_chapter") or 0) + 1
@@ -107,6 +107,10 @@ def capture(store):
             raise ValueError("opening_prose_handoff_conflict")
         if not any(item.get("chapter_number") == target for item in handoff.payload["outline_execution_contract"]):
             raise ValueError("opening_prose_chapter_not_planned")
+        versions = config.get("plan_versions") or []
+        version = versions[-1] if versions else {"version": 1, "start_chapter": 1, "end_chapter": config.get("chapter_count", 3)}
+        if not version["start_chapter"] <= target <= version["end_chapter"]:
+            raise ValueError("opening_prose_chapter_not_planned")
         planning_projection(store, target)
         # Keep the established complete-volume requirement, including its
         # canonical chapter/rolling-outline checks, before any model call.
@@ -125,6 +129,7 @@ def capture(store):
             "chapter_number": target, "graph_revision": state.graph_revision,
             "definition_fingerprint": state.definition_fingerprint,
             "artifact_revisions": revisions, "source_fingerprint": fingerprint,
+            "plan_version": version["version"],
         }
 
 
@@ -149,6 +154,7 @@ def record_confirmation(store, candidate):
     receipt = {
         "schema_version": "opening-prose-receipt/v1", "candidate_id": candidate.candidate_id,
         "chapter_number": candidate.chapter_number, "authority": deepcopy(authority),
+        "plan_version": authority["plan_version"],
         "context_trace_ids": list(candidate.context_trace_ids),
     }
     store.snapshot_store.replace_json_transaction({

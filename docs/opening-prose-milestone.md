@@ -1,5 +1,7 @@
 # Opening prose handoff milestone
 
+This records the PR #32 boundary. The later, explicit future-volume extension is documented in [ongoing-planning-milestone.md](ongoing-planning-milestone.md); consumed chapters and their receipts remain frozen.
+
 Base: PR #31 merged main a6b79df493d6a7798b9349d708d945c25aa312d8. Exact-commit Python and Web CI passed on the temporary verification branch.
 
 Scope: explicitly extend the Opening Graph chapter window to the first volume boundary, retain existing accepted task artifacts, complete missing detail through the existing orchestration loop, then generate prose candidates through the existing Character Intent / Director / Writer / Canon Review pipeline. Acceptance covers the first three chapters with synthetic providers. No real project writes or provider calls.

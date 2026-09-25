@@ -108,6 +108,21 @@ def assert_sources_current(store):
         raise ValueError("opening_source_changed_sync_required")
 
 
+def assert_planning_sources_current(store):
+    """Admit a future-only planning run against the last confirmed snapshot."""
+    config = settings(store)
+    if config and config.get("execution"):
+        from .execution import source_fingerprint
+
+        pending = config.get("pending_extension")
+        if not pending or pending.get("source_fingerprint") != source_fingerprint(store):
+            raise ValueError("opening_planning_source_conflict")
+        if int(store.state().get("current_chapter") or 0) != pending["confirmed_through"]:
+            raise ValueError("opening_planning_source_conflict")
+        return
+    assert_sources_current(store)
+
+
 def assert_unwritten(store):
     if int(store.snapshot_store.read_json(store.webnovel_dir / "state.json", {}).get("current_chapter") or 0) > 0:
         raise ValueError("opening_requires_unwritten_project")
@@ -313,6 +328,96 @@ def extend_first_volume(store, expected_graph_revision):
         store.snapshot_store.replace_json_transaction(payloads)
 
 
+def extend_next_volume(store, expected_graph_revision):
+    """Version the next complete volume without changing consumed artifacts."""
+    from .execution import source_fingerprint
+
+    with project_update_lock(store.root):
+        config = dict(settings(store) or {})
+        execution = config.get("execution")
+        if not execution:
+            raise ValueError("opening_execution_not_started")
+        project = NovelProject.model_validate(store.project())
+        previous = graph_for(store, project)
+        state = store.build_graph_store().read_state()
+        if state is None or state.graph_revision != expected_graph_revision:
+            raise ValueError("build_graph_changed")
+        store.build_graph_store().initialize(previous.definition)
+        if any(task.active_run_id for task in state.tasks.values()):
+            raise ValueError("build_run_in_progress")
+        if config.get("pending_extension"):
+            assert_planning_sources_current(store)
+            return  # The transactional graph migration already happened.
+        current = int(store.state().get("current_chapter") or 0)
+        if execution.get("confirmed_through") != current or execution.get("graph_revision") != state.graph_revision:
+            raise ValueError("opening_planning_source_conflict")
+        fingerprint = source_fingerprint(store)
+        if execution.get("source_fingerprint") != fingerprint:
+            raise ValueError("opening_planning_source_conflict")
+        service = store.build_graph_service(previous.definition, validators=validators_for(store, project))
+        if not service.build_readiness().ready or any(task.status != "completed" for task in state.tasks.values()):
+            raise ValueError("opening_graph_not_ready")
+        old_marker = store.build_graph_materialization()
+        old_revisions = {key: task.current_artifact_revision for key, task in state.tasks.items()}
+        if not old_marker or old_marker.get("artifact_revisions") != old_revisions:
+            raise ValueError("opening_prose_materialization_required")
+        old_handoff = store.snapshot_store.read_json(store.webnovel_dir / "opening_execution_contracts.json", None)
+        if old_handoff != _artifact(store, "outline_execution_contract"):
+            raise ValueError("opening_prose_handoff_conflict")
+        old_outline = store.snapshot_store.read_json(store.webnovel_dir / "outline.json", None)
+        plan = canonical_plan(store).outline
+        if current != config["chapter_count"]:
+            raise ValueError("opening_volume_boundary_required")
+        next_arc = next((arc for arc in plan.arcs if arc.start_chapter == current + 1), None)
+        if next_arc is None:
+            raise ValueError("opening_next_volume_missing")
+        target = next_arc.end_chapter
+        graph = opening_graph(definition_project(store, project), chapter_count=target)
+        tasks = dict(state.tasks)
+        for task_id in graph.definition.ordered_task_ids:
+            if task_id not in tasks:
+                ready = all(tasks[dep].status == "completed" for dep in graph.spec(task_id).task.dependencies)
+                history = store.build_graph_store().artifact_history(task_id)
+                tasks[task_id] = BuildTaskState(task_id=task_id, status="ready" if ready else "blocked",
+                    current_artifact_revision=history[-1].revision if history else None)
+        tasks["outline_execution_contract"] = replace(tasks["outline_execution_contract"], status="stale", validation_status="unknown")
+        updated = replace(state, tasks=tasks, graph_revision=state.graph_revision + 1,
+                          definition_fingerprint=graph.definition.definition_fingerprint)
+        versions = list(config.get("plan_versions") or [])
+        if not versions:
+            versions.append({"version": 1, "start_chapter": 1, "end_chapter": current,
+                "graph_revision": state.graph_revision, "artifact_revisions": old_revisions,
+                "source_fingerprint": fingerprint})
+        version = len(versions) + 1
+        archive = store.webnovel_dir / "opening_plan_versions" / f"v{version - 1}"
+        config.update(chapter_count=target, plan_versions=versions, pending_extension={
+            "version": version, "start_chapter": current + 1, "end_chapter": target,
+            "confirmed_through": current, "source_fingerprint": fingerprint,
+            "base_artifact_revisions": old_revisions,
+        })
+        prepared = dict(store.project())
+        prepared["pipeline_stage"] = "world_ready"
+        NovelProject.model_validate(prepared)
+        payloads = {store.webnovel_dir / "project.json": prepared}
+        payloads.update({
+            store.webnovel_dir / SETTINGS: config,
+            store.build_graph_store().state_path: updated.to_dict(),
+        })
+        previous_release = {
+            archive / "outline.json": old_outline,
+            archive / "opening_execution_contracts.json": old_handoff,
+            archive / "build_graph_materialization.json": old_marker,
+            archive / "build_graph.json": state.to_dict(),
+        }
+        for path, evidence in previous_release.items():
+            existing = store.snapshot_store.read_json(path, None)
+            if existing is None:
+                payloads[path] = evidence
+            elif existing != evidence:
+                raise ValueError("opening_previous_release_conflict")
+        store.snapshot_store.replace_json_transaction(payloads)
+
+
 def canonical_plan(store):
     return validate_generated_opening_plan(
         assembled_plan(store), expected_chapter_numbers=list(range(1, settings(store).get("chapter_count", CHAPTER_COUNT) + 1)),
@@ -443,4 +548,78 @@ def publish(store, graph, service, expected_revision):
         config = dict(settings(store))
         config["source_revision"] = source_revision(store, project=prepared, outline=outline)
         payloads[store.webnovel_dir / SETTINGS] = config
+        store.snapshot_store.replace_json_transaction(payloads)
+
+
+def publish_next_volume(store, graph, service, expected_revision):
+    """Atomically release only future detail and a new execution baseline."""
+    from .execution import source_fingerprint
+    from packages.story_core.world_build.materialize import materialization_payload, materialization_path
+    from packages.story_core.elastic_outline import validate_outline_for_project
+
+    with project_update_lock(store.root):
+        config = dict(settings(store) or {})
+        pending = config.get("pending_extension")
+        if not pending or not config.get("execution"):
+            raise ValueError("opening_planning_extension_missing")
+        current_fingerprint = source_fingerprint(store)
+        if current_fingerprint != expected_revision or current_fingerprint != pending["source_fingerprint"]:
+            raise ValueError("opening_planning_source_conflict")
+        current = int(store.state().get("current_chapter") or 0)
+        if current != pending["confirmed_through"] or config["execution"]["confirmed_through"] != current:
+            raise ValueError("opening_planning_source_conflict")
+        state = service.inspect_graph()
+        if state.definition_fingerprint != graph.definition.definition_fingerprint:
+            raise ValueError("build_graph_state_mismatch")
+        if not service.build_readiness().ready or any(task.status != "completed" for task in state.tasks.values()):
+            raise ValueError("opening_graph_not_ready")
+        for task_id, revision in pending["base_artifact_revisions"].items():
+            if task_id != "outline_execution_contract" and state.tasks[task_id].current_artifact_revision != revision:
+                raise ValueError("opening_consumed_artifact_changed")
+        old_marker = store.build_graph_materialization()
+        if not old_marker or old_marker.get("artifact_revisions") != pending["base_artifact_revisions"]:
+            raise ValueError("opening_previous_marker_changed")
+        plan = canonical_plan(store)
+        outline = validate_outline_for_project(plan.outline.model_dump(mode="json"), current_chapter=current)
+        previous_outline = store.snapshot_store.read_json(store.webnovel_dir / "outline.json", None)
+        if not previous_outline or previous_outline.get("chapters") != outline["chapters"][:current]:
+            raise ValueError("opening_consumed_outline_changed")
+        previous_handoff = store.snapshot_store.read_json(store.webnovel_dir / "opening_execution_contracts.json", None)
+        handoff = _artifact(store, "outline_execution_contract")
+        if not previous_handoff or handoff["outline_execution_contract"][:current] != previous_handoff.get("outline_execution_contract"):
+            raise ValueError("opening_consumed_handoff_changed")
+        prepared = dict(store.project())
+        prepared["pipeline_stage"] = "environment_ready"
+        NovelProject.model_validate(prepared)
+        payloads = {store.webnovel_dir / "project.json": prepared}
+        marker = materialization_payload(graph, service, NovelProject.model_validate(prepared))
+        fingerprint = source_fingerprint(store, project=prepared,
+            outline=outline, handoff=handoff)
+        version = pending["version"]
+        release = store.webnovel_dir / "opening_plan_versions" / f"v{version}"
+        config["plan_versions"] = [*config["plan_versions"], {
+            "version": version, "start_chapter": pending["start_chapter"],
+            "end_chapter": pending["end_chapter"], "graph_revision": state.graph_revision,
+            "artifact_revisions": marker["artifact_revisions"], "source_fingerprint": fingerprint,
+        }]
+        config["execution"] = {**config["execution"],
+            "graph_revision": state.graph_revision, "source_fingerprint": fingerprint}
+        config.pop("pending_extension")
+        release_evidence = {
+            release / "outline.json": outline,
+            release / "opening_execution_contracts.json": handoff,
+            release / "build_graph_materialization.json": marker,
+            release / "build_graph.json": state.to_dict(),
+        }
+        for path, evidence in release_evidence.items():
+            existing = store.snapshot_store.read_json(path, None)
+            if existing is not None and existing != evidence:
+                raise ValueError("opening_release_conflict")
+        payloads.update({
+            store.webnovel_dir / SETTINGS: config,
+            store.webnovel_dir / "outline.json": outline,
+            store.webnovel_dir / "opening_execution_contracts.json": handoff,
+            materialization_path(store): marker,
+        })
+        payloads.update(release_evidence)
         store.snapshot_store.replace_json_transaction(payloads)

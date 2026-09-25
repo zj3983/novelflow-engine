@@ -407,7 +407,7 @@ def input_fingerprint(contract: Mapping[str, Any]) -> str:
 
 def run_read_projection(graph: WorldBuildGraph, task_id: str, contract: Mapping[str, Any]) -> dict[str, Any]:
     spec = graph.spec(task_id)
-    return {
+    projection = {
         "schema_version": "world-build-read-projection/v1",
         "task_id": task_id,
         "read_paths": list(spec.task.reads),
@@ -415,6 +415,11 @@ def run_read_projection(graph: WorldBuildGraph, task_id: str, contract: Mapping[
         "read_revisions": dict(contract.get("read_revisions") or {}),
         "dependency_revisions": dict(contract.get("dependency_revisions") or {}),
     }
+    if "confirmed_state" in contract:
+        projection["confirmed_through"] = contract["confirmed_through"]
+        projection["confirmed_state"] = deepcopy(contract["confirmed_state"])
+        projection["confirmed_canon"] = deepcopy(contract.get("confirmed_canon"))
+    return projection
 
 
 def repair_fields_for_diagnostics(
