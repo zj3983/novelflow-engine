@@ -15,7 +15,7 @@ Codex、MCP 工具或 CLI 可通过 HTTP 读取任务状态、阻断和下一动
 | PATCH `/tasks/{task_id}/artifact` | 提交完整任务 payload，必须携带 expected_graph_revision + expected_revision |
 | POST `/next` | 执行一个已允许的 Build 任务，必须携带 task_id + expected_graph_revision；返回 job_id |
 
-`ready` 表示 Build 定义的 required_for_readiness 节点完成且没有活动任务或来源冲突；它不是“自动确认章节”许可。`can_continue` 表示存在允许的 Build 动作。尚未初始化的项目返回 initialized=false 和 build_graph_not_initialized，不会通过 GET 初始化图。已有候选会作为 `human_confirmation` 返回候选 ID、章节号、上下文快照引用；不返回正文，且没有自动确认接口。候选确认仍由现有 candidate/confirmation 服务及人工流程负责。任务处于 review_required 时，公共编辑接口拒绝写入，不可用编辑冒充审查通过。
+`ready` 表示 Build 定义的 required_for_readiness 节点完成且没有活动任务或来源冲突；它不是“自动确认章节”许可。`can_continue` 表示存在当前可执行或需人工处理的动作；不代表所有阻断已解除。尚未初始化的项目返回 initialized=false 和 build_graph_not_initialized，不会通过 GET 初始化图。已有候选会作为 `human_confirmation` 返回候选 ID、章节号、上下文快照引用；不返回正文，且没有自动确认接口。候选确认仍由现有 candidate/confirmation 服务及人工流程负责。任务处于 review_required 时，公共编辑接口拒绝写入，不可用编辑冒充审查通过。
 
 ## CLI：只读检查
 
@@ -116,3 +116,16 @@ python -m pytest tests/api/test_build_public_routes.py tests/story_core/test_bui
 ```
 
 覆盖只读不写盘、stale/review_required/validation_failed、并发 revision 冲突、权限、消耗后的 opening 写锁、候选项目归属与人工确认边界、能力来源和脱敏。所有数据为临时合成项目，模型调用采用注入实现或捕获调度，不调用真实 provider。
+
+## Opening 与正文生命周期动作
+
+`readiness.phase` 标识 activation、source sync、build/materialization、volume detail、candidate review、next volume 或 planned book complete；`confirmed_through` 是已确认章节，`prose_ready` 是现有 Opening admission 检查的结果。
+
+`next_actions` 除 Build 操作外，还返回已有项目接口的链接：`activate_opening`、`sync_opening_input`、`extend_first_volume`、`generate_candidate`、`review_candidate`、`confirm_candidate`、`extend_next_volume`。这些动作不创建新的写服务。
+
+- `execution_surface=existing_project_api` 的 `body` 才是提交给原接口的请求体，`preconditions` 是供调用方核对的 authority 引用，不是原接口新增的请求字段。
+- 图扩展接口接收 `expected_graph_revision`。正文生成在原服务内重新捕获当前 authority；候选确认由候选保存的 authority 与当前状态再次比较。生成接口不提供对客户端快照的 compare-and-swap，不能宣称 advisory preconditions 都被作为请求参数强制执行。
+- 人工标志必须由调用方遵守；公共投影不授予无人值守确认权限。候选读取链接会进入原正文接口，该接口具有原有内容可见性，不受此处 metadata-only 返回规则约束。
+- 能力 `verification_status` 根据可信来源类别派生，用户声明不能自行标记 verified；有效状态 unknown（含过期）不会显示 verified。
+
+追加回归覆盖首次激活、完整首卷要求、候选审查及 authority 漂移、续写与跨卷投影，以及 provider 工作期间另一线程可以取得项目锁。

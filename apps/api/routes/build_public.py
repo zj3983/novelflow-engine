@@ -90,15 +90,16 @@ def _snapshot(project_id):
         busy = busy or bool(state and any(task.active_run_id or task.status == "running" for task in state.tasks.values()))
         if busy:
             blockers.append({"code": "build_job_in_progress"})
+        config = runtime.settings(store) if runtime.enabled(store) else {}
         source_blocked = False
         try:
-            runtime.assert_planning_sources_current(store)
+            if not config.get("execution") or config.get("pending_extension"):
+                runtime.assert_planning_sources_current(store)
         except ValueError as exc:
             source_blocked = True
             blockers.append({"code": projection.safe_code(str(exc))})
-        config = runtime.settings(store) if runtime.enabled(store) else {}
         from packages.story_core.world_build.materialize import materialized_domain_conflicts
-        if not config.get("pending_extension") and materialized_domain_conflicts(NovelProject.model_validate(store.project()), graph, store.build_graph_materialization()):
+        if not config.get("execution") and not config.get("pending_extension") and materialized_domain_conflicts(NovelProject.model_validate(store.project()), graph, store.build_graph_materialization()):
             source_blocked = True
             blockers.append({"code": "project_source_changed"})
         pending = config.get("pending_extension") or {}
@@ -122,15 +123,23 @@ def _snapshot(project_id):
                             "href": f"{prefix}/next", "preconditions": {"expected_graph_revision": state.graph_revision, "task_id": next_task},
                             "requires_human_confirmation": False})
         candidates = []
+        pending_candidates = []
         accepted = _candidate_project_ids(store, project_id)
         for candidate in store.candidate_store.list():
             if candidate.project_id in accepted and candidate.status == "pending":
+                pending_candidates.append(candidate)
                 candidates.append({"kind": "candidate_confirmation", "candidate_id": candidate.candidate_id,
                                    "chapter_number": candidate.chapter_number,
                                    "context_snapshot_id": candidate.context_snapshot_id,
                                    "requires_human_confirmation": True})
         result["readiness"]["human_confirmation"].extend(candidates)
-        result["readiness"]["ready"] = result["readiness"]["ready"] and not busy and not source_blocked
+        lifecycle = projection.lifecycle_projection(store, state, config, project_id, pending_candidates)
+        result["readiness"].update({key: lifecycle[key] for key in ("phase", "confirmed_through", "prose_ready")})
+        blockers.extend(lifecycle["blockers"])
+        if not busy:
+            actions.extend(action for action in lifecycle["actions"]
+                           if not source_blocked or action["action"] in {"sync_opening_input", "review_candidate"})
+        result["readiness"]["ready"] = result["readiness"]["ready"] and not busy and not source_blocked and not lifecycle["blockers"]
         result["readiness"]["can_continue"] = bool(actions)
         result["next_actions"] = actions
         active_id = workbench._active_build_orchestration_jobs.get(workbench._strip_file_prefix(project_id))
@@ -224,7 +233,7 @@ def init_build_public_routes() -> APIRouter:
         with workbench._world_build_jobs_lock, project_update_lock(store.root):
             _, _, _, state = _context(project_id)
             _check_revision(state, body.expected_graph_revision)
-            if not any(action["action"] == "run_next" and action["task_id"] == body.task_id for action in _snapshot(project_id)["next_actions"]):
+            if not any(action["action"] in {"run_next", "materialize_build"} and action.get("task_id") == body.task_id for action in _snapshot(project_id)["next_actions"]):
                 raise HTTPException(409, "build_no_allowed_action")
             job = _delegate(request, "start_file_project_build_orchestration", project_id=project_id,
                             request=workbench.BuildWorkbenchOrchestrationRequest(mode="next"))

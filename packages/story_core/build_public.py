@@ -98,9 +98,9 @@ def capability_projection(profile) -> dict:
             "source": provenance.source if provenance.source in {
                 "runtime_observation", "provider_metadata", "official_catalog", "user_declared", "unknown"
             } else "unknown",
-            "verification_status": provenance.verification_status if provenance.verification_status in {
-                "verified", "declared", "inferred", "unknown"
-            } else "unknown",
+            "verification_status": ("unknown" if item.state == "unknown" else
+                                    "verified" if provenance.source in {"runtime_observation", "provider_metadata"} else
+                                    "declared" if provenance.source in {"official_catalog", "user_declared"} else "unknown"),
             "verified_at": timestamp(provenance.verified_at), "expires_at": timestamp(provenance.expires_at),
         }
     identity = profile.identity
@@ -115,3 +115,101 @@ def capability_projection(profile) -> dict:
         "limits": {name: record(profile.effective_capability(name), limit=True) for name in KNOWN_LIMITS},
         "output_budget_enforcement": "best_effort" if "cli" in identity.protocol else "provider_dependent",
     }
+
+
+def lifecycle_projection(store, state, config, project_id, candidates) -> dict:
+    """Read existing Opening authority; return links to established lifecycle APIs.
+
+    ``body`` is the endpoint request; ``preconditions`` describe the authority
+    reference and are not undocumented parameters for those existing endpoints.
+    """
+    from packages.story_core.opening_build import execution, runtime
+    from packages.story_core.file_project_store import _assert_auto_chapter_quality
+
+    prefix = f"/file-projects/{project_id}"
+    revision = state.graph_revision if state else None
+    confirmed = int(store.state().get("current_chapter") or 0)
+    result = {"phase": "build", "confirmed_through": confirmed, "prose_ready": False,
+              "actions": [], "blockers": []}
+
+    def action(name, href, body, preconditions, *, human=False, method="POST"):
+        result["actions"].append({"action": name, "method": method, "href": prefix + href,
+            "body": body, "preconditions": preconditions, "requires_human_confirmation": human,
+            "execution_surface": "existing_project_api"})
+
+    if not config:
+        if confirmed == 0:
+            result["phase"] = "opening_activation"
+            action("activate_opening", "/build-graph/opening", {"expected_graph_revision": revision},
+                   {"expected_graph_revision": revision, "confirmed_through": 0}, human=True)
+        else:
+            result["phase"] = "legacy_project"
+            result["blockers"].append({"code": "opening_requires_unwritten_project"})
+        return result
+    if config.get("sync_pending") or (not config.get("execution") and config.get("source_revision") != runtime.source_revision(store)):
+        result["phase"] = "source_sync_required"
+        action("sync_opening_input", "/build-graph/opening/input", {"expected_graph_revision": revision},
+               {"expected_graph_revision": revision}, human=True)
+        return result
+    if state is None or any(task.status != "completed" or task.active_run_id for task in state.tasks.values()):
+        return result
+    marker = store.build_graph_materialization() or {}
+    revisions = {key: task.current_artifact_revision for key, task in state.tasks.items()}
+    if config.get("pending_extension") or (not config.get("execution") and (
+        marker.get("artifact_revisions") != revisions or store.project().get("pipeline_stage") != "environment_ready"
+    )):
+        result["phase"] = "materialization_required"
+        result["actions"].append({"action": "materialize_build", "task_id": "__materialize__",
+            "method": "POST", "href": prefix + "/public-build/next",
+            "preconditions": {"expected_graph_revision": revision, "task_id": "__materialize__"},
+            "requires_human_confirmation": False})
+        return result
+    if not config.get("execution"):
+        plan = runtime.canonical_plan(store).outline
+        first = next((arc for arc in plan.arcs if arc.start_chapter == 1), None)
+        if first and first.end_chapter > config.get("chapter_count", 3):
+            result["phase"] = "volume_detail_required"
+            action("extend_first_volume", "/build-graph/opening/volume-detail",
+                   {"expected_graph_revision": revision},
+                   {"expected_graph_revision": revision, "end_chapter": first.end_chapter})
+            return result
+    if config.get("execution") and confirmed == config.get("chapter_count"):
+        recorded = config["execution"]
+        if recorded.get("source_fingerprint") != execution.source_fingerprint(store) or recorded.get("graph_revision") != revision:
+            result["blockers"].append({"code": "opening_prose_source_conflict"})
+            return result
+        plan = runtime.canonical_plan(store).outline
+        following = next((arc for arc in plan.arcs if arc.start_chapter == confirmed + 1), None)
+        result["phase"] = "next_volume" if following else "planned_book_complete"
+        if following:
+            action("extend_next_volume", "/build-graph/opening/next-volume", {"expected_graph_revision": revision},
+                   {"expected_graph_revision": revision, "confirmed_through": confirmed,
+                    "source_fingerprint": recorded["source_fingerprint"], "start_chapter": following.start_chapter})
+        return result
+    try:
+        authority = execution.capture(store)
+    except ValueError as exc:
+        result["blockers"].append({"code": safe_code(str(exc).split(":", 1)[0])})
+        return result
+    result["prose_ready"] = True
+    result["phase"] = "candidate_review" if candidates else "ready_for_candidate"
+    reference = {key: authority[key] for key in (
+        "chapter_number", "graph_revision", "source_fingerprint", "plan_version", "artifact_revisions")}
+    if not candidates:
+        action("generate_candidate", "/generation-jobs", {}, reference)
+    for candidate in candidates:
+        action("review_candidate", f"/candidates/{candidate.candidate_id}", None,
+               {"candidate_id": candidate.candidate_id, "context_snapshot_id": candidate.context_snapshot_id},
+               human=True, method="GET")
+        if candidate.submission_payload.get("opening_authority") != authority:
+            result["blockers"].append({"code": "opening_prose_revision_conflict", "candidate_id": candidate.candidate_id})
+            continue
+        try:
+            _assert_auto_chapter_quality(candidate.quality_report, operation=candidate.operation)
+        except ValueError:
+            result["blockers"].append({"code": "candidate_validation_failed", "candidate_id": candidate.candidate_id})
+            continue
+        action("confirm_candidate", f"/candidates/{candidate.candidate_id}/confirm", {},
+               {"candidate_id": candidate.candidate_id, "context_snapshot_id": candidate.context_snapshot_id,
+                **reference}, human=True)
+    return result

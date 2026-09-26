@@ -104,7 +104,7 @@ def test_exception_states_and_diagnostics_are_structured(tmp_path, monkeypatch, 
     assert task["diagnostics"] == [{"code": "missing_label", "severity": "blocking"}]
     if status == "review_required":
         assert response.json()["readiness"]["human_confirmation"][0]["kind"] == "task_review"
-        assert all(a["task_id"] != "world_model" for a in response.json()["next_actions"])
+        assert all(a.get("task_id") != "world_model" for a in response.json()["next_actions"])
 
 
 def test_bad_request_does_not_echo_payload(tmp_path, monkeypatch):
@@ -187,7 +187,10 @@ def test_consumed_opening_keeps_planning_and_candidate_authority(tmp_path, monke
     response = client.get(BASE)
     assert response.status_code == 200, response.text
     snapshot = response.json()
-    assert snapshot["next_actions"] == []
+    assert [action["action"] for action in snapshot["next_actions"]] == ["generate_candidate"]
+    assert snapshot["readiness"]["confirmed_through"] == 1
+    assert snapshot["readiness"]["ready"]
+    assert snapshot["readiness"]["blockers"] == []
     task = next(t for t in snapshot["tasks"] if t["task_id"] == "story_core")
     denied = client.patch(BASE + "/tasks/story_core/artifact", json={
         "expected_graph_revision": snapshot["graph_revision"], "expected_revision": task["artifact_revision"],
@@ -207,7 +210,7 @@ def test_missing_state_is_read_only_and_writes_fail_closed(tmp_path, monkeypatch
     assert response.status_code == 200, response.text
     assert not response.json()["initialized"]
     assert not response.json()["readiness"]["ready"]
-    assert not response.json()["next_actions"]
+    assert [action["action"] for action in response.json()["next_actions"]] == ["activate_opening"]
     response = client.patch(BASE + "/tasks/world_model/artifact", json={
         "expected_graph_revision": 0, "expected_revision": 1, "payload": {}})
     assert response.status_code == 409
@@ -234,3 +237,81 @@ def test_future_handler_dependencies_fail_closed(tmp_path, monkeypatch):
         "expected_graph_revision": service.inspect_graph().graph_revision, "expected_revision": 1, "payload": {"label": "edit"}})
     assert response.status_code == 503, response.text
     assert tree(store) == before
+
+
+def test_lifecycle_before_and_after_pending_candidate(tmp_path, monkeypatch):
+    from tests.story_core.test_opening_prose import prepared_store, FakeEngine
+    store = prepared_store(tmp_path)
+    monkeypatch.setattr(file_projects, "_store_for", lambda _: store)
+    client = TestClient(app, raise_server_exceptions=False)
+    before = tree(store)
+    response = client.get(BASE)
+    assert response.status_code == 200, response.text
+    assert response.json()["readiness"]["phase"] == "ready_for_candidate"
+    action = next(a for a in response.json()["next_actions"] if a["action"] == "generate_candidate")
+    assert action["href"].endswith("/generation-jobs")
+    assert action["preconditions"]["chapter_number"] == 1
+    assert tree(store) == before
+    generated = store.generate_next_chapter(engine=FakeEngine(), persist=False)["candidate"]
+    response = client.get(BASE)
+    assert response.status_code == 200, response.text
+    assert response.json()["readiness"]["phase"] == "candidate_review"
+    actions = response.json()["next_actions"]
+    assert not any(a["action"] == "generate_candidate" for a in actions)
+    confirm = next(a for a in actions if a["action"] == "confirm_candidate")
+    assert confirm["requires_human_confirmation"]
+    assert confirm["preconditions"]["candidate_id"] == generated["candidate_id"]
+    assert generated["body"] not in response.text
+    candidate = store.candidate_store.get(generated["candidate_id"])
+    candidate.submission_payload["opening_authority"]["graph_revision"] -= 1
+    store.candidate_store.save(candidate)
+    response = client.get(BASE)
+    assert not any(a["action"] == "confirm_candidate" for a in response.json()["next_actions"])
+    assert any(b["code"] == "opening_prose_revision_conflict" for b in response.json()["readiness"]["blockers"])
+
+
+def test_lifecycle_requires_full_first_volume(tmp_path, monkeypatch):
+    from tests.story_core.test_opening_prose import prepared_store
+    store = prepared_store(tmp_path, complete_volume=False)
+    monkeypatch.setattr(file_projects, "_store_for", lambda _: store)
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.get(BASE)
+    assert response.status_code == 200, response.text
+    assert response.json()["readiness"]["phase"] == "volume_detail_required"
+    action = next(a for a in response.json()["next_actions"] if a["action"] == "extend_first_volume")
+    assert action["body"]["expected_graph_revision"] == response.json()["graph_revision"]
+    assert not any(a["action"] == "generate_candidate" for a in response.json()["next_actions"])
+
+
+def test_async_model_call_runs_after_public_admission_lock(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from packages.story_core.opening_build import runtime
+    from packages.story_core.persistence.project_locking import project_update_lock
+    from tests.story_core.test_opening_build import opening_store, opening_payloads
+    from tests.api.test_build_workbench_edit_route import _wait_orchestration
+    store, graph, service = opening_store(tmp_path)
+    service.commit_candidate("opening_input", runtime.settings(store)["author_input"], source="imported")
+    monkeypatch.setattr(file_projects, "_store_for", lambda _: store)
+    observed = []
+    def complete(stage, request):
+        def probe():
+            lock = project_update_lock(store.root)
+            acquired = lock.acquire(timeout=2)
+            if acquired:
+                lock.release()
+            return acquired
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            observed.append(executor.submit(probe).result(timeout=3))
+        return SimpleNamespace(ok=True, text=json.dumps(opening_payloads()["story_core"]),
+                               provider="test", model="test", resolved_model="test")
+    monkeypatch.setattr(file_projects, "shuangwen_model_gateway", SimpleNamespace(complete_stage=complete))
+    client = TestClient(app, raise_server_exceptions=False)
+    snapshot = client.get(BASE).json()
+    action = next(a for a in snapshot["next_actions"] if a["action"] == "run_next")
+    assert action["task_id"] == "story_core"
+    response = client.post(BASE + "/next", json=action["preconditions"])
+    assert response.status_code == 200, response.text
+    job = _wait_orchestration(client, "p-synthetic-build-edit", response.json()["job_id"])
+    assert job["status"] == "completed", job
+    assert observed == [True]
+    assert service.inspect_task("story_core").status == "completed"
