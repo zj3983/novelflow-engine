@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, HTTPException, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from packages.story_core.codex_cli_provider import (
@@ -21,8 +22,9 @@ from packages.story_core.codex_cli_provider import (
     read_latest_codex_cli_version,
 )
 from packages.story_core.model_gateway.contracts import ModelRequest
-from packages.story_core.model_gateway.capabilities import ModelCapabilityResolver
+from packages.story_core.model_gateway.capabilities import ModelCapabilityResolver, safe_base_url_for_diagnostics
 from packages.story_core.model_gateway.capability_refresh import capability_snapshot, refresh_capabilities
+from packages.story_core.model_gateway.model_usability import read_model_usability, test_model_usability, usability_view
 from packages.story_core.model_gateway.model_discovery import discover_provider_models
 from packages.story_core.model_gateway.provider_catalog import (
     BUILTIN_PROVIDER_IDS,
@@ -48,6 +50,8 @@ class _SecretSafeRoute(APIRoute):
             try:
                 return await handler(request)
             except RequestValidationError as exc:
+                if request.url.path.startswith("/runtime-settings/product"):
+                    return JSONResponse(status_code=422, content={"message": "请补全模型和连接设置后重试。"})
                 # Pydantic includes the complete candidate input for model-level
                 # failures. Never echo credentials through validation diagnostics.
                 safe_fields = {"body", "runtime_settings", "stage", "accounts", "stages", "planner", "writer", "provider_id", "model", "api_key", "base_url", "codex_command", "custom_models", "model_capabilities", "image", "enabled", "temperature", "outline_planning", "timeout_seconds", "stream", "split_phases", "new_character_policy", "schema_version", *BUILTIN_PROVIDER_IDS}
@@ -58,6 +62,10 @@ class _SecretSafeRoute(APIRoute):
                     "msg": "配置字段无效，请检查必填值与服务商绑定",
                 } for error in exc.errors()]
                 raise HTTPException(status_code=422, detail=detail) from None
+            except HTTPException:
+                if request.url.path.startswith("/runtime-settings/product"):
+                    return JSONResponse(status_code=422, content={"message": "请检查模型和连接设置后重试。"})
+                raise
 
         return safe_handler
 
@@ -109,6 +117,146 @@ class RuntimeModelDiscoveryResponse(_StrictModel):
     provider: str
     protocol: str
     models: list[RuntimeDiscoveredModel]
+
+
+class ProductAccount(_StrictModel):
+    api_key: str = ""
+    base_url: str = ""
+    custom_models: list[str] = Field(default_factory=list)
+    codex_command: str = ""
+
+
+class ProductConfiguration(_StrictModel):
+    accounts: dict[str, ProductAccount]
+    stages: dict[str, dict[str, str]]
+    image: dict[str, str | bool]
+
+
+class ProductModelRequest(_StrictModel):
+    stage: RuntimeStage
+    settings: ProductConfiguration
+
+
+class ProductDiscoveryRequest(_StrictModel):
+    provider_id: str
+    settings: ProductConfiguration
+
+
+class ProductModelAction(_StrictModel):
+    id: Literal["test", "edit_connection", "choose_model"]
+    label: str
+
+
+class ProductModelStatusResponse(_StrictModel):
+    status: Literal["ready", "untested", "connection_error", "blocked"]
+    heading: str
+    message: str
+    tone: str
+    can_continue: bool
+    actions: list[ProductModelAction]
+
+
+def _product_configuration(configuration=None):
+    serialized = _serialize_runtime_settings(configuration)
+    for account in serialized["accounts"].values():
+        account["base_url"] = safe_base_url_for_diagnostics(account["base_url"])
+    serialized["image"]["base_url"] = safe_base_url_for_diagnostics(serialized["image"]["base_url"])
+    return {
+        "accounts": {key: {name: value[name] for name in ("api_key", "base_url", "custom_models", "codex_command")} for key, value in serialized["accounts"].items()},
+        "stages": serialized["stages"], "image": serialized["image"],
+    }
+
+
+def _product_candidate(payload: ProductConfiguration):
+    # Preserve engineering settings on the server, including old declarations.
+    current = get_runtime_configuration().model_dump(mode="json")
+    for provider_id, account in payload.accounts.items():
+        if provider_id not in BUILTIN_PROVIDER_IDS:
+            raise HTTPException(status_code=422, detail="请选择列表中的模型服务。")
+        previous = current["accounts"].setdefault(provider_id, {})
+        submitted = account.model_dump()
+        if submitted["base_url"] == safe_base_url_for_diagnostics(previous.get("base_url", "")):
+            submitted["base_url"] = previous.get("base_url", "")
+        previous.update(submitted)
+    current["stages"] = payload.stages
+    image = dict(payload.image)
+    if image.get("base_url") == safe_base_url_for_diagnostics(current["image"].get("base_url", "")):
+        image["base_url"] = current["image"].get("base_url", "")
+    current["image"] = image
+    try:
+        return _restore_masked_api_keys(RuntimeConfiguration.model_validate(current))
+    except ValueError:
+        raise HTTPException(status_code=422, detail="请补全模型和连接设置后重试。") from None
+
+
+@router.get("/runtime-settings/product")
+def read_product_configuration():
+    return _product_configuration()
+
+
+@router.put("/runtime-settings/product")
+def save_product_configuration(payload: ProductConfiguration):
+    try:
+        saved = update_runtime_settings(_product_candidate(payload))
+    except HTTPException:
+        raise HTTPException(status_code=422, detail="请检查所选模型的密钥、连接地址和名称后再保存。") from None
+    return _product_configuration(RuntimeConfiguration.model_validate(saved))
+
+
+@router.get("/runtime-settings/product/providers")
+def read_product_providers():
+    return {"providers": [{
+        "provider_id": definition.provider_id, "name": definition.name,
+        "default_base_url": definition.default_base_url,
+        "planner_models": list(definition.planner_models), "writer_models": list(definition.writer_models),
+        "requires_api_key": definition.requires_api_key,
+        "base_url_editable": definition.base_url_editable,
+        "uses_local_command": definition.protocol.endswith("_cli"),
+        "default_command": "codex" if definition.protocol == "codex_cli" else "agy" if definition.protocol == "antigravity_cli" else "",
+        "account_label": "待检测",
+    } for definition in (provider_definition(key) for key in BUILTIN_PROVIDER_IDS)]}
+
+
+def _product_model_runtime(payload):
+    runtime = _resolve_candidate_stage_runtime(_product_candidate(payload.settings), payload.stage)
+    if runtime.protocol.endswith("_cli") and not runtime.codex_command.strip():
+        raise HTTPException(status_code=422, detail="请填写本地连接设置。")
+    return runtime
+
+
+@router.post("/runtime-settings/product/model-status", response_model=ProductModelStatusResponse)
+def read_product_model_status(payload: ProductModelRequest):
+    try:
+        runtime = _product_model_runtime(payload)
+    except HTTPException:
+        return usability_view("blocked", stage=payload.stage)
+    return read_model_usability(runtime, stage=payload.stage)
+
+
+@router.post("/runtime-settings/product/test-model", response_model=ProductModelStatusResponse)
+def test_product_model(payload: ProductModelRequest):
+    try:
+        runtime = _product_model_runtime(payload)
+    except HTTPException:
+        return usability_view("blocked", stage=payload.stage)
+    try:
+        return test_model_usability(runtime, stage=payload.stage)
+    except Exception:
+        return usability_view("connection_error", stage=payload.stage)
+
+
+@router.post("/runtime-settings/product/discover-models")
+def discover_product_models(payload: ProductDiscoveryRequest):
+    try:
+        runtime = _resolve_candidate_provider_runtime(_product_candidate(payload.settings), payload.provider_id)
+        models = discover_provider_models(runtime)
+    except Exception:
+        return {"message": "暂时无法获取模型列表，请检查连接设置后重试。", "models": []}
+    return {"message": "请选择需要使用的模型，再测试连接。" if models else "没有找到模型，可以手动填写模型名称。", "models": [{
+        "name": model["model_id"], "selectable": model["compatibility"] != "unsupported",
+        "message": "此模型不适合文本写作" if model["compatibility"] == "unsupported" else "请先测试模型",
+        "can_test": model["compatibility"] != "unsupported",
+    } for model in models]}
 
 
 class RuntimeStrategyResponse(_StrictModel):
