@@ -1198,13 +1198,13 @@ test("new chapter candidate stays attached to its own chapter", async ({ page })
 
   await page.goto(`/projects/${fixture.encodedId}/write?chapter=1`);
 
-  await expect(page.getByLabel("候选稿")).toHaveCount(0);
+  await expect(page.getByLabel("候选稿", { exact: true })).toHaveCount(0);
   const savedNotice = page.getByLabel("下一章候选稿已保留");
   await expect(savedNotice).toContainText("第 2 章候选稿已经生成并保留");
   await savedNotice.getByRole("link", { name: "查看第 2 章候选稿" }).click();
 
   await expect(page).toHaveURL(/write\?chapter=2/);
-  await expect(page.getByLabel("候选稿")).toContainText("CHAPTER_TWO_CANDIDATE");
+  await expect(page.getByLabel("候选稿", { exact: true })).toContainText("CHAPTER_TWO_CANDIDATE");
   await expect(page.getByText(/章节加载失败/)).toHaveCount(0);
 });
 
@@ -1704,7 +1704,7 @@ test("empty file novel can generate its first chapter", async ({ page }) => {
   await generateButton.click();
 
   await expect.poll(() => generationStarted).toBe(true);
-  await expect(page.getByLabel("候选稿")).toBeVisible();
+  await expect(page.getByLabel("候选稿", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "确认提交" }).click();
   await expect(page).toHaveURL(new RegExp(`/write\\?chapter=1$`));
 });
@@ -2409,7 +2409,7 @@ test("short confirmed chapter can be expanded manually into a candidate", async 
   await expandButton.click();
 
   await expect.poll(() => requestPayload).toEqual({ chapter_number: 1, operation: "expand" });
-  await expect(page.getByLabel("候选稿")).toContainText("扩写后的候选正文");
+  await expect(page.getByLabel("候选稿", { exact: true })).toContainText("扩写后的候选正文");
 });
 
 test("world snapshot displays Chinese labels instead of internal field names", async ({ page }) => {
@@ -3663,7 +3663,7 @@ for (const generationCase of [
 
     await expect(page).toHaveURL(new RegExp(`chapter=${generationCase.expectedChapter}$`));
     await expect(page.locator(".ws-reader__body")).toContainText(`GENERATED_CHAPTER_${generationCase.expectedChapter}`);
-    await expect(page.getByLabel("候选稿")).toHaveCount(0);
+    await expect(page.getByLabel("候选稿", { exact: true })).toHaveCount(0);
     expect(calls.filter((path) => path.endsWith("/overview"))).toHaveLength(2);
     expect(calls.some((path) => /^\/file-stories\/[^/]+$/.test(path))).toBe(false);
     expect(calls.filter((path) => path.endsWith(`/chapters/${generationCase.expectedChapter}`))).toHaveLength(1);
@@ -3869,7 +3869,7 @@ test("write page can regenerate the current file-project chapter", async ({ page
 
   await expect.poll(() => regenerationPayload).toMatchObject({ chapter_number: 1 });
   await expect(page.locator("div.ws-reader__body")).toContainText("商会印记的旧铜牌");
-  await expect(page.getByLabel("候选稿")).toContainText("REGENERATED_CHAPTER");
+  await expect(page.getByLabel("候选稿", { exact: true })).toContainText("REGENERATED_CHAPTER");
   await page.getByRole("button", { name: "确认提交" }).click();
   await expect(page.locator("div.ws-reader__body")).toContainText("REGENERATED_CHAPTER");
   expect(calls.filter((path) => path.endsWith("/overview"))).toHaveLength(2);

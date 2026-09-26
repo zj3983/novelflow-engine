@@ -561,6 +561,8 @@ test("新书从开局方向进入 Build，人工确认后跨卷继续候选审�
   await expect(candidatePanel).toContainText("第1段：雨水沿着档案袋边缘");
   await expect(candidatePanel).toContainText("第十三段是全文末段标记");
   const review = page.getByLabel("候选稿审查结果");
+  await expect(page.getByLabel("正文写作路径")).toContainText("有警告");
+  await expect(page.getByLabel("人工确认前检查")).toContainText("存在警告");
   await expect(review).toContainText("正文审查状态：有警告或修改建议");
   await expect(review.getByLabel("Canon 审查快照")).toContainText("0");
   await expect(review.getByLabel("Canon 审查快照")).toContainText("continuity_snapshot");
@@ -609,6 +611,8 @@ test("Canon hard blocker 的强制确认被拒绝且候选保留", async ({ page
   const candidatePanel = page.getByLabel("候选稿", { exact: true });
   await expect(candidatePanel).toBeVisible();
   const review = page.getByLabel("候选稿审查结果");
+  await expect(page.getByLabel("正文写作路径")).toContainText("受阻");
+  await expect(page.getByLabel("人工确认前检查")).toContainText("存在硬阻断");
   await expect(review).toContainText("canon.hard_blocker");
   await expect(review).toContainText("遗嘱日期与已确认时间线冲突");
   await expect(candidatePanel.getByRole("button", { name: "仍然采用" })).toHaveCount(0);

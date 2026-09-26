@@ -321,3 +321,9 @@
   .path_grid { grid-template-columns: 1fr; }
   .detail_head { flex-direction: column; }
 }
+
+.overview { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.overview progress { width: 100%; margin-top: 12px; accent-color: var(--ws-accent); }
+.raw_detail { max-height: 340px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.detail_section summary { cursor: pointer; font-weight: 750; }
+@media (max-width: 900px) { .overview { grid-template-columns: 1fr; gap: 0; } }

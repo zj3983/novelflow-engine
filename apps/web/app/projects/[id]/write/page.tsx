@@ -33,6 +33,9 @@ import {
 } from "../../../../lib/api";
 import { userFacingErrorMessage } from "../../../../lib/user-facing-error";
 
+import { WorkflowNotice } from "../build/WorkflowNotice";
+import styles from "./write.module.css";
+
 const PAGE_SIZE = 80;
 
 function WritingProgressRow({ status, href }: { status: string; href: string }) {
@@ -93,19 +96,7 @@ function OpeningBuildGuide({
   );
 }
 
-function CandidatePanel({
-  candidate,
-  action,
-  onConfirm,
-  onForceConfirm,
-  onDiscard,
-}: {
-  candidate: CandidateDraft;
-  action: "confirm" | "force-confirm" | "discard" | null;
-  onConfirm: () => void;
-  onForceConfirm: () => void;
-  onDiscard: () => void;
-}) {
+function candidateReview(candidate: CandidateDraft) {
   const qualityReport = asRecord(candidate.quality_report) ?? {};
   const writingReview = asRecord(qualityReport.writing_review) ?? {};
   const reviewResult = asRecord(qualityReport.review_result) ?? {};
@@ -167,8 +158,25 @@ function CandidatePanel({
       || simplifiedReview.status === "warning"
       || simplifiedReview.status === "needs_revision"
     );
+  return { qualityReport, canonSnapshot, canonPreflight, blockingFindings, warningFindings, reviewStatus, reviewBlocked, reviewStatusLabel, reviewSummary, hasQualityWarnings };
+}
+
+function CandidatePanel({
+  candidate,
+  action,
+  onConfirm,
+  onForceConfirm,
+  onDiscard,
+}: {
+  candidate: CandidateDraft;
+  action: "confirm" | "force-confirm" | "discard" | null;
+  onConfirm: () => void;
+  onForceConfirm: () => void;
+  onDiscard: () => void;
+}) {
+  const { qualityReport, canonSnapshot, canonPreflight, blockingFindings, warningFindings, reviewStatus, reviewBlocked, reviewStatusLabel, reviewSummary, hasQualityWarnings } = candidateReview(candidate);
   return (
-    <section className="ws-card" aria-label="候选稿">
+    <section id="candidate-review" className={`ws-card ${styles.candidate}`} aria-label="候选稿">
       <div className="ws-section-head">
         <div>
           <p className="ws-card__title">候选稿，尚未提交</p>
@@ -190,6 +198,12 @@ function CandidatePanel({
           </button>
         </div>
       </div>
+      <WorkflowNotice status={reviewBlocked ? "blocked" : hasQualityWarnings || warningFindings.length ? "warning" : "review_required"} title="人工确认前检查">
+        <p>{reviewBlocked ? "存在硬阻断：请先处理冲突。服务端会拒绝仍有硬阻断的提交，候选稿会保留。"
+          : hasQualityWarnings ? "存在质量警告：先阅读正文与审查建议。如接受这些问题，可点击“仍然采用”。"
+          : warningFindings.length ? "存在警告与修改建议：先阅读并复核，再点击“确认提交”。"
+          : "先阅读候选正文与审查结果，再点击“确认提交”。只有人工确认后才会写入正式章节。"}</p>
+      </WorkflowNotice>
       <section className="ws-card" aria-label="候选稿审查结果">
         <div className="ws-section-head">
           <div>
@@ -201,7 +215,7 @@ function CandidatePanel({
           <p className="ws-card__hint">{reviewSummary}</p>
         ) : null}
         {reviewBlocked ? (
-          <details open>
+          <details className={styles.blockers} open={blockingFindings.length <= 3}>
             <summary>阻断项（{Math.max(blockingFindings.length, reviewBlocked ? 1 : 0)}）</summary>
             {blockingFindings.length > 0 ? (
               <ul className="ws-plain-list">
@@ -211,7 +225,7 @@ function CandidatePanel({
           </details>
         ) : null}
         {warningFindings.length > 0 ? (
-          <details open>
+          <details className={styles.warnings} open={warningFindings.length <= 3}>
             <summary>警告与修改建议（{warningFindings.length}）</summary>
             <ul className="ws-plain-list">
               {warningFindings.map((finding) => <ReviewFindingItem key={finding.key} finding={finding} />)}
@@ -224,7 +238,7 @@ function CandidatePanel({
         <section aria-label="Canon 审查快照">
           <p className="ws-card__title">Canon 状态快照</p>
           {canonSnapshot ? (
-            <dl className="ws-simple-grid">
+            <dl className={`ws-simple-grid ${styles.canon_grid}`}>
               <div className="ws-simple-item"><strong>截至章节</strong><span>{displayAuditValue(canonSnapshot.as_of_chapter)}</span></div>
               <div className="ws-simple-item"><strong>状态来源</strong><span>{displayAuditValue(canonSnapshot.state_source)}</span></div>
               <div className="ws-simple-item"><strong>有界状态可用</strong><span>{displayAuditValue(canonSnapshot.bounded_state_available)}</span></div>
@@ -235,7 +249,7 @@ function CandidatePanel({
           <p className="ws-card__title">Canon 实体预检</p>
           <p className="ws-card__hint">预检只说明实体准备情况，不等同于 Canon Review 通过。</p>
           {canonPreflight ? (
-            <dl className="ws-simple-grid">
+            <dl className={`ws-simple-grid ${styles.canon_grid}`}>
               <div className="ws-simple-item"><strong>请求实体</strong><span>{displayAuditValue(canonPreflight.requested)}</span></div>
               <div className="ws-simple-item"><strong>已准备</strong><span>{displayAuditValue(canonPreflight.prepared)}</span></div>
               <div className="ws-simple-item"><strong>缺失</strong><span>{displayAuditValue(canonPreflight.missing)}</span></div>
@@ -243,6 +257,10 @@ function CandidatePanel({
           ) : <p className="ws-card__hint">Canon 实体预检未提供 / 未核验。</p>}
         </section>
       </section>
+      <details className={styles.raw_details}>
+        <summary>查看原始审查详情</summary>
+        <pre>{JSON.stringify(qualityReport, null, 2)}</pre>
+      </details>
       <article className="ws-reader__body" style={{ maxHeight: 520, overflow: "auto" }} aria-label="候选稿完整正文">
         {candidate.body.split(/\n{2,}/).map((paragraph, index) => (
           <p key={index}>{paragraph}</p>
@@ -854,6 +872,14 @@ export default function WritePage() {
     }
   }
 
+  const visibleCandidate = pendingCandidate ?? nextPendingCandidate;
+  const visibleReview = visibleCandidate ? candidateReview(visibleCandidate) : null;
+  const writingBusy = generatingNext || regenerating || expanding || continuousGeneration.active || Boolean(candidateAction);
+  const writingStatus = regenerateError ? "failed" : writingBusy ? "running"
+    : visibleReview?.reviewBlocked ? "blocked"
+      : visibleReview && (visibleReview.hasQualityWarnings || visibleReview.warningFindings.length > 0) ? "warning"
+        : visibleCandidate ? "review_required" : nextChapterNeedsOutline ? "blocked" : chapter ? "confirmed" : "pending";
+
   return (
     <div className="ws-page">
       <PageHeader
@@ -868,6 +894,24 @@ export default function WritePage() {
             : "章节"}
         subtitle={chapter?.chapter_title || pendingCandidate?.chapter_title || project?.current_focus || "目录和正文放在同一页。"}
       />
+
+      {!workspaceLoading && !error ? <WorkflowNotice status={writingStatus} title="正文写作路径">
+        <ol className={styles.steps} aria-label="写作步骤">
+          <li aria-current={writingBusy || !visibleCandidate && !chapter ? "step" : undefined}>1 生成候选</li>
+          <li aria-current={visibleCandidate ? "step" : undefined}>2 审查</li>
+          <li>3 人工确认</li>
+          <li aria-current={!visibleCandidate && chapter ? "step" : undefined}>4 下一章 / 跨卷</li>
+        </ol>
+        <p>{regenerateError ? "本次操作失败。请查看错误并处理原因，候选状态以当前列表为准。"
+          : writingBusy ? "任务进行中，请等待结果；生成完成后仍需人工确认。"
+          : visibleCandidate ? `第 ${visibleCandidate.chapter_number} 章候选待确认。${visibleReview?.reviewBlocked ? "存在硬阻断，请先处理审查冲突。" : visibleReview?.hasQualityWarnings || visibleReview?.warningFindings.length ? "存在警告，请审查后决定是否采用。" : "请阅读正文与审查结果，再人工确认。"}`
+          : nextChapterNeedsOutline ? "下一章尚未就绪：先完成所在卷规划和正式细纲，再生成候选。"
+          : chapter ? `第 ${chapter.chapter_number} 章已确认。可生成下一章候选，卷末先完成下一卷规划。`
+          : "准备生成第一章候选，完成审查后再人工确认。"}</p>
+        {visibleCandidate ? <p>{pendingCandidate ? <a href="#candidate-review">前往候选审查与人工确认</a> : <Link href={`/projects/${encodedProjectId}/write?chapter=${visibleCandidate.chapter_number}`}>前往下一章候选审查</Link>}</p> : null}
+        {nextChapterNeedsOutline && !visibleCandidate ? <p><Link href={useBuildRouteForPlanning ? openingBuildHref : `/projects/${encodedProjectId}/outline?tab=chapters&chapter=${nextChapterNumber}`}>处理下一章准备事项</Link></p> : null}
+        {regenerateError ? <div role="alert"><p className="ws-error">任务失败：{userFacingErrorMessage(regenerateError)}</p><details className={styles.raw_details}><summary>查看原始错误</summary><pre>{regenerateError}</pre></details></div> : null}
+      </WorkflowNotice> : null}
 
       {error ? (
         <div className="ws-card" style={{ borderColor: "var(--ws-danger)" }}>
@@ -1013,7 +1057,6 @@ export default function WritePage() {
               />
             ) : null}
 
-            {regenerateError ? <p className="ws-error">任务失败：{userFacingErrorMessage(regenerateError)}</p> : null}
             {nextPendingCandidate ? (
               <section className="ws-card" aria-label="下一章候选稿已保留">
                 <div className="ws-section-head">
@@ -1186,8 +1229,8 @@ export default function WritePage() {
         </div>
       ) : (
         <div className="ws-empty">
-          <p className="ws-empty__title">还没有可阅读章节</p>
-          <p className="ws-empty__hint">生成第一章后会在这里显示目录和正文。</p>
+          <p className="ws-empty__title">{pendingCandidate ? "候选稿等待人工确认" : "还没有可阅读章节"}</p>
+          <p className="ws-empty__hint">{pendingCandidate ? "请先审查下方候选，确认提交后会显示正式目录与正文。" : "生成第一章后会在这里显示目录和正文。"}</p>
           <button
             className="ws-btn ws-btn--primary"
             type="button"
@@ -1232,7 +1275,6 @@ export default function WritePage() {
               href={`/projects/${encodedProjectId}/log`}
             />
           ) : null}
-          {regenerateError ? <p className="ws-error">任务失败：{userFacingErrorMessage(regenerateError)}</p> : null}
           {pendingCandidate ? (
             <CandidatePanel
               candidate={pendingCandidate}

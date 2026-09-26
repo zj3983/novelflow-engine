@@ -28,6 +28,7 @@ import {
   type BuildWorkbenchValidation,
 } from "../../../../lib/api";
 import styles from "./build.module.css";
+import { WorkflowNotice } from "./WorkflowNotice";
 
 const STATUS_LABELS: Record<string, string> = {
   pending: "未开始",
@@ -38,6 +39,7 @@ const STATUS_LABELS: Record<string, string> = {
   review_required: "待审核",
   completed: "已完成",
   stale: "已过期",
+  failed: "失败",
 };
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -51,8 +53,8 @@ const SOURCE_LABELS: Record<string, string> = {
 function StatusBadge({ status }: { status: string }) {
   const tone = status === "completed" ? "success"
     : status === "running" || status === "ready" ? "active"
-      : status === "validation_failed" || status === "blocked" || status === "stale" ? "danger"
-        : status === "review_required" ? "warning" : "neutral";
+      : status === "failed" || status === "validation_failed" || status === "blocked" ? "danger"
+        : status === "review_required" || status === "stale" ? "warning" : "neutral";
   return <span className={`${styles.status} ${styles[`status_${tone}`]}`}>{STATUS_LABELS[status] ?? status}</span>;
 }
 
@@ -270,6 +272,15 @@ function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved, onDra
         <StatusBadge status={task.status} />
       </div>
 
+      <WorkflowNotice status={task.status} title="任务处理建议">
+        <p>{task.status === "stale" ? "上游输入已变化。请使用“重建过期项”，按依赖顺序更新产物。"
+          : task.status === "blocked" ? "先处理下方依赖任务中的失败、过期或待审核项，再继续构建。"
+          : task.status === "validation_failed" || task.status === "failed" ? "先查看诊断。产物可编辑时，可人工修正并校验，或预检后使用 AI 修复；处理后再继续构建。"
+          : task.status === "review_required" ? "请人工查看产物与诊断，按意见编辑并校验。审核完成前不会自动越过此任务。"
+          : task.status === "running" ? "任务正在运行，请等待结果。完成后再处理产物，避免重复执行。"
+          : task.status === "completed" ? "产物已完成。可查看校验和原始详情，继续后续任务。"
+          : "使用“运行下一任务”逐步构建，或“继续构建”推进可执行任务。"}</p>
+      </WorkflowNotice>
       <div className={styles.facts}>
         <div><span>产物版本</span><strong>{detail?.artifact ? `r${detail.artifact.revision}` : task.artifact_revision === null ? "暂无" : `r${task.artifact_revision}`}</strong></div>
         <div><span>产物来源</span><strong>{detail?.artifact ? SOURCE_LABELS[detail.artifact.source] ?? detail.artifact.source : source}</strong></div>
@@ -303,15 +314,15 @@ function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved, onDra
       {detail?.editable ? <p className={styles.empty_value}>完整重生成此任务；成功后下游会标记为过期，不会自动重跑。</p> : null}
       {repairError ? <div className={styles.validation_fail} role="alert">
         <strong>{repairError}</strong>
-        {repairDiagnostics.length ? <ul className={styles.diagnostics}>{repairDiagnostics.map((diagnostic, index) => (
+        {repairDiagnostics.length ? <details open={repairDiagnostics.length <= 3}><summary>查看诊断（{repairDiagnostics.length} 项）</summary><ul className={styles.diagnostics}>{repairDiagnostics.map((diagnostic, index) => (
           <li key={`${diagnostic.code}-${diagnostic.path}-${index}`}><strong>{diagnostic.code}</strong><code>{diagnostic.path || "（未提供路径）"}</code><p>{diagnostic.message}</p><DiagnosticPreflight details={diagnostic.details} /></li>
-        ))}</ul> : null}
+        ))}</ul></details> : null}
       </div> : null}
       {rerunError ? <div className={styles.validation_fail} role="alert">
         <strong>{rerunError}</strong>
-        {rerunDiagnostics.length ? <ul className={styles.diagnostics}>{rerunDiagnostics.map((diagnostic, index) => (
+        {rerunDiagnostics.length ? <details open={rerunDiagnostics.length <= 3}><summary>查看诊断（{rerunDiagnostics.length} 项）</summary><ul className={styles.diagnostics}>{rerunDiagnostics.map((diagnostic, index) => (
           <li key={`${diagnostic.code}-${diagnostic.path}-${index}`}><strong>{diagnostic.code}</strong><code>{diagnostic.path || "（未提供路径）"}</code><p>{diagnostic.message}</p><DiagnosticPreflight details={diagnostic.details} /></li>
-        ))}</ul> : null}
+        ))}</ul></details> : null}
       </div> : null}
       {editorOpen ? (
         <section className={styles.editor} aria-label="人工编辑产物">
@@ -330,12 +341,13 @@ function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved, onDra
           {editError ? <p className={styles.edit_error} role="alert">{editError}</p> : null}
           {validation ? <div className={validation.passed ? styles.validation_pass : styles.validation_fail} role="status">
             <strong>{validation.passed ? `校验通过 · ${validation.disposition}` : "校验未通过"}</strong>
-            {validation.diagnostics.length ? <ul className={styles.diagnostics}>{validation.diagnostics.map((diagnostic, index) => (
+            {validation.diagnostics.length ? <details open={validation.diagnostics.length <= 3}><summary>查看诊断（{validation.diagnostics.length} 项）</summary><ul className={styles.diagnostics}>{validation.diagnostics.map((diagnostic, index) => (
               <li key={`${diagnostic.code}-${diagnostic.path}-${index}`}><strong>{diagnostic.code}</strong><code>{diagnostic.path || "（未提供路径）"}</code><p>{diagnostic.message}</p></li>
-            ))}</ul> : null}
+            ))}</ul></details> : null}
           </div> : null}
         </section>
       ) : null}
+      {editError && !editorOpen ? <p className={styles.edit_error} role="alert">任务读取或操作失败：{editError}</p> : null}
       {detail?.materialization_status === "outdated" ? <p className={styles.outdated_marker}>旧物化结果已过期；保存不会自动重建世界。</p> : null}
 
       <section className={styles.detail_section}>
@@ -353,6 +365,8 @@ function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved, onDra
         ) : <p className={styles.empty_value}>无前置依赖</p>}
       </section>
 
+      <details className={styles.detail_section}>
+        <summary>任务契约与原始产物详情</summary>
       <div className={styles.path_grid}>
         <section className={styles.detail_section}>
           <h3>读取（reads）</h3>
@@ -364,9 +378,14 @@ function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved, onDra
         </section>
       </div>
 
+        <h3>原始产物</h3>
+        <pre className={styles.raw_detail}>{JSON.stringify(detail?.artifact?.payload ?? {}, null, 2)}</pre>
+      </details>
       <section className={styles.detail_section}>
-        <h3>诊断信息</h3>
+        <h3>诊断信息 · {task.diagnostics.length} 项</h3>
         {task.diagnostics.length > 0 ? (
+          <details open={task.diagnostics.length <= 3}>
+          <summary>查看诊断（{task.diagnostics.length} 项）</summary>
           <ul className={styles.diagnostics}>
             {task.diagnostics.map((diagnostic, index) => (
               <li key={`${diagnostic.code}-${diagnostic.path}-${index}`}>
@@ -377,6 +396,7 @@ function TaskDetail({ task, graph, projectId, onSelectDependency, onSaved, onDra
               </li>
             ))}
           </ul>
+          </details>
         ) : <p className={styles.empty_value}>暂无诊断</p>}
       </section>
 
@@ -514,6 +534,14 @@ export default function BuildWorkbenchPage() {
 
   const selectedTask = graph?.tasks.find((task) => task.task_id === selectedTaskId) ?? null;
   const completedCount = graph?.tasks.filter((task) => task.status === "completed").length ?? 0;
+  const attentionTasks = graph?.tasks.filter((task) => ["failed", "validation_failed", "blocked", "stale", "review_required"].includes(task.status)) ?? [];
+  const nextTask = graph?.tasks.find((task) => orchestrationBusy && task.task_id === orchestration?.current_task_id)
+    ?? graph?.tasks.find((task) => task.status === "running")
+    ?? attentionTasks.find((task) => task.status !== "blocked")
+    ?? graph?.tasks.find((task) => task.status === "ready");
+  const summaryStatus = orchestrationBusy ? "running" : orchestration?.status === "failed" ? "failed"
+    : nextTask?.status ?? (attentionTasks.length ? "blocked" : graph?.tasks.length && completedCount === graph.tasks.length ? "completed" : "pending");
+
 
   return (
     <div className="ws-page">
@@ -524,7 +552,25 @@ export default function BuildWorkbenchPage() {
       />
 
       {loading ? <section className="ws-card" role="status">正在读取 Build Graph…</section> : null}
-      {error ? <section className={`ws-card ${styles.error}`} role="alert">读取失败：{error}</section> : null}
+      {error ? <section className={`ws-card ${styles.error}`} role="alert">读取失败：{error}<p><button type="button" className={styles.edit_button} onClick={() => window.location.reload()}>重新读取构建状态</button></p></section> : null}
+
+      {!loading && !error && graph?.initialized ? <div className={styles.overview} aria-label="构建工作路径">
+        <WorkflowNotice status={summaryStatus} title="当前任务与进度">
+          <p>{nextTask ? `当前关注：${nextTask.title}` : "所有任务状态见下方列表"}</p>
+          <progress aria-label="构建完成进度" value={completedCount} max={Math.max(graph.tasks.length, 1)} />
+          <p>已完成 {completedCount} 项，共 {graph.tasks.length} 项</p>
+        </WorkflowNotice>
+        <WorkflowNotice status={attentionTasks.some((task) => ["blocked", "failed", "validation_failed"].includes(task.status)) ? "blocked" : attentionTasks.length ? "review_required" : graph.tasks.length > 0 && completedCount === graph.tasks.length ? "completed" : "pending"} title="产物与校验">
+          <p>受阻 {graph.tasks.filter((task) => ["blocked", "failed", "validation_failed"].includes(task.status)).length} · 过期 {graph.tasks.filter((task) => task.status === "stale").length} · 待审核 {graph.tasks.filter((task) => task.status === "review_required").length}</p>
+          <p>{attentionTasks.length ? "先处理需关注的产物，再推进后续任务。" : "选择任务查看产物版本、来源与校验结果。"}</p>
+          {attentionTasks.length ? <button className={styles.edit_button} disabled={draftOpen} onClick={() => setSelectedTaskId((attentionTasks.find((task) => task.status !== "blocked") ?? attentionTasks[0]).task_id)}>查看待处理产物</button> : null}
+        </WorkflowNotice>
+        <WorkflowNotice status={summaryStatus} title="下一动作与模型状态">
+          <p>{orchestrationBusy ? "正在构建，请等待当前任务完成。" : graph.opening_next_volume_available ? "卷末已到：扩展下一卷细纲任务，再继续构建。" : graph.opening_execution_started && !graph.opening_planning_pending ? "前往正文候选与审查，逐章人工确认。" : attentionTasks.some((task) => ["failed", "validation_failed", "review_required"].includes(task.status)) ? "查看待处理产物，按诊断修正后继续构建。" : attentionTasks.some((task) => task.status === "stale") ? "点击“重建过期项”更新依赖产物。" : attentionTasks.length ? "查看待处理产物，先处理其前置依赖。" : graph.tasks.length > 0 && completedCount === graph.tasks.length ? "构建任务已完成，可前往正文候选与审查。" : "点击“继续构建”，或“运行下一任务”逐步推进。"}</p>
+          <p>{(nextTask ?? selectedTask)?.model ? `任务记录模型：${(nextTask ?? selectedTask)?.model}` : "模型尚未在当前任务记录中提供。"} 可在支持预检的任务详情检查模型请求。</p>
+          <p><a href="#build-operations">前往构建操作</a></p>
+        </WorkflowNotice>
+      </div> : null}
 
       {!loading && !error && graph ? <section className="ws-card" aria-label="完整开局构建">
         <h2 className={styles.empty_title}>{graph.opening_graph ? "完整开局图已启用" : "构建故事到章节的完整开局"}</h2>
@@ -561,7 +607,7 @@ export default function BuildWorkbenchPage() {
             <div><span>物化状态</span><strong>{graph.materialization_status === "in_use" ? "已用于正文，规划已锁定" : graph.materialization_status === "outdated" ? "旧物化结果已过期" : graph.materialization_status === "current" ? "当前" : "未物化"}</strong></div>
           </section>
 
-          <section className={`ws-card ${styles.orchestration}`} aria-label="构建操作">
+          <section id="build-operations" className={`ws-card ${styles.orchestration}`} aria-label="构建操作">
             <div className={styles.orchestration_actions}>
               <button type="button" disabled={orchestrationBusy || openingBusy || (graph.opening_execution_started && !graph.opening_planning_pending)} onClick={() => void runOrchestration("continue")}>继续构建</button>
               <button type="button" disabled={orchestrationBusy || openingBusy || (graph.opening_execution_started && !graph.opening_planning_pending) || !graph.tasks.some((task) => task.status === "stale")} onClick={() => void runOrchestration("rebuild_stale")}>重建过期项</button>
@@ -575,9 +621,9 @@ export default function BuildWorkbenchPage() {
               {orchestration.failure_task_id ? <p>失败任务：{graph.tasks.find((task) => task.task_id === orchestration.failure_task_id)?.title || orchestration.failure_task_id} · {orchestration.error_code}</p> : null}
               {orchestration.next_task_id && orchestration.status === "completed" ? <p>下一任务：{graph.tasks.find((task) => task.task_id === orchestration.next_task_id)?.title || orchestration.next_task_id}</p> : null}
               {orchestration.materialized ? <p>{graph.opening_graph ? `全部任务已就绪，世界、角色和前 ${graph.opening_chapter_count ?? 3} 章细纲已发布。` : "全部任务已就绪，世界设定已重新物化。"}</p> : null}
-              {orchestration.diagnostics?.length ? <ul className={styles.diagnostics}>{orchestration.diagnostics.map((diagnostic, index) => (
+              {orchestration.diagnostics?.length ? <details open={orchestration.diagnostics.length <= 3}><summary>构建诊断（{orchestration.diagnostics.length} 项）</summary><ul className={styles.diagnostics}>{orchestration.diagnostics.map((diagnostic, index) => (
                 <li key={`${diagnostic.code}-${diagnostic.path}-${index}`}><strong>{diagnostic.code}</strong><code>{diagnostic.path || "（未提供路径）"}</code><p>{diagnostic.message}</p></li>
-              ))}</ul> : null}
+              ))}</ul></details> : null}
             </div> : null}
           </section>
 
