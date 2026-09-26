@@ -563,9 +563,29 @@ class ModelProfile:
 class ModelCapabilityStore:
     """Small JSON cache containing runtime evidence only, never credentials."""
 
+    _shared_lock = RLock()
+
     def __init__(self, path: str | os.PathLike[str] | None = None) -> None:
         self.path = Path(path) if path is not None else CAPABILITY_CACHE_FILE
-        self._lock = RLock()
+        self._lock = self._shared_lock
+
+    def invalidate_identity(self, identity: ModelIdentity) -> None:
+        """Discard evidence for a removed binding, including resolved snapshots."""
+        with self._lock:
+            payload = self._read()
+            profiles = payload["profiles"]
+            removed = []
+            for key, entry in profiles.items():
+                try:
+                    cached = ModelIdentity.from_dict(entry["identity"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if cached.with_resolved_model(None) == identity.with_resolved_model(None):
+                    removed.append(key)
+            for key in removed:
+                del profiles[key]
+            if removed:
+                self._write(payload)
 
     @staticmethod
     def _empty_payload() -> dict[str, Any]:

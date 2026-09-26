@@ -48,6 +48,10 @@ const runtimeConfiguration = {
 };
 
 async function routeConfig(page: Page, onPut?: (payload: any) => void) {
+  await page.route("**/runtime-settings/capabilities", async (route) => {
+    const candidate = route.request().postDataJSON();
+    await route.fulfill({ json: capabilityProfile(candidate.runtime_settings.stages[candidate.stage]) });
+  });
   await page.route("**/runtime-settings/providers", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(providerCatalog) }));
   await page.route("**/runtime-settings", async (route) => {
     if (route.request().method() === "PUT") onPut?.(route.request().postDataJSON());
@@ -69,6 +73,76 @@ async function routeConfig(page: Page, onPut?: (payload: any) => void) {
     });
   });
 }
+
+function capabilityProfile(binding: { provider_id: string; model: string }, verified = false) {
+  const record = (state: string, source = "unknown", value: number | null = null) => ({
+    state, source, value, verification_status: source === "runtime_observation" ? "verified" : source === "user_declared" ? "declared" : "unknown",
+    verified_at: source === "unknown" ? null : "2026-09-26T00:00:00Z",
+    expires_at: source === "runtime_observation" ? "2099-09-27T00:00:00Z" : null,
+  });
+  return {
+    provider: binding.provider_id, model: binding.model, protocol: "openai_compatible", identity_key: `fake-${binding.model}`,
+    output_budget: binding.provider_id === "codexcli" ? "best_effort" : "provider_parameter",
+    records: {
+      streaming: record(verified ? "unsupported" : "unknown", verified ? "runtime_observation" : "unknown"),
+      json_mode: record("supported", "user_declared"), temperature: record("unknown"),
+      context_window: record("supported", "user_declared", 8192),
+    },
+  };
+}
+
+test("capabilities are local on read and refresh shows provenance for the current candidate", async ({ page }) => {
+  await routeConfig(page);
+  const refreshes: any[] = [];
+  await page.route("**/runtime-settings/refresh-capabilities", async (route) => {
+    const candidate = route.request().postDataJSON();
+    refreshes.push(candidate);
+    await route.fulfill({ json: { ok: true, steps: [
+      { step: "connectivity", status: "success" },
+      { step: "discovery", status: "success", model_count: 1, selected_model_found: true },
+      { step: "streaming", status: "unsupported" },
+    ], profile: capabilityProfile(candidate.runtime_settings.stages[candidate.stage], true) } });
+  });
+  await page.goto("/config");
+  const panel = page.getByRole("region", { name: "正文写作能力记录", exact: true });
+  await expect(panel.getByText("当前配置的能力记录已载入。")).toBeVisible();
+  expect(refreshes).toHaveLength(0);
+  await expect(panel.getByRole("row").filter({ hasText: "JSON 模式" })).toContainText("用户声明");
+  await expect(page.getByText(/CLI 输出预算为 best_effort/)).toBeVisible();
+  await page.getByLabel("正文写作模型").selectOption("deepseek-novel");
+  await panel.getByRole("button", { name: "测试并刷新正文写作能力" }).click();
+  await expect(panel.getByRole("status")).toContainText("模型发现：成功");
+  expect(refreshes).toHaveLength(1);
+  expect(refreshes[0].runtime_settings.stages.writer.model).toBe("deepseek-novel");
+  await expect(panel.getByRole("row").filter({ hasText: "流式输出" })).toContainText("不支持");
+  await expect(panel.getByRole("row").filter({ hasText: "流式输出" })).toContainText("运行验证");
+  await expect(panel.getByRole("row").filter({ hasText: "流式输出" })).toContainText("2099-09-27");
+  await page.screenshot({ path: "test-results/config-capabilities.png", fullPage: true });
+});
+
+test("editing a model discards a late capability refresh response", async ({ page }) => {
+  await routeConfig(page);
+  let release: () => void = () => {};
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  let requested = false;
+  await page.route("**/runtime-settings/refresh-capabilities", async (route) => {
+    requested = true;
+    const candidate = route.request().postDataJSON();
+    await pending;
+    await route.fulfill({ json: { ok: true, steps: [{ step: "streaming", status: "unsupported" }], profile: capabilityProfile(candidate.runtime_settings.stages.writer, true) } });
+  });
+  await page.goto("/config");
+  const panel = page.getByRole("region", { name: "正文写作能力记录", exact: true });
+  await expect(panel.getByText("当前配置的能力记录已载入。")).toBeVisible();
+  await panel.getByRole("button").click();
+  await expect.poll(() => requested).toBe(true);
+  await page.getByLabel("正文写作模型").selectOption("deepseek-novel");
+  await expect(panel.getByText("当前配置的能力记录已载入。")).toBeVisible();
+  release();
+  await expect(panel.getByRole("heading")).toContainText("deepseek-novel");
+  await expect(panel.getByRole("row").filter({ hasText: "流式输出" })).toContainText("未知");
+  await expect(panel.getByRole("row").filter({ hasText: "流式输出" })).not.toContainText("运行验证");
+});
 
 test("/config uses provider accounts and exactly two stage bindings", async ({ page }) => {
   let saved: any = null;
