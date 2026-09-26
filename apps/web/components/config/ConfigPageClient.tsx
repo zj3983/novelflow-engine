@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { CapabilityPanel } from "../../app/config/CapabilityPanel";
 
 import {
   createDefaultRuntimeSettings,
@@ -184,6 +185,7 @@ export function ConfigPageClient() {
       <div className="config-shell__primary">
         <ProviderAccountsCard value={settings} providers={providers} statuses={connections} disabled={busy} onChange={setSettings} onTest={(providerId, model) => void testProvider(providerId, model)} />
         <StageBindingsCard value={settings} providers={providers} disabled={busy} onChange={setSettings} />
+        <CapabilityPanel settings={settings} disabled={busy} />
         <OutlinePlanningCard
           value={settings.outline_planning}
           disabled={busy}

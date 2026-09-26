@@ -10,6 +10,8 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
 
 from packages.story_core.codex_cli_provider import (
@@ -19,6 +21,8 @@ from packages.story_core.codex_cli_provider import (
     read_latest_codex_cli_version,
 )
 from packages.story_core.model_gateway.contracts import ModelRequest
+from packages.story_core.model_gateway.capabilities import ModelCapabilityResolver
+from packages.story_core.model_gateway.capability_refresh import capability_snapshot, refresh_capabilities
 from packages.story_core.model_gateway.model_discovery import discover_provider_models
 from packages.story_core.model_gateway.provider_catalog import (
     BUILTIN_PROVIDER_IDS,
@@ -36,7 +40,29 @@ from packages.story_core.runtime_config import (
 )
 
 
-router = APIRouter()
+class _SecretSafeRoute(APIRoute):
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def safe_handler(request):
+            try:
+                return await handler(request)
+            except RequestValidationError as exc:
+                # Pydantic includes the complete candidate input for model-level
+                # failures. Never echo credentials through validation diagnostics.
+                safe_fields = {"body", "runtime_settings", "stage", "accounts", "stages", "planner", "writer", "provider_id", "model", "api_key", "base_url", "codex_command", "custom_models", "model_capabilities", "image", "enabled", "temperature", "outline_planning", "timeout_seconds", "stream", "split_phases", "new_character_policy", "schema_version", *BUILTIN_PROVIDER_IDS}
+                safe_types = {"missing", "value_error", "extra_forbidden", "literal_error", "string_type", "float_parsing", "int_parsing", "greater_than_equal", "less_than_equal", "model_type", "dict_type", "list_type"}
+                detail = [{
+                    "loc": [part if isinstance(part, int) or part in safe_fields else "field" for part in error["loc"]],
+                    "type": error["type"] if error["type"] in safe_types else "validation_error",
+                    "msg": "配置字段无效，请检查必填值与服务商绑定",
+                } for error in exc.errors()]
+                raise HTTPException(status_code=422, detail=detail) from None
+
+        return safe_handler
+
+
+router = APIRouter(route_class=_SecretSafeRoute)
 _MASKED_API_KEY = "********"
 
 
@@ -270,7 +296,55 @@ def read_runtime_settings() -> dict[str, object]:
 def update_runtime_settings(payload: RuntimeConfiguration) -> dict[str, object]:
     candidate = _restore_masked_api_keys(payload)
     _validate_selected_accounts(candidate)
-    return _serialize_runtime_settings(set_runtime_configuration(candidate))
+    previous = get_runtime_configuration()
+    saved = set_runtime_configuration(candidate)
+    resolver = ModelCapabilityResolver()
+
+    def identities(configuration):
+        found = set()
+        for stage in ("planner", "writer"):
+            binding = getattr(configuration.stages, stage)
+            account = configuration.accounts.get(binding.provider_id)
+            if account:
+                definition = provider_definition(binding.provider_id)
+                found.add(resolver.identity(binding.provider_id, account.base_url, _strip_model_display_name(binding.model), definition.protocol))
+        return found
+
+    for identity in identities(previous) - identities(saved):
+        resolver.store.invalidate_identity(identity)
+    return _serialize_runtime_settings(saved)
+
+
+@router.post("/runtime-settings/capabilities")
+def read_candidate_capabilities(payload: RuntimeSettingsTestRequest) -> dict:
+    """Local-only preview, including unsaved settings; never invokes a provider."""
+    candidate = _restore_masked_api_keys(payload.runtime_settings)
+    binding = getattr(candidate.stages, payload.stage)
+    try:
+        definition = provider_definition(binding.provider_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=422, detail="unknown_provider") from exc
+    account = candidate.accounts.get(binding.provider_id)
+    if account is None:
+        raise HTTPException(status_code=422, detail="provider_account_missing")
+    model = _strip_model_display_name(binding.model)
+    runtime = StageRuntimeSettings(
+        provider_id=binding.provider_id, protocol=definition.protocol, model=model,
+        base_url=account.base_url, api_key="", codex_command=account.codex_command,
+        user_declared_capabilities=dict(account.model_capabilities.get(model, {})),
+    )
+    return capability_snapshot(runtime, ModelCapabilityResolver())
+
+
+@router.post("/runtime-settings/refresh-capabilities")
+def refresh_candidate_capabilities(payload: RuntimeSettingsTestRequest) -> dict:
+    candidate = _restore_masked_api_keys(payload.runtime_settings)
+    # Only the selected stage is tested; an unrelated incomplete binding must
+    # not prevent a candidate provider from being configured.
+    runtime = _resolve_candidate_stage_runtime(candidate, payload.stage)
+    if not runtime.model.strip():
+        raise HTTPException(status_code=422, detail="model_required")
+    return refresh_capabilities(runtime)
 
 
 @router.post("/runtime-settings/reveal-api-key")
@@ -298,7 +372,6 @@ def reveal_runtime_api_key(
 @router.post("/runtime-settings/test")
 def test_runtime_settings(payload: RuntimeSettingsTestRequest) -> RuntimeSettingsTestResponse:
     candidate = _restore_masked_api_keys(payload.runtime_settings)
-    _validate_selected_accounts(candidate)
     runtime = _resolve_candidate_stage_runtime(candidate, payload.stage)
     request = ModelRequest(
         prompt="只回复 pong。",
