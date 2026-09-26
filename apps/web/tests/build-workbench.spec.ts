@@ -142,7 +142,7 @@ test("卷末显式扩展下一卷，刷新后显示版本和待构建任务", as
   await expect(page.getByRole("button", { name: "继续构建" })).toBeEnabled();
   await expect(page.getByText("规划版本：v1（第 1–50 章）")).toBeVisible();
   await page.reload();
-  await expect(page.getByText("第51章细纲")).toBeVisible();
+  await expect(page.getByText("第51章细纲", { exact: true })).toBeVisible();
   expect(writes).toBe(1);
 });
 
@@ -244,6 +244,7 @@ test("15 个完成任务显示正式状态、来源和版本，刷新后仍从�
   await expect(page.getByText("r1 · AI 修复", { exact: true })).toBeVisible();
   await expect(page.getByText("r1 · 系统生成", { exact: true })).toBeVisible();
   await expect(page.getByText("r1 · AI 生成", { exact: true }).first()).toBeVisible();
+  await page.getByText("任务契约与原始产物详情", { exact: true }).click();
   await expect(page.getByText("build.input_0", { exact: true })).toBeVisible();
   await expect(page.getByText("build.output_0", { exact: true })).toBeVisible();
   await expect(page.getByText("provider-x", { exact: true })).toBeVisible();
@@ -532,4 +533,26 @@ test("重建过期项显示运行任务、完成任务与重新物化结果", as
   await expect(page.getByText("全部任务已就绪，世界设定已重新物化。")).toBeVisible();
   await expect(page.getByText("environment_ready", { exact: true })).toBeVisible();
   expect(requestedMode).toBe("rebuild_stale");
+});
+
+
+test("首屏给出恢复动作，长诊断折叠且保留原始产物", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await routeProjectAndGraph(page, graph([task(0, {
+    status: "validation_failed", validation_status: "failed",
+    diagnostics: Array.from({ length: 5 }, (_, index) => ({ code: `invalid_${index}`, path: `rules.${index}`, message: `规则诊断 ${index}`, severity: "blocking" })),
+  }), task(1, { status: "stale" })]));
+  await page.goto(`/projects/${encodedId}/build`);
+  const overview = page.getByLabel("构建工作路径");
+  await expect(overview.getByLabel("当前任务与进度")).toBeInViewport();
+  await expect(overview.getByLabel("产物与校验")).toContainText("受阻 1 · 过期 1 · 待审核 0");
+  await expect(overview.getByLabel("下一动作与模型状态")).toContainText("查看待处理产物");
+  await page.getByRole("button", { name: "查看待处理产物" }).click();
+  await expect(page.getByLabel("任务处理建议")).toContainText("先查看诊断");
+  await expect(page.getByText("规则诊断 4", { exact: true })).not.toBeVisible();
+  await page.getByText("查看诊断（5 项）", { exact: true }).click();
+  await expect(page.getByText("规则诊断 4", { exact: true })).toBeVisible();
+  await page.getByText("任务契约与原始产物详情", { exact: true }).click();
+  await expect(page.locator("pre").filter({ hasText: "Initial" })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("build-status-recovery.png"), fullPage: true });
 });
