@@ -73,10 +73,11 @@ function StageCapabilities({ settings, stage, disabled }: { settings: RuntimeSet
         <tbody>{Object.entries(labels).map(([key, label]) => {
           const record = profile?.records[key];
           const expired = record?.expires_at && Date.parse(record.expires_at) <= Date.now();
+          const state = expired ? "unknown" : record?.state ?? "unknown";
           return <tr key={key}>
             <td>{label}</td>
-            <td>{record ? states[record.state] : "未知"}{record?.state === "supported" && record.value != null ? ` · ${record.value.toLocaleString()}` : ""}{expired ? "（已过期）" : ""}</td>
-            <td>{record ? sources[record.source] ?? "未知" : "未知"} {record?.verification_status === "declared" ? "· 声明" : record?.verification_status === "verified" ? "· 已验证" : ""}</td>
+            <td>{states[state]}{state === "supported" && record?.value != null ? ` · ${record.value.toLocaleString()}` : ""}{expired ? "（已过期）" : ""}</td>
+            <td>{record ? sources[record.source] ?? "未知" : "未知"} {state !== "unknown" && record?.verification_status === "declared" ? "· 声明" : state !== "unknown" && record?.verification_status === "verified" ? "· 已验证" : ""}</td>
             <td>{record?.verified_at ?? "未验证"}<br />{record?.expires_at ?? "未设置到期时间"}</td>
           </tr>;
         })}</tbody>

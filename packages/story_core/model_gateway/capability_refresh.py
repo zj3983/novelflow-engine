@@ -54,7 +54,10 @@ def capability_snapshot(runtime: Any, resolver: ModelCapabilityResolver) -> dict
             "state": record.state,
             "value": record.value if record.state == "supported" and name in KNOWN_LIMITS and isinstance(record.value, (int, float)) and not isinstance(record.value, bool) else None,
             "source": provenance.source,
-            "verification_status": provenance.verification_status if record.state != "unknown" else "unknown",
+            "verification_status": (
+                {"runtime_observation": "verified", "provider_metadata": "verified", "official_catalog": "declared", "user_declared": "declared"}.get(provenance.source, "unknown")
+                if record.state != "unknown" else "unknown"
+            ),
             "verified_at": provenance.verified_at,
             "expires_at": provenance.expires_at,
         }

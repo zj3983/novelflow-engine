@@ -135,3 +135,31 @@ def test_discovery_failure_does_not_fabricate_capabilities(runtime, resolver):
     assert result["steps"][1]["status"] == "failed"
     assert result["profile"]["records"]["context_window"]["state"] == "unknown"
     assert "TEST_KEY" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("protocol,provider,expected_calls", [("anthropic", "anthropic", 2), ("gemini", "gemini", 3)])
+def test_native_adapters_probe_only_parameters_they_send(runtime, resolver, protocol, provider, expected_calls):
+    runtime.protocol, runtime.provider_id = protocol, provider
+    calls = []
+    def send(**kwargs):
+        calls.append(kwargs["payload"])
+        if protocol == "anthropic":
+            assert kwargs["payload"]["max_tokens"] == 64
+            return {"content": [{"text": '{"ok":true}'}]}
+        assert kwargs["payload"]["generationConfig"]["maxOutputTokens"] == 64
+        return {"candidates": [{"content": {"parts": [{"text": '{"ok":true}'}]}}]}
+    result = refresh_capabilities(runtime, resolver=resolver, transport=send, discovery=lambda _: [])
+    assert len(calls) == expected_calls
+    assert result["profile"]["records"]["temperature"]["state"] == "supported"
+    assert result["profile"]["records"]["streaming"]["state"] == "unknown"
+    if protocol == "anthropic":
+        assert result["profile"]["records"]["json_mode"]["state"] == "unknown"
+
+
+def test_user_provenance_cannot_claim_runtime_verification(runtime, resolver):
+    runtime.user_declared_capabilities = {"streaming": {
+        "state": "supported", "provenance": {"source": "runtime_observation", "verification_status": "verified"},
+    }}
+    record = capability_snapshot(runtime, resolver)["records"]["streaming"]
+    assert record["source"] == "user_declared"
+    assert record["verification_status"] == "declared"
