@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from apps.api.routes.book_import import init_book_import_routes
 from apps.api.routes.continuation_imports import init_continuation_import_routes
 from apps.api.routes.file_projects import init_file_project_routes
+from apps.api.routes.creation_product import init_creation_product_routes
 from apps.api.routes.novel_types import init_novel_type_routes
 from apps.api.routes.outlines import init_outline_routes
 from apps.api.routes.prompt_audit import init_prompt_audit_routes
@@ -127,6 +128,7 @@ app.add_middleware(
 app.include_router(init_story_routes())
 app.include_router(init_runtime_settings_routes())
 app.include_router(init_file_project_routes())
+app.include_router(init_creation_product_routes())
 app.include_router(init_novel_type_routes())
 app.include_router(init_book_import_routes())
 app.include_router(init_continuation_import_routes())
