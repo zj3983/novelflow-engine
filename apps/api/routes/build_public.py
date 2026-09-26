@@ -233,4 +233,3 @@ def init_build_public_routes() -> APIRouter:
                     "status_href": f"/file-projects/{project_id}/public-build"}
 
     return router
-
