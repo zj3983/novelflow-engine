@@ -645,15 +645,16 @@ export default function WritePage() {
   const lengthIssues = lengthReview?.issues ?? [];
   const writingLessons = story?.writing_lessons ?? [];
 
-  async function loadPendingCandidate(chapterNumber: number): Promise<CandidateDraft | null> {
+  async function loadPendingCandidate(chapterNumber: number, showAsCurrent = false): Promise<CandidateDraft | null> {
     if (!isFileProject) return null;
     const response = await fetchFileProjectCandidates(projectId, chapterNumber);
     const pending = response.items
       .filter((item) => item.status === "pending")
       .sort((left, right) => left.created_at.localeCompare(right.created_at))
       .at(-1) ?? null;
-    if (chapterNumber === requestedChapter) {
+    if (showAsCurrent || chapterNumber === requestedChapter) {
       setPendingCandidate(pending);
+      if (showAsCurrent) setNextPendingCandidate(null);
     } else if (chapterNumber === nextChapterNumber) {
       setNextPendingCandidate(pending);
     }
@@ -776,6 +777,11 @@ export default function WritePage() {
         ? completedChapterNumber
         : nextChapterNumber;
       await refresh({ invalidateChapter: false });
+      // A retry can finish on the same ?chapter= URL it started on, so
+      // neither requestedChapter nor refreshVersion changes to trigger the
+      // candidate-loading effect. Fetch the persisted draft explicitly and
+      // expose it as the current review before navigating to that chapter.
+      await loadPendingCandidate(generatedChapterNumber, true);
       setNextPendingCandidate(null);
       router.push(`/projects/${encodedProjectId}/write?chapter=${generatedChapterNumber}`);
     } catch (err) {
