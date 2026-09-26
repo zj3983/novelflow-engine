@@ -4,6 +4,8 @@ This dedicated suite exercises the file-project workflow through a real local Fa
 
 ## Run
 
+The default Playwright config explicitly excludes `tests/integration/**`, so `npx playwright test --list` and ordinary page tests do not import this suite or require any `INTEGRATION_*` variables. The dedicated config collects the two integration tests through the launcher below.
+
 From `apps/web`, install the web dependencies if needed, then run the dedicated launcher:
 
 ```powershell

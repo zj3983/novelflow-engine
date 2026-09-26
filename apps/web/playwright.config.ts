@@ -13,7 +13,8 @@ export default defineConfig({
   // as migration reference.
   testDir: "../..",
   testMatch: ["apps/web/tests/**/*.spec.ts"],
-  testIgnore: [`${repoRoot}/.worktrees/**`],
+  // Live API tests require the isolated servers and environment from their launcher.
+  testIgnore: [`${repoRoot}/.worktrees/**`, `${repoRoot}/apps/web/tests/integration/**`],
   fullyParallel: true,
   timeout: 30_000,
   expect: { timeout: 5_000 },
