@@ -527,7 +527,7 @@ test("新书从开局方向进入 Build，人工确认后跨卷继续候选审�
   await page.getByRole("button", { name: "采用这个方向" }).click();
   await expect(page).toHaveURL(new RegExp(`${encodedId}/outline$`));
 
-  await page.getByRole("link", { name: "开书构建" }).click();
+  await page.getByRole("link", { name: "开书构建", exact: true }).click();
   await expect(page.getByRole("heading", { name: "构建故事到章节的完整开局" })).toBeVisible();
   await expect(page.getByLabel("连续生产")).toHaveCount(0);
   await page.getByRole("button", { name: "启用完整开局图" }).click();
@@ -574,7 +574,7 @@ test("新书从开局方向进入 Build，人工确认后跨卷继续候选审�
   await expect(page).toHaveURL(new RegExp(`${encodedId}/write\\?chapter=1$`));
   expect(fixture.story.current_chapter).toBe(50);
 
-  await page.getByRole("link", { name: "开书构建" }).click();
+  await page.getByRole("link", { name: "开书构建", exact: true }).click();
   await expect(page.getByText("已用于正文，规划已锁定", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "扩展下一卷细纲任务" })).toBeVisible();
   await page.getByRole("button", { name: "扩展下一卷细纲任务" }).click();
