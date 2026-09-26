@@ -3,7 +3,7 @@ from dataclasses import replace
 
 import pytest
 
-from packages.story_core.model_gateway.capabilities import ModelCapabilityResolver, ModelCapabilityStore
+from packages.story_core.model_gateway.capabilities import CapabilityObservation, ModelCapabilityResolver, ModelCapabilityStore
 from packages.story_core.model_gateway.model_usability import read_model_usability, test_model_usability as run_model_test
 from packages.story_core.runtime_config import StageRuntimeSettings
 
@@ -75,3 +75,19 @@ def test_cli_explicit_test_uses_gateway_without_capability_probe(context):
             assert request.operation == "model_usability_test"
             return ModelResponse.success(request, text="OK")
     assert run_model_test(runtime, resolver=resolver, gateway=FakeGateway(), refresh=lambda *_args, **_kwargs: pytest.fail("CLI probe"))["status"] == "ready"
+
+
+def test_connection_success_with_unsupported_features_does_not_claim_task_suitability(context):
+    runtime, resolver = context
+    identity = resolver.identity(runtime.provider_id, runtime.base_url, runtime.model, runtime.protocol)
+    for capability in ("streaming", "json_mode", "reasoning_effort"):
+        resolver.record_runtime_observation(CapabilityObservation(identity, capability, "unsupported"))
+    view = run_model_test(runtime, resolver=resolver, refresh=passed, stage="writer")
+    assert view["status"] == "ready"
+    assert view["heading"] == "模型已连接"
+    assert "可以发起创作" in view["message"]
+    assert "具体内容能否完成会在开始时检查" in view["message"]
+    assert "可用" not in view["heading"]
+    for term in ("streaming", "json_mode", "preflight", "supported", "推理强度"):
+        assert term not in json.dumps(view, ensure_ascii=False)
+    assert resolver.resolve_model_profile(runtime.provider_id, runtime.base_url, runtime.model, runtime.protocol).effective_capability("json_mode").state == "unsupported"

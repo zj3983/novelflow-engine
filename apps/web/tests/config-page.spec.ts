@@ -44,7 +44,7 @@ const runtimeConfiguration = {
 };
 
 const untested = { status: "untested", heading: "尚未检测", message: "请先测试模型。", tone: "neutral", can_continue: false, actions: [{ id: "test", label: "测试模型" }] };
-const ready = { status: "ready", heading: "模型可用", message: "连接正常，可以继续创作。", tone: "success", can_continue: true, actions: [{ id: "test", label: "重新检测" }] };
+const ready = { status: "ready", heading: "模型已连接", message: "模型连接正常。可以发起创作；具体内容能否完成会在开始时检查。", tone: "success", can_continue: true, actions: [{ id: "test", label: "重新检测" }] };
 
 async function routeConfig(page: Page, onPut?: (payload: any) => void) {
   await page.route("**/runtime-settings/product/providers", (route) => route.fulfill({ json: providerCatalog }));
@@ -78,7 +78,7 @@ test("ordinary config receives product responses and only explicitly tests the c
   expect(refreshes).toHaveLength(0);
   await page.getByLabel("正文写作模型").selectOption("deepseek-novel");
   await panel.getByRole("button", { name: "测试模型", exact: true }).click();
-  await expect(panel.getByText("模型可用")).toBeVisible();
+  await expect(panel.getByText("模型已连接")).toBeVisible();
   expect(refreshes[0].settings.stages.writer.model).toBe("deepseek-novel");
   expect(requests.every((url) => url.includes("/runtime-settings/product"))).toBe(true);
   await expect(page.locator("textarea")).toHaveCount(0);
@@ -108,7 +108,7 @@ test("editing a model discards a late test result", async ({ page }) => {
   await expect(panel.getByText("尚未检测")).toBeVisible();
   release();
   await expect(panel.getByRole("heading")).toContainText("deepseek-novel");
-  await expect(panel.getByText("模型可用")).toHaveCount(0);
+  await expect(panel.getByText("模型已连接")).toHaveCount(0);
 });
 
 test("repair actions and explanations come from the backend", async ({ page }) => {

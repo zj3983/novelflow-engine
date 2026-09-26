@@ -10,7 +10,7 @@ from .runtime_gateway import RuntimeModelGateway
 
 def usability_view(status="untested", *, stage="planner"):
     presentations = {
-        "ready": ("模型可用", "连接正常，可以使用当前模型继续创作。", "success", True),
+        "ready": ("模型已连接", "模型连接正常。可以发起创作；具体内容能否完成会在开始时检查。", "success", True),
         "untested": ("尚未检测", "当前模型还没有有效的检测结果，请先测试模型。", "neutral", False),
         "connection_error": ("连接未成功", "暂时无法使用当前模型。请检查密钥和连接地址，也可以稍后重新检测。", "warning", False),
         "blocked": ("需要完善设置", "请补全当前模型的连接设置，再测试模型。", "warning", False),
@@ -23,6 +23,7 @@ def usability_view(status="untested", *, stage="planner"):
 
 
 def read_model_usability(runtime, *, resolver=None, stage="planner"):
+    """Report connection readiness; task suitability stays with execution preflight."""
     resolver = resolver or ModelCapabilityResolver()
     # User capability declarations cannot prove a working connection.
     identity = resolver.identity(runtime.provider_id, runtime.base_url, runtime.model, runtime.protocol)
