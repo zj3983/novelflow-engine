@@ -1,0 +1,11 @@
+.notice { border: 1px solid var(--ws-line); border-left: 4px solid var(--ws-accent); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; background: var(--ws-surface, #fffdf8); min-width: 0; }
+.heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.heading span { font-size: 12px; font-weight: 800; border-radius: 20px; padding: 3px 9px; background: var(--ws-accent-soft); }
+.notice p { margin: 8px 0 0; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.danger { border-left-color: var(--ws-danger); }
+.danger .heading span { color: var(--ws-danger); background: rgba(180,35,24,.08); }
+.warning { border-left-color: var(--ws-warn); }
+.warning .heading span { color: var(--ws-warn); background: var(--ws-warn-soft); }
+.success { border-left-color: var(--ws-success); }
+.success .heading span { color: var(--ws-success); background: var(--ws-success-soft); }
+.neutral { border-left-color: var(--ws-accent); }

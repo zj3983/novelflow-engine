@@ -1,5 +1,6 @@
 "use client";
 
+import { usePathname } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import {
@@ -77,6 +78,8 @@ export function normalizeStoryChapterIndex(story: StoryResponse | null): Chapter
 }
 
 export function ProjectWorkspaceProvider({ projectId, children }: ProjectWorkspaceProviderProps) {
+  const pathname = usePathname() ?? "";
+  const productPage = /\/(build|write)\/?$/.test(pathname);
   const [project, setProject] = useState<ProjectResponse | null>(null);
   const [story, setStory] = useState<WorkspaceStory | null>(null);
   const [loading, setLoading] = useState(true);
@@ -102,10 +105,16 @@ export function ProjectWorkspaceProvider({ projectId, children }: ProjectWorkspa
 
   useEffect(() => {
     let cancelled = false;
+    refreshToken.current += 1;
     const projectChanged = activeProjectId.current !== projectId;
     activeProjectId.current = projectId;
-    setLoading(true);
+    setLoading(!productPage);
     setError(null);
+    if (productPage) {
+      setProject(null);
+      setStory(null);
+      return () => { cancelled = true; };
+    }
     if (projectChanged) {
       setProject(null);
       setStory(null);
@@ -141,9 +150,10 @@ export function ProjectWorkspaceProvider({ projectId, children }: ProjectWorkspa
     return () => {
       cancelled = true;
     };
-  }, [overviewVersion, projectId]);
+  }, [overviewVersion, projectId, productPage]);
 
   const refresh = useCallback(async (options?: { invalidateChapter?: boolean }) => {
+    if (productPage) return;
     const token = ++refreshToken.current;
     const requestedProjectId = activeProjectId.current;
     setError(null);
@@ -168,10 +178,12 @@ export function ProjectWorkspaceProvider({ projectId, children }: ProjectWorkspa
       setError(err instanceof Error ? err.message : String(err));
       throw err;
     }
-  }, []);
+  }, [productPage]);
 
   const hasCurrentProject = activeProjectId.current === projectId;
-  const currentView = selectProjectWorkspaceView({ hasCurrentProject, project, story, loading, error });
+  const currentView = productPage
+    ? { project: null, story: null, loading: false, error: null }
+    : selectProjectWorkspaceView({ hasCurrentProject, project, story, loading, error });
   const chapterIndex = useMemo(() => {
     if (!currentView.story) return [];
     if ("chapters" in currentView.story) return currentView.story.chapters;

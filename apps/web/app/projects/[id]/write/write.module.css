@@ -1,0 +1,7 @@
+.steps { display: flex; flex-wrap: wrap; gap: 8px 18px; list-style: none; padding: 0; margin: 12px 0; font-size: 12px; color: var(--ws-ink-muted); }
+.steps li { padding: 5px 8px; border: 1px solid var(--ws-line); border-radius: 6px; }
+.steps [aria-current="step"] { color: var(--ws-accent); background: var(--ws-accent-soft); font-weight: 800; }
+.candidate { text-align: left; width: 100%; margin: 14px 0; }
+
+.directory { max-height: 65vh; overflow-y: auto; scrollbar-gutter: stable; }
+@media (max-width: 760px) { .directory { max-height: min(50vh, 420px); } }
