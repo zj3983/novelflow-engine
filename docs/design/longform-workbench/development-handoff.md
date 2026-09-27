@@ -137,4 +137,4 @@ npm exec -- next dev -p 3530
 
 设计原稿在 `references/writing.png`、`books.png`、`planning.png`、`story.png`。这些是设计依据，不是本轮页面截图。本轮没有生成新的实拍页面证据。阶段 A 的浏览器权限验证故障仍列为待复核，不能以已实现代码替代视觉验收。
 
-最终 Draft PR、HEAD 和 CI 链接由集成方完成交付时补充；本文件不虚构 PR 或检查结果。真实模型下的连续性、文本质量、速度和依赖安全仍需独立授权与验收。
+统一交付为 [Draft PR #45](https://github.com/zj3983/novelflow-engine/pull/45)，当前 HEAD 以 PR 为准。按用户要求，交付提交使用 `[skip ci]` 暂停自动 CI；工作流未修改，没有本轮成功的 CI 链接。恢复验收后必须重新执行最终 HEAD 的完整检查。真实模型下的连续性、文本质量、速度和依赖安全仍需独立授权与验收。
