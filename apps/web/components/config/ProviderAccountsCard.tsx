@@ -1,14 +1,14 @@
 import { Eye, EyeOff, PlugZap, RefreshCw } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   discoverRuntimeModels,
   revealRuntimeApiKey,
-  type RuntimeDiscoveredModel,
+  type ProductModel,
   type RuntimeProviderAccount,
   type RuntimeProviderDefinition,
   type RuntimeSettings,
-} from "../../lib/api";
+} from "../../lib/config-capabilities";
 import type { RuntimeConnectionStatus } from "./types";
 
 type Props = {
@@ -25,8 +25,7 @@ function accountFor(value: RuntimeSettings, provider: RuntimeProviderDefinition)
     api_key: "",
     base_url: provider.default_base_url,
     custom_models: [],
-    codex_command: provider.protocol === "codex_cli" ? "codex" : provider.protocol === "antigravity_cli" ? "agy" : "",
-    model_capabilities: {},
+    codex_command: provider.default_command,
   };
 }
 
@@ -35,11 +34,10 @@ export function ProviderAccountsCard({ value, providers, statuses, disabled, onC
   const [showKey, setShowKey] = useState(false);
   const [revealedKey, setRevealedKey] = useState("");
   const [revealError, setRevealError] = useState("");
-  const [discoveredModels, setDiscoveredModels] = useState<RuntimeDiscoveredModel[]>([]);
+  const [discoveredModels, setDiscoveredModels] = useState<ProductModel[]>([]);
   const [discoveryState, setDiscoveryState] = useState<"idle" | "loading" | "error">("idle");
   const [discoveryMessage, setDiscoveryMessage] = useState("");
-  const [capabilitiesJson, setCapabilitiesJson] = useState("{}");
-  const [capabilitiesError, setCapabilitiesError] = useState("");
+  const discoveryGeneration = useRef(0);
   const selected = providers.find((provider) => provider.provider_id === selectedId) ?? providers[0];
   const account = selected ? accountFor(value, selected) : null;
   const status = statuses[selectedId] ?? { state: "idle", message: "" };
@@ -47,24 +45,21 @@ export function ProviderAccountsCard({ value, providers, statuses, disabled, onC
   const keyValue = storedKey ? revealedKey : (account?.api_key ?? "");
 
   useEffect(() => {
+    discoveryGeneration.current++;
     if (providers.length > 0 && !providers.some((provider) => provider.provider_id === selectedId)) {
       setSelectedId(providers[0].provider_id);
     }
   }, [providers, selectedId]);
 
   useEffect(() => {
+    discoveryGeneration.current++;
     setShowKey(false);
     setRevealedKey("");
     setRevealError("");
     setDiscoveredModels([]);
     setDiscoveryState("idle");
     setDiscoveryMessage("");
-  }, [selectedId, disabled]);
-
-  useEffect(() => {
-    setCapabilitiesJson(JSON.stringify(value.accounts[selectedId]?.model_capabilities ?? {}, null, 2));
-    setCapabilitiesError("");
-  }, [selectedId, value.accounts[selectedId]?.model_capabilities]);
+  }, [selectedId, disabled, value.accounts[selectedId]?.base_url, value.accounts[selectedId]?.api_key]);
 
   const selectedModels = useMemo(() => {
     if (!selected || !account) return [];
@@ -79,19 +74,6 @@ export function ProviderAccountsCard({ value, providers, statuses, disabled, onC
       ...value,
       accounts: { ...value.accounts, [selected.provider_id]: { ...activeAccount, ...patch } },
     });
-  }
-
-  function saveModelCapabilities() {
-    try {
-      const parsed: unknown = JSON.parse(capabilitiesJson);
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new Error("顶层必须是 JSON 对象");
-      }
-      updateAccount({ model_capabilities: parsed as Record<string, Record<string, unknown>> });
-      setCapabilitiesError("");
-    } catch (error) {
-      setCapabilitiesError(error instanceof Error ? error.message : "JSON 格式无效");
-    }
   }
 
   async function toggleKey() {
@@ -114,31 +96,28 @@ export function ProviderAccountsCard({ value, providers, statuses, disabled, onC
   }
 
   async function discoverModels() {
+    const current = ++discoveryGeneration.current;
     setDiscoveryState("loading");
     setDiscoveryMessage("");
     try {
       const result = await discoverRuntimeModels(value, selected.provider_id);
+      if (current !== discoveryGeneration.current) return;
       setDiscoveredModels(result.models);
       setDiscoveryState("idle");
-      setDiscoveryMessage(result.models.length ? `发现 ${result.models.length} 个候选模型` : "没有发现模型");
+      setDiscoveryMessage(result.message);
     } catch (error) {
+      if (current !== discoveryGeneration.current) return;
       setDiscoveryState("error");
       setDiscoveryMessage(error instanceof Error ? error.message : "获取模型列表失败");
     }
   }
 
-  function toggleDiscoveredModel(model: RuntimeDiscoveredModel, enabled: boolean) {
-    if (model.compatibility === "unsupported") return;
+  function toggleDiscoveredModel(model: ProductModel, enabled: boolean) {
+    if (!model.selectable) return;
     const next = enabled
-      ? Array.from(new Set([...activeAccount.custom_models, model.model_id]))
-      : activeAccount.custom_models.filter((item) => item !== model.model_id);
+      ? Array.from(new Set([...activeAccount.custom_models, model.name]))
+      : activeAccount.custom_models.filter((item) => item !== model.name);
     updateAccount({ custom_models: next });
-  }
-
-  function compatibilityLabel(model: RuntimeDiscoveredModel) {
-    if (model.compatibility === "supported") return "可用于写作";
-    if (model.compatibility === "unsupported") return "不可用于写作";
-    return "需要测试";
   }
 
   return (
@@ -159,10 +138,11 @@ export function ProviderAccountsCard({ value, providers, statuses, disabled, onC
               aria-current={provider.provider_id === selected.provider_id ? "true" : undefined}
               disabled={disabled}
               key={provider.provider_id}
+              data-provider-id={provider.provider_id}
               onClick={() => setSelectedId(provider.provider_id)}
             >
               <span>{provider.name}</span>
-              <small>{value.accounts[provider.provider_id]?.api_key === "********" || !provider.requires_api_key ? "可用" : "未配置"}</small>
+              <small>{provider.account_label}</small>
             </button>
           ))}
         </nav>
@@ -171,7 +151,6 @@ export function ProviderAccountsCard({ value, providers, statuses, disabled, onC
           <div className="config-card__header">
             <div>
               <h3 className="config-card__title">{selected.name}</h3>
-              <p className="config-card__subtitle">{selected.help_text}</p>
             </div>
             <button className="btn btn--ghost" type="button" disabled={disabled || status.state === "testing"} onClick={() => onTest(selected.provider_id)}>
               <PlugZap size={16} aria-hidden="true" />
@@ -179,7 +158,7 @@ export function ProviderAccountsCard({ value, providers, statuses, disabled, onC
             </button>
           </div>
 
-          {selected.protocol.endsWith("_cli") ? (
+          {selected.uses_local_command ? (
             <div className="field">
               <label htmlFor="provider-cli-command">{selected.name} 命令</label>
               <input id="provider-cli-command" aria-label={`${selected.name} 命令`} className="text-input" value={account.codex_command} disabled={disabled} onChange={(event) => updateAccount({ codex_command: event.target.value })} />
@@ -210,24 +189,6 @@ export function ProviderAccountsCard({ value, providers, statuses, disabled, onC
             <small className="field-help">当前可选模型：{selectedModels.join("、") || "请添加自定义模型"}</small>
           </div>
 
-          <div className="field">
-            <label htmlFor="provider-model-capabilities">模型能力与限额声明</label>
-            <textarea
-              id="provider-model-capabilities"
-              aria-label="模型能力与限额声明"
-              className="text-input"
-              rows={8}
-              value={capabilitiesJson}
-              disabled={disabled}
-              onChange={(event) => setCapabilitiesJson(event.target.value)}
-              onBlur={saveModelCapabilities}
-            />
-            <small className="field-help">
-              按精确模型名填写用户声明，例如 {`{"my-model":{"capabilities":{"json_mode":"supported"},"limits":{"input_token_limit":64000,"context_window":65536,"max_output_tokens":8192}}}`}。声明会标记为 user_declared；未知项不会视为已验证。
-            </small>
-            {capabilitiesError ? <p className="field-error" role="alert">能力声明未保存：{capabilitiesError}</p> : null}
-          </div>
-
           <div className="provider-model-catalog">
             <div className="provider-model-catalog__header">
               <div>
@@ -243,28 +204,25 @@ export function ProviderAccountsCard({ value, providers, statuses, disabled, onC
             {discoveredModels.length ? (
               <div className="provider-model-list">
                 {discoveredModels.map((model) => (
-                  <div className={`provider-model-row provider-model-row--${model.compatibility}`} key={model.model_id}>
+                  <div className="provider-model-row" key={model.name}>
                     <input
                       type="checkbox"
-                      aria-label={`启用模型 ${model.model_id}`}
-                      checked={activeAccount.custom_models.includes(model.model_id)}
-                      disabled={disabled || model.compatibility === "unsupported"}
+                      aria-label={`启用模型 ${model.name}`}
+                      checked={activeAccount.custom_models.includes(model.name)}
+                      disabled={disabled || !model.selectable}
                       onChange={(event) => toggleDiscoveredModel(model, event.target.checked)}
                     />
                     <span className="provider-model-row__body">
-                      <strong>{model.model_id}</strong>
-                      <small>{model.endpoint} · {model.reason}</small>
+                      <strong>{model.name}</strong>
+                      <small>{model.message}</small>
                     </span>
-                    <span className={`runtime-status__badge runtime-status__badge--${model.compatibility === "supported" ? "success" : model.compatibility === "unsupported" ? "error" : "warning"}`}>
-                      {compatibilityLabel(model)}
-                    </span>
-                    {model.compatibility !== "unsupported" ? (
+                    {model.can_test ? (
                       <button
                         className="btn btn--ghost provider-model-row__test"
                         type="button"
-                        aria-label={`测试模型 ${model.model_id}`}
+                        aria-label={`测试模型 ${model.name}`}
                         disabled={disabled || status.state === "testing"}
-                        onClick={() => onTest(selected.provider_id, model.model_id)}
+                        onClick={() => onTest(selected.provider_id, model.name)}
                       >
                         测试
                       </button>
@@ -276,7 +234,7 @@ export function ProviderAccountsCard({ value, providers, statuses, disabled, onC
           </div>
 
           <p className="config-status" aria-live="polite">
-            <span className={`runtime-status__badge runtime-status__badge--${status.state}`}>{status.state === "success" ? "正常" : status.state === "error" ? "失败" : status.state === "testing" ? "测试中" : "待测"}</span>
+            <span className={`runtime-status__badge runtime-status__badge--${status.state}`}>{status.state === "testing" ? "测试中" : status.heading ?? "待检测"}</span>
             {status.message ? <span className="runtime-status__text">{status.message}</span> : null}
           </p>
         </div>

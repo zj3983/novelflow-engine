@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-import { revealRuntimeApiKey, type RuntimeImageSettings } from "../../lib/api";
+import { revealRuntimeApiKey, type RuntimeImageSettings } from "../../lib/config-capabilities";
 
 type ImageValidationErrors = Partial<Record<"api_key" | "base_url" | "model", string>>;
 
@@ -88,7 +88,6 @@ export function CoverImageConfigCard({ value, errors, disabled, onChange }: Prop
     <section className="config-card config-card--spacious" aria-label="封面图片模型" aria-busy={disabled || revealPending}>
       <div className="config-card__header">
         <div>
-          <p className="config-card__eyebrow">IMAGE PIPELINE</p>
           <h2 className="config-card__title">封面图片模型</h2>
           <p className="config-card__subtitle">独立于正文模型配置，用于生成书籍封面底图与标题成图。</p>
         </div>

@@ -1,8 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 const providerCatalog = {
-  schema_version: "provider-catalog/v1",
-  providers: [
+    providers: [
     ["openai", "OpenAI", "openai_compatible", "https://api.openai.com/v1", ["gpt-5"], true, false],
     ["deepseek", "DeepSeek", "openai_compatible", "https://api.deepseek.com/v1", ["deepseek-chat"], true, false],
     ["kimi", "Kimi", "openai_compatible", "https://api.moonshot.cn/v1", ["kimi-k2.5"], true, false],
@@ -20,8 +19,8 @@ const providerCatalog = {
     ["antigravity", "Antigravity CLI", "antigravity_cli", "", ["gemini-3.6-flash-high"], false, false],
     ["custom_openai", "自定义 OpenAI 兼容接口", "openai_compatible", "", [], true, true],
   ].map(([provider_id, name, protocol, default_base_url, models, requires_api_key, base_url_editable]) => ({
-    provider_id, name, protocol, default_base_url, planner_models: models, writer_models: models,
-    requires_api_key, base_url_editable, help_text: `${name} 配置说明`,
+    provider_id, name, default_base_url, planner_models: models, writer_models: models,
+    requires_api_key, base_url_editable, uses_local_command: String(protocol).endsWith("_cli"), default_command: protocol === "codex_cli" ? "codex" : protocol === "antigravity_cli" ? "agy" : "", account_label: "待检测",
   })),
 };
 
@@ -33,7 +32,6 @@ const accounts = Object.fromEntries(providerCatalog.providers.map((provider) => 
 }]));
 
 const runtimeConfiguration = {
-  schema_version: "runtime-config/v2",
   accounts: {
     ...accounts,
     deepseek: { ...accounts.deepseek, api_key: "********", custom_models: ["deepseek-novel"] },
@@ -43,32 +41,89 @@ const runtimeConfiguration = {
     writer: { provider_id: "deepseek", model: "retired-but-stored-model" },
   },
   image: { enabled: false, api_key: "", base_url: "", model: "" },
-  temperature: 0.7,
-  new_character_policy: "Director review",
 };
 
+const untested = { status: "untested", heading: "尚未检测", message: "请先测试模型。", tone: "neutral", can_continue: false, actions: [{ id: "test", label: "测试模型" }] };
+const ready = { status: "ready", heading: "模型已连接", message: "模型连接正常。可以发起创作；具体内容能否完成会在开始时检查。", tone: "success", can_continue: true, actions: [{ id: "test", label: "重新检测" }] };
+
 async function routeConfig(page: Page, onPut?: (payload: any) => void) {
-  await page.route("**/runtime-settings/providers", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(providerCatalog) }));
-  await page.route("**/runtime-settings", async (route) => {
+  await page.route("**/runtime-settings/product/providers", (route) => route.fulfill({ json: providerCatalog }));
+  await page.route("**/runtime-settings/product", async (route) => {
     if (route.request().method() === "PUT") onPut?.(route.request().postDataJSON());
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(runtimeConfiguration) });
+    await route.fulfill({ json: runtimeConfiguration });
   });
-  await page.route("**/runtime-settings/discover-models", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        provider: "deepseek",
-        protocol: "openai_compatible",
-        models: [
-          { model_id: "deepseek-chat", compatibility: "supported", endpoint: "/chat/completions", reason: "内置文本模型" },
-          { model_id: "text-embedding-3-large", compatibility: "unsupported", endpoint: "/chat/completions", reason: "不是文本生成模型" },
-          { model_id: "vendor-new-chat", compatibility: "unknown", endpoint: "/chat/completions", reason: "请先测试" },
-        ],
-      }),
-    });
-  });
+  await page.route("**/runtime-settings/product/model-status", (route) => route.fulfill({ json: untested }));
+  await page.route("**/runtime-settings/product/discover-models", (route) => route.fulfill({ json: {
+    message: "请选择需要使用的模型，再测试连接。",
+    models: [
+      { name: "deepseek-chat", selectable: true, can_test: true, message: "请先测试模型" },
+      { name: "text-embedding-3-large", selectable: false, can_test: false, message: "此模型不适合文本写作" },
+      { name: "vendor-new-chat", selectable: true, can_test: true, message: "请先测试模型" },
+    ],
+  } }));
 }
+
+test("ordinary config receives product responses and only explicitly tests the current model", async ({ page }) => {
+  await routeConfig(page);
+  const requests: string[] = [];
+  const refreshes: any[] = [];
+  page.on("request", (request) => { if (request.url().includes("runtime-settings")) requests.push(request.url()); });
+  await page.route("**/runtime-settings/product/test-model", async (route) => {
+    refreshes.push(route.request().postDataJSON());
+    await route.fulfill({ json: ready });
+  });
+  await page.goto("/config");
+  const panel = page.getByRole("region", { name: "正文写作使用状态", exact: true });
+  await expect(panel.getByText("尚未检测")).toBeVisible();
+  expect(refreshes).toHaveLength(0);
+  await page.getByLabel("正文写作模型").selectOption("deepseek-novel");
+  await panel.getByRole("button", { name: "测试模型", exact: true }).click();
+  await expect(panel.getByText("模型已连接")).toBeVisible();
+  expect(refreshes[0].settings.stages.writer.model).toBe("deepseek-novel");
+  expect(requests.every((url) => url.includes("/runtime-settings/product"))).toBe(true);
+  await expect(page.locator("textarea")).toHaveCount(0);
+  await expect(page.getByRole("table")).toHaveCount(0);
+  for (const forbidden of ["provenance", "verified_at", "expires_at", "best_effort", "Temperature", "Thinking", "JSON 模式", "上下文窗口", "流式读取", "单次调用超时", "高级设置"]) {
+    await expect(page.locator(".config-shell")).not.toContainText(forbidden);
+  }
+  await page.screenshot({ path: "test-results/config-model-usability.png", fullPage: true });
+});
+
+test("editing a model discards a late test result", async ({ page }) => {
+  await routeConfig(page);
+  let release: () => void = () => {};
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  let requested = false;
+  await page.route("**/runtime-settings/product/test-model", async (route) => {
+    requested = true;
+    await pending;
+    await route.fulfill({ json: ready });
+  });
+  await page.goto("/config");
+  const panel = page.getByRole("region", { name: "正文写作使用状态", exact: true });
+  await expect(panel.getByText("尚未检测")).toBeVisible();
+  await panel.getByRole("button").click();
+  await expect.poll(() => requested).toBe(true);
+  await page.getByLabel("正文写作模型").selectOption("deepseek-novel");
+  await expect(panel.getByText("尚未检测")).toBeVisible();
+  release();
+  await expect(panel.getByRole("heading")).toContainText("deepseek-novel");
+  await expect(panel.getByText("模型已连接")).toHaveCount(0);
+});
+
+test("repair actions and explanations come from the backend", async ({ page }) => {
+  await routeConfig(page);
+  const blocked = { status: "blocked", heading: "请先处理连接问题", message: "当前模型暂时无法写作，请检查密钥。", tone: "warning", can_continue: false,
+    actions: [{ id: "edit_connection", label: "去检查密钥" }, { id: "choose_model", label: "改用其他模型" }, { id: "test", label: "处理后重新检测" }] };
+  await page.route("**/runtime-settings/product/model-status", (route) => route.fulfill({ json: blocked }));
+  await page.goto("/config");
+  const panel = page.getByRole("region", { name: "正文写作使用状态", exact: true });
+  await expect(panel.getByText(blocked.message)).toBeVisible();
+  await panel.getByRole("button", { name: "改用其他模型" }).click();
+  await expect(page.getByLabel("正文写作模型")).toBeFocused();
+  await panel.getByRole("button", { name: "去检查密钥" }).click();
+  await expect(page.getByLabel("DeepSeek API 密钥", { exact: true })).toBeFocused();
+});
 
 test("/config uses provider accounts and exactly two stage bindings", async ({ page }) => {
   let saved: any = null;
@@ -79,28 +134,13 @@ test("/config uses provider accounts and exactly two stage bindings", async ({ p
   await expect(page.getByLabel("剧情规划供应商")).toHaveValue("codexcli");
   await expect(page.getByLabel("正文写作供应商")).toHaveValue("deepseek");
   await expect(page.getByLabel("正文写作模型")).toHaveValue("retired-but-stored-model");
-  await expect(page.getByText(/状态提取跟随剧情规划/)).toBeVisible();
+  await expect(page.getByText("规划故事与撰写正文可以选择不同模型。")).toBeVisible();
   await expect(page.getByText(/记忆模型/)).toHaveCount(0);
 
-  await page.getByRole("button", { name: "OpenAI 未配置", exact: true }).click();
-  const declaredCapabilities = JSON.stringify({
-    "gpt-5": {
-      capabilities: { json_mode: "supported" },
-      limits: { input_token_limit: 64000, context_window: 65536, max_output_tokens: 8192 },
-    },
-  }, null, 2);
-  await page.getByLabel("模型能力与限额声明").fill(declaredCapabilities);
-  await page.getByLabel("模型能力与限额声明").press("Tab");
-  await expect(page.getByLabel("模型能力与限额声明")).toHaveValue(declaredCapabilities);
   await page.getByLabel("正文写作模型").selectOption("deepseek-novel");
   await page.getByRole("button", { name: "统一保存" }).click();
   await expect.poll(() => saved).not.toBeNull();
-  expect(saved.schema_version).toBe("runtime-config/v2");
   expect(saved.stages.writer).toEqual({ provider_id: "deepseek", model: "deepseek-novel" });
-  expect(saved.accounts.openai.model_capabilities["gpt-5"]).toEqual({
-    capabilities: { json_mode: "supported" },
-    limits: { input_token_limit: 64000, context_window: 65536, max_output_tokens: 8192 },
-  });
   expect(saved.providers).toBeUndefined();
   expect(saved.provider).toBeUndefined();
 });
@@ -122,9 +162,9 @@ test("each provider keeps its own key, endpoint, models and connection test", as
     revealPayload = route.request().postDataJSON();
     await route.fulfill({ status: 200, contentType: "application/json", headers: { "cache-control": "no-store" }, body: JSON.stringify({ api_key: "deepseek-secret" }) });
   });
-  await page.route("**/runtime-settings/test", async (route) => {
+  await page.route("**/runtime-settings/product/test-model", async (route) => {
     testPayload = route.request().postDataJSON();
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, provider: "deepseek", stage: "writer", model: "retired-but-stored-model", message: "连接成功" }) });
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(ready) });
   });
 
   await page.goto("/config");
@@ -137,8 +177,8 @@ test("each provider keeps its own key, endpoint, models and connection test", as
   await page.getByRole("button", { name: "测试连接" }).click();
   await expect.poll(() => testPayload).not.toBeNull();
   expect(testPayload.stage).toBe("writer");
-  expect(testPayload.runtime_settings.accounts.deepseek).toMatchObject({ api_key: "********", custom_models: ["deepseek-novel"] });
-  await expect(page.getByText("连接成功")).toBeVisible();
+  expect(testPayload.settings.accounts.deepseek).toMatchObject({ api_key: "********", custom_models: ["deepseek-novel"] });
+  await expect(page.getByText(ready.message)).toBeVisible();
 
   await page.getByRole("button", { name: /OpenAI/, exact: false }).first().click();
   await expect(page.getByLabel("OpenAI API 密钥", { exact: true })).toHaveValue("");
@@ -148,17 +188,15 @@ test("each provider keeps its own key, endpoint, models and connection test", as
 test("discovered models require explicit selection and block incompatible entries", async ({ page }) => {
   let testedModel = "";
   await routeConfig(page);
-  await page.route("**/runtime-settings/test", async (route) => {
-    testedModel = route.request().postDataJSON().runtime_settings.stages.writer.model;
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, provider: "deepseek", stage: "writer", model: testedModel, protocol: "openai_compatible", diagnosis: "", message: "连接成功" }) });
+  await page.route("**/runtime-settings/product/test-model", async (route) => {
+    testedModel = route.request().postDataJSON().settings.stages.writer.model;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(ready) });
   });
   await page.goto("/config");
   await page.getByRole("button", { name: /DeepSeek/ }).click();
   await page.getByRole("button", { name: "获取模型列表" }).click();
 
-  await expect(page.getByText("可用于写作", { exact: true })).toBeVisible();
-  await expect(page.getByText("不可用于写作", { exact: true })).toBeVisible();
-  await expect(page.getByText("需要测试", { exact: true })).toBeVisible();
+  await expect(page.getByText("此模型不适合文本写作", { exact: true })).toBeVisible();
   await expect(page.getByLabel("启用模型 deepseek-chat")).not.toBeChecked();
   await expect(page.getByLabel("启用模型 text-embedding-3-large")).toBeDisabled();
 
