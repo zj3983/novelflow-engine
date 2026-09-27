@@ -13,7 +13,7 @@ from apps.api.routes.creation_product import ProductRoute, Screen, _handler, _ke
 from apps.api.routes.file_project_candidates import _candidate_project_ids
 from packages.story_core import longform_lifecycle as lifecycle
 from packages.story_core import product_presentation as product
-from packages.story_core.candidate_editing import candidate_authority, save_edit
+from packages.story_core.candidate_editing import assert_review_current, candidate_authority, save_edit
 from packages.story_core.file_project_creation import FileProjectCreateSpec
 from packages.story_core.longform_presentation import genre_id, opening_content, project_content, text
 from packages.story_core.opening_build import execution, runtime
@@ -55,10 +55,10 @@ class AuthorScreen(Screen):
         self.commands[name] = action
         return action
 
-    def start_next(self, reservation=None):
+    def start_next(self, reservation=None, *, expected_plan=None):
         lifecycle.require_accepted_plan(self.store)
         return workbench.start_file_generation_job(self.project_id,
-            workbench.FileProjectGenerationJobRequest(candidate_only=True, require_accepted_plan=True), reserved_job_id=reservation)
+            workbench.FileProjectGenerationJobRequest(candidate_only=True, require_accepted_plan=True), reserved_job_id=reservation, expected_plan=expected_plan)
 
     def prepare(self):
         self.generation_job = workbench.read_file_generation_job_state(self.store) or {}
@@ -100,11 +100,13 @@ class AuthorScreen(Screen):
                   "targetWords": info.get("target_words"), "chapterWords": info.get("target_chapter_words"),
                   "requirements": "\n".join(info.get("author_constraints") or []),
                   "direction": text(selected_direction.get("title")), "planAdopted": plan["accepted"],
-                  "directions": [{"text": text(d.get("title")), "label": text(d.get("logline")) or text(d.get("hook"))} for d in setup.get("directions", [])],
+                  "directions": [{"id": _key("direction", self.project_id, d.get("id")), "text": text(d.get("title")), "label": text(d.get("logline")) or text(d.get("hook"))} for d in setup.get("directions", [])],
                   "chapters": [], "notice": "正在处理，请稍候。" if busy else "", "busy": busy,
                   "canRetry": job.get("status") in {"failed", "interrupted", "conflicted"},
                   "nextVolume": False, "archived": False, **content}
         result["future"] = lifecycle.author_future_intent(store)
+        if not result["direction"] and (confirmed or content["plan"]):
+            result["direction"] = content["plan"] or "沿用已有故事规划"
         for number in store.chapter_numbers():
             data = store.snapshot_store.read_json(store.story_system_dir / "chapters" / f"{number:04d}.json", {})
             body = store.chapter(number).get("body", "") if number == selected else ""
@@ -116,10 +118,13 @@ class AuthorScreen(Screen):
             return workbench.start_opening_direction_job(self.project_id, expected_source=source, guidance=text(values.get("text")))
 
         def choose(values):
-            direction = next((d for d in setup.get("directions", []) if d.get("title") == values.get("text")), None)
+            direction = next((d for d in setup.get("directions", []) if _key("direction", self.project_id, d.get("id")) == values.get("id")), None)
             if direction is None:
                 raise ValueError("direction_not_found")
-            return self.call("select_opening_direction", direction_id=direction["id"])
+            with project_update_lock(store.root):
+                if execution.source_fingerprint(store) != source or opening_content(store) != setup:
+                    raise ValueError("candidate_source_changed")
+                return self.call("select_opening_direction", direction_id=direction["id"])
 
         self.command("prepare-directions", "准备故事方向", authority, directions,
             enabled=not busy and confirmed == 0 and not setup.get("selected_id"))
@@ -127,7 +132,7 @@ class AuthorScreen(Screen):
         self.command("adopt", "采纳当前规划", authority,
             lambda values: lifecycle.accept_plan(store, plan["fingerprint"]), enabled=not busy and plan["ready"])
         self.command("generate", "生成候选" if confirmed == 0 else "继续写作", authority,
-            lambda values: self.start_next(), enabled=not busy and not pending and plan["accepted"] and plan["ready"],
+            lambda values: self.start_next(expected_plan=plan["fingerprint"]), enabled=not busy and not pending and plan["accepted"] and plan["ready"],
             reason=None if plan["accepted"] else "请先完成并采纳当前规划。")
         self.command("requirements", "保存作者要求", authority,
             lambda values: lifecycle.save_author_requirements(store, requirements=text(values.get("text")).splitlines(), expected_source=source), enabled=not busy)
@@ -172,6 +177,10 @@ class AuthorScreen(Screen):
             ref = [authority, expected]
             editable = candidate.operation == "generate" and candidate.chapter_number == confirmed + 1
             needs_check = bool(candidate.review_binding) and candidate.review_binding.get("state") != "checked"
+            try:
+                assert_review_current(store, candidate)
+            except ValueError:
+                needs_check = True
             result["candidate"] = {"key": _key("candidate", candidate.candidate_id), "number": candidate.chapter_number,
                 "title": candidate.chapter_title, "body": candidate.body, "label": review["message"],
                 "needsCheck": needs_check, "checking": busy and job.get("operation") in {"candidate_review", "candidate_revise"},
@@ -193,6 +202,7 @@ class AuthorScreen(Screen):
             self.command("discard", "放弃当前候选", ref,
                 lambda values: self.call("discard_file_project_candidate", candidate_id=candidate.candidate_id), enabled=not busy)
             def confirm(values, allow_warning=False):
+                workbench._assert_candidate_mutation_allowed(store)
                 if values.get("continue") is True:
                     return lifecycle.confirm_and_continue(store, candidate.candidate_id, expected_candidate=expected,
                         accept_quality_warnings=allow_warning, start_next=self.start_next,
@@ -204,7 +214,7 @@ class AuthorScreen(Screen):
                     lifecycle.require_accepted_plan(store)
                     # Final body/check/source admission and the confirmation
                     # transaction share the lock. There is no model call here.
-                    return self.call("confirm_file_project_candidate", candidate_id=candidate.candidate_id, force=allow_warning)
+                    return store.confirm_candidate(candidate.candidate_id, accept_quality_warnings=allow_warning)
             self.command("confirm", "确认本章", ref, confirm, enabled=not busy and not blocked and not warning)
             self.command("accept-suggestion", "保留原文并确认本章（接受提醒）", ref,
                 lambda values: confirm(values, True), enabled=not busy and not blocked and warning)
@@ -235,7 +245,7 @@ class AuthorScreen(Screen):
             editable = product.editable_payload(artifact.get("payload") or {}, detail.get("diagnostics"))
             fields, _ = product.editable_fields(editable, lambda path: _key(task_id, path))
             ref = [build.graph.get("graph_revision"), artifact.get("revision")]
-            display = {"title": product.part_title(task_id, task["title"]),
+            display = {"key": _key("planning-part", self.project_id, task_id), "title": product.part_title(task_id, task["title"]),
                        "description": product.status(task["status"])["message"],
                        "paragraphs": [f'{f["label"]}：{f["value"]}' for f in fields],
                        "issues": product.issues(detail.get("diagnostics")), "actions": []}

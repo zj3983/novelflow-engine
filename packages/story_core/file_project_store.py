@@ -458,35 +458,37 @@ def _without_monster_stat_surfaces(text: str) -> str:
     return compact_monster_panel.sub("", text)
 
 
-def _chapter_length_review(body: str) -> dict[str, Any]:
+def _chapter_length_review(body: str, *, goal: int | None = None) -> dict[str, Any]:
+    from packages.story_core.chapter_length_policy import target_chars, acceptance_chars
+    target, accepted = target_chars(goal), acceptance_chars(goal)
     body_chars = len("".join(str(body or "").split()))
     issues: list[str] = []
     acceptance_issues: list[str] = []
-    if body_chars < FILE_CHAPTER_TARGET_MIN_CHARS:
-        issues.append(f"章节字数偏少：当前约{body_chars}字，目标不少于{FILE_CHAPTER_TARGET_MIN_CHARS}字。")
-    elif body_chars > FILE_CHAPTER_MAX_CHARS:
-        issues.append(f"章节字数偏多：当前约{body_chars}字，目标不超过{FILE_CHAPTER_MAX_CHARS}字。")
-    if body_chars < FILE_CHAPTER_MIN_CHARS:
-        acceptance_issues.append(f"章节字数偏少：当前约{body_chars}字，最低要求{FILE_CHAPTER_MIN_CHARS}字。")
-    elif body_chars > FILE_CHAPTER_HARD_MAX_CHARS:
-        acceptance_issues.append(f"章节字数超标：当前约{body_chars}字，建议不超过{FILE_CHAPTER_MAX_CHARS}字。")
+    if body_chars < target["min"]:
+        issues.append(f"章节字数偏少：当前约{body_chars}字，目标不少于{target['min']}字。")
+    elif body_chars > target["max"]:
+        issues.append(f"章节字数偏多：当前约{body_chars}字，目标不超过{target['max']}字。")
+    if body_chars < accepted["min"]:
+        acceptance_issues.append(f"章节字数偏少：当前约{body_chars}字，最低要求{accepted['min']}字。")
+    elif body_chars > accepted["max"]:
+        acceptance_issues.append(f"章节字数超标：当前约{body_chars}字，建议不超过{target['max']}字。")
     return {
         "pass": not issues,
         "acceptance_pass": not acceptance_issues,
         "body_chars": body_chars,
-        "min_chars": FILE_CHAPTER_TARGET_MIN_CHARS,
-        "hard_min_chars": FILE_CHAPTER_MIN_CHARS,
-        "max_chars": FILE_CHAPTER_MAX_CHARS,
-        "hard_max_chars": FILE_CHAPTER_HARD_MAX_CHARS,
+        "min_chars": target["min"],
+        "hard_min_chars": accepted["min"],
+        "max_chars": target["max"],
+        "hard_max_chars": accepted["max"],
         "issues": issues,
         "acceptance_issues": acceptance_issues,
     }
 
 
-def _assert_auto_chapter_length(body: str, *, operation: str) -> None:
+def _assert_auto_chapter_length(body: str, *, operation: str, goal: int | None = None) -> None:
     """Reject generated chapters that cannot satisfy the file-project length gate."""
 
-    length_review = _chapter_length_review(body)
+    length_review = _chapter_length_review(body, goal=goal)
     if length_review.get("acceptance_pass", True):
         return
     body_chars = int(length_review.get("body_chars") or 0)
@@ -2636,6 +2638,7 @@ class FileProjectStore(
         operation: str = "generate",
         opening_authority: dict[str, Any] | None = None,
         bind_review: bool = False,
+        emit_progress: bool = True,
     ) -> CandidateDraft:
         submission_payload = self._bundle_to_dict(bundle)
         if opening_authority is not None:
@@ -2713,6 +2716,12 @@ class FileProjectStore(
             if not unavailable:
                 candidate.review_binding["result"] = review_digest(candidate)
         self.candidate_store.save_latest(candidate)
+        if emit_progress:
+            self._report_candidate_output(candidate)
+        return candidate
+
+    @staticmethod
+    def _report_candidate_output(candidate: CandidateDraft) -> None:
         report_generation_progress(
             build_chapter_pipeline_event(
                 "candidate_output",
@@ -2730,7 +2739,6 @@ class FileProjectStore(
                 },
             )
         )
-        return candidate
 
     def _extract_continuity_delta(
         self,
@@ -2821,7 +2829,7 @@ class FileProjectStore(
         (defense in depth against tampering) but the candidate
         card no longer lies about the verdict.
         """
-        length_review = _chapter_length_review(body)
+        length_review = _chapter_length_review(body, goal=self.project().get("target_chapter_words"))
         if quality_report is None:
             quality_report = getattr(bundle, "quality_report", None)
         if not isinstance(quality_report, dict):
@@ -4412,7 +4420,11 @@ class FileProjectStore(
         blueprint.pop("time_state", None)
         blueprint.pop("current_arc", None)
         synced["world_blueprint"] = blueprint
-        if summary["next_focus"] and summary["next_focus"] != "continue":
+        from packages.story_core.longform_lifecycle import author_future_intent
+        author_intent = author_future_intent(self)
+        if author_intent:
+            synced["current_focus"] = author_intent
+        elif summary["next_focus"] and summary["next_focus"] != "continue":
             synced["current_focus"] = summary["next_focus"]
 
         existing_profiles: list[dict[str, Any]] = []
@@ -5161,40 +5173,12 @@ class FileProjectStore(
             raise ValueError("invalid_novel_type")
         return validated_brief.novel_type_id
 
-    @_with_project_update_lock
     def generate_opening_directions(
-        self, generator: Any, *, guidance: str = ""
+        self, generator: Any, *, guidance: str = "", expected_source: str | None = None
     ) -> dict[str, Any]:
-        existing = self.opening_directions()
-        if existing and existing.get("selected_id"):
-            raise ValueError("direction_already_selected")
-        brief = OpeningBrief.model_validate(self.opening_brief())
-        try:
-            current_type_id = self._current_opening_direction_novel_type_id(brief)
-            effective_brief = brief.model_copy(update={"novel_type_id": current_type_id})
-            trope_candidates = self._opening_direction_trope_candidates(effective_brief)
-            result = generator.generate(effective_brief, guidance=guidance.strip())
-            generated_directions = validate_opening_direction_set_primary_tropes(
-                GeneratedOpeningDirectionSet.model_validate(result),
-                trope_candidates,
-            )
-            directions = OpeningDirectionSet.model_validate(
-                generated_directions.model_dump(mode="json")
-            )
-        except Exception as exc:
-            if isinstance(exc, ValueError) and str(exc) == "invalid_novel_type":
-                raise ValueError("opening_direction_generation_failed") from exc
-            if isinstance(exc, ValueError) and str(exc) == "opening_direction_generation_failed":
-                raise
-            raise ValueError("opening_direction_generation_failed") from exc
-        project = {**self.project(), "pipeline_stage": "direction_ready"}
-        self._replace_json_transaction(
-            {
-                self.webnovel_dir / "project.json": project,
-                self.webnovel_dir / "opening_directions.json": directions.model_dump(mode="json"),
-            }
-        )
-        return self.opening_setup()
+        from packages.story_core.opening_setup_store import OpeningSetupStoreMixin
+        return OpeningSetupStoreMixin.generate_opening_directions(
+            self, generator, guidance=guidance, expected_source=expected_source)
 
     @_with_project_update_lock
     def select_opening_direction(self, direction_id: str) -> dict[str, Any]:
@@ -7212,7 +7196,7 @@ class FileProjectStore(
             chapter_title=title,
         )
         if not accept_quality_warnings:
-            _assert_auto_chapter_length(body, operation=operation)
+            _assert_auto_chapter_length(body, operation=operation, goal=self.project().get("target_chapter_words"))
 
         review = quality_report
         if "writing_review" not in review:
@@ -7445,6 +7429,7 @@ class FileProjectStore(
         persist: bool = True,
         accept_quality_warnings: bool = False,
         require_review: bool = False,
+        required_plan_fingerprint: str | None = None,
     ) -> dict[str, Any]:
         from packages.story_core.engine import StoryEngine
 
@@ -7455,6 +7440,12 @@ class FileProjectStore(
             if persist:
                 raise ValueError("candidate_confirmation_required")
             with project_update_lock(self.root):
+                if required_plan_fingerprint:
+                    from packages.story_core.longform_lifecycle import require_accepted_plan
+                    require_accepted_plan(self, required_plan_fingerprint)
+                if any(c.status == "pending" and c.chapter_number == int(self.persisted_state().get("current_chapter") or 0) + 1
+                       for c in self.candidate_store.list()):
+                    raise ValueError("candidate_pending_confirmation")
                 source_before = opening_execution.source_fingerprint(self)
         if opening_runtime.enabled(self):
             if persist:
@@ -7516,8 +7507,17 @@ class FileProjectStore(
                     opening_execution.verify(self, authority)
                 if source_before is not None and source_before != opening_execution.source_fingerprint(self):
                     raise ValueError("candidate_source_changed")
+                if required_plan_fingerprint:
+                    from packages.story_core.longform_lifecycle import require_accepted_plan
+                    require_accepted_plan(self, required_plan_fingerprint)
+                if require_review and any(c.status == "pending" and c.chapter_number == target_chapter
+                                          for c in self.candidate_store.list()):
+                    raise ValueError("candidate_pending_confirmation")
                 candidate = self._save_candidate_from_bundle(bundle, project_id=project_id,
-                    opening_authority=authority, bind_review=require_review)
+                    opening_authority=authority, bind_review=require_review, emit_progress=False)
+            # Progress callbacks acquire the executor's job lock. Keep them
+            # outside the project transaction to preserve admission lock order.
+            self._report_candidate_output(candidate)
             return {
                 "schema_version": "file-project-candidate/v1",
                 "root": str(self.root),

@@ -91,6 +91,7 @@ _file_generation_executor = ThreadPoolExecutor(max_workers=1)
 _file_generation_jobs: dict[str, dict[str, object]] = {}
 _active_file_generation_jobs: dict[str, str] = {}
 _file_generation_jobs_lock = Lock()
+_file_generation_session = uuid4().hex
 _world_build_executor = ThreadPoolExecutor(max_workers=1)
 _world_build_jobs: dict[str, dict[str, object]] = {}
 _active_world_build_jobs: dict[str, str] = {}
@@ -131,6 +132,7 @@ class OpeningDirectionGenerationRequest(BaseModel):
 
 class FileProjectGenerationJobRequest(BaseModel):
     candidate_only: bool = False
+    require_accepted_plan: bool = False
     chapter_number: int | None = None
     operation: Literal["polish", "expand"] | None = None
     variant: str | None = None
@@ -1362,6 +1364,13 @@ def _reconcile_file_generation_job_locked(
     story_id = str(job.get("story_id", ""))
     if job.get("status") not in {"queued", "running"}:
         return
+    if (job.get("candidate_only") or job.get("operation") == "candidate_review") and job.get("executor_session") != _file_generation_session:
+        job.update(status="interrupted", progress="上次创作已中断，内容已保留。",
+                   error="generation_interrupted", updated_at=_now_iso())
+        _persist_file_generation_job(job)
+        if _active_file_generation_jobs.get(story_id) == job.get("job_id"):
+            _active_file_generation_jobs.pop(story_id, None)
+        return
     if store is not None:
         starting_chapter = int(job.get("starting_chapter") or 0)
         current_chapter = int(store.summary().get("current_chapter") or 0)
@@ -1389,6 +1398,10 @@ def _reconcile_file_generation_job_locked(
                 _active_file_generation_jobs.pop(story_id, None)
             return
 
+    # A quiet model call still belongs to this process. Releasing its slot on
+    # elapsed time would allow a second writer while the first is committing.
+    if (job.get("candidate_only") or job.get("operation") == "candidate_review") and job.get("executor_session") == _file_generation_session and _active_file_generation_jobs.get(story_id) == job.get("job_id"):
+        return
     updated_at = _parse_iso_datetime(job.get("updated_at"))
     if updated_at is None:
         return
@@ -1426,9 +1439,12 @@ def _run_file_generation_job(
     guidance: str | None = None,
     chapter_direction_id: str | None = None,
     candidate_only: bool = False,
+    accepted_plan: str | None = None,
     review_candidate_id: str | None = None,
     review_expected: str | None = None,
     revision_guidance: str | None = None,
+    opening_direction_guidance: str | None = None,
+    direction_source: str | None = None,
 ) -> None:
     def report_progress(message: str | dict[str, object]) -> None:
         if isinstance(message, dict):
@@ -1447,9 +1463,12 @@ def _run_file_generation_job(
         if not isinstance(source, str) or not source.strip():
             source = _infer_file_generation_source(display_message, stage)
         artifact = payload.get("artifact")
-        _update_file_generation_job(job_id, status=normalized_status, progress=display_message)
         with _file_generation_jobs_lock:
             job = _file_generation_jobs.get(job_id)
+            author_job = bool(job and (job.get("candidate_only") or job.get("operation") == "candidate_review"))
+        # A stage finishing does not release ownership of the whole chapter.
+        # Only this worker's outer completion/failure marks an author job done.
+        _update_file_generation_job(job_id, status="running" if author_job else normalized_status, progress=display_message)
         if job is not None:
             _append_file_generation_job_step(
                 job,
@@ -1461,33 +1480,27 @@ def _run_file_generation_job(
             )
 
     story_id = _file_id(_strip_file_prefix(project_id))
-    report_progress(
-        {
-            "message": "生产任务启动中",
-            "status": "running",
-            "stage": "orchestrator",
-            "source": "file-project-route",
-            "artifact": {
-                "reason": "execution_started",
-                "used_modules": [
-                    "story_store",
-                    "director",
-                    "writer",
-                    "memory",
-                    "runtime_manager",
-                ],
-                "inputs": {
-                    "project_id": project_id,
-                    "chapter_number": chapter_number,
-                    "operation": operation or ("regenerate" if chapter_number else "generate"),
-                    "variant": variant or "",
-                    "guidance": guidance or "",
-                    "chapter_direction_id": chapter_direction_id or "",
-                },
-            },
-        }
-    )
     try:
+        report_progress(
+            {
+                "message": "生产任务启动中",
+                "status": "running",
+                "stage": "orchestrator",
+                "source": "file-project-route",
+                "artifact": {
+                    "reason": "execution_started",
+                    "used_modules": ["story_store", "director", "writer", "memory", "runtime_manager"],
+                    "inputs": {
+                        "project_id": project_id,
+                        "chapter_number": chapter_number,
+                        "operation": "opening_directions" if opening_direction_guidance is not None else "candidate_review" if review_candidate_id else operation or ("regenerate" if chapter_number else "generate"),
+                        "variant": variant or "",
+                        "guidance": guidance or "",
+                        "chapter_direction_id": chapter_direction_id or "",
+                    },
+                },
+            }
+        )
         store = _store_for(project_id)
         with generation_progress(report_progress):
             from packages.story_core.opening_build.runtime import enabled as opening_enabled
@@ -1498,7 +1511,10 @@ def _run_file_generation_job(
                 or (isinstance(chapter_number, int) and chapter_number > 0)
             ):
                 raise ValueError("opening_prose_operation_unsupported")
-            if review_candidate_id:
+            if opening_direction_guidance is not None:
+                generated = store.generate_opening_directions(opening_direction_generator,
+                    guidance=opening_direction_guidance, expected_source=direction_source)
+            elif review_candidate_id:
                 from packages.story_core.candidate_editing import recheck, revise_with_ai
                 if revision_guidance is not None:
                     generated = revise_with_ai(store, review_candidate_id, expected=review_expected,
@@ -1522,6 +1538,7 @@ def _run_file_generation_job(
                     persist=not (opening_active or candidate_only),
                     accept_quality_warnings=not (opening_active or candidate_only),
                     **({"require_review": True} if candidate_only else {}),
+                    **({"required_plan_fingerprint": accepted_plan} if accepted_plan else {}),
                 )
                 )
     except Exception as exc:  # pragma: no cover - background safety net
@@ -1853,6 +1870,7 @@ def start_file_generation_job(
     payload: FileProjectGenerationJobRequest | None = None,
     *,
     reserved_job_id: str | None = None,
+    expected_plan: str | None = None,
 ) -> dict[str, object]:
     """Queue generation through the shared file-project job runner."""
     store = _store_for(project_id)
@@ -1862,6 +1880,12 @@ def start_file_generation_job(
             raise HTTPException(status_code=409, detail="project_generation_in_progress")
     operation = payload.operation if payload else None
     candidate_only = bool(payload and payload.candidate_only)
+    accepted_plan = None
+    if payload and payload.require_accepted_plan:
+        from packages.story_core.longform_lifecycle import require_accepted_plan
+        accepted_plan = require_accepted_plan(store, expected=expected_plan)
+        if not candidate_only or payload.operation or payload.chapter_number is not None:
+            raise HTTPException(422, "candidate_historical_edit_locked")
     target_chapter = (
         payload.chapter_number
         if payload and isinstance(payload.chapter_number, int)
@@ -1942,7 +1966,7 @@ def start_file_generation_job(
                 return _file_generation_job_response(reserved)
             loaded = _load_file_generation_job(store, reserved_job_id)
             if loaded is not None:
-                if loaded.get("operation") == "candidate_review":
+                if loaded.get("operation") in {"candidate_review", "opening_directions"}:
                     # Review recovery is an explicit user action, never prose generation.
                     raise HTTPException(409, "candidate_review_required")
                 _file_generation_jobs[reserved_job_id] = loaded
@@ -1967,6 +1991,8 @@ def start_file_generation_job(
                     job_kwargs["chapter_direction_id"] = loaded_direction
                 if loaded.get("candidate_only"):
                     job_kwargs["candidate_only"] = True
+                if loaded.get("accepted_plan"):
+                    job_kwargs["accepted_plan"] = loaded["accepted_plan"]
                 if not submit_loaded_job:
                     return response
             else:
@@ -2030,6 +2056,8 @@ def start_file_generation_job(
                 "target_chapter": target_chapter,
                 "operation": job_operation,
                 "candidate_only": candidate_only,
+                "accepted_plan": accepted_plan,
+                "executor_session": _file_generation_session,
                 "variant": variant or "",
                 "guidance": guidance or "",
                 "chapter_direction_id": chapter_direction_id or "",
@@ -2056,10 +2084,72 @@ def start_file_generation_job(
             job_kwargs["chapter_direction_id"] = chapter_direction_id
         if candidate_only:
             job_kwargs["candidate_only"] = True
-    _file_generation_executor.submit(
-        _run_file_generation_job, job_id, project_id, **job_kwargs
-    )
+        if accepted_plan:
+            job_kwargs["accepted_plan"] = accepted_plan
+    try:
+        _file_generation_executor.submit(_run_file_generation_job, job_id, project_id, **job_kwargs)
+    except Exception:
+        with _file_generation_jobs_lock:
+            if _active_file_generation_jobs.get(story_id) == job_id:
+                _active_file_generation_jobs.pop(story_id, None)
+        _update_file_generation_job(job_id, status="failed", progress="创作尚未开始", error="generation_admission_failed")
+        raise
     return response
+
+
+def read_file_generation_job_state(store, job_id=None):
+    """Read persisted recovery state without admission, models, or job locks.
+
+    This reader is safe inside a short project lock. The normal job recovery
+    endpoint persists the same interrupted disposition on its next read.
+    """
+    job = _load_file_generation_job(store, job_id)
+    if job is None:
+        return None
+    if (job.get("status") in {"queued", "running"}
+            and (job.get("candidate_only") or job.get("operation") == "candidate_review")
+            and job.get("executor_session") != _file_generation_session):
+        return {**job, "status": "interrupted", "error": "generation_interrupted"}
+    return job
+
+
+def start_opening_direction_job(project_id, *, expected_source, guidance=""):
+    """Persist opening preparation in the same executor used for prose."""
+    from packages.story_core.opening_build.execution import source_fingerprint
+    from packages.story_core.persistence.project_locking import project_update_lock
+    store = _store_for(project_id)
+    story_id = _story_id_for(store)
+    if not isinstance(guidance, str) or len(guidance) > 1000:
+        raise HTTPException(422, "opening_guidance_invalid")
+    with _file_generation_jobs_lock:
+        if _normal_generation_active_locked(store) or _continuous_generation_active_locked(store):
+            raise HTTPException(409, "project_generation_in_progress")
+        with project_update_lock(store.root):
+            if source_fingerprint(store) != expected_source:
+                raise HTTPException(409, "candidate_source_changed")
+            existing = store.opening_directions() or {}
+            if existing.get("selected_id") or int(store.persisted_state().get("current_chapter") or 0):
+                raise HTTPException(409, "direction_already_selected")
+            now = _now_iso()
+            job_id = f"fgj-{uuid4().hex[:12]}"
+            job = {"job_id": job_id, "story_id": story_id, "project_id": _public_project_id(store),
+                "status": "queued", "progress": "正在准备故事方向", "steps": [],
+                "operation": "opening_directions", "candidate_only": True,
+                "chapter_number": None, "target_chapter": None, "starting_chapter": 0,
+                "executor_session": _file_generation_session, "created_at": now, "updated_at": now,
+                "error": "", "_project_root": str(store.root)}
+            _persist_file_generation_job(job)
+            _file_generation_jobs[job_id] = job
+            _active_file_generation_jobs[story_id] = job_id
+        try:
+            _file_generation_executor.submit(_run_file_generation_job, job_id, project_id,
+                opening_direction_guidance=guidance, direction_source=expected_source)
+        except Exception:
+            _active_file_generation_jobs.pop(story_id, None)
+            job.update(status="failed", error="generation_admission_failed", updated_at=_now_iso())
+            _persist_file_generation_job(job)
+            raise
+        return _file_generation_job_response(job)
 
 
 def start_candidate_review_job(project_id: str, candidate_id: str, *, expected: str,
@@ -2076,12 +2166,16 @@ def start_candidate_review_job(project_id: str, candidate_id: str, *, expected: 
         if _normal_generation_active_locked(store) or _continuous_generation_active_locked(store):
             raise HTTPException(409, "project_generation_in_progress")
         with project_update_lock(store.root):
-            candidate = _pending(store, candidate_id, expected)
+            candidate = _pending(store, candidate_id, expected, refresh_author_inputs=True)
             if guidance is None:
                 candidate.review_binding = {**candidate.review_binding, "state": "unchecked"}
                 candidate.review_binding.pop("result", None)
                 store.candidate_store.save(candidate)
                 expected = candidate_authority(candidate)
+            else:
+                # Do not mutate the saved candidate before AI has produced a
+                # revision. Its optimistic authority remains the stored one.
+                expected = candidate_authority(store.candidate_store.get(candidate_id))
             now = _now_iso()
             job_id = f"fgj-{uuid4().hex[:12]}"
             job = {"job_id": job_id, "story_id": story_id,
@@ -2091,6 +2185,7 @@ def start_candidate_review_job(project_id: str, candidate_id: str, *, expected: 
                    "starting_chapter": int(store.summary().get("current_chapter") or 0),
                    "review_candidate_id": candidate_id, "review_expected": expected,
                    "revision_guidance": guidance,
+                   "executor_session": _file_generation_session,
                    "error": "", "created_at": now, "updated_at": now,
                    "_project_root": str(store.root)}
             # Persist before making admission visible. A persistence failure

@@ -12,14 +12,20 @@ CHAPTER_TARGET_RANGE_TEXT = (
 )
 
 
-def target_chars() -> dict[str, int]:
+def target_chars(goal: int | None = None) -> dict[str, int]:
+    if isinstance(goal, int) and not isinstance(goal, bool) and 500 <= goal <= 20000:
+        return {"min": round(goal * 0.9), "max": round(goal * 1.1)}
     return {
         "min": CHAPTER_TARGET_MIN_CHARS,
         "max": CHAPTER_TARGET_MAX_CHARS,
     }
 
 
-def acceptance_chars() -> dict[str, int]:
+def acceptance_chars(goal: int | None = None) -> dict[str, int]:
+    # Editorial review bounds, never a transport/model token limit. Missing
+    # goals retain the established policy for existing projects.
+    if isinstance(goal, int) and not isinstance(goal, bool) and 500 <= goal <= 20000:
+        return {"min": round(goal * 0.8), "max": round(goal * 1.2)}
     return {
         "min": CHAPTER_HARD_MIN_CHARS,
         "max": CHAPTER_HARD_MAX_CHARS,

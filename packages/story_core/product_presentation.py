@@ -27,6 +27,13 @@ def problem(value):
     """Translate known errors; never echo exception text or unknown model output."""
     text = str(value or "")
     pairs = (
+        (("generation_interrupted",), "上次创作已中断，已保存的内容仍然保留。", "请重新发起当前创作；不会自动调用模型。"),
+        (("plan_acceptance_required", "plan_not_accepted", "plan_changed"), "当前规划尚未采纳，或采纳后又有修改。", "到全书规划查看最新内容并采纳，再继续写作。"),
+        (("pending_candidate", "candidate_pending_confirmation"), "这一章已有等待处理的候选。", "先阅读、修改或确认当前候选。"),
+        (("author_requirements_invalid", "author_future_intent_invalid", "author_constraint_too_long"), "填写的创作要求过多或过长。", "请精简后重新保存；当前编辑内容仍在。"),
+        (("opening_direction_generation_failed",), "这次故事方向尚未准备好。", "查看模型设置后，重新准备故事方向。"),
+        (("chapter.length", "length_failed"), "这章篇幅与设定的目标差距较大。", "按本章目标补充或精简正文，再重新检查。"),
+        (("chapter.hook_not_landed",), "章末还没有落实规划中的悬念。", "调整结尾，并重新检查。"),
         (("candidate_review_required",), "这份改稿尚未检查。", "点击重新检查，通过后再确认正文。"),
         (("candidate_review_unavailable",), "这次检查未能完成，改稿已保留。", "检查模型设置后，重新检查当前稿件。"),
         (("candidate_review_planning_missing",), "这份旧候选缺少重新检查所需的章节安排。", "请保留需要的文字，丢弃旧候选后重新生成。"),
@@ -158,7 +165,7 @@ def apply_fields(payload, paths, values):
     return result
 
 
-def author_advice(quality):
+def author_advice(quality, *, body=""):
     """Keep actual author advice, excluding diagnostic IDs and transport details."""
     review = quality.get("writing_review") or {}
     findings = [*(review.get("warnings") or []), *(review.get("blocking") or []),
@@ -171,7 +178,13 @@ def author_advice(quality):
         message = str(finding.get("message") or "").strip()
         if not message or len(message) > 1000 or not re.search(r"[\u4e00-\u9fff]", message) or forbidden.search(message):
             continue
-        item = {"message": message, "tone": "danger" if finding.get("blocking") else "warning"}
+        item = {"message": message, "suggestion": "结合正文与相关章节核对，再修改并重新检查。", "tone": "danger" if finding.get("blocking") else "warning"}
+        quote = str(finding.get("quote") or "")
+        if quote and len(quote) <= 500 and quote in body:
+            item["quote"] = quote
+        chapter = finding.get("evidence_chapter")
+        if isinstance(chapter, int) and not isinstance(chapter, bool) and chapter > 0:
+            item["chapter"] = chapter
         if item not in output:
             output.append(item)
     return output
@@ -199,11 +212,12 @@ def candidate_review(candidate, *, store=None):
     except ValueError:
         blocked = True
     if blocked:
-        return {"label": "需要修改", "tone": "danger", "message": "正文与已确认的故事事实存在冲突，暂时不能采用。"}, [problem("canon.hard_blocker"), *author_advice(quality)], True, False
+        findings = author_advice(quality, body=candidate.body)
+        return {"label": "需要修改", "tone": "danger", "message": "正文还有必须处理的问题，暂时不能采用。"}, findings or [problem("canon.hard_blocker")], True, False
     review = quality.get("review_result") or quality.get("writing_review") or {}
-    warning = bool(quality.get("ok") is False or review.get("status") in {"warning", "needs_revision"} or quality.get("quality_warning"))
+    warning = bool(quality.get("ok") is False or review.get("status") in {"warning", "needs_revision"} or quality.get("quality_warning") or review.get("warnings") or review.get("issues"))
     if warning:
-        return {"label": "请复核", "tone": "warning", "message": "正文有修改建议，请阅读后决定是否采用。"}, author_advice(quality) or [
+        return {"label": "请复核", "tone": "warning", "message": "正文有修改建议，请阅读后决定是否采用。"}, author_advice(quality, body=candidate.body) or [
             {"message": "这份候选仍有需要打磨的地方。", "suggestion": "请检查情节衔接和人物表现，再决定是否采用。", "tone": "warning"}
         ], False, True
     return {"label": "等待你确认", "tone": "success", "message": "请阅读正文。只有你确认后，才会加入正式章节。"}, [], False, False

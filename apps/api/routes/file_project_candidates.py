@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from packages.story_core.file_project_store import FileProjectStore
+from packages.story_core.persistence.project_locking import project_update_lock
 from packages.story_core.simplified_review import build_simplified_review
 
 
@@ -118,17 +119,18 @@ def register_file_project_candidate_routes(
     ) -> dict[str, Any]:
         store = store_for(project_id)
         assert_mutation_allowed(store)
-        candidate = store.candidate_store.get(candidate_id)
-        if (
-            candidate is None
-            or candidate.project_id not in _candidate_project_ids(store, project_id)
-        ):
-            raise HTTPException(status_code=404, detail="candidate_not_found")
-        try:
-            candidate.discard()
-        except ValueError as exc:
-            _raise_candidate_error(exc)
-        store.candidate_store.save(candidate)
+        with project_update_lock(store.root):
+            candidate = store.candidate_store.get(candidate_id)
+            if (
+                candidate is None
+                or candidate.project_id not in _candidate_project_ids(store, project_id)
+            ):
+                raise HTTPException(status_code=404, detail="candidate_not_found")
+            try:
+                candidate.discard()
+            except ValueError as exc:
+                _raise_candidate_error(exc)
+            store.candidate_store.save(candidate)
         return {
             "schema_version": "file-project-candidate-discard/v1",
             "candidate": candidate.to_dict(),

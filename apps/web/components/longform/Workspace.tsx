@@ -58,6 +58,7 @@ export function LongformWorkspace({ adapter }: { adapter: WorkspaceAdapter }) {
     if (!completed || completed === completedDialog.current) return;
     completedDialog.current = completed;
     if (completed.bookId !== b.id) return;
+    if (completed.type === "save-draft") setEditing(false);
     const kind = completed.type === "ai-edit" ? "ai" : completed.type;
     if (kind === dialog && completed.token === dialogToken) { delete dialogDrafts.current[`${b.id}:${kind}`]; setDialog(null); }
   }, [state.lastCompleted, b.id, dialog, dialogToken]);
@@ -130,7 +131,7 @@ export function LongformWorkspace({ adapter }: { adapter: WorkspaceAdapter }) {
       <main className={s.manuscript} ref={prose} aria-label="正文阅读区">
         {current ? <><div className={s.breadcrumb}><span>第{activeVolume}卷 {volumes.find(v => v.number === activeVolume)?.title || ""}　 ›　 第{current.number}章</span><span className={isCandidate ? s.accent : ""}>{isCandidate ? "候选稿 · 尚未加入正式章节" : "正式章节 · 只读回看"}</span></div>
           <h1>第{current.number}章　{current.title}</h1>
-          {isCandidate && editing ? <div className={s.editor}><label htmlFor="candidate-editor">修改候选正文</label><textarea id="candidate-editor" value={c.editorDraft ?? c.body} onChange={e => act({ type: "draft", text: e.target.value })} disabled={busy} /><p>编辑草稿会保留。保存后需要重新检查，才能确认本章。</p><button className={s.primary} disabled={busy || !allowed("save-draft") || !(c.editorDraft ?? c.body).trim()} onClick={() => { act({ type: "save-draft", text: c.editorDraft ?? c.body }); setEditing(false); }}>保存改稿</button><button onClick={() => setEditing(false)}>稍后继续编辑</button>{live && <button onClick={() => { act({ type: "discard-local-draft" }); setEditing(false); }}>结束编辑，使用已保存正文</button>}</div>
+          {isCandidate && editing ? <div className={s.editor}><label htmlFor="candidate-editor">修改候选正文</label><textarea id="candidate-editor" value={c.editorDraft ?? c.body} onChange={e => act({ type: "draft", text: e.target.value })} disabled={busy} /><p>编辑草稿会保留。保存后需要重新检查，才能确认本章。</p><button className={s.primary} disabled={busy || !allowed("save-draft") || !(c.editorDraft ?? c.body).trim()} onClick={() => { act({ type: "save-draft", text: c.editorDraft ?? c.body }); }}>保存改稿</button><button onClick={() => setEditing(false)}>稍后继续编辑</button>{live && <button onClick={() => { act({ type: "discard-local-draft" }); setEditing(false); }}>结束编辑，使用已保存正文</button>}</div>
           : <div className={s.prose}>{current.body.split("\n\n").map((paragraph, i) => <p key={i}>{isCandidate && c.concern?.quote && paragraph.includes(c.concern.quote) ? <>{paragraph.split(c.concern.quote)[0]}<mark>{c.concern.quote}</mark>{paragraph.split(c.concern.quote).slice(1).join(c.concern.quote)}</> : paragraph}</p>)}</div>}
         </> : <><h1>开始你的第一章</h1><Empty text={b.busy ? "正在准备候选稿，请稍候。" : "先采纳故事规划，再开始正文。每一章都由你亲自确认。"} /></>}
       </main>
@@ -182,7 +183,7 @@ export function LongformWorkspace({ adapter }: { adapter: WorkspaceAdapter }) {
       <aside className={s.concerns}><h3>写作提醒</h3>{b.reminders?.map((text, i) => <p className={s.reminder} key={i}><CircleAlert size={23} />{text}</p>)}<button className={`${s.primary} ${s.wide}`} disabled={busy || !allowed("future")} onClick={() => openDialog("future", b.future)}>修改后续设定</button><button className={s.wide} onClick={() => openDialog("contradiction")}>我发现前文有矛盾</button><p>已确认正文只供回看，不能在这里改写历史。</p></aside>
     </div>}
 
-    {state.page === "settings" && <main className={s.settings}><h1>写作设置</h1><section><h3>正文模型：演示可用</h3><p>这里使用模拟结果，不连接模型，不产生费用。</p><p>真实设置入口在阶段 B 接入。当前演示不会读取或修改任何模型配置。</p></section><button onClick={() => navigate("books")}>返回作品</button></main>}
+    {state.page === "settings" && <main className={s.settings}><h1>写作设置</h1><section><h3>正文模型：演示可用</h3><p>这里使用模拟结果，不连接模型，不产生费用。</p><p>真实工作区提供独立设置入口。当前演示不会读取或修改任何模型配置。</p></section><button onClick={() => navigate("books")}>返回作品</button></main>}
 
     {dialog && <dialog ref={node => { if (node && !node.open) node.showModal(); }} className={s.dialog} aria-label={{ ai: "让 AI 修改", plan: "调整规划", future: "修改后续设定", requirements: "修改作者要求", history: "保留的旧稿", contradiction: "核对前文", reset: "重置演示" }[dialog]} onCancel={() => setDialog(null)}>
       <button className={s.close} aria-label="关闭对话框" onClick={() => setDialog(null)}><X size={21} /></button>
@@ -206,9 +207,9 @@ function NewBook({ onCreate, onCancel, genres, busy, demo }: { demo?: boolean; g
     <h2>新建小说</h2><p className={s.subtitle}>先说清你想写的故事，其余可以边写边完善。</p>
     <label>暂定书名<input name="title" required maxLength={80} placeholder="给新故事起个名字" /></label>
     <label>小说类型<select name="genre" required>{(genres || [{ value: "东方玄幻", label: "东方玄幻" }, { value: "都市", label: "都市" }]).map(g => <option key={g.value} value={g.value}>{g.label}</option>)}</select></label>
-    <label>故事想法<textarea name="idea" required placeholder="一个怎样的人，会经历怎样的故事？" /></label>
-    <div className={s.pair}><label>目标篇幅（万字）<input name="target" type="number" defaultValue={90} min={1} max={1000} required /></label><label>每章目标字数<input name="chapter" type="number" defaultValue={3000} min={100} max={20000} step={100} required /></label></div>
-    <p className={s.smallNote}>篇幅是创作目标，可随故事发展调整。</p>
+    <label>故事想法<textarea name="idea" required maxLength={1000} placeholder="一个怎样的人，会经历怎样的故事？" /></label>
+    <div className={s.pair}><label>目标篇幅（万字）<input name="target" type="number" defaultValue={90} min={1} max={1000} required /></label><label>每章目标字数<input name="chapter" type="number" defaultValue={3000} min={500} max={20000} step={100} required /></label></div>
+    <p className={s.smallNote}>篇幅是创作目标，每章可以根据情节适当浮动。</p>
     <label>必须遵守的写作要求<textarea name="requirements" placeholder="如：单主角，成长循序渐进，不提前揭晓身世。" /></label>
     <button type="submit" disabled={busy} className={`${s.primary} ${s.wide}`}>开始准备故事</button><button type="button" className={s.wide} onClick={onCancel}>取消</button><p className={s.smallNote}>先完善故事方向和分卷规划，采纳后才开始正文。</p>
   </form>;

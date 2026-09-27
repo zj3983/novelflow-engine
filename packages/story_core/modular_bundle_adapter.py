@@ -150,6 +150,9 @@ def adapt_modular_bundle_to_legacy(
                     "code": str(finding.get("code") or ""),
                     "message": str(finding.get("message") or ""),
                     "source": str(finding.get("source") or "consistency"),
+                    "quote": str(finding.get("quote") or ""),
+                    "evidence_chapter": finding.get("evidence_chapter"),
+                    "blocking": True,
                 }
                 for finding in blocking_findings
             ],
@@ -158,6 +161,9 @@ def adapt_modular_bundle_to_legacy(
                     "code": str(finding.get("code") or ""),
                     "message": str(finding.get("message") or ""),
                     "source": str(finding.get("source") or "consistency"),
+                    "quote": str(finding.get("quote") or ""),
+                    "evidence_chapter": finding.get("evidence_chapter"),
+                    "blocking": False,
                 }
                 for finding in non_blocking_findings
             ],
