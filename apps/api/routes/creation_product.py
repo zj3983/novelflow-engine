@@ -259,7 +259,7 @@ class Screen:
         for current in candidates:
             if current is not candidate and not all_actions:
                 continue
-            review, findings, blocked, warning = product.candidate_review(current)
+            review, findings, blocked, warning = product.candidate_review(current, store=store)
             if opening:
                 try:
                     execution.verify(store, current.submission_payload.get("opening_authority"))
@@ -274,9 +274,30 @@ class Screen:
                 enabled=not running and not blocked, reason="请先处理正文中的冲突。" if blocked else None)
             discard = self.action("discard-" + current.candidate_id, "丢弃候选稿", ref,
                 lambda values, c=current: self.call("discard_file_project_candidate", candidate_id=c.candidate_id), enabled=not running)
+            from packages.story_core.candidate_editing import candidate_authority, save_edit
+            expected = candidate_authority(current)
+            editable = current.operation == "generate" and current.chapter_number == confirmed + 1
+            body_key = _key("candidate-body", current.candidate_id)
+            guidance_key = _key("candidate-guidance", current.candidate_id)
+            save = self.action("edit-" + current.candidate_id, "保存改稿", ref,
+                lambda values, c=current, expected=expected, body_key=body_key: save_edit(
+                    store, c.candidate_id, body=values.get(body_key, ""),
+                    expected=expected, expected_source=authority), enabled=editable and not running)
+            recheck = self.action("recheck-" + current.candidate_id, "重新检查", ref,
+                lambda values, c=current, expected=expected: workbench.start_candidate_review_job(
+                    self.project_id, c.candidate_id, expected=expected), enabled=editable and not running)
+            revise = self.action("revise-" + current.candidate_id, "让 AI 修改并检查", ref,
+                lambda values, c=current, expected=expected, key=guidance_key: workbench.start_candidate_review_job(
+                    self.project_id, c.candidate_id, expected=expected, guidance=values.get(key, "")),
+                enabled=editable and not running)
             if current is candidate:
                 result["candidate"] = {"number": current.chapter_number, "title": current.chapter_title or f"第 {current.chapter_number} 章候选稿",
-                                       "body": current.body, "review": review, "issues": findings, "actions": [confirm, discard]}
+                                       "body": current.body, "review": review, "issues": findings, "actions": [recheck, confirm, discard]}
+                if editable:
+                    result["candidate"]["form"] = {"title": "我来改写", "description": "保存会保留旧稿。改稿后请重新检查，再确认正文。",
+                        "fields": [{"key": body_key, "label": "候选正文", "value": current.body, "type": "textarea"}], "actions": [save]}
+                    result["forms"].append({"title": "让 AI 修改", "description": "按已保存的候选修改。请先保存手工改稿。",
+                        "fields": [{"key": guidance_key, "label": "修改要求", "value": "", "type": "textarea"}], "actions": [revise]})
                 result["status"] = review
         if candidates and not candidate:
             result["actions"].append(self.link("查看待确认的候选", f"/write?chapter={candidates[0].chapter_number}"))
@@ -309,7 +330,7 @@ class Screen:
         return {"redirect": self.origin + f"/write?chapter={candidate.chapter_number}"}
 
     def _generate(self, chapter):
-        workbench.start_file_generation_job(self.project_id, workbench.FileProjectGenerationJobRequest())
+        workbench.start_file_generation_job(self.project_id, workbench.FileProjectGenerationJobRequest(candidate_only=True))
         return {"redirect": self.origin + f"/write?chapter={chapter}"}
 
 

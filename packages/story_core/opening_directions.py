@@ -104,6 +104,9 @@ class OpeningBrief(_StrictOpeningModel):
     novel_type_id: str = Field(min_length=1, max_length=100)
     idea: str = Field(min_length=1, max_length=1000)
     working_title: str = Field(default="", max_length=120)
+    target_words: int | None = Field(default=None, ge=1000, le=10000000)
+    target_chapter_words: int | None = Field(default=None, ge=500, le=20000)
+    author_constraints: list[str] = Field(default_factory=list, max_length=100)
 
     @field_validator("novel_type_id", "idea", "working_title", mode="before")
     @classmethod
@@ -300,6 +303,10 @@ class LLMOpeningDirectionGenerator:
                 },
                 "working_title": validated_brief.working_title,
                 "idea": validated_brief.idea,
+                "author_constraints": list(validated_brief.author_constraints),
+                "creative_goals": {"total_words": validated_brief.target_words,
+                                   "chapter_words": validated_brief.target_chapter_words,
+                                   "meaning": "创作篇幅目标，不是单次输出上限"},
                 "regeneration_guidance": normalized_guidance,
             }
             trope_candidates = prompt_context.get("genre_trope_templates", [])

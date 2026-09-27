@@ -164,6 +164,8 @@ def adapt_modular_bundle_to_legacy(
             "source": "modular_pipeline",
         },
         "modular_pipeline": {
+            "consistency_checked": not any(finding.get("code") in {
+                "consistency.unavailable", "consistency.invalid_response"} for finding in raw_findings),
             "director_artifact_present": True,
             "fact_extractor_chapter": (
                 continuity_delta.chapter_number
@@ -261,5 +263,6 @@ def adapt_modular_bundle_to_legacy(
             "fact_extractor",
         ],
         context_snapshot_id=f"modular-pipeline:chapter-{chapter_number}",
+        director_artifact=director_artifact.model_dump(mode="json"),
         continuity_delta=continuity_delta,
     )

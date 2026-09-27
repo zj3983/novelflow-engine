@@ -54,6 +54,9 @@ class CandidateDraft:
     # --- v2 additions ---
     continuity_delta: Any | None = None  # ContinuityDelta | None; lazy import
     context_trace_ids: list[str] = field(default_factory=list)
+    # Only edited candidates opt into the strict review/body/source binding.
+    # Empty means a legacy candidate, preserving existing loading semantics.
+    review_binding: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def create(
@@ -141,6 +144,7 @@ class CandidateDraft:
             "status": self.status,
             "created_at": self.created_at,
             "confirmed_at": self.confirmed_at,
+            "review_binding": dict(self.review_binding),
         }
         if schema_version == CANDIDATE_SCHEMA_V2:
             payload["continuity_delta"] = _delta_to_dict(self.continuity_delta)
@@ -173,6 +177,7 @@ class CandidateDraft:
             confirmed_at=str(payload.get("confirmed_at") or ""),
             continuity_delta=continuity_delta,
             context_trace_ids=[str(item) for item in (payload.get("context_trace_ids") or [])],
+            review_binding=dict(payload.get("review_binding") or {}),
         )
 
 

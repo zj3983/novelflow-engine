@@ -27,6 +27,11 @@ def problem(value):
     """Translate known errors; never echo exception text or unknown model output."""
     text = str(value or "")
     pairs = (
+        (("candidate_review_required",), "这份改稿尚未检查。", "点击重新检查，通过后再确认正文。"),
+        (("candidate_review_unavailable",), "这次检查未能完成，改稿已保留。", "检查模型设置后，重新检查当前稿件。"),
+        (("candidate_review_planning_missing",), "这份旧候选缺少重新检查所需的章节安排。", "请保留需要的文字，丢弃旧候选后重新生成。"),
+        (("candidate_body_invalid",), "正文不能为空或过长。", "请检查输入的章节正文。"),
+        (("candidate_guidance_required",), "请填写本次修改要求。", "说明希望修改的情节或表达，再让 AI 修改。"),
         (("stages.missing_change", "missing_change"), "修炼阶段缺少升级条件。", "补充各阶段的升级条件，或让 AI 修复。"),
         (("stages.missing_name",), "修炼阶段缺少名称。", "为各个阶段补充名称。"),
         (("canon.hard_blocker", "hard_block", "quality_failed", "review_result_blocked"), "正文与已确认的故事事实存在冲突。", "请先修改或重新生成候选，再进行确认。"),
@@ -172,7 +177,18 @@ def author_advice(quality):
     return output
 
 
-def candidate_review(candidate):
+def candidate_review(candidate, *, store=None):
+    from packages.story_core.candidate_editing import assert_review_current, review_digest
+    if candidate.review_binding:
+        try:
+            if store is not None:
+                assert_review_current(store, candidate)
+            elif (candidate.review_binding.get("state") != "checked"
+                  or candidate.review_binding.get("result") != review_digest(candidate)):
+                raise ValueError("candidate_review_required")
+        except ValueError as exc:
+            issue = problem(exc)
+            return {"label": "需要重新检查", "tone": "warning", "message": issue["message"]}, [issue], True, False
     from packages.story_core.file_project_store import _assert_explicit_quality_blocking, _assert_auto_chapter_quality
     quality = deepcopy(candidate.quality_report or {})
     blocked = False

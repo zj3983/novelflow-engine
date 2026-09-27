@@ -418,6 +418,8 @@ def _ensure_writer_context(
         update={
             "project_title": canonical.project_title or legacy.project_title,
             "genre": canonical.genre or legacy.genre,
+            "rewrite_guidance": "\n".join(dict.fromkeys(filter(None,
+                (canonical.rewrite_guidance, legacy.rewrite_guidance)))),
             "previous_tail": canonical.previous_tail or legacy.previous_tail,
             "continuity_facts": (
                 canonical.continuity_facts or legacy.continuity_facts
@@ -540,11 +542,17 @@ def _legacy_writer_context(
         genre_id = project_payload.get("genre_plugin_id") or project_payload.get("genre")
         if isinstance(genre_id, str) and genre_id.strip():
             genre = genre_id.strip()
+    author_guidance = [str(item) for item in project_payload.get("author_constraints", []) if str(item).strip()]
+    if project_payload.get("target_words"):
+        author_guidance.append(f"全书创作目标约 {project_payload['target_words']} 字。")
+    if project_payload.get("target_chapter_words"):
+        author_guidance.append(f"每章创作目标约 {project_payload['target_chapter_words']} 字；这是篇幅目标，不是输出硬上限。")
     return WriterContext(
         chapter_number=chapter_number,
         director_artifact=director_artifact,
         project_title=project_title,
         genre=genre,
+        rewrite_guidance="\n".join(author_guidance),
         previous_tail=str(previous.get("tail") or ""),
         continuity_facts=continuity_facts,
         character_cards=character_cards,
@@ -589,7 +597,7 @@ def plan_director_artifact(
     )
     if rewrite_guidance.strip():
         context = context.model_copy(
-            update={"rewrite_guidance": rewrite_guidance.strip()}
+            update={"rewrite_guidance": "\n".join(filter(None, (context.rewrite_guidance, rewrite_guidance.strip())))}
         )
     runtime = runtime or _default_director_runtime(project_root)
     provider, model = _resolved_stage_provider_model("director")
@@ -748,7 +756,7 @@ def run_writer(
     )
     if rewrite_guidance.strip():
         context = context.model_copy(
-            update={"rewrite_guidance": rewrite_guidance.strip()}
+            update={"rewrite_guidance": "\n".join(filter(None, (context.rewrite_guidance, rewrite_guidance.strip())))}
         )
     canon = _ensure_canon_service(canon_registry, project_root)
 

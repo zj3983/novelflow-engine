@@ -94,6 +94,9 @@ def source_revision(store, *, project=None, outline=None):
         "world_blueprint", "character_profiles", "relationship_graph",
     )}
     sources = {name: store.snapshot_store.read_json(store.webnovel_dir / name, None) for name in SOURCE_FILES}
+    # Omitted goals retain the existing fingerprint for legacy projects.
+    fields.update({key: project[key] for key in ("target_words", "target_chapter_words")
+                   if project.get(key) is not None})
     if outline is not None:
         sources["outline.json"] = outline
     sources["current_chapter"] = store.snapshot_store.read_json(store.webnovel_dir / "state.json", {}).get("current_chapter", 0)
@@ -151,6 +154,8 @@ def author_input(store):
     return {
         "title": project.get("title", ""), "seed_outline": project.get("seed_outline", ""),
         "author_constraints": project.get("author_constraints", []),
+        **{key: project[key] for key in ("target_words", "target_chapter_words")
+           if project.get(key) is not None},
         "current_focus": project.get("current_focus", ""),
         "genre_plugin_ids": (project.get("world_blueprint") or {}).get("genre_plugin_ids", []),
         "power_progression_mode": build_world_build_graph(NovelProject.model_validate(project)).power_progression_mode,

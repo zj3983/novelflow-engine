@@ -168,6 +168,8 @@ class CandidateConfirmationStoreMixin:
             return {"schema_version": "file-project-candidate-confirm/v1", "candidate": candidate.to_dict()}
         if candidate.status != "pending":
             raise ValueError("candidate_not_pending")
+        from packages.story_core.candidate_editing import assert_review_current
+        assert_review_current(self, candidate)
         payload = dict(candidate.submission_payload)
         if not payload:
             raise ValueError("candidate_submission_payload_missing")
@@ -211,8 +213,8 @@ class CandidateConfirmationStoreMixin:
             self._wrap_confirmation_in_transaction(candidate)
             from packages.story_core.opening_build.execution import record_confirmation
             record_confirmation(self, candidate)
-        candidate.confirm()
-        self.candidate_store.save(candidate)
+            candidate.confirm()
+            self.candidate_store.save(candidate)
         return {"schema_version": "file-project-candidate-confirm/v1", "candidate": candidate.to_dict()}
 
     # --- Transaction-managed paths -----------------------------------------
@@ -245,6 +247,7 @@ class CandidateConfirmationStoreMixin:
         return [
             self.story_system_dir / "chapters",
             self.webnovel_dir / "opening_execution_receipts",
+            self.candidate_store.directory,
             self.story_system_dir / "reviews",
             self.story_system_dir / "continuity",
             self.story_system_dir / "commits",

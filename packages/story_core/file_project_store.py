@@ -2635,6 +2635,7 @@ class FileProjectStore(
         quality_report: dict[str, Any] | None = None,
         operation: str = "generate",
         opening_authority: dict[str, Any] | None = None,
+        bind_review: bool = False,
     ) -> CandidateDraft:
         submission_payload = self._bundle_to_dict(bundle)
         if opening_authority is not None:
@@ -2700,6 +2701,17 @@ class FileProjectStore(
             continuity_delta=continuity_delta,
             context_trace_ids=context_trace_ids,
         )
+        if bind_review:
+            from packages.story_core.candidate_editing import review_digest
+            from packages.story_core.opening_build.execution import source_fingerprint
+            warnings = (candidate.quality_report.get("writing_review") or {}).get("warnings") or []
+            unavailable = ((candidate.quality_report.get("modular_pipeline") or {}).get("consistency_checked") is not True
+                or any(isinstance(item, dict) and item.get("code") in {
+                    "consistency.unavailable", "consistency.invalid_response"} for item in warnings))
+            candidate.review_binding = {"state": "unchecked" if unavailable else "checked",
+                                        "source": source_fingerprint(self)}
+            if not unavailable:
+                candidate.review_binding["result"] = review_digest(candidate)
         self.candidate_store.save_latest(candidate)
         report_generation_progress(
             build_chapter_pipeline_event(
@@ -7432,11 +7444,18 @@ class FileProjectStore(
         commit_message: str | None = None,
         persist: bool = True,
         accept_quality_warnings: bool = False,
+        require_review: bool = False,
     ) -> dict[str, Any]:
         from packages.story_core.engine import StoryEngine
 
         from packages.story_core.opening_build import runtime as opening_runtime, execution as opening_execution
         authority = None
+        source_before = None
+        if require_review:
+            if persist:
+                raise ValueError("candidate_confirmation_required")
+            with project_update_lock(self.root):
+                source_before = opening_execution.source_fingerprint(self)
         if opening_runtime.enabled(self):
             if persist:
                 raise ValueError("opening_candidate_confirmation_required")
@@ -7495,7 +7514,10 @@ class FileProjectStore(
             with project_update_lock(self.root):
                 if authority is not None:
                     opening_execution.verify(self, authority)
-                candidate = self._save_candidate_from_bundle(bundle, project_id=project_id, opening_authority=authority)
+                if source_before is not None and source_before != opening_execution.source_fingerprint(self):
+                    raise ValueError("candidate_source_changed")
+                candidate = self._save_candidate_from_bundle(bundle, project_id=project_id,
+                    opening_authority=authority, bind_review=require_review)
             return {
                 "schema_version": "file-project-candidate/v1",
                 "root": str(self.root),
@@ -7538,6 +7560,8 @@ class FileProjectStore(
             return {"schema_version": "file-project-candidate-confirm/v1", "candidate": candidate.to_dict()}
         if candidate.status != "pending":
             raise ValueError("candidate_not_pending")
+        from packages.story_core.candidate_editing import assert_review_current
+        assert_review_current(self, candidate)
         payload = dict(candidate.submission_payload)
         if not payload:
             raise ValueError("candidate_submission_payload_missing")
@@ -7582,8 +7606,8 @@ class FileProjectStore(
             self._wrap_confirmation_in_transaction(candidate)
             from packages.story_core.opening_build.execution import record_confirmation
             record_confirmation(self, candidate)
-        candidate.confirm()
-        self.candidate_store.save(candidate)
+            candidate.confirm()
+            self.candidate_store.save(candidate)
         return {"schema_version": "file-project-candidate-confirm/v1", "candidate": candidate.to_dict()}
 
     # --- Transaction-managed paths -----------------------------------------
@@ -7615,6 +7639,7 @@ class FileProjectStore(
         return [
             self.story_system_dir / "chapters",
             self.webnovel_dir / "opening_execution_receipts",
+            self.candidate_store.directory,
             self.story_system_dir / "reviews",
             self.story_system_dir / "continuity",
             self.story_system_dir / "commits",
