@@ -15,7 +15,7 @@ from packages.story_core import longform_lifecycle as lifecycle
 from packages.story_core import product_presentation as product
 from packages.story_core.candidate_editing import candidate_authority, save_edit
 from packages.story_core.file_project_creation import FileProjectCreateSpec
-from packages.story_core.longform_presentation import project_content, text
+from packages.story_core.longform_presentation import genre_id, opening_content, project_content, text
 from packages.story_core.opening_build import execution, runtime
 from packages.story_core.persistence.project_locking import project_update_lock
 
@@ -25,6 +25,22 @@ class CommandRequest(BaseModel):
     bookId: str | None = None
     token: str = Field(min_length=64, max_length=64, pattern=r"^[a-f0-9]+$")
     command: dict[str, Any]
+
+
+class PlanningScreen(Screen):
+    """Retain this request's already-read details for the four-page projection."""
+    def __init__(self, request, project_id):
+        super().__init__(request, project_id)
+        self.graph = {}
+        self.details = {}
+
+    def call(self, name, **kwargs):
+        value = super().call(name, **kwargs)
+        if name == "get_file_project_build_graph":
+            self.graph = value
+        elif name == "get_file_project_build_graph_task":
+            self.details[kwargs["task_id"]] = value
+        return value
 
 
 class AuthorScreen(Screen):
@@ -46,8 +62,18 @@ class AuthorScreen(Screen):
 
     def prepare(self):
         self.generation_job = workbench.read_file_generation_job_state(self.store) or {}
-        self.build_screen = Screen(self.request, self.project_id)
+        self.build_screen = PlanningScreen(self.request, self.project_id)
         self.build_screen.prepare_build()
+        # Read job ownership before taking the project lock. A failed next
+        # chapter must stay recoverable even when the receipt still says queued.
+        self.continuation_jobs = {}
+        current_chapter = int(self.store.state().get("current_chapter") or 0)
+        accepted_ids = _candidate_project_ids(self.store, self.project_id)
+        for candidate in self.store.candidate_store.list():
+            if candidate.status == "confirmed" and candidate.chapter_number == current_chapter and candidate.project_id in accepted_ids:
+                intent = lifecycle.continuation_state(self.store, candidate.candidate_id)
+                if intent and intent.get("job_id"):
+                    self.continuation_jobs[intent["job_id"]] = workbench.read_file_generation_job_state(self.store, intent["job_id"])
 
     def view(self, chapter=None):
         store = self.store
@@ -65,12 +91,12 @@ class AuthorScreen(Screen):
             data = continuous.to_dict() if hasattr(continuous, "to_dict") else continuous
             busy = busy or data.get("status") in {"queued", "running", "stopping"}
         plan = lifecycle.plan_state(store)
-        setup = store.opening_setup()
+        setup = opening_content(store)
         selected_direction = next((d for d in setup.get("directions", []) if d.get("id") == setup.get("selected_id")), {})
         content = project_content(store)
         authority = [source, info, plan["fingerprint"], job.get("job_id"), job.get("status")]
         result = {"id": self.project_id, "title": text(info.get("title")) or "未命名作品",
-                  "genre": text(info.get("novel_type_id")), "idea": text((setup.get("brief") or {}).get("idea")),
+                  "genre": genre_id(info, state), "idea": text((setup.get("brief") or {}).get("idea")),
                   "targetWords": info.get("target_words"), "chapterWords": info.get("target_chapter_words"),
                   "requirements": "\n".join(info.get("author_constraints") or []),
                   "direction": text(selected_direction.get("title")), "planAdopted": plan["accepted"],
@@ -87,7 +113,7 @@ class AuthorScreen(Screen):
             result["notice"] = product.problem(job.get("error") or job.get("error_code"))["message"]
 
         def directions(values):
-            return self.call("generate_opening_directions", payload=workbench.OpeningDirectionGenerationRequest(guidance=text(values.get("text"))))
+            return workbench.start_opening_direction_job(self.project_id, expected_source=source, guidance=text(values.get("text")))
 
         def choose(values):
             direction = next((d for d in setup.get("directions", []) if d.get("title") == values.get("text")), None)
@@ -95,7 +121,8 @@ class AuthorScreen(Screen):
                 raise ValueError("direction_not_found")
             return self.call("select_opening_direction", direction_id=direction["id"])
 
-        self.command("prepare-directions", "准备故事方向", authority, directions, enabled=not busy and confirmed == 0)
+        self.command("prepare-directions", "准备故事方向", authority, directions,
+            enabled=not busy and confirmed == 0 and not setup.get("selected_id"))
         self.command("direction", "选择这个方向", [authority, setup], choose, enabled=not busy and confirmed == 0 and bool(setup.get("directions")))
         self.command("adopt", "采纳当前规划", authority,
             lambda values: lifecycle.accept_plan(store, plan["fingerprint"]), enabled=not busy and plan["ready"])
@@ -121,7 +148,11 @@ class AuthorScreen(Screen):
             last = next((c for c in store.candidate_store.list() if c.project_id in accepted_ids
                          and c.status == "confirmed" and c.chapter_number == confirmed), None)
             intent = lifecycle.continuation_state(store, last.candidate_id) if last else None
-            if intent and intent.get("state") in {"failed", "launching"}:
+            next_job = self.continuation_jobs.get(intent.get("job_id")) if intent else None
+            interrupted = intent and (intent.get("state") in {"failed", "launching"}
+                or (next_job or {}).get("status") in {"failed", "interrupted", "conflicted"}
+                or intent.get("state") in {"queued", "running"} and not next_job)
+            if interrupted:
                 result["notice"] = "本章已保存，下一章尚未开始。完成规划后可以继续。"
                 self.command("retry-next", "继续准备下一章", [authority, intent],
                     lambda values: lifecycle.confirm_and_continue(store, last.candidate_id, expected_candidate=None,
@@ -166,10 +197,16 @@ class AuthorScreen(Screen):
                     return lifecycle.confirm_and_continue(store, candidate.candidate_id, expected_candidate=expected,
                         accept_quality_warnings=allow_warning, start_next=self.start_next,
                         read_job=lambda job_id: workbench.read_file_generation_job_state(store, job_id))
-                lifecycle.require_accepted_plan(store)
-                return self.call("confirm_file_project_candidate", candidate_id=candidate.candidate_id, force=allow_warning)
+                with project_update_lock(store.root):
+                    current = store.candidate_store.get(candidate.candidate_id)
+                    if current is None or candidate_authority(current) != expected:
+                        raise ValueError("candidate_revision_conflict")
+                    lifecycle.require_accepted_plan(store)
+                    # Final body/check/source admission and the confirmation
+                    # transaction share the lock. There is no model call here.
+                    return self.call("confirm_file_project_candidate", candidate_id=candidate.candidate_id, force=allow_warning)
             self.command("confirm", "确认本章", ref, confirm, enabled=not busy and not blocked and not warning)
-            self.command("accept-suggestion", "仍然采用当前稿件", ref,
+            self.command("accept-suggestion", "保留原文并确认本章（接受提醒）", ref,
                 lambda values: confirm(values, True), enabled=not busy and not blocked and warning)
 
         # Reuse each existing build callback, including its commit-time protections.
@@ -189,12 +226,29 @@ class AuthorScreen(Screen):
                     result["nextVolume"] = action["enabled"]
         # The editing fields already contain author labels and opaque paths.
         result["planningParts"] = []
-        for part in planning.get("parts", []):
-            detail = build.build(selection=part["selection"])
-            selected_part = detail.get("selected")
-            if not selected_part:
+        for task in build.graph.get("tasks", []):
+            task_id = task["task_id"]
+            detail = build.details.get(task_id)
+            if detail is None:
                 continue
-            display = deepcopy(selected_part)
+            artifact = detail.get("artifact") or {}
+            editable = product.editable_payload(artifact.get("payload") or {}, detail.get("diagnostics"))
+            fields, _ = product.editable_fields(editable, lambda path: _key(task_id, path))
+            ref = [build.graph.get("graph_revision"), artifact.get("revision")]
+            display = {"title": product.part_title(task_id, task["title"]),
+                       "description": product.status(task["status"])["message"],
+                       "paragraphs": [f'{f["label"]}：{f["value"]}' for f in fields],
+                       "issues": product.issues(detail.get("diagnostics")), "actions": []}
+            for operation, label in (("repair", "让 AI 修复"), ("rerun", "重新创作这一部分"), ("save", "保存修改")):
+                digest = _key(self.project_id, f"{task_id}-{operation}", ref)
+                original = "b" + digest[1:]
+                if original not in build.actions:
+                    continue
+                action = {"token": original, "label": label, "enabled": not busy}
+                if operation == "save":
+                    display["form"] = {"title": "我来修改", "description": "保存后检查规划是否完整。", "fields": fields, "actions": [action]}
+                else:
+                    display["actions"].append(action)
             for action in display.get("actions", []):
                 callback = build.actions.get(action["token"])
                 if callback:
@@ -240,7 +294,7 @@ def _workspace(request, book_id=None, chapter=None):
         info = store.project()
         project_id = workbench._public_project_id(store)
         token = _key("restore", project_id, info)
-        books.append({"id": project_id, "title": text(info.get("title")), "genre": genre_names.get(info.get("novel_type_id"), "未设置"),
+        books.append({"id": project_id, "title": text(info.get("title")), "genre": genre_names.get(genre_id(info), "未设置"),
                       "idea": "", "requirements": "", "future": "", "plan": "", "planAdopted": False,
                       "planningVolume": 1, "chapters": [], "archived": True, "notice": "作品已归档。", "busy": False,
                       "canRetry": False, "nextVolume": False, "actions": {"archive": {"token": token, "label": "恢复作品", "enabled": True}}})
@@ -248,7 +302,7 @@ def _workspace(request, book_id=None, chapter=None):
             "showNew": False, "storyTab": "人物", "person": "", "storageWarning": "",
             "genres": [{"value": g["id"], "label": g["name"]} for g in genres],
             "actions": {"create": {"token": _key("create-author-book"), "label": "开始创作", "enabled": True}},
-            "links": {"settings": "/settings", "import": "/projects?import=1"}}, selected
+            "links": {"settings": "/config", "import": "/projects?import=1"}}, selected
 
 
 def init_longform_product_routes():
@@ -264,7 +318,7 @@ def init_longform_product_routes():
         name = command.get("type")
         if name == "create":
             if body.token != _key("create-author-book"):
-                raise HTTPException(409, "product_action_expired")
+                raise HTTPException(409, "product_action_revision_expired")
             result = _handler(request, "create_new_file_project", payload=FileProjectCreateSpec(
                 mode="inspiration", title=text(command.get("title")), novel_type_id=text(command.get("genre")), idea=text(command.get("idea")),
                 target_words=command.get("targetWords", 900000), target_chapter_words=command.get("chapterWords", 3000),
@@ -275,9 +329,9 @@ def init_longform_product_routes():
         if name == "archive" and command.get("archived") is False:
             store = workbench._store_for(body.bookId)
             if store.project().get("project_lifecycle") != "archived":
-                raise HTTPException(409, "product_action_expired")
+                raise HTTPException(409, "product_action_revision_expired")
             if body.token != _key("restore", body.bookId, store.project()):
-                raise HTTPException(409, "product_action_expired")
+                raise HTTPException(409, "product_action_revision_expired")
             _handler(request, "restore_file_project", project_id=body.bookId)
             return {"bookId": body.bookId, "message": "作品已恢复。"}
         screen = AuthorScreen(request, body.bookId)
@@ -286,7 +340,7 @@ def init_longform_product_routes():
             screen.view()
             action = screen.commands.get(name)
             if not action or not action["enabled"] or action["token"] != body.token:
-                raise HTTPException(409, "product_action_expired")
+                raise HTTPException(409, "product_action_revision_expired")
             callback = screen.actions[body.token]
         result = callback(command)
         message = "已保存。"
