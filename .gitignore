@@ -33,6 +33,7 @@ data/continuation-imports/
 
 # Build artifacts
 apps/web/.next-dev/
+apps/web/.next-longform/
 apps/web/.next-dev.stale-*/
 apps/web/.next-e2e-*/
 apps/web/.next.bak-*/
