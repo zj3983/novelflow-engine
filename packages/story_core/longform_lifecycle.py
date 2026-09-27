@@ -250,7 +250,23 @@ def _save_author_inputs(store, patch: dict, *, expected_source: str, future_inte
         if config and config.get("execution"):
             if config.get("pending_extension") or config.get("sync_pending") or config["execution"].get("source_fingerprint") != expected_source:
                 raise ValueError("opening_planning_source_conflict")
-            execution.capture(store)
+            try:
+                execution.capture(store)
+            except ValueError as exc:
+                if str(exc) != "opening_prose_chapter_not_planned":
+                    raise
+                # At a published volume boundary, authors must be able to set
+                # intent before preparing the next volume. capture has already
+                # checked graph cleanliness, materialization and the published
+                # handoff before this precise error. Check the remaining
+                # confirmed execution authority without authorizing prose.
+                graph_state = store.build_graph_store().read_state()
+                confirmed = int(store.state().get("current_chapter") or 0)
+                authority = config["execution"]
+                if (graph_state is None
+                        or authority.get("graph_revision") != graph_state.graph_revision
+                        or authority.get("confirmed_through") != confirmed):
+                    raise ValueError("opening_planning_source_conflict") from exc
         prepared, payloads = store.update_project(patch, _commit=False)
         metadata = config if config else prepared
         if future_intent is not None:
