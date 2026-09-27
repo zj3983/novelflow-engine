@@ -1,9 +1,16 @@
 """Read-only author projections. Internal state is never forwarded wholesale."""
 from __future__ import annotations
+import re
 
 
 def text(value):
     return value if isinstance(value, str) else ""
+
+
+def person_role(value):
+    known = {"protagonist": "主角", "antagonist": "对手", "supporting": "配角", "minor": "其他人物"}
+    role = text(value)
+    return known.get(role, role if re.search(r"[\u4e00-\u9fff]", role) else "人物")
 
 
 def opening_content(store):
@@ -61,7 +68,7 @@ def project_content(store):
     arcs = outline.get("arcs") or []
     volumes = [{"number": index + 1, "title": text(arc.get("title")) or f"第 {index + 1} 卷",
                 "start": arc.get("start_chapter"), "end": arc.get("end_chapter"),
-                "goal": text(arc.get("goal")), "label": "已完成" if int(arc.get("end_chapter") or 0) <= confirmed else "待创作"}
+                "goal": text(arc.get("goal")), "label": "已完成" if 0 < int(arc.get("end_chapter") or 0) <= confirmed else "待创作"}
                for index, arc in enumerate(arcs) if isinstance(arc, dict)]
     people = []
     for person in state.get("characters") or []:
@@ -78,7 +85,7 @@ def project_content(store):
         performance = [text(portrayal.get(key)) for key in ("speech_style", "action_style", "risk_posture") if text(portrayal.get(key))]
         performance.extend(item for key in ("emotional_triggers", "decision_rules", "reveal_limits") for item in portrayal.get(key) or [] if isinstance(item, str))
         performance.extend(item for item in person.get("dialogue_examples") or [] if isinstance(item, str))
-        people.append({"name": text(person.get("name")), "role": text(person.get("role")),
+        people.append({"name": text(person.get("name")), "role": person_role(person.get("role")),
                        "description": "\n".join(v for v in (text(identity.get("current_identity")), text(identity.get("occupation")), text(drive.get("motivation")) or text(person.get("core_motivation")), text(person.get("story_function"))) if v),
                        "facts": facts, "performance": performance})
     world = list(world_records)

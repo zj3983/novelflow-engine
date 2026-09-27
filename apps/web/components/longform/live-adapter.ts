@@ -26,7 +26,7 @@ export function createLiveAdapter(): WorkspaceAdapter {
     local.bookId = chosen?.id || "";
     if (!preservePage && next.page) local.page = next.page;
     if (!chosen && local.page !== "books") local.page = "books";
-    state = { ...next, ...local, mode: "live", loading: false, sending, lastCompleted: state.lastCompleted, error: state.error, storageWarning: state.storageWarning, showNew: state.showNew };
+    state = { ...next, ...local, mode: "live", loading: false, sending, lastCompleted: state.lastCompleted, error: state.error, storageWarning: next.storageWarning || state.storageWarning, showNew: state.showNew };
     state.books = next.books.map(book => {
       const draft = local.drafts[book.id];
       if (draft && draft.candidate && draft.candidate !== book.candidate?.key) state.storageWarning = "你保留了较早候选的编辑草稿。较新的候选已在服务器保存；请复制需要保留的文字，再结束旧草稿编辑，重新修改当前候选。";

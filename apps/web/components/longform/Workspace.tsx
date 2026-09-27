@@ -142,7 +142,7 @@ export function LongformWorkspace({ adapter }: { adapter: WorkspaceAdapter }) {
           {c.concerns?.slice(1).map((item, i) => <section className={s.issue} key={i}><div><p>{item.message}</p><p>{item.suggestion}</p>{item.chapter && <button onClick={() => showChapter(item.chapter!)}>查看第{item.chapter}章依据</button>}</div></section>)}
           <div className={s.pair}><button className={s.primary} disabled={busy || !allowed("ai-edit") || c.editorDraft !== undefined} onClick={() => openDialog("ai")}>让 AI 修改</button><button disabled={busy || !allowed("save-draft")} onClick={() => setEditing(true)}>我来改写</button></div>
           {c.editorDraft !== undefined && <p className={s.muted}>有尚未保存的编辑草稿。确认前请先保存并检查。</p>}
-          {(c.needsCheck || c.checking || !c.concern) && <button className={s.wide} disabled={busy || c.editorDraft !== undefined || !allowed("review")} onClick={() => act({ type: "review" })}>{c.checking ? "正在检查…" : "重新检查"}</button>}
+          {(live || c.needsCheck || c.checking || !c.concern) && <button className={s.wide} disabled={busy || c.editorDraft !== undefined || !allowed("review")} onClick={() => act({ type: "review" })}>{c.checking ? "正在检查…" : "重新检查"}</button>}
           {c.concern && (live ? c.canAcceptSuggestion : !c.concern.quote) && <button className={s.wide} disabled={busy || c.editorDraft !== undefined || !allowed("accept-suggestion")} onClick={() => act({ type: "accept-suggestion" })}>{live ? "保留原文并确认本章（接受提醒）" : "保留原文，不采用此建议"}</button>}
           {!!c.pastDrafts.length && <button className={s.textButton} onClick={() => openDialog("history")}>查看保留的旧稿（{c.pastDrafts.length}）</button>}
           <p className={s.smallNote}>修改后重新检查，确认后才加入正式章节。</p>

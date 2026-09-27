@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from copy import copy, deepcopy
 import json
+import ipaddress
 import os
 from pathlib import Path
 import re
@@ -67,6 +68,9 @@ for key, relative in {
 }.items():
     os.environ[key] = str(ROOT / relative)
 (ROOT / "projects").mkdir(exist_ok=True)
+os.environ["NOVEL_AUTOGROWTH_ALLOWED_FS_ROOTS"] = str(ROOT / "projects")
+os.environ["NOVEL_AUTOGROWTH_CORS_ORIGINS"] = ",".join(
+    f"http://{host}:{port}" for host in ("127.0.0.1", "localhost") for port in (3000, 3530))
 if any(path.is_symlink() or getattr(path, "is_junction", lambda: False)() for path in ROOT.rglob("*")):
     raise RuntimeError("Synthetic projects must not link to directories outside their isolated root.")
 
@@ -75,10 +79,27 @@ def _offline_only(*args, **kwargs):
     raise PermissionError("External connections and commands are disabled in the synthetic development server.")
 
 
-# Defense in depth for endpoints which might otherwise probe a provider or
-# invoke a configured CLI. Incoming ASGI connections do not call connect().
-socket.socket.connect = _offline_only
-socket.socket.connect_ex = _offline_only
+# Windows asyncio uses loopback socket pairs for its own wakeups. Preserve
+# those local connections while denying outbound addresses. Model transports
+# are independently replaced below, and unrelated public routes are closed.
+_socket_connect = socket.socket.connect
+_socket_connect_ex = socket.socket.connect_ex
+
+
+def _local_connect(original, sock, address):
+    if sock.family == getattr(socket, "AF_UNIX", None):
+        return original(sock, address)
+    if isinstance(address, tuple):
+        try:
+            if ipaddress.ip_address(address[0]).is_loopback:
+                return original(sock, address)
+        except ValueError:
+            pass
+    return _offline_only()
+
+
+socket.socket.connect = lambda sock, address: _local_connect(_socket_connect, sock, address)
+socket.socket.connect_ex = lambda sock, address: _local_connect(_socket_connect_ex, sock, address)
 socket.create_connection = _offline_only
 subprocess.Popen = _offline_only
 
