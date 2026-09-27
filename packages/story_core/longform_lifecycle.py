@@ -37,6 +37,7 @@ def _plan_fingerprint(store):
     # accepts the actual published plan once, until its content/authority changes.
     config = opening.settings(store) if opening.enabled(store) else {}
     graph = store.build_graph_store().read_state() if config else None
+    project = store.project()
     return digest({
         "outline": store.snapshot_store.read_json(store.webnovel_dir / "outline.json", None),
         "handoff": store.snapshot_store.read_json(store.webnovel_dir / "opening_execution_contracts.json", None),
@@ -46,7 +47,9 @@ def _plan_fingerprint(store):
         "versions": (config or {}).get("plan_versions", []),
         "artifacts": {key: task.current_artifact_revision for key, task in graph.tasks.items()} if graph else {},
         "definition": graph.definition_fingerprint if graph else None,
-        "requirements": store.project().get("author_constraints", []),
+        "requirements": project.get("author_constraints", []),
+        "targets": {key: project[key] for key in ("target_words", "target_chapter_words") if key in project},
+        "future_intent": author_future_intent(store),
     })
 
 
@@ -145,10 +148,22 @@ def _confirm_and_continue(store, candidate_id: str, *, expected_candidate: str |
 
     ``start_next`` must pass this reserved ID to existing job admission, request
     candidate-only generation, and validate the accepted plan at worker admission.
-    ``read_job`` must be a read-only persisted job lookup. It must not recover jobs.
+    ``read_job`` must be a read-only job lookup. It must not recover jobs. It may
+    report ``worker_active=False`` when the existing executor can prove a stored
+    running/queued job has no live worker (for example after a process restart).
     Callback work happens outside the project lock. A interrupted launch is only
     recoverable by an explicit retry, using the same durable reservation.
     """
+    # Job ownership may take the existing executor lock; never acquire it while
+    # holding the project lock, because job admission uses the opposite order.
+    previous_job = None
+    previous_job_id = None
+    if retry:
+        with project_update_lock(store.root):
+            previous = _read_receipt(store, _candidate(store, candidate_id)).get("continuation")
+            previous_job_id = previous.get("job_id") if previous else None
+        if previous_job_id:
+            previous_job = read_job(previous_job_id)
     with project_update_lock(store.root):
         candidate = _candidate(store, candidate_id)
         if candidate.operation != "generate":
@@ -159,6 +174,12 @@ def _confirm_and_continue(store, candidate_id: str, *, expected_candidate: str |
             require_accepted_plan(store)
             if opening.enabled(store):
                 execution.verify(store, candidate.submission_payload.get("opening_authority"))
+            from packages.story_core.product_presentation import candidate_review
+            _, _, blocked, warning = candidate_review(candidate, store=store)
+            if blocked:
+                raise ValueError("candidate_review_required")
+            if warning and not accept_quality_warnings:
+                raise ValueError("candidate_quality_warning_confirmation_required")
             store.confirm_candidate(candidate_id, accept_quality_warnings=accept_quality_warnings)
             candidate = _candidate(store, candidate_id)
         receipt = _read_receipt(store, candidate)
@@ -168,8 +189,12 @@ def _confirm_and_continue(store, candidate_id: str, *, expected_candidate: str |
         if int(store.state().get("current_chapter") or 0) != candidate.chapter_number:
             return _result(candidate, {"state": "completed"})
         if intent:
-            job = read_job(intent["job_id"])
-            if job and job.get("status") in {"queued", "running", "completed"}:
+            if previous_job_id != intent["job_id"]:
+                return _result(candidate, intent)
+            job = previous_job
+            running = bool(job and job.get("status") in {"queued", "running"}
+                           and job.get("worker_active") is not False)
+            if job and (running or job.get("status") == "completed"):
                 return _result(candidate, {**intent, "state": str(job["status"])})
             # A failed job has finished. A deliberate retry receives a new ID;
             # a crash before admission reuses its original durable reservation.
@@ -201,6 +226,23 @@ def _confirm_and_continue(store, candidate_id: str, *, expected_candidate: str |
 def save_author_requirements(store, requirements: list[str], *, expected_source: str):
     if not isinstance(requirements, list) or len(requirements) > 100 or any(not isinstance(item, str) or len(item) > 4000 for item in requirements):
         raise ValueError("author_requirements_invalid")
+    return _save_author_inputs(store, {"author_constraints": [item.strip() for item in requirements if item.strip()]}, expected_source=expected_source)
+
+
+def author_future_intent(store):
+    """Explicit future guidance, distinct from generated chapter next-focus."""
+    _, metadata = _metadata(store)
+    return str((metadata.get("longform_author_inputs") or {}).get("future_intent") or "")
+
+
+def save_future_intent(store, text: str, *, expected_source: str):
+    if not isinstance(text, str) or len(text) > 20000:
+        raise ValueError("author_future_intent_invalid")
+    return _save_author_inputs(store, {"current_focus": text.strip()},
+                               expected_source=expected_source, future_intent=text.strip())
+
+
+def _save_author_inputs(store, patch: dict, *, expected_source: str, future_intent=None):
     with project_update_lock(store.root):
         if execution.source_fingerprint(store) != expected_source:
             raise ValueError("candidate_source_changed")
@@ -209,13 +251,19 @@ def save_author_requirements(store, requirements: list[str], *, expected_source:
             if config.get("pending_extension") or config.get("sync_pending") or config["execution"].get("source_fingerprint") != expected_source:
                 raise ValueError("opening_planning_source_conflict")
             execution.capture(store)
-        prepared, payloads = store.update_project(
-            {"author_constraints": [item.strip() for item in requirements if item.strip()]}, _commit=False)
+        prepared, payloads = store.update_project(patch, _commit=False)
+        metadata = config if config else prepared
+        if future_intent is not None:
+            metadata["longform_author_inputs"] = {
+                **metadata.get("longform_author_inputs", {}), "future_intent": future_intent,
+            }
+        metadata.pop("longform_plan_acceptance", None)
+        if config is None:
+            payloads[store.webnovel_dir / "project.json"] = prepared
         paths = [*payloads, store.webnovel_dir / opening.SETTINGS]
         with ProjectTransaction.create(store.root, snapshot_store=store.snapshot_store, managed_paths=paths):
             store.snapshot_store.replace_json_transaction(payloads)
             if config:
-                config.pop("longform_plan_acceptance", None)
                 if config.get("execution"):
                     # A sanctioned author-input edit changes only future model
                     # inputs. Preserve all published planning and historical
