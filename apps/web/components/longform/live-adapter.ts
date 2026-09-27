@@ -9,7 +9,8 @@ export function createLiveAdapter(): WorkspaceAdapter {
   let local: Local = { bookId: "", page: "books", storyTab: "人物", person: "", drafts: {} };
   try { const saved = JSON.parse(localStorage.getItem(KEY) || "null"); if (saved?.drafts) local = { ...local, ...saved }; } catch { /* usable without storage */ }
   const query = new URLSearchParams(location.search);
-  if (query.has("book")) local.bookId = query.get("book") || "";
+  if (query.has("book")) { local.bookId = query.get("book") || ""; local.selectedChapter = undefined; }
+  if (query.has("chapter")) { const chapter = Number(query.get("chapter")); local.selectedChapter = Number.isInteger(chapter) && chapter > 0 ? chapter : undefined; }
   if (["books", "planning", "writing", "story"].includes(query.get("page") || "")) local.page = query.get("page") as Local["page"];
   let state: Workspace = { ...local, books: [], showNew: false, storageWarning: "", mode: "live", loading: true };
   let disposed = false, requestNumber = 0, sending = false;
@@ -25,7 +26,7 @@ export function createLiveAdapter(): WorkspaceAdapter {
     local.bookId = chosen?.id || "";
     if (!preservePage && next.page) local.page = next.page;
     if (!chosen && local.page !== "books") local.page = "books";
-    state = { ...next, ...local, mode: "live", loading: false, sending, error: state.error, storageWarning: state.storageWarning, showNew: state.showNew };
+    state = { ...next, ...local, mode: "live", loading: false, sending, lastCompleted: state.lastCompleted, error: state.error, storageWarning: state.storageWarning, showNew: state.showNew };
     state.books = next.books.map(book => {
       const draft = local.drafts[book.id];
       if (draft && draft.candidate && draft.candidate !== book.candidate?.key) state.storageWarning = "你保留了较早候选的编辑草稿。较新的候选已在服务器保存；请复制需要保留的文字，再结束旧草稿编辑，重新修改当前候选。";
@@ -57,7 +58,7 @@ export function createLiveAdapter(): WorkspaceAdapter {
   }
   function navigate() {
     state = { ...state, ...local, error: "" }; persist(); publish();
-    const params = new URLSearchParams({ page: local.page }); if (local.bookId) params.set("book", local.bookId);
+    const params = new URLSearchParams({ page: local.page }); if (local.bookId) params.set("book", local.bookId); if (local.selectedChapter) params.set("chapter", String(local.selectedChapter));
     history.replaceState(null, "", `/workspace?${params}`); void refresh();
   }
   async function executeRemote(command: Command) {
@@ -74,13 +75,14 @@ export function createLiveAdapter(): WorkspaceAdapter {
       const next = await request<{bookId?: string; message?: string}>("/author-workspace/commands", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ bookId, command, token }) });
       if (disposed) return;
       if (command.type === "save-draft") delete local.drafts[bookId];
-      if (command.type === "create") state.showNew = false;
+      if (["plan", "future", "requirements", "ai-edit"].includes(command.type)) { try { localStorage.removeItem(`novelflow.author.dialog:${bookId}:${command.type === "ai-edit" ? "ai" : command.type}`); } catch { /* server saved; browser copy may remain */ } }
+      if (command.type === "create") { state.showNew = false; try { localStorage.removeItem("novelflow.author.new-book"); } catch { /* optional cached form */ } }
       if (command.type === "create") { local.bookId = next.bookId || local.bookId; local.page = "planning"; }
       if (["next-volume", "direction", "prepare-plan"].includes(command.type)) local.page = "planning";
       if (["adopt", "generate", "confirm", "retry-next"].includes(command.type)) local.page = "writing";
       local.selectedChapter = undefined;
-      state = { ...state, ...local, storageWarning: next.message || "" };
-      const params = new URLSearchParams({ page: local.page }); if (local.bookId) params.set("book", local.bookId);
+      state = { ...state, ...local, lastCompleted: { bookId, type: command.type, token }, storageWarning: next.message || "" };
+      const params = new URLSearchParams({ page: local.page }); if (local.bookId) params.set("book", local.bookId); if (local.selectedChapter) params.set("chapter", String(local.selectedChapter));
       history.replaceState(null, "", `/workspace?${params}`); persist(); publish();
     } catch (error) { if (!disposed) { state.error = error instanceof Error ? error.message : "操作未完成，编辑内容已保留。"; publish(); } }
     finally { sending = false; if (!disposed) { state.sending = false; publish(); void refresh(); } }

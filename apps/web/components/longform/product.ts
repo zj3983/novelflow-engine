@@ -13,7 +13,7 @@ export interface Candidate extends Chapter {
   label: string; canConfirm: boolean; needsCheck: boolean; checking: boolean;
   concern?: Concern; pastDrafts: { body: string; label: string }[]; editorDraft?: string;
 }
-export interface PlanningPart { title: string; description?: string; paragraphs: string[]; issues: Concern[]; actions: ProductAction[]; form?: { title: string; description?: string; fields: {key:string;value:string;label:string;type:string;required?:boolean}[]; actions: ProductAction[] } }
+export interface PlanningPart { key?: string; selection?: string; title: string; description?: string; paragraphs: string[]; issues: Concern[]; actions: ProductAction[]; form?: { title: string; description?: string; fields: {key:string;value:string;label:string;type:string;required?:boolean}[]; actions: ProductAction[] } }
 export interface Book {
   planningParts?: PlanningPart[];
   actions?: Record<string, ProductAction>; volumes?: Volume[]; upcoming?: { number: number; title: string; summary: string }[];
@@ -25,6 +25,7 @@ export interface Book {
   notice: string; busy: boolean; canRetry: boolean; nextVolume: boolean;
 }
 export interface Workspace {
+  lastCompleted?: { bookId: string; type: string; token?: string };
   recoveredDraft?: string; mode?: "demo" | "live"; loading?: boolean; sending?: boolean; error?: string;
   actions?: Record<string, ProductAction>; genres?: { value: string; label: string }[]; links?: { settings?: string; import?: string };
   books: Book[]; bookId: string; page: PageName; selectedChapter?: number;
@@ -39,14 +40,14 @@ export type Command =
   | { type: `planning-action:${string}`; values?: Record<string,string>; token: string }
   | { type: "prepare-plan" | "sync-plan" | "refresh-plan" | "continue-plan" | "complete-volume" | "retry-next" | "discard" }
   | { type: "prepare-directions" } | { type: "refresh" }
-  | { type: "plan"; text: string }
+  | { type: "plan"; text: string; token?: string }
   | { type: "adopt" } | { type: "generate" } | { type: "next-volume" }
   | { type: "discard-local-draft" }
   | { type: "draft"; text: string } | { type: "save-draft"; text: string }
-  | { type: "review" } | { type: "ai-edit"; instruction: string }
+  | { type: "review" } | { type: "ai-edit"; instruction: string; token?: string }
   | { type: "confirm"; continue: boolean } | { type: "accept-suggestion" }
   | { type: "story-tab"; tab: StoryTab } | { type: "person"; name: string }
-  | { type: "future"; text: string } | { type: "requirements"; text: string }
+  | { type: "future"; text: string; token?: string } | { type: "requirements"; text: string; token?: string }
   | { type: "archive"; id: string; archived: boolean }
   | { type: "reset" } | { type: "scenario"; scenario: "generation-failure" | "review-failure" | "next-failure" | "volume-end" | "soft-suggestion" };
 export interface WorkspaceAdapter {

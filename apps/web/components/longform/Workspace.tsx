@@ -21,6 +21,10 @@ export function LongformWorkspace({ adapter }: { adapter: WorkspaceAdapter }) {
   const [editing, setEditing] = useState(false);
   const [dialog, setDialog] = useState<"ai" | "plan" | "future" | "requirements" | "history" | "contradiction" | "reset" | null>(null);
   const [dialogText, setDialogText] = useState("");
+  const [dialogToken, setDialogToken] = useState("");
+  const [draftNotice, setDraftNotice] = useState("");
+  const completedDialog = useRef<typeof state.lastCompleted>();
+  const dialogDrafts = useRef<Record<string,{text:string;token:string}>>({});
   const [search, setSearch] = useState("");
   const [showArchive, setShowArchive] = useState(false);
   const [showDemo, setShowDemo] = useState(false);
@@ -31,7 +35,7 @@ export function LongformWorkspace({ adapter }: { adapter: WorkspaceAdapter }) {
   const c = b.candidate;
   const current = state.selectedChapter ? b.chapters.find(ch => ch.number === state.selectedChapter) : c || b.chapters.at(-1);
   const isCandidate = current === c && !!c;
-  const count = b.chapters.length;
+  const count = Math.max(0, ...b.chapters.map(ch => ch.number));
   const activeVolume = volumeFor(current?.number || count + 1)?.number || b.planningVolume;
   const crossTab = state.storageWarning.startsWith("演示已在另一");
   const busy = b.busy || crossTab || !!state.sending;
@@ -49,11 +53,33 @@ export function LongformWorkspace({ adapter }: { adapter: WorkspaceAdapter }) {
   }, [state.selectedChapter, c?.number, openVolumes]);
   useEffect(() => { if (prose.current) prose.current.scrollTop = 0; }, [current?.number, b.id]);
   function navigate(page: PageName) { setEditing(false); setDialog(null); act({ type: "navigate", page }); }
+  useEffect(() => {
+    const completed = state.lastCompleted;
+    if (!completed || completed === completedDialog.current) return;
+    completedDialog.current = completed;
+    if (completed.bookId !== b.id) return;
+    const kind = completed.type === "ai-edit" ? "ai" : completed.type;
+    if (kind === dialog && completed.token === dialogToken) { delete dialogDrafts.current[`${b.id}:${kind}`]; setDialog(null); }
+  }, [state.lastCompleted, b.id, dialog, dialogToken]);
   function openDialog(kind: typeof dialog, text = "") {
-    if (live) { try { text = localStorage.getItem(`novelflow.author.dialog:${b.id}:${kind}`) ?? text; } catch { /* optional recovery */ } }
-    setDialogText(text); setDialog(kind);
+    let token = b.actions?.[kind === "ai" ? "ai-edit" : kind || ""]?.token || "";
+    if (live) {
+      try {
+        const raw = localStorage.getItem(`novelflow.author.dialog:${b.id}:${kind}`);
+        if (raw) {
+          let saved: { text: string; token?: string };
+          try { saved = JSON.parse(raw); } catch { saved = { text: raw }; }
+          if (typeof saved?.text === "string") { text = saved.text; token = saved.token || ""; }
+        }
+      } catch { setDraftNotice("无法读取浏览器中的旧草稿。请保留当前文字，离开前先保存修改。"); }
+    }
+    const memory = dialogDrafts.current[`${b.id}:${kind}`];
+    setDialogText(memory?.text ?? text); setDialogToken(memory?.token ?? token); setDialog(kind);
   }
-  function updateDialog(text: string) { setDialogText(text); if (live) { try { localStorage.setItem(`novelflow.author.dialog:${b.id}:${dialog}`, text); } catch { /* retain in memory */ } } }
+  function updateDialog(text: string) {
+    setDialogText(text); dialogDrafts.current[`${b.id}:${dialog}`] = { text, token: dialogToken };
+    if (live) { try { localStorage.setItem(`novelflow.author.dialog:${b.id}:${dialog}`, JSON.stringify({ text, token: dialogToken })); } catch { setDraftNotice("编辑内容暂时无法保存到浏览器，请勿刷新或关闭页面。"); } }
+  }
   function showChapter(number: number) { setEditing(false); setOpenVolumes(v => [...new Set([...v, volumeFor(number)?.number || b.planningVolume])]); act({ type: "navigate", page: "writing", chapter: number }); }
   function title(text: string) { return <h2 ref={heading}>{text}</h2>; }
 
@@ -66,6 +92,7 @@ export function LongformWorkspace({ adapter }: { adapter: WorkspaceAdapter }) {
       <span className={s.saved}><CheckCircle2 size={17} />{count ? `已确认至第${count}章` : "还没有正式章节"}</span>
       <button className={s.iconButton} aria-label="打开设置" onClick={() => navigate("settings")}><Settings size={20} /></button>
     </header>
+    {draftNotice && <div className={s.notice} role="alert">{draftNotice}</div>}
     {state.loading && <div className={s.notice}>正在打开工作区…</div>}{state.error && <div className={s.notice} role="alert">{state.error}<button onClick={() => act({ type: "refresh" })}>重新连接</button></div>}
     {state.recoveredDraft !== undefined && <section className={s.notice}><h3>保留的编辑草稿</h3><p>对应的候选已不在当前待确认列表。文字仍保留在此，供你复制。</p><textarea aria-label="保留的编辑草稿" readOnly value={state.recoveredDraft} /><button onClick={() => act({ type: "discard-local-draft" })}>清除本地草稿</button></section>}
     {state.storageWarning && <div className={s.notice} role="alert">{state.storageWarning}</div>}
@@ -138,7 +165,7 @@ export function LongformWorkspace({ adapter }: { adapter: WorkspaceAdapter }) {
           <div className={s.sectionHeading}><h1>第{b.planningVolume}卷 · {volumes.find(v => v.number === b.planningVolume)?.title || "当前规划"}</h1><span className={s.badge}>{b.planAdopted ? "你已采纳" : "等待你查看并采纳"}</span></div>
           <p className={s.bio}>{b.plan || "规划尚未准备完整。"}</p><h3>近期章节安排</h3>{b.upcoming?.length ? <table className={s.table}><thead><tr><th>章数</th><th>章节名</th><th>主要内容</th></tr></thead><tbody>{b.upcoming.map(ch => <tr key={ch.number}><td>第{ch.number}章</td><td>{ch.title}</td><td>{ch.summary}</td></tr>)}</tbody></table> : <Empty text="近期章节尚未准备。" />}
         </>}
-        {b.planningParts?.map((part, i) => <PlanningSection key={`${b.id}:${i}`} part={part} bookId={b.id} busy={busy} act={act} />)}
+        {b.planningParts?.map((part, i) => <PlanningSection key={`${b.id}:${part.key || part.selection || i}`} part={part} bookId={b.id} completed={state.lastCompleted} busy={busy} act={act} />)}
         {b.actions?.plan?.reason && <p>{b.actions.plan.reason}</p>}
         {b.actions?.adopt?.reason && <p>{b.actions.adopt.reason}</p>}
       </main>
@@ -159,11 +186,14 @@ export function LongformWorkspace({ adapter }: { adapter: WorkspaceAdapter }) {
 
     {dialog && <dialog ref={node => { if (node && !node.open) node.showModal(); }} className={s.dialog} aria-label={{ ai: "让 AI 修改", plan: "调整规划", future: "修改后续设定", requirements: "修改作者要求", history: "保留的旧稿", contradiction: "核对前文", reset: "重置演示" }[dialog]} onCancel={() => setDialog(null)}>
       <button className={s.close} aria-label="关闭对话框" onClick={() => setDialog(null)}><X size={21} /></button>
+      {state.error && <p role="alert">{state.error}</p>}
       <h2>{{ ai: "希望怎样修改？", plan: "调整后续规划", future: "修改后续打算", requirements: "修改作者要求", history: "保留的旧稿", contradiction: "先找到相关章节", reset: "重新开始演示？" }[dialog]}</h2>
       {dialog === "reset" ? <><p>仅清除这个原型的模拟进度。真实作品和其他工作区不会改变。</p><button className={s.primary} onClick={() => { act({ type: "reset" }); setDialog(null); }}>确认重置演示</button></> : dialog === "history" ? <div className={s.history}>{c?.pastDrafts.map((draft, i) => <section key={i}><h3>{draft.label}</h3><p>{draft.body}</p></section>)}</div> : dialog === "contradiction" ? <><p>本轮只能回看和定位历史正文，不能直接改写已确认内容。可以先记录后续安排。</p>{count > 0 ? <button className={s.primary} onClick={() => { setDialog(null); showChapter(count); }}>回看第{count}章</button> : <p>当前还没有已确认的正文。</p>}</> : <>
         <label htmlFor="dialog-text">{dialog === "ai" ? "修改要求" : "修改内容"}</label><textarea id="dialog-text" autoFocus value={dialogText} onChange={e => updateDialog(e.target.value)} />
+        {live && !dialogToken && <p>这份旧草稿无法直接提交。请复制文字后重新打开当前内容，再粘贴需要保留的修改。</p>}
+        {live && <button onClick={() => { try { localStorage.removeItem(`novelflow.author.dialog:${b.id}:${dialog}`); } catch { /* text remains visible */ } delete dialogDrafts.current[`${b.id}:${dialog}`]; setDialogToken(b.actions?.[dialog === "ai" ? "ai-edit" : dialog]?.token || ""); setDialogText(dialog === "plan" ? b.plan : dialog === "future" ? b.future : dialog === "requirements" ? b.requirements : ""); }}>重新载入当前内容（请先复制要保留的文字）</button>}
         <p className={s.smallNote}>{dialog === "ai" ? "仅修改当前候选，完成后重新检查；不会覆盖已确认正文。" : "已确认正文与已写事实保持原样。"}</p>
-        <button className={s.primary} disabled={!dialogText.trim() || busy || !allowed(dialog === "ai" ? "ai-edit" : dialog)} onClick={() => { if (dialog === "ai") act({ type: "ai-edit", instruction: dialogText }); else act({ type: dialog, text: dialogText }); setDialog(null); }}>{dialog === "ai" ? "修改并重新检查" : "保存修改"}</button>
+        <button className={s.primary} disabled={!dialogText.trim() || busy || (live && !dialogToken) || !allowed(dialog === "ai" ? "ai-edit" : dialog)} onClick={() => { if (dialog === "ai") act({ type: "ai-edit", instruction: dialogText, ...(live ? { token: dialogToken } : {}) }); else act({ type: dialog, text: dialogText, ...(live ? { token: dialogToken } : {}) }); if (!live) setDialog(null); }}>{dialog === "ai" ? "修改并重新检查" : "保存修改"}</button>
       </>}
     </dialog>}
   </div>;
@@ -188,16 +218,18 @@ function ActionButton({ action, busy, act }: { action: ProductAction; busy: bool
   return <div><button disabled={busy || !action.enabled} onClick={() => act({ type: action.command, token: action.token } as Command)}>{action.label}</button>{action.reason && <p className={s.smallNote}>{action.reason}</p>}</div>;
 }
 
-function PlanningSection({ part, bookId, busy, act }: { part: PlanningPart; bookId: string; busy: boolean; act: (c: Command) => void }) {
+function PlanningSection({ part, bookId, completed, busy, act }: { part: PlanningPart; bookId: string; completed?: { bookId: string; type: string; token?: string }; busy: boolean; act: (c: Command) => void }) {
   const form = part.form;
-  const key = `novelflow.author.plan-draft:${bookId}:${part.title}`;
+  const key = `novelflow.author.plan-draft:${bookId}:${part.key || part.selection || part.title}`;
   const [editing, setEditing] = useState(false);
   const [values, setValues] = useState<Record<string,string>>({});
   const [captured, setCaptured] = useState<ProductAction[]>([]);
+  const handled = useRef<typeof completed>();
   useEffect(() => { try { const saved = JSON.parse(localStorage.getItem(key) || "null"); if (saved?.values) { setValues(saved.values); setCaptured(saved.actions || []); setEditing(true); } } catch { /* optional recovery */ } }, [key]);
+  useEffect(() => { if (!completed || handled.current === completed) return; handled.current = completed; if (completed.bookId === bookId && captured.some(a => a.token === completed.token)) { setEditing(false); setCaptured([]); try { localStorage.removeItem(key); } catch { /* server content saved */ } } }, [completed, bookId, captured, key]);
   function update(next: Record<string,string>) { setValues(next); try { localStorage.setItem(key, JSON.stringify({ values: next, actions: captured })); } catch { /* keep draft in memory */ } }
   function open() { if (!form) return; setValues(Object.fromEntries(form.fields.map(f => [f.key, f.value]))); setCaptured(form.actions); setEditing(true); }
   return <section><h3>{part.title}</h3>{part.description && <p>{part.description}</p>}{part.paragraphs.map((text, i) => <p key={i}>{text}</p>)}{part.issues.map((issue, i) => <div className={s.issue} key={i}><p>{issue.message}</p><p>{issue.suggestion}</p></div>)}<div className={s.pair}>{part.actions.map((action,i) => <ActionButton key={i} action={action} busy={busy || editing} act={act} />)}</div>
-    {form && (!editing ? <button disabled={busy} onClick={open}>{form.title}</button> : <div className={s.editor}>{form.description && <p>{form.description}</p>}{form.fields.map(field => <label key={field.key}>{field.label}<textarea value={values[field.key] ?? ""} required={field.required} onChange={e => update({ ...values, [field.key]: e.target.value })} /></label>)}{captured.map((action,i) => <button key={i} disabled={busy || !action.enabled || form.fields.some(f => f.required && !values[f.key]?.trim())} onClick={() => act({ type: action.command, token: action.token, values } as Command)}>{action.label}</button>)}<button onClick={() => { setEditing(false); localStorage.removeItem(key); }}>结束编辑并清除本地草稿</button><p className={s.smallNote}>编辑内容保留在当前浏览器。提交后请查看保存结果；若规划已变化，请保留草稿并重新打开当前内容。</p></div>)}
+    {form && (!editing ? <button disabled={busy} onClick={open}>{form.title}</button> : <div className={s.editor}>{form.description && <p>{form.description}</p>}{form.fields.map(field => <label key={field.key}>{field.label}<textarea value={values[field.key] ?? ""} required={field.required} onChange={e => update({ ...values, [field.key]: e.target.value })} /></label>)}{captured.map((action,i) => <button key={i} disabled={busy || !action.enabled || form.fields.some(f => f.required && !values[f.key]?.trim())} onClick={() => act({ type: action.command, token: action.token, values } as Command)}>{action.label}</button>)}<button onClick={() => { setEditing(false); try { localStorage.removeItem(key); } catch { /* original draft remains recoverable */ } }}>结束编辑并清除本地草稿</button><p className={s.smallNote}>编辑内容保留在当前浏览器。提交后请查看保存结果；若规划已变化，请保留草稿并重新打开当前内容。</p></div>)}
   </section>;
 }
