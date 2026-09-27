@@ -16,7 +16,7 @@ export function LongformWorkspace({ adapter }: { adapter: WorkspaceAdapter }) {
   const volumes = b.volumes || [];
   const people = b.people || [];
   const person = people.find(p => p.name === state.person) || people[0];
-  const volumeFor = (number: number) => volumes.find(v => v.start !== undefined && number >= v.start && (v.end === undefined || number <= v.end));
+  const volumeFor = (number: number) => volumes.find(v => typeof v.start === "number" && number >= v.start && (typeof v.end !== "number" || number <= v.end));
   const act = (command: Command) => adapter.execute(command);
   const [editing, setEditing] = useState(false);
   const [dialog, setDialog] = useState<"ai" | "plan" | "future" | "requirements" | "history" | "contradiction" | "reset" | null>(null);
