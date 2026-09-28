@@ -418,10 +418,15 @@ def test_generator_prompt_contains_only_brief_genre_and_empty_guidance():
         "working_title",
         "idea",
         "regeneration_guidance",
+        "creative_goals",
+        "author_constraints",
     }
     assert prompt_context["idea"] == "SECRET_IDEA"
     assert prompt_context["working_title"] == "SECRET_WORKING_TITLE"
     assert prompt_context["regeneration_guidance"] == ""
+    assert prompt_context["creative_goals"]["total_words"] is None
+    assert prompt_context["creative_goals"]["chapter_words"] is None
+    assert prompt_context["author_constraints"] == []
     assert prompt_context["genre_trope_templates"]
     assert prompt_context["genre_opening_core_reference"] == {}
     assert prompt_context["title_strategy"]["purpose"] == "book_title_candidates"
@@ -1158,10 +1163,12 @@ def test_store_rejects_fake_generator_with_unknown_primary_trope_without_overwri
     assert directions_path.read_bytes() == before
 
 
-def test_generate_opening_directions_holds_project_lock_across_model_call(tmp_path):
+def test_generate_opening_directions_releases_lock_and_rejects_source_drift(tmp_path):
     store = make_opening_store(tmp_path)
     store.update_project({"world_blueprint": {"genre_plugin_ids": ["xuanhuan"]}})
     other_store = FileProjectStore(store.root)
+    directions_path = store.webnovel_dir / "opening_directions.json"
+    before = directions_path.read_bytes() if directions_path.exists() else None
     urban_ids = set(_primary_trope_ids("urban"))
     xuanhuan_only_trope_id = next(
         trope_id for trope_id in _primary_trope_ids("xuanhuan") if trope_id not in urban_ids
@@ -1176,7 +1183,7 @@ def test_generate_opening_directions_holds_project_lock_across_model_call(tmp_pa
         def generate(self, brief, *, guidance=""):
             calls.append(brief.novel_type_id)
             generator_started.set()
-            assert release_generator.wait(timeout=1), "generator was not released"
+            assert release_generator.wait(timeout=5), "generator was not released"
             return {
                 "schema_version": "opening-directions/v1",
                 "directions": [
@@ -1206,22 +1213,17 @@ def test_generate_opening_directions_holds_project_lock_across_model_call(tmp_pa
     assert generator_started.wait(timeout=1), "generator never started"
     update_thread.start()
 
-    assert not update_finished.wait(timeout=0.2)
+    assert update_finished.wait(timeout=2), "model call held the project lock"
 
     release_generator.set()
     generation_thread.join(timeout=2)
     update_thread.join(timeout=2)
 
-    assert errors == []
-    saved = json.loads((store.webnovel_dir / "opening_directions.json").read_text(encoding="utf-8"))
+    assert len(errors) == 1 and str(errors[0]) == "opening_direction_source_changed"
     project = store.project()
     assert calls == ["xuanhuan"]
     assert project["world_blueprint"]["genre_plugin_ids"] == ["urban"]
-    assert [item["primary_trope_id"] for item in saved["directions"]] == [
-        xuanhuan_only_trope_id,
-        xuanhuan_only_trope_id,
-        xuanhuan_only_trope_id,
-    ]
+    assert (directions_path.read_bytes() if directions_path.exists() else None) == before
 
 
 def test_select_opening_direction_is_atomic_across_store_instances(tmp_path):

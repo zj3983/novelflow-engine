@@ -2883,12 +2883,12 @@ def init_file_project_routes() -> APIRouter:
         )
         return store, project, graph, build_store, state, service
 
-    def _workbench_preflight_for_artifact(store, artifact):
+    def _workbench_preflight_for_artifact(store, artifact, read_log=None):
         call_id = str(getattr(artifact, "prompt_call_id", "") or "")
         if not call_id:
             return None
         try:
-            record = store.prompt_call_log().get(call_id)
+            record = (read_log() if read_log else store.prompt_call_log()).get(call_id)
         except Exception:
             return None
         report = record.get("preflight_report") if isinstance(record, Mapping) else None
@@ -3186,6 +3186,14 @@ def init_file_project_routes() -> APIRouter:
             raise HTTPException(status_code=409, detail="build_graph_state_mismatch")
 
         tasks: list[dict[str, Any]] = []
+        prompt_log = None
+
+        def read_log():
+            nonlocal prompt_log
+            if prompt_log is None:
+                prompt_log = store.prompt_call_log()
+            return prompt_log
+
         for task in graph.definition.tasks:
             task_state = state.tasks[task.task_id]
             revision = task_state.current_artifact_revision
@@ -3207,7 +3215,7 @@ def init_file_project_routes() -> APIRouter:
                     "provider": artifact.provider if artifact else None,
                     "model": artifact.model if artifact else None,
                     "prompt_call_id": artifact.prompt_call_id if artifact else None,
-                    "preflight_report": _workbench_preflight_for_artifact(store, artifact) if artifact else None,
+                    "preflight_report": _workbench_preflight_for_artifact(store, artifact, read_log) if artifact else None,
                 }
             )
 

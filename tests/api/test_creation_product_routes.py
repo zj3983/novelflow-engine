@@ -32,6 +32,39 @@ def tree(store):
     return {str(p.relative_to(store.root)): p.read_bytes() for p in store.root.rglob("*") if p.is_file()}
 
 
+def test_longform_planning_projection_reuses_snapshot_without_changing_actions(tmp_path, monkeypatch):
+    from apps.api.routes import creation_product
+    from apps.api.routes.longform_product import PlanningScreen
+    from packages.story_core.persistence.project_locking import project_update_lock
+
+    store = prepared_store(tmp_path)
+    monkeypatch.setattr(file_projects, "_store_for", lambda _: store)
+    client = client_for(monkeypatch)
+    request = SimpleNamespace(app=client.app)
+    baseline = creation_product.Screen(request, "p-synthetic-build-edit")
+    baseline.prepare_build()
+    with project_update_lock(store.root):
+        expected = baseline.build(all_actions=True)
+    original = creation_product._handler
+    calls = []
+
+    def observed(http_request, name, **kwargs):
+        calls.append(name)
+        return original(http_request, name, **kwargs)
+
+    monkeypatch.setattr(creation_product, "_handler", observed)
+    screen = PlanningScreen(request, "p-synthetic-build-edit")
+    screen.prepare_build()
+    before = tree(store)
+    with project_update_lock(store.root):
+        actual = screen.build(all_actions=True)
+    assert actual == expected
+    assert set(screen.actions) == set(baseline.actions)
+    assert calls.count("get_file_project_build_graph") == 1
+    assert "get_file_project_build_graph_task" not in calls
+    assert tree(store) == before
+
+
 def assert_product(value):
     if isinstance(value, dict):
         assert not INTERNAL.intersection(value)
@@ -171,14 +204,14 @@ def test_changed_candidate_authority_disables_confirmation(tmp_path, monkeypatch
     monkeypatch.setattr(file_projects, "_store_for", lambda _: store)
     generated = store.generate_next_chapter(engine=FakeEngine(), persist=False)["candidate"]
     client = client_for(monkeypatch)
-    old = client.get(BASE + "/write").json()["candidate"]["actions"][0]
+    old = next(a for a in client.get(BASE + "/write").json()["candidate"]["actions"] if a["label"] == "确认提交")
     candidate = store.candidate_store.get(generated["candidate_id"])
     candidate.submission_payload["opening_authority"]["graph_revision"] -= 1
     store.candidate_store.save(candidate)
     before = tree(store)
     assert client.post(BASE + "/actions", json={"token": old["token"]}).status_code == 409
     changed = client.get(BASE + "/write").json()["candidate"]
-    assert not changed["actions"][0]["enabled"]
+    assert not next(a for a in changed["actions"] if a["label"] == "确认提交")["enabled"]
     assert changed["review"]["tone"] == "danger"
     assert tree(store) == before
 
@@ -199,7 +232,8 @@ def test_real_author_review_advice_survives_without_engineering_details():
     quality = {"writing_review": {"warnings": [
         {"message": "人物在雨夜离开的动机不够清楚，请补一句说明。"},
         {"message": "内部诊断 canon.failed Authorization TEST_SECRET"}]}}
-    assert product.author_advice(quality) == [{"message": "人物在雨夜离开的动机不够清楚，请补一句说明。", "tone": "warning"}]
+    assert product.author_advice(quality) == [{"message": "人物在雨夜离开的动机不够清楚，请补一句说明。",
+        "suggestion": "结合正文与相关章节核对，再修改并重新检查。", "tone": "warning"}]
 
 
 def test_job_reads_happen_before_project_lock(tmp_path, monkeypatch):

@@ -16,6 +16,7 @@ from packages.story_core import product_presentation as product
 from packages.story_core.candidate_editing import assert_review_current, candidate_authority, save_edit
 from packages.story_core.file_project_creation import FileProjectCreateSpec
 from packages.story_core.longform_presentation import genre_id, opening_content, project_content, text
+from packages.story_core.models import NovelProject
 from packages.story_core.opening_build import execution, runtime
 from packages.story_core.persistence.project_locking import project_update_lock
 
@@ -35,9 +36,29 @@ class PlanningScreen(Screen):
         self.details = {}
 
     def call(self, name, **kwargs):
+        if name == "get_file_project_build_graph_task" and kwargs["task_id"] in self.details:
+            return self.details[kwargs["task_id"]]
         value = super().call(name, **kwargs)
         if name == "get_file_project_build_graph":
             self.graph = value
+            # The caller holds the project lock for this entire projection. Reuse
+            # its validated graph snapshot instead of reconstructing and checking
+            # the complete graph once per chapter just to read its text.
+            self.details = {}
+            if value.get("initialized"):
+                definition = runtime.graph_for(self.store, NovelProject.model_validate(self.store.project()))
+                build_store = self.store.build_graph_store()
+                for task in value["tasks"]:
+                    revision = task.get("artifact_revision")
+                    artifact = build_store.read_artifact(task["task_id"], revision) if revision is not None else None
+                    if revision is not None and artifact is None:
+                        raise HTTPException(409, "build_graph_artifact_missing")
+                    self.details[task["task_id"]] = {
+                        **task,
+                        "artifact": artifact.to_dict() if artifact else None,
+                        "editable": definition.spec(task["task_id"]).kind == "model"
+                            and artifact is not None and not value.get("opening_execution_started"),
+                    }
         elif name == "get_file_project_build_graph_task":
             self.details[kwargs["task_id"]] = value
         return value

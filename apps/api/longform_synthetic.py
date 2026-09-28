@@ -25,6 +25,9 @@ No tests, startup or end-to-end runs are implied by this implementation.
 from __future__ import annotations
 
 from copy import copy, deepcopy
+# Windows asyncio defines its Popen subclass at import time. Load that standard
+# library class before replacing process launch functions with offline guards.
+import asyncio
 import json
 import ipaddress
 import os
