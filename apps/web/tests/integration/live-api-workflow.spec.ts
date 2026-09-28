@@ -114,7 +114,9 @@ test("live API: create, plan, preserve blocked candidate, confirm once, refresh,
   await page.getByRole("button", { name: "采用这个方向" }).click();
   await expect(page).toHaveURL(new RegExp(`${encodeURIComponent(projectId)}/outline$`));
 
-  await page.getByRole("link", { name: "开书构建" }).click();
+  // The ordinary navigation now leads to the four-page workspace.
+  // Exercise this retained compatibility route directly.
+  await page.goto(`/projects/${encodeURIComponent(projectId)}/build`);
   await expect(page.getByRole("heading", { name: "准备故事", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "开始准备故事" }).click();
   await expect(page.getByRole("button", { name: "生成规划", exact: true })).toBeVisible();
