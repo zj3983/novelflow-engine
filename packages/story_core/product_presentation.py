@@ -83,6 +83,15 @@ LABELS = {
     "overall": "全书规划", "arcs": "分卷规划", "story": "故事", "start_chapter": "起始章节",
     "end_chapter": "结束章节", "planned_hook": "本章悬念", "next_focus": "后续方向",
     "consequences": "后果", "cause": "原因", "effect": "结果", "abilities": "能力",
+    "logline": "故事主线", "protagonist_summary": "主角简介", "inciting_incident": "故事起因",
+    "long_term_goal": "长远目标", "stakes": "面临的风险", "growth_arc": "成长方向",
+    "ending": "最终走向", "ending_direction": "最终走向", "reader_promise": "故事看点",
+    "identity": "身份", "location": "所在地", "desire": "愿望", "fear": "担忧",
+    "personality": "性格", "appearance": "外貌", "background": "经历",
+    "target_words": "目标字数", "chapter_target_words": "每章目标字数",
+    "chapter_goal": "本章目标", "chapter_title": "章节名", "chapter_summary": "章节概要",
+    "opening": "开场", "outcome": "结果", "turning_point": "转折",
+    "required_facts": "必须遵守的事实", "hard_constraints": "作者硬要求",
 }
 
 
@@ -125,9 +134,16 @@ def editable_fields(payload, key_for):
     def walk(value, path, labels):
         if isinstance(value, dict):
             for name, item in value.items():
-                if name.startswith("_") or name in {"schema_version", "task_id", "artifact_revision", "graph_revision", "prompt_call_id", "provider", "protocol", "metadata"}:
+                if name.startswith("_") or name in {"schema_version", "task_id", "artifact_revision", "graph_revision", "prompt_call_id", "provider", "protocol", "metadata", "status", "importance", "narrative_function", "role", "role_type", "source", "provenance", "diagnostics", "capabilities", "preflight"}:
                     continue
-                walk(item, path + [name], labels + [LABELS.get(name, "内容")])
+                # Only named author fields cross the product boundary. Unknown
+                # containers can hold known prose fields; unknown scalars stay
+                # unchanged in storage instead of becoming generic form inputs.
+                if name not in LABELS and not isinstance(item, (dict, list)):
+                    continue
+                if name not in LABELS and isinstance(item, list) and not any(isinstance(x, (dict, list)) for x in item):
+                    continue
+                walk(item, path + [name], labels + ([LABELS[name]] if name in LABELS else []))
         elif isinstance(value, list):
             for i, item in enumerate(value):
                 walk(item, path + [i], labels + [f"第 {i + 1} 项"])

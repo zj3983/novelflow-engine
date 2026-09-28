@@ -87,7 +87,9 @@ export function createLiveAdapter(): WorkspaceAdapter {
     } catch (error) { if (!disposed) { state.error = error instanceof Error ? error.message : "操作未完成，编辑内容已保留。"; publish(); } }
     finally { sending = false; if (!disposed) { state.sending = false; publish(); void refresh(); } }
   }
-  const timer = setInterval(() => { if (state.books.some(b => b.busy)) void refresh(); }, 2200);
+  // A slow read must finish before polling again, otherwise requestNumber
+  // invalidates every response and the author sees a permanently busy book.
+  const timer = setInterval(() => { if (!controllers.size && state.books.some(b => b.busy)) void refresh(); }, 2200);
   void refresh();
   return {
     subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }, snapshot: () => state,

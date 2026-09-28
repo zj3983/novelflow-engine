@@ -318,6 +318,13 @@ def _workspace(request, book_id=None, chapter=None):
         with project_update_lock(store.root):
             book = screen.view(chapter if project_id == book_id else None)
         book["genre"] = genre_names.get(book["genre"], "未设置")
+        for rule in book.get("world", []):
+            # Legacy seed facts contain the machine genre ID. Translate that
+            # exact system-created sentence without changing authored prose.
+            for genre, label in genre_names.items():
+                if rule.get("text") == f"小说类型：{genre}":
+                    rule["text"] = f"小说类型：{label}"
+                    break
         books.append(book)
         if project_id == book_id or selected is None and book_id is None:
             selected = screen

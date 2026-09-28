@@ -8,6 +8,7 @@ async function openRiver(page: Page) {
 }
 async function aiRepair(page: Page) {
   await page.getByRole("button", { name: "让 AI 修改", exact: true }).click();
+  await page.getByLabel("修改要求").fill("保留已确认事实，修正人物出现的矛盾。");
   await page.getByRole("button", { name: "修改并重新检查" }).click();
   await expect(page.getByRole("button", { name: "只确认本章", exact: true })).toBeEnabled();
 }
@@ -30,8 +31,8 @@ test("新建、选择方向、调整并采纳规划、第一章人工确认", as
   await page.getByRole("button", { name: "调整规划", exact: true }).click();
   await page.getByLabel("修改内容").fill("找到旧信；学会合作；发现信中另有地址");
   await page.getByRole("button", { name: "保存修改" }).click();
-  await expect(page.getByText("规划已准备好，待你采纳")).toBeVisible();
-  await page.getByRole("button", { name: "采纳本卷规划，开始第1章" }).click();
+  await expect(page.getByText("等待你查看并采纳")).toBeVisible();
+  await page.getByRole("button", { name: "采纳当前规划" }).click();
   await expect(page.getByRole("heading", { name: /第1章/ })).toBeVisible();
   await page.getByRole("button", { name: "只确认本章", exact: true }).click();
   await expect(page.getByText("已确认至第1章", { exact: true })).toBeVisible();
@@ -62,6 +63,7 @@ test("AI 改稿检查失败后保留改稿，可重新检查恢复", async ({ pa
   await openRiver(page);
   await scenario(page, "下次检查失败");
   await page.getByRole("button", { name: "让 AI 修改", exact: true }).click();
+  await page.getByLabel("修改要求").fill("保留已确认事实，修正人物出现的矛盾。");
   await page.getByRole("button", { name: "修改并重新检查" }).click();
   await expect(page.getByText("这次检查没有完成，改稿已保留。请重新检查后再确认。")).toBeVisible();
   await expect(page.getByRole("button", { name: "只确认本章", exact: true })).toBeDisabled();
@@ -86,6 +88,7 @@ test("确认成功后下一章失败，不回滚、不重复确认，可重试",
 test("检查进行中刷新，不自动重启；主动重试才恢复", async ({ page }) => {
   await openRiver(page);
   await page.getByRole("button", { name: "让 AI 修改", exact: true }).click();
+  await page.getByLabel("修改要求").fill("保留已确认事实，修正人物出现的矛盾。");
   await page.getByRole("button", { name: "修改并重新检查" }).click();
   await page.reload();
   await expect(page.getByText(/上次操作已中断/)).toBeVisible();
@@ -97,11 +100,11 @@ test("检查进行中刷新，不自动重启；主动重试才恢复", async ({
 test("卷末通过采纳新卷规划继续，前卷保留", async ({ page }) => {
   await openRiver(page); await scenario(page, "体验卷末");
   await page.getByRole("button", { name: "准备下一卷", exact: true }).click();
-  await expect(page.getByText("规划已准备好，待你采纳")).toBeVisible();
-  await page.getByRole("button", { name: "采纳本卷规划，开始第51章" }).click();
+  await expect(page.getByText("等待你查看并采纳")).toBeVisible();
+  await page.getByRole("button", { name: "采纳当前规划" }).click();
   await expect(page.getByRole("heading", { name: /第51章/ })).toBeVisible();
   await page.getByRole("button", { name: "故事设定", exact: true }).click();
-  await page.getByRole("button", { name: "查看相关章节" }).last().click();
+  await page.getByRole("button", { name: "查看第50章", exact: true }).click();
   await expect(page.getByRole("heading", { name: "第50章 渡口别离" })).toBeVisible();
   await expect(page.getByRole("main", { name: "正文阅读区" })).toContainText("他还不知道兄长的去向");
 });
@@ -179,7 +182,7 @@ test("首次生成失败后可以重试，不产生正式章节", async ({ page 
   await openRiver(page); await scenario(page, "体验卷末");
   await page.getByRole("button", { name: "准备下一卷", exact: true }).click();
   await scenario(page, "下次生成失败");
-  await page.getByRole("button", { name: "采纳本卷规划，开始第51章" }).click();
+  await page.getByRole("button", { name: "采纳当前规划" }).click();
   await expect(page.getByText("这次生成没有完成，已确认正文未改变。可以重试。")).toBeVisible();
   await expect(page.getByText("已确认至第50章", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "重试生成" }).click();
@@ -195,7 +198,7 @@ test("规划改变后旧采纳失效，候选也要重检", async ({ page }) => 
   await page.getByRole("button", { name: "写作", exact: true }).click();
   await expect(page.getByRole("button", { name: "只确认本章", exact: true })).toBeDisabled();
   await page.getByRole("button", { name: "全书规划", exact: true }).click();
-  await page.getByRole("button", { name: "采纳规划，回到候选稿" }).click();
+  await page.getByRole("button", { name: "采纳当前规划" }).click();
   await expect(page.getByRole("button", { name: "只确认本章", exact: true })).toBeDisabled();
   await page.getByRole("button", { name: "重新检查", exact: true }).click();
   await expect(page.getByRole("button", { name: "只确认本章", exact: true })).toBeEnabled();

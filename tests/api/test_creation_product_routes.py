@@ -20,6 +20,25 @@ INTERNAL = {"artifact", "revision", "diagnostics", "preflight", "provenance", "p
             "capabilities", "schema_version", "quality_report", "task_id", "graph_revision", "context_snapshot_id"}
 
 
+def test_planning_fields_keep_internal_enums_out_and_preserve_them_on_save():
+    payload = {"title": "新故事", "status": "ready", "source": "custom",
+               "new_internal_flag": "enabled", "unknown_list": ["core", "major"],
+               "characters": [{"name": "林照", "role": "protagonist",
+                               "importance": "core", "narrative_function": "other",
+                               "goal": "查清旧案"}],
+               "hard_constraints": ["不可改写已确认事实"],
+               "must_not_write": ["不可提前揭晓幕后人"]}
+    fields, paths = product.editable_fields(payload, lambda p: json.dumps(p))
+    visible = json.dumps(fields, ensure_ascii=False)
+    for value in ("ready", "custom", "enabled", "protagonist", "core", "major", "other"):
+        assert value not in visible
+    assert "不可改写已确认事实" in visible
+    assert "不可提前揭晓幕后人" in visible
+    title = next(f for f in fields if f["label"] == "标题")
+    edited = product.apply_fields(payload, paths, {title["key"]: "修改书名"})
+    assert edited == {**payload, "title": "修改书名"}
+
+
 def client_for(monkeypatch):
     monkeypatch.setattr(file_projects, "router", APIRouter())
     app = FastAPI()
