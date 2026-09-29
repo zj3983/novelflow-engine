@@ -116,7 +116,7 @@ def _world_sections(project, saved_state, *, include_game_catalogs=False):
     return sections
 
 
-def _planning_projection(outline, confirmed):
+def _planning_projection(outline, confirmed, *, editable=True):
     overall = outline.get("overall") if isinstance(outline.get("overall"), dict) else {}
     arcs = outline.get("arcs") if isinstance(outline.get("arcs"), list) else []
     volumes = []
@@ -130,10 +130,11 @@ def _planning_projection(outline, confirmed):
             "startChapter": arc.get("start_chapter"),
             "endChapter": end,
             "goal": _first_text(arc, ("goal", "arc_goal", "summary")),
-            "mainConflict": _first_text(arc, ("main_conflict", "conflict", "central_conflict")),
+            "mainConflict": _first_text(arc, ("obstacle", "main_conflict", "conflict", "central_conflict")),
             "characterChanges": _text_list(arc.get("character_changes") or arc.get("relationship_changes"), limit=20),
             "endingTurn": _first_text(arc, ("ending_turn", "turning_point", "planned_hook", "next_arc_entry")),
             "statusLabel": "已完成" if isinstance(end, int) and 0 < end <= confirmed else "待创作",
+            "editable": bool(editable and not (isinstance(arc.get("start_chapter"), int) and arc["start_chapter"] <= confirmed)),
         })
     chapters = []
     raw_chapters = outline.get("chapters") if isinstance(outline.get("chapters"), list) else []
@@ -147,9 +148,10 @@ def _planning_projection(outline, confirmed):
             "number": number,
             "title": _first_text(item, ("chapter_title", "title")),
             "goal": _first_text(item, ("chapter_goal", "goal", "summary")),
-            "conflict": _first_text(item, ("core_conflict", "conflict", "main_conflict")),
-            "progression": _first_text(item, ("progression", "next_focus", "outcome")),
+            "conflict": _first_text(item, ("obstacle", "core_conflict", "conflict", "main_conflict")),
+            "progression": _first_text(item, ("action", "progression", "next_focus", "outcome")),
             "foreshadowing": _text_list(item.get("foreshadowing") or item.get("foreshadowing_in"), limit=12),
+            "editable": bool(editable),
         })
     chapters.sort(key=lambda item: item["number"])
     current_volume = next((
@@ -157,6 +159,7 @@ def _planning_projection(outline, confirmed):
         if isinstance(item["endChapter"], int) and item["endChapter"] > confirmed
     ), len(volumes) or 1)
     return {
+        "editable": bool(editable),
         "overall": {
             "direction": _first_text(overall, ("story", "foreground_story", "direction")),
             "endingGoal": _first_text(overall, ("ending_direction", "ending_image", "ending_goal")),
@@ -339,6 +342,7 @@ def _dynamic_world_view(store, snapshot, confirmed, selected_chapter):
     snapshot_entries = _state_entries(snapshot)
     chapters = []
     selected_payload = None
+    latest_payload = None
     for number in store.chapter_numbers():
         if number > confirmed:
             continue
@@ -353,18 +357,19 @@ def _dynamic_world_view(store, snapshot, confirmed, selected_chapter):
                 "number": number,
                 "title": text(payload.get("chapter_title")) or f"第 {number} 章",
             })
+            latest_payload = (number, payload)
         if number == selected_chapter:
-            selected_payload = payload
-    record = None
-    if isinstance(selected_payload, dict):
-        simulation = selected_payload.get("simulation_status") if isinstance(selected_payload.get("simulation_status"), dict) else {}
+            selected_payload = (number, payload)
+
+    def product_record(number, payload):
+        simulation = payload.get("simulation_status") if isinstance(payload.get("simulation_status"), dict) else {}
         pulse_store = simulation.get("world_pulse") if isinstance(simulation.get("world_pulse"), dict) else {}
         pulse = pulse_store.get("latest") if isinstance(pulse_store.get("latest"), dict) else {}
         inbox = simulation.get("visibility_inbox") or pulse.get("visibility_inbox")
-        chapter_summary = selected_payload.get("chapter_summary") if isinstance(selected_payload.get("chapter_summary"), dict) else {}
+        chapter_summary = payload.get("chapter_summary") if isinstance(payload.get("chapter_summary"), dict) else {}
         market = pulse.get("market_order_book") if isinstance(pulse.get("market_order_book"), dict) else {}
-        record = {
-            "chapter": selected_chapter,
+        result = {
+            "chapter": number,
             "summary": text(pulse.get("summary")) or text(chapter_summary.get("summary")),
             "publicChanges": _event_entries(pulse.get("public_traces")),
             "nextPressures": _event_entries(pulse.get("pressure_points")),
@@ -373,16 +378,29 @@ def _dynamic_world_view(store, snapshot, confirmed, selected_chapter):
             "authorVisibleUnknowns": _state_entries(pulse.get("hidden_state")),
             "marketMovements": _market_view(market),
         }
-        if not any(record[key] for key in (
+        if not any(result[key] for key in (
             "summary", "publicChanges", "nextPressures", "nextChapterInformation",
             "backgroundEvents", "authorVisibleUnknowns", "marketMovements",
         )):
-            record = None
+            return None
+        return result
+
+    record = product_record(*selected_payload) if selected_payload else None
+    preparation = None
+    if latest_payload:
+        latest_number, latest = latest_payload
+        latest_record = product_record(latest_number, latest)
+        if latest_record and latest_record["nextChapterInformation"]:
+            preparation = {
+                "sourceChapter": latest_number,
+                "entries": latest_record["nextChapterInformation"],
+            }
     return {
         "currentSnapshot": {"chapter": confirmed or None, "entries": snapshot_entries},
         "availableChapters": chapters,
         "selectedChapter": selected_chapter,
         "chapterRecord": record,
+        "preparationInformation": preparation,
         "emptyMessage": "暂无记录" if record is None else "",
     }
 
@@ -484,7 +502,7 @@ def _person_views(project, state, facts_by_person, fact_sources):
     return result
 
 
-def project_content(store, *, future_intent=None, selected_chapter=None):
+def project_content(store, *, future_intent=None, selected_chapter=None, planning_editable=True):
     # Read the authoritative file without triggering the legacy Markdown sync.
     outline = store.snapshot_store.read_json(store.webnovel_dir / "outline.json", {})
     project = store.project()
@@ -523,7 +541,7 @@ def project_content(store, *, future_intent=None, selected_chapter=None):
             facts_by_person.setdefault(fact["subject"], []).append(item)
         else:
             world_records.append({"title": "故事记录", **item})
-    planning = _planning_projection(outline, confirmed)
+    planning = _planning_projection(outline, confirmed, editable=planning_editable)
     volumes = [{"number": item["number"], "title": item["title"], "start": item["startChapter"],
                 "end": item["endChapter"], "goal": item["goal"], "label": item["statusLabel"],
                 "conflict": item["mainConflict"], "characterChanges": item["characterChanges"],

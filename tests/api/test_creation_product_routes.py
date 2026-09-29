@@ -221,6 +221,136 @@ def test_author_workspace_api_projects_product_sections_from_existing_sources(tm
     assert tree(store) == before
 
 
+def test_author_workspace_structured_planning_save_and_confirmed_chapter_guard(tmp_path, monkeypatch):
+    from packages.story_core.file_project_store import FileProjectStore
+    from packages.story_core.models import NovelProject
+
+    project_id = "p-synthetic-planning-edit"
+    root = tmp_path / "planning-project"
+    root.mkdir()
+    store = FileProjectStore(root)
+    project = NovelProject(project_id=project_id, title="规划边界测试", seed_outline="沿河追查旧案。")
+    store.snapshot_store.replace_json_transaction({
+        store.webnovel_dir / "project.json": project.model_dump(mode="json"),
+        store.webnovel_dir / "state.json": {"story_id": "planning-story", "current_chapter": 1},
+        store.webnovel_dir / "outline.json": {
+            "overall": {"story": "沿河追查旧案。", "ending_direction": "找到旧账。"},
+            "arcs": [
+                {"id": "arc-1", "title": "旧渡口", "start_chapter": 1, "end_chapter": 50, "goal": "找到第一条线索。", "obstacle": "码头封锁。", "relationship_changes": [], "next_arc_entry": ""},
+                {"id": "arc-2", "title": "河上暗潮", "start_chapter": 51, "end_chapter": 100, "goal": "查明旧账。", "obstacle": "证词互相矛盾。", "relationship_changes": [], "next_arc_entry": ""},
+            ],
+            "chapters": [
+                {"chapter_number": 1, "title": "已确认章节", "goal": "保住旧信。"},
+                {"chapter_number": 2, "title": "尚未确认章节", "goal": "找到目击者。"},
+                {"chapter_number": 51, "title": "下一卷开篇", "goal": "重新核对旧账。"},
+            ],
+        },
+    })
+    chapter_dir = store.story_system_dir / "chapters"
+    chapter_dir.mkdir(parents=True, exist_ok=True)
+    (chapter_dir / "0001.json").write_text(json.dumps({
+        "chapter_number": 1, "chapter_title": "已确认章节", "body": "已经确认的正文。",
+    }, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(file_projects, "_store_for", lambda _: store)
+    monkeypatch.setattr(file_projects, "_stores", lambda *, lifecycle=None: [store] if lifecycle == "active" else [])
+    monkeypatch.setattr(file_projects, "_public_project_id", lambda _: project_id)
+    app = FastAPI()
+    app.include_router(file_projects.init_file_project_routes())
+    app.include_router(init_novel_type_routes())
+    app.include_router(init_longform_product_routes())
+    client = TestClient(app)
+
+    current = client.get("/author-workspace", params={"book_id": project_id}).json()["books"][0]
+    assert current["planning"]["editable"] is True
+    assert current["planning"]["volumes"][0]["editable"] is False
+    assert current["planning"]["upcomingChapters"][0]["number"] == 2
+    assert current["planning"]["upcomingChapters"][0]["editable"] is True
+    patch = {
+        "overall": {"direction": "沿河追查被抹去的旧账。"},
+        "volumes": [
+            {"number": 1, "title": "旧渡口", "goal": "找到第一条线索。", "mainConflict": "码头封锁。", "characterChanges": [], "endingTurn": ""},
+            {"number": 2, "title": "河上暗潮", "goal": "查明旧账。", "mainConflict": "新证据推翻旧证词。", "characterChanges": [], "endingTurn": ""},
+        ],
+        "upcomingChapters": [{"number": 2, "title": "尚未确认章节", "goal": "查明目击者去向。", "conflict": "证词不一致。", "progression": "前往旧档案馆。"}],
+    }
+    saved = client.post("/author-workspace/commands", json={
+        "bookId": project_id, "token": current["actions"]["plan"]["token"],
+        "command": {"type": "plan", "patch": patch},
+    })
+    assert saved.status_code == 200, saved.text
+    outline = store.snapshot_store.read_json(store.webnovel_dir / "outline.json", {})
+    assert outline["overall"]["story"] == "沿河追查被抹去的旧账。"
+    assert outline["arcs"][0]["obstacle"] == "码头封锁。"
+    assert outline["arcs"][1]["obstacle"] == "新证据推翻旧证词。"
+    assert outline["chapters"][0]["goal"] == "保住旧信。"
+    assert outline["chapters"][1]["goal"] == "查明目击者去向。"
+
+    refreshed = client.get("/author-workspace", params={"book_id": project_id}).json()["books"][0]
+    rejected = client.post("/author-workspace/commands", json={
+        "bookId": project_id, "token": refreshed["actions"]["plan"]["token"],
+        "command": {"type": "plan", "patch": {"upcomingChapters": [{"number": 1, "goal": "覆盖已确认章节"}]}},
+    })
+    assert rejected.status_code == 409
+    assert "已经用于已确认正文" in rejected.json()["detail"]["message"]
+    assert store.snapshot_store.read_json(store.webnovel_dir / "outline.json", {})["chapters"][0]["goal"] == "保住旧信。"
+
+
+def test_candidate_dissection_report_is_bound_to_current_pending_body(tmp_path, monkeypatch):
+    from apps.api.routes import longform_product
+    from packages.story_core.candidate_draft import CandidateDraft
+
+    store = prepared_store(tmp_path)
+    project_id = "p-synthetic-build-edit"
+    candidate = CandidateDraft.create(
+        project_id=store.project()["project_id"], chapter_number=1,
+        chapter_title="候选章节", body="候选正文版本一。",
+    )
+    store.candidate_store.save(candidate)
+    monkeypatch.setattr(file_projects, "_store_for", lambda _: store)
+    monkeypatch.setattr(file_projects, "_stores", lambda *, lifecycle=None: [store] if lifecycle == "active" else [])
+    monkeypatch.setattr(file_projects, "_public_project_id", lambda _: project_id)
+    inspected = []
+    queued = []
+    monkeypatch.setattr(longform_product.workbench, "diagnose_project_chapter", lambda project, chapter: (
+        inspected.append(chapter) or {"mode": "project", "chapter_number": chapter["chapter_number"],
+                                      "chapter_title": chapter["chapter_title"],
+                                      "sections": {"下一版改法": ["先核对候选正文中的人物动机。"]}}
+    ))
+    monkeypatch.setattr(longform_product.workbench, "start_candidate_review_job", lambda *args, **kwargs: (
+        queued.append((args, kwargs)) or {"job_id": "synthetic-ai-edit"}
+    ))
+    app = FastAPI()
+    app.include_router(file_projects.init_file_project_routes())
+    app.include_router(init_novel_type_routes())
+    app.include_router(init_longform_product_routes())
+    client = TestClient(app)
+
+    view = client.get("/author-workspace", params={"book_id": project_id}).json()["books"][0]
+    assert view["dissectionView"]["actions"]["inspectCandidate"]["enabled"] is True
+    action = view["dissectionView"]["actions"]["inspectCandidate"]
+    report_response = client.post("/author-workspace/commands", json={
+        "bookId": project_id, "token": action["token"],
+        "command": {"type": action["command"]},
+    })
+    assert report_response.status_code == 200, report_response.text
+    report_payload = report_response.json()["product"]
+    assert report_payload["candidateSourceToken"] == view["dissectionView"]["candidateSourceToken"]
+    assert report_payload["report"]["sections"] == [{"title": "下一版改法", "items": ["先核对候选正文中的人物动机。"]}]
+    assert inspected[0]["body"] == "候选正文版本一。"
+
+    changed = store.candidate_store.get(candidate.candidate_id)
+    changed.body = "候选正文版本二。"
+    store.candidate_store.save(changed)
+    fresh = client.get("/author-workspace", params={"book_id": project_id}).json()["books"][0]
+    rejected = client.post("/author-workspace/commands", json={
+        "bookId": project_id, "token": fresh["actions"]["ai-edit"]["token"],
+        "command": {"type": "ai-edit", "instruction": "使用报告建议", "dissectionSourceToken": report_payload["candidateSourceToken"]},
+    })
+    assert rejected.status_code == 409
+    assert "旧体检报告不能用于这份稿件" in rejected.json()["detail"]["message"]
+    assert queued == []
+
+
 def test_author_workspace_settings_and_story_edits_use_compare_and_swap(tmp_path, monkeypatch):
     from packages.story_core.models import ForeshadowingState
 

@@ -137,6 +137,120 @@ def _world_section_item(raw: Any, *, title: str, body: str, section_id: str) -> 
     return updated
 
 
+def _planning_patch_outline(outline, patch, *, confirmed, graph_managed):
+    if not isinstance(patch, dict) or not patch or set(patch) - {"overall", "volumes", "upcomingChapters"}:
+        raise ValueError("planning_patch_invalid")
+    payload = deepcopy(outline)
+    overall = payload.setdefault("overall", {})
+    arcs = payload.get("arcs") if isinstance(payload.get("arcs"), list) else []
+    chapters = payload.get("chapters") if isinstance(payload.get("chapters"), list) else []
+    original_arcs, original_chapters = deepcopy(arcs), deepcopy(chapters)
+
+    def fields(raw, allowed, name):
+        if not isinstance(raw, dict) or set(raw) - allowed:
+            raise ValueError("planning_patch_invalid")
+        return raw
+
+    def clean_text(value):
+        if not isinstance(value, str) or len(value) > 10000:
+            raise ValueError("planning_patch_invalid")
+        return value.strip()
+
+    def clean_list(value):
+        if not isinstance(value, list) or len(value) > 40 or any(not isinstance(x, str) or len(x) > 1000 for x in value):
+            raise ValueError("planning_patch_invalid")
+        return list(dict.fromkeys(x.strip() for x in value if x.strip()))
+
+    def set_alias(target, aliases, value):
+        key = next((name for name in aliases if name in target), aliases[0])
+        target[key] = value
+
+    overall_fields = {
+        "direction": ("story", "foreground_story", "direction"),
+        "endingGoal": ("ending_direction", "ending_image", "ending_goal"),
+    }
+    if "overall" in patch:
+        for key, value in fields(patch["overall"], set(overall_fields), "overall").items():
+            set_alias(overall, overall_fields[key], clean_text(value))
+
+    volume_fields = {
+        "title": (("title",), clean_text),
+        "goal": (("goal", "arc_goal", "summary"), clean_text),
+        "mainConflict": (("obstacle", "main_conflict", "conflict", "central_conflict"), clean_text),
+        "characterChanges": (("relationship_changes", "character_changes"), clean_list),
+        "endingTurn": (("next_arc_entry", "ending_turn", "turning_point", "planned_hook"), clean_text),
+    }
+    volume_updates = patch.get("volumes", [])
+    if not isinstance(volume_updates, list) or len(volume_updates) > 100:
+        raise ValueError("planning_patch_invalid")
+    for update in volume_updates:
+        item = fields(update, {"number", *volume_fields}, "volume")
+        number = item.get("number")
+        if not isinstance(number, int) or isinstance(number, bool) or number < 1 or number > len(arcs):
+            raise ValueError("planning_patch_invalid")
+        arc = arcs[number - 1]
+        if not isinstance(arc, dict):
+            raise ValueError("planning_patch_invalid")
+        start_chapter = arc.get("start_chapter")
+        consumed_volume = isinstance(start_chapter, int) and start_chapter <= confirmed
+        for key, value in item.items():
+            if key == "number":
+                continue
+            aliases, convert = volume_fields[key]
+            converted = convert(value)
+            if consumed_volume:
+                current_key = next((alias for alias in aliases if alias in arc), None)
+                current_value = convert(arc[current_key]) if current_key is not None else ([] if convert is clean_list else "")
+                if converted != current_value:
+                    raise ValueError("planning_consumed_content_locked")
+                # The projection includes empty defaults for optional fields.
+                # Ignore those defaults on a consumed arc instead of adding
+                # new keys and mistaking the full-form save for an edit.
+                continue
+            set_alias(arc, aliases, converted)
+
+    chapter_fields = {
+        "title": (("title", "chapter_title"), clean_text),
+        "goal": (("chapter_goal", "goal", "summary"), clean_text),
+        "conflict": (("obstacle", "core_conflict", "conflict", "main_conflict"), clean_text),
+        "progression": (("action", "progression", "next_focus", "outcome"), clean_text),
+    }
+    chapter_updates = patch.get("upcomingChapters", [])
+    if not isinstance(chapter_updates, list) or len(chapter_updates) > 100:
+        raise ValueError("planning_patch_invalid")
+    chapters_by_number = {
+        item.get("chapter_number"): item for item in chapters
+        if isinstance(item, dict) and isinstance(item.get("chapter_number"), int)
+    }
+    for update in chapter_updates:
+        item = fields(update, {"number", *chapter_fields}, "chapter")
+        number = item.get("number")
+        if not isinstance(number, int) or isinstance(number, bool) or number <= confirmed:
+            raise ValueError("planning_consumed_content_locked")
+        chapter = chapters_by_number.get(number)
+        if chapter is None:
+            raise ValueError("planning_patch_invalid")
+        for key, value in item.items():
+            if key == "number":
+                continue
+            aliases, convert = chapter_fields[key]
+            set_alias(chapter, aliases, convert(value))
+
+    for index, arc in enumerate(original_arcs):
+        if not isinstance(arc, dict):
+            continue
+        start = arc.get("start_chapter")
+        if isinstance(start, int) and start <= confirmed and arcs[index] != arc:
+            raise ValueError("planning_consumed_content_locked")
+    for item in original_chapters:
+        if isinstance(item, dict) and isinstance(item.get("chapter_number"), int) and item["chapter_number"] <= confirmed:
+            if chapters_by_number.get(item["chapter_number"]) != item:
+                raise ValueError("planning_consumed_content_locked")
+    if graph_managed and (arcs != original_arcs or chapters != original_chapters):
+        raise ValueError("opening_build_use_workbench")
+    return payload
+
+
 class PlanningScreen(Screen):
     """Retain this request's already-read details for the four-page projection."""
     def __init__(self, request, project_id):
@@ -224,7 +338,8 @@ class AuthorScreen(Screen):
         setup = opening_content(store)
         selected_direction = next((d for d in setup.get("directions", []) if d.get("id") == setup.get("selected_id")), {})
         future_intent = lifecycle.author_future_intent(store)
-        content = project_content(store, future_intent=future_intent, selected_chapter=selected)
+        content = project_content(store, future_intent=future_intent, selected_chapter=selected,
+                                  planning_editable=not runtime.enabled(store))
         details = book_details(store)
         authority = [source, info, plan["fingerprint"], job.get("job_id"), job.get("status")]
         result = {"id": self.project_id, "title": text(info.get("title")) or "未命名作品",
@@ -560,15 +675,19 @@ class AuthorScreen(Screen):
         self.command("trash", "移入回收站", authority,
             lambda values: self.call("trash_file_project"), enabled=not busy)
 
-        def save_plan(values, key):
+        def save_plan(values):
             outline = deepcopy(store.snapshot_store.read_json(store.webnovel_dir / "outline.json", {}))
-            outline.setdefault("overall", {})[key] = text(values.get("text"))
+            if "patch" in values:
+                outline = _planning_patch_outline(
+                    outline, values.get("patch"), confirmed=confirmed, graph_managed=runtime.enabled(store))
+            else:
+                outline.setdefault("overall", {})["story"] = text(values.get("text"))
             return lifecycle.save_future_plan(store, payload=outline, expected_source=source)
 
-        edit_reason = "请在下方相应规划部分修改；已被正文采用的内容不能覆盖。" if runtime.enabled(store) else None
+        edit_reason = "当前分卷和章节安排已纳入正文生成保护。可以继续修改作者要求；规划编辑需从故事准备工具更新。" if runtime.enabled(store) else None
         self.command("future", "保存后续创作想法", authority,
             lambda values: lifecycle.save_future_intent(store, text(values.get("text")), expected_source=source), enabled=not busy)
-        self.command("plan", "保存全书方向", authority, lambda values: save_plan(values, "story"),
+        self.command("plan", "保存全书方向", authority, save_plan,
             enabled=not busy and not runtime.enabled(store), reason=edit_reason)
         self.command("archive", "归档作品", authority, lambda values: self.call("archive_file_project"), enabled=not busy)
 
@@ -1053,12 +1172,48 @@ class AuthorScreen(Screen):
             reason=None if can_inspect_chapter else "选择一章已确认且正文可用的章节后再体检。")
         reference_action = self.command("dissection-reference", "拆解参考书片段",
             [authority, "reference-dissection"], inspect_reference, enabled=not busy)
+        candidate_editable = bool(candidate and candidate.operation == "generate"
+                                  and candidate.chapter_number == confirmed + 1)
+        candidate_authority_token = candidate_authority(candidate) if candidate_editable else None
+        candidate_source_token = (_key("candidate-dissection-source", self.project_id,
+                                       candidate.candidate_id, candidate_authority_token)
+                                  if candidate_editable else None)
+
+        def inspect_candidate(values):
+            if not candidate_editable or candidate is None:
+                raise ValueError("dissection_candidate_changed")
+            with project_update_lock(store.root):
+                current = store.candidate_store.get(candidate.candidate_id)
+                if (current is None or current.status != "pending"
+                        or candidate_authority(current) != candidate_authority_token
+                        or current.operation != "generate"
+                        or current.chapter_number != int(store.state().get("current_chapter") or 0) + 1):
+                    raise ValueError("dissection_candidate_changed")
+                report = workbench.diagnose_project_chapter(
+                    {"project": store.project(), "state": store.state()},
+                    {"chapter_number": current.chapter_number,
+                     "chapter_title": current.chapter_title, "body": current.body})
+            return {"_product_response": {
+                "modeLabel": "待确认候选体检",
+                "candidateSourceToken": candidate_source_token,
+                "sourceToken": candidate_source_token,
+                "report": product.book_dissection_result(report),
+            }}
+
+        candidate_action = self.command(
+            "dissection-candidate", "体检待确认候选",
+            [authority, candidate_authority_token, candidate_source_token],
+            inspect_candidate, enabled=not busy and candidate_editable,
+            reason=None if candidate_editable else "只有当前待确认的候选稿可以用于报告改稿。")
         result["dissectionView"] = {
             "modeLabel": "本书章节体检",
             "selectedChapter": selected if selected_chapter_row else None,
+            "candidateSourceToken": candidate_source_token,
             "statusLabel": "尚未生成报告",
             "report": None,
-            "actions": {"inspectChapter": inspect_action, "inspectReference": reference_action},
+            "candidateReport": None,
+            "actions": {"inspectChapter": inspect_action, "inspectReference": reference_action,
+                        "inspectCandidate": candidate_action},
             "reportIsReadOnly": True,
         }
 
@@ -1110,8 +1265,14 @@ class AuthorScreen(Screen):
                 lambda values: save_edit(store, candidate.candidate_id, body=text(values.get("text")), expected=expected, expected_source=source), enabled=editable and not busy)
             self.command("review", "重新检查", ref,
                 lambda values: workbench.start_candidate_review_job(self.project_id, candidate.candidate_id, expected=expected), enabled=editable and not busy)
-            self.command("ai-edit", "让 AI 修改", ref,
-                lambda values: workbench.start_candidate_review_job(self.project_id, candidate.candidate_id, expected=expected, guidance=text(values.get("instruction"))), enabled=editable and not busy)
+            def ai_edit(values):
+                supplied_source = values.get("dissectionSourceToken")
+                if supplied_source is not None and supplied_source != candidate_source_token:
+                    raise ValueError("dissection_candidate_changed")
+                return workbench.start_candidate_review_job(
+                    self.project_id, candidate.candidate_id, expected=expected,
+                    guidance=text(values.get("instruction")))
+            self.command("ai-edit", "让 AI 修改", ref, ai_edit, enabled=editable and not busy)
             self.command("discard", "放弃当前候选", ref,
                 lambda values: self.call("discard_file_project_candidate", candidate_id=candidate.candidate_id), enabled=not busy)
             def confirm(values, allow_warning=False):

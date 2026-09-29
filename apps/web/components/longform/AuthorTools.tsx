@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { Book, BookDetails, CharacterCardView, Command, DissectionView, DynamicWorld, ForeshadowItem, ProductAction, Relationship, WritingAbilities, WritingTemplate, WorldSection } from "./product";
+import type { Book, BookDetails, CharacterCardView, Command, DissectionView, DynamicWorld, ForeshadowItem, ProductAction, Relationship, DissectionReport, WritingAbilities, WritingTemplate, WorldSection } from "./product";
 import s from "./workspace.module.css";
 
 type Act = (command: Command) => void;
@@ -114,8 +114,47 @@ export function WritingAbilitiesEditor({ value, bookId, busy, act }: { value:Wri
   return <section className={s.productEditor}><div className={s.sectionHeading}><h3>本书写作能力</h3><a href={`/projects/${encodeURIComponent(bookId)}/skills`}>{value.managementLabel}</a></div><p>{value.selectionModeLabel}。修改只影响本书后续启动的任务；包状态由已选模块汇总。</p>{packs.map(pack=><article className={s.productCard} key={pack.id}><h4>{pack.name}{!pack.available&&"（暂不可用）"}</h4><p>{pack.description} · {pack.modules.filter(module=>module.selected).length}/{pack.modules.length} 个模块已启用</p>{pack.modules.map(module=><label className={s.checkLine} key={module.id}><input type="checkbox" checked={module.selected} disabled={!pack.available} onChange={e=>toggleModule(pack.id,module.id,e.target.checked)} /><span>{module.title}<small>{module.purpose}</small></span></label>)}</article>)}<Action action={value.save} disabled={busy} onClick={()=>{const selectedModules=packs.filter(pack=>pack.available).flatMap(pack=>pack.modules.filter(module=>module.selected).map(module=>({packId:pack.id,moduleId:`${pack.id}::${module.id}`})));const packIds=[...new Set(selectedModules.map(module=>module.packId))];send(act,value.save,{packIds,moduleIds:selectedModules.map(module=>module.moduleId)});}} /></section>;
 }
 
-export function DissectionPanel({ value, book, busy, act, onChapter }: { value:DissectionView; book:Book; busy:boolean; act:Act; onChapter:(n:number)=>void }) {
-  const [text,setText]=useState("");const [genre,setGenre]=useState(book.genre||"");const [focus,setFocus]=useState("");
+export function DissectionPanel({ value, book, busy, act, onChapter, onApplyCandidate }: {
+  value:DissectionView; book:Book; busy:boolean; act:Act; onChapter:(n:number)=>void;
+  onApplyCandidate:(report:DissectionReport,sourceToken:string)=>void;
+}) {
+  const [text,setText]=useState("");
+  const [genre,setGenre]=useState(book.genre||"");
+  const [focus,setFocus]=useState("");
+  const [copyNotice,setCopyNotice]=useState("");
+  const reportText=(report:DissectionReport)=>report.sections.flatMap(section=>section.items.map(item=>section.title+"："+item)).join("\n");
+  async function copyReport(report:DissectionReport) {
+    try { await navigator.clipboard.writeText(reportText(report)); setCopyNotice("已复制体检建议。"); }
+    catch { setCopyNotice("浏览器没有允许复制，请手动选择报告内容。"); }
+  }
+  function displayReport(report:DissectionReport) {
+    return <article className={s.auditReport}>
+      <h4>{report.statusLabel}{report.chapterNumber?" · 第"+report.chapterNumber+"章 "+(report.chapterTitle||""):""}</h4>
+      <button onClick={()=>void copyReport(report)}>复制体检建议</button>
+      {report.sections.map((section,index)=><section key={section.title+"-"+index}><h4>{section.title}</h4><DisplayList items={section.items} /></section>)}
+    </article>;
+  }
   const record=value.report;
-  return <section className={s.productEditor}><h3>拆书与章节体检</h3><p>{value.modeLabel} · 报告只读，不会直接改写作品要求。</p><label>选择已确认章节<select value={value.selectedChapter||""} onChange={e=>{const n=Number(e.target.value);if(n)onChapter(n)}}><option value="">请选择章节</option>{book.chapters.map(ch=><option key={ch.number} value={ch.number}>第{ch.number}章 · {ch.title}</option>)}</select></label><Action action={value.actions.inspectChapter} disabled={busy} onClick={()=>send(act,value.actions.inspectChapter)} /><label>参考书片段<textarea value={text} onChange={e=>setText(e.target.value)} placeholder="粘贴希望分析的片段" /></label><div className={s.pair}><label>题材<input value={genre} onChange={e=>setGenre(e.target.value)} /></label><label>关注重点<input value={focus} onChange={e=>setFocus(e.target.value)} /></label></div><Action action={value.actions.inspectReference} disabled={busy||!text.trim()} onClick={()=>send(act,value.actions.inspectReference,{text,genre,focus})} />{record?<article className={s.auditReport}><h4>{record.statusLabel}{record.chapterNumber?` · 第${record.chapterNumber}章 ${record.chapterTitle||""}`:""}</h4>{record.sections.map((section,i)=><section key={`${section.title}-${i}`}><h4>{section.title}</h4><DisplayList items={section.items} /></section>)}</article>:<p className={s.smallNote}>{value.statusLabel}</p>}</section>;
+  const candidateReport=value.candidateReport;
+  return <section className={s.productEditor}>
+    <h3>拆书与章节体检</h3>
+    <p>{value.modeLabel} · 报告只读，不会直接改写作品要求。</p>
+    <label>选择已确认章节<select value={value.selectedChapter||""} onChange={e=>{const n=Number(e.target.value);if(n)onChapter(n)}}>
+      <option value="">请选择章节</option>{book.chapters.map(ch=><option key={ch.number} value={ch.number}>第{ch.number}章 · {ch.title}</option>)}
+    </select></label>
+    <Action action={value.actions.inspectChapter} disabled={busy} onClick={()=>send(act,value.actions.inspectChapter)} />
+    <p className={s.smallNote}>已确认章节只供回看和复制建议，不能在这里改写保存。</p>
+    <section className={s.productCard}>
+      <h4>体检待确认候选</h4>
+      <p>报告会绑定当前候选正文；候选变化后，需要重新体检。</p>
+      <Action action={value.actions.inspectCandidate} disabled={busy} onClick={()=>send(act,value.actions.inspectCandidate)} />
+      {candidateReport&&candidateReport.sections.length>0 ? displayReport(candidateReport) : null}
+      {candidateReport&&value.candidateSourceToken&&<button className={s.primary} disabled={busy} onClick={()=>onApplyCandidate(candidateReport,value.candidateSourceToken!)}>使用报告修改当前候选</button>}
+    </section>
+    <label>参考书片段<textarea value={text} onChange={e=>setText(e.target.value)} placeholder="粘贴希望分析的片段" /></label>
+    <div className={s.pair}><label>题材<input value={genre} onChange={e=>setGenre(e.target.value)} /></label><label>关注重点<input value={focus} onChange={e=>setFocus(e.target.value)} /></label></div>
+    <Action action={value.actions.inspectReference} disabled={busy||!text.trim()} onClick={()=>send(act,value.actions.inspectReference,{text,genre,focus})} />
+    {record?displayReport(record):<p className={s.smallNote}>{value.statusLabel}</p>}
+    {copyNotice&&<p role="status">{copyNotice}</p>}
+  </section>;
 }

@@ -12,6 +12,7 @@ export function createLiveAdapter(): WorkspaceAdapter {
   if (query.has("book")) { local.bookId = query.get("book") || ""; local.selectedChapter = undefined; }
   if (query.has("chapter")) { const chapter = Number(query.get("chapter")); local.selectedChapter = Number.isInteger(chapter) && chapter > 0 ? chapter : undefined; }
   if (["books", "planning", "writing", "story"].includes(query.get("page") || "")) local.page = query.get("page") as Local["page"];
+  if (["人物", "世界规则", "伏笔线索", "创作要求"].includes(query.get("tab") || "")) local.storyTab = query.get("tab") as Local["storyTab"];
   let state: Workspace = { ...local, books: [], showNew: false, storageWarning: "", mode: "live", loading: true };
   let disposed = false, requestNumber = 0, sending = false;
   const listeners = new Set<() => void>();
@@ -64,10 +65,17 @@ export function createLiveAdapter(): WorkspaceAdapter {
           const dissection = cached.dissection;
           const report = dissection?.report;
           const selectedChapter = local.selectedChapter;
-          const dissectionMatches = !!dissection && (typeof dissection.sourceChapter !== "number" || dissection.sourceChapter === selectedChapter);
+          const candidateReport = typeof dissection?.candidateSourceToken === "string";
+          const dissectionMatches = !!dissection && (candidateReport
+            ? dissection.candidateSourceToken === book.dissectionView?.candidateSourceToken
+            : dissection.modeLabel === "参考书拆解" || dissection.sourceChapter === selectedChapter);
           return {
             ...book,
-            ...(dissectionMatches && book.dissectionView ? { dissectionView: { ...book.dissectionView, statusLabel: report?.statusLabel || book.dissectionView.statusLabel, report: report || null } } : {}),
+            ...(dissectionMatches && book.dissectionView ? { dissectionView: {
+              ...book.dissectionView,
+              statusLabel: report?.statusLabel || book.dissectionView.statusLabel,
+              ...(candidateReport ? { candidateReport: report || null } : { report: report || null }),
+            } } : {}),
             ...(book.writingTemplatesView ? { writingTemplatesView: { ...book.writingTemplatesView, templates: book.writingTemplatesView.templates.map(template => cached.templateChecks[template.id] ? { ...template, lastCheck: cached.templateChecks[template.id] } : template) } } : {}),
           };
         });
@@ -78,7 +86,7 @@ export function createLiveAdapter(): WorkspaceAdapter {
   }
   function navigate() {
     state = { ...state, ...local, loading: true, error: "" }; persist(); publish();
-    const params = new URLSearchParams({ page: local.page }); if (local.bookId) params.set("book", local.bookId); if (local.selectedChapter) params.set("chapter", String(local.selectedChapter));
+    const params = new URLSearchParams({ page: local.page }); if (local.bookId) params.set("book", local.bookId); if (local.selectedChapter) params.set("chapter", String(local.selectedChapter)); if (local.page === "story") params.set("tab", local.storyTab);
     history.replaceState(null, "", `/workspace?${params}`); void refresh();
   }
   async function executeRemote(command: Command) {
@@ -98,7 +106,8 @@ export function createLiveAdapter(): WorkspaceAdapter {
       if (next.product) {
         const cached = productResults[bookId] ||= { templateChecks: {} };
         const commandName = command.type as string;
-        if (commandName === "dissection-chapter" || commandName === "dissection-reference") cached.dissection = next.product;
+        if (commandName === "dissection-chapter" || commandName === "dissection-reference"
+            || commandName === "dissection-candidate") cached.dissection = next.product;
         if (commandName.startsWith("template-check-") || commandName.startsWith("template-deep-check-")) {
           const template = book?.writingTemplatesView?.templates.find(item => item.actions.check.command === commandName || item.actions.deepCheck.command === commandName);
           if (template) cached.templateChecks[template.id] = { ...next.product, checkedContent: typeof (command as unknown as Record<string, unknown>).content === "string" ? (command as unknown as Record<string, string>).content : "" };
@@ -112,7 +121,7 @@ export function createLiveAdapter(): WorkspaceAdapter {
       if (["adopt", "generate", "confirm", "retry-next"].includes(command.type)) local.page = "writing";
       if (["create", "direction", "prepare-plan", "sync-plan", "refresh-plan", "continue-plan", "complete-volume", "adopt", "generate", "save-draft", "review", "ai-edit", "confirm", "accept-suggestion", "retry-next", "next-volume"].includes(command.type)) local.selectedChapter = undefined;
       state = { ...state, ...local, lastCompleted: { bookId, type: command.type, token }, storageWarning: next.message || "" };
-      const params = new URLSearchParams({ page: local.page }); if (local.bookId) params.set("book", local.bookId); if (local.selectedChapter) params.set("chapter", String(local.selectedChapter));
+      const params = new URLSearchParams({ page: local.page }); if (local.bookId) params.set("book", local.bookId); if (local.selectedChapter) params.set("chapter", String(local.selectedChapter)); if (local.page === "story") params.set("tab", local.storyTab);
       history.replaceState(null, "", `/workspace?${params}`); persist(); publish();
     } catch (error) { if (!disposed) { state.error = error instanceof Error ? error.message : "操作未完成，编辑内容已保留。"; publish(); } }
     finally { sending = false; if (!disposed) { state.sending = false; publish(); void refresh(); } }
@@ -127,7 +136,9 @@ export function createLiveAdapter(): WorkspaceAdapter {
       if (command.type === "refresh") { state.error = ""; void refresh(); return; }
       if (command.type === "navigate") {
         if (command.page === "settings") { location.assign(state.links?.settings || "/config"); return; }
-        local.page = command.page; local.bookId = command.bookId || local.bookId; local.selectedChapter = command.chapter; navigate(); return;
+        local.page = command.page; local.bookId = command.bookId || local.bookId; local.selectedChapter = command.chapter;
+        if (command.storyTab) local.storyTab = command.storyTab;
+        navigate(); return;
       }
       if (command.type === "resume") { const b = state.books.find(b => b.id === command.id); local.bookId = command.id; local.page = b?.candidate ? "writing" : !b?.planAdopted ? "planning" : "writing"; local.selectedChapter = undefined; navigate(); return; }
       if (command.type === "new-form") { state.showNew = command.open; publish(); return; }

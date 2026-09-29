@@ -151,6 +151,14 @@ test("live API: create, plan, preserve blocked candidate, confirm once, refresh,
   const retainedBlocked = afterRejectedConfirmation.body.items.find((item: any) => item.candidate_id === blockedId);
   expect(retainedBlocked?.status).toBe("pending");
 
+  // Verify the migrated author workspace and candidate report against the
+  // isolated FastAPI server before continuing through the compatibility route.
+  await page.goto(`/workspace?page=writing&book=${encodeURIComponent(projectId)}&chapter=1`);
+  await expect(page.getByRole("heading", { name: "拆书与章节体检" })).toBeVisible();
+  await page.getByRole("button", { name: "体检待确认候选" }).click();
+  await expect(page.getByRole("heading", { name: "体检完成" })).toBeVisible();
+
+  await page.goto(`/projects/${encodeURIComponent(projectId)}/write?chapter=1`);
   await page.reload();
   const recoveredCandidate = await waitForCandidate(page, 1);
   await expect(recoveredCandidate).toContainText("正文与已确认的故事事实存在冲突");
@@ -190,6 +198,8 @@ test("live API: create, plan, preserve blocked candidate, confirm once, refresh,
   await assertBrowserHitRealApi(settled, responses, "/product/actions", "POST", 200);
   await assertBrowserHitRealApi(settled, responses, "/product/build", "GET", 200);
   await assertBrowserHitRealApi(settled, responses, "/product/write", "GET", 200);
+  await assertBrowserHitRealApi(settled, responses, "/author-workspace", "GET", 200);
+  await assertBrowserHitRealApi(settled, responses, "/author-workspace/commands", "POST", 200);
   expect(responses.some(item => /\/public-build|\/build-graph|\/candidates/.test(item.path))).toBe(false);
 
   const syntheticEvents = readJsonLines(syntheticAuditLog);

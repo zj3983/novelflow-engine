@@ -5,7 +5,7 @@ export type PageName = "books" | "planning" | "writing" | "story" | "settings";
 export type StoryTab = "人物" | "世界规则" | "伏笔线索" | "创作要求";
 export interface ProductAction { command?: string; token: string; label: string; enabled: boolean; reason?: string; requiresConfirmation?: boolean }
 export interface Evidence { text: string; chapter?: number }
-export interface Volume { number: number; title: string; start?: number; end?: number; goal?: string; label?: string }
+export interface Volume { number: number; title: string; start?: number; end?: number; goal?: string; mainConflict?:string; characterChanges?:string[]; endingTurn?:string; label?: string }
 export interface StoryEntry { title: string; text: string; chapter?: number }
 export interface ForeshadowItem extends StoryEntry { key: string; statusLabel?: string; firstChapter?: number; lastTouchedChapter?: number; resolvedChapter?: number; payoffPlan?: string; editable?: boolean }
 export interface Person { name: string; role: string; description: string; facts: Evidence[]; performance: string[]; stableProfile?: Record<string, string>; currentState?: Record<string, string>; futurePlans?: string[] }
@@ -20,10 +20,11 @@ export interface BookDetails {
   writingStyle?: string; writingStyleOptions?: string[];
   actions?: { saveType: ProductAction; saveStyle: ProductAction; saveSynopsis: ProductAction; generateSynopsis: ProductAction; generateCover: ProductAction };
 }
-export interface DynamicWorld { currentSnapshot?: {chapter?:number|null;entries:{label:string;value:string}[]}; availableChapters?:{number:number;title:string}[]; selectedChapter?:number; chapterRecord?: Record<string, any> | null; emptyMessage?:string }
+export interface DynamicWorld { currentSnapshot?: {chapter?:number|null;entries:{label:string;value:string}[]}; availableChapters?:{number:number;title:string}[]; selectedChapter?:number; chapterRecord?: Record<string, any> | null; preparationInformation?:{sourceChapter:number;entries:{text:string;whoCanKnow?:string}[]} | null; emptyMessage?:string }
 export interface WritingTemplate { id: string; title: string; purpose: string; applicabilityLabel: string; activeForBook: boolean; content: string; placeholders: {syntax:string;label:string}[]; sourceLabel:string; usesBookOverride:boolean; lastCheck?:Record<string, any>; actions:{saveProject:ProductAction;saveGlobal:ProductAction;restoreGlobal?:ProductAction|null;check:ProductAction;deepCheck:ProductAction} }
 export interface WritingAbilities { packs:{id:string;name:string;description:string;available:boolean;selected:boolean;modules:{id:string;title:string;purpose:string;selected:boolean}[]}[]; selectionModeLabel:string; save:ProductAction; managementLabel:string }
-export interface DissectionView { modeLabel:string; selectedChapter?:number|null; statusLabel:string; report?:{statusLabel:string;chapterNumber?:number;chapterTitle?:string;sections:{title:string;items:string[]}[]}|null; reportIsReadOnly:boolean; actions:{inspectChapter:ProductAction;inspectReference:ProductAction} }
+export interface DissectionReport { statusLabel:string; chapterNumber?:number; chapterTitle?:string; sections:{title:string;items:string[]}[] }
+export interface DissectionView { modeLabel:string; selectedChapter?:number|null; candidateSourceToken?:string|null; statusLabel:string; report?:DissectionReport|null; candidateReport?:DissectionReport|null; reportIsReadOnly:boolean; actions:{inspectChapter:ProductAction;inspectReference:ProductAction;inspectCandidate:ProductAction} }
 export interface Chapter { number: number; title: string; body: string }
 export interface Concern { message: string; suggestion: string; quote?: string; chapter?: number }
 export interface Candidate extends Chapter {
@@ -31,10 +32,15 @@ export interface Candidate extends Chapter {
   label: string; canConfirm: boolean; needsCheck: boolean; checking: boolean;
   concern?: Concern; pastDrafts: { body: string; label: string }[]; editorDraft?: string;
 }
-export interface PlanningProjection { overall:{direction:string;endingGoal:string;previousConnection:string}; currentVolume:number; volumes:{number:number;title:string;startChapter?:number;endChapter?:number;goal:string;mainConflict:string;characterChanges:string[];endingTurn:string;statusLabel:string}[]; upcomingChapters:{number:number;title:string;goal:string;conflict:string;progression:string;foreshadowing:string[]}[]; authorReminders:string[] }
+export interface PlanningProjection { editable:boolean; overall:{direction:string;endingGoal:string;previousConnection:string}; currentVolume:number; volumes:{number:number;title:string;startChapter?:number;endChapter?:number;goal:string;mainConflict:string;characterChanges:string[];endingTurn:string;statusLabel:string;editable?:boolean}[]; upcomingChapters:{number:number;title:string;goal:string;conflict:string;progression:string;foreshadowing:string[];editable?:boolean}[]; authorReminders:string[] }
+export interface PlanningEditPatch {
+  overall: { direction:string; endingGoal:string };
+  volumes: { number:number; title:string; goal:string; mainConflict:string; characterChanges:string[]; endingTurn:string }[];
+  upcomingChapters: { number:number; title:string; goal:string; conflict:string; progression:string }[];
+}
 export interface RecycleBinBook { id:string; title:string; actions:Record<string,ProductAction> }
 export interface Book {
-  actions?: Record<string, ProductAction>; volumes?: Volume[]; upcoming?: { number: number; title: string; summary: string }[];
+  actions?: Record<string, ProductAction>; volumes?: Volume[]; upcoming?: { number: number; title: string; summary?: string; goal?:string; conflict?:string; progression?:string; foreshadowing?:string[] }[];
   directions?: { id?: string; text: string; label?: string }[]; ending?: string; connections?: Evidence[];
   people?: Person[]; world?: StoryEntry[]; foreshadow?: StoryEntry[]; reminders?: string[];
   worldCatalogs?: Pick<ImportedWorldBlueprint, "equipment_cards" | "monster_profiles">;
@@ -56,7 +62,7 @@ export interface Workspace {
   showNew: boolean; storyTab: StoryTab; person: string; storageWarning: string;
 }
 export type Command =
-  | { type: "navigate"; page: PageName; bookId?: string; chapter?: number }
+  | { type: "navigate"; page: PageName; bookId?: string; chapter?: number; storyTab?: StoryTab }
   | { type: "new-form"; open: boolean }
   | { type: "create"; title: string; genre: string; idea: string; targetWords: number; chapterWords: number; requirements: string }
   | { type: "resume"; id: string }
@@ -64,11 +70,11 @@ export type Command =
   | { type: `planning-action:${string}`; values?: Record<string,string>; token: string }
   | { type: "prepare-plan" | "sync-plan" | "refresh-plan" | "continue-plan" | "complete-volume" | "retry-next" | "discard" }
   | { type: "prepare-directions" } | { type: "refresh" }
-  | { type: "plan"; text: string; token?: string }
+  | { type: "plan"; text?: string; patch?: PlanningEditPatch; token?: string }
   | { type: "adopt" } | { type: "generate" } | { type: "next-volume" }
   | { type: "discard-local-draft" }
   | { type: "draft"; text: string } | { type: "save-draft"; text: string }
-  | { type: "review" } | { type: "ai-edit"; instruction: string; token?: string }
+  | { type: "review" } | { type: "ai-edit"; instruction: string; token?: string; dissectionSourceToken?: string }
   | { type: "confirm"; continue: boolean } | { type: "accept-suggestion" }
   | { type: "story-tab"; tab: StoryTab } | { type: "person"; name: string }
   | { type: "future"; text: string; token?: string } | { type: "requirements"; text: string; token?: string }

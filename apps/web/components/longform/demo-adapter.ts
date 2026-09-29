@@ -29,15 +29,50 @@ function baseBook(id: string, title: string): Book {
     planAdopted: true, planningVolume: 2, chapters: [], notice: "", busy: false, canRetry: false, nextVolume: false };
 }
 function decorate(book: Book) {
-  book.volumes = ["渡口", "暗潮", "远山", "归舟", "旧岸", "归途"].map((title, i) => ({ number: i + 1, title, start: i * 50 + 1, end: (i + 1) * 50, goal: "沿着一封失落的信，找出暗潮背后的真相。", label: book.chapters.length >= (i + 1) * 50 ? "已完成" : i + 1 === book.planningVolume ? "当前准备" : "后续方向" }));
+  const savedVolumes = book.volumes || [];
+  book.volumes = ["渡口", "暗潮", "远山", "归舟", "旧岸", "归途"].map((title, i) => {
+    const saved = savedVolumes.find(item => item.number === i + 1);
+    return { ...saved, number: i + 1, title: saved?.title || title, start: i * 50 + 1, end: (i + 1) * 50,
+      goal: saved?.goal || "沿着一封失落的信，找出暗潮背后的真相。",
+      mainConflict: saved?.mainConflict || "线索与证词彼此矛盾。",
+      characterChanges: saved?.characterChanges || [], endingTurn: saved?.endingTurn || "",
+      label: book.chapters.length >= (i + 1) * 50 ? "已完成" : i + 1 === book.planningVolume ? "当前准备" : "后续方向" };
+  });
   book.directions = ["沿河追寻：从寻找家人，到守护沿河的人。", "旧信悬疑：循着一封信，揭开渡口埋藏的秘密。", "同行成长：在旅途中结识伙伴，一起面对旧日风波。"].map(text => ({ text }));
   book.ending = "揭开河运旧案，主角作出自己的选择。";
-  book.upcoming = titles.map((title, i) => ({number: book.chapters.length + i + 1, title, summary: ["渡口收到另一半船印。", "旧物换来新去向。", "与前卷来信形成呼应。"][i]}));
+  const savedUpcoming = book.upcoming || [];
+  book.upcoming = titles.map((title, i) => {
+    const number = book.chapters.length + i + 1;
+    const saved = savedUpcoming.find(item => item.number === number);
+    return { number, title: saved?.title || title,
+      summary: saved?.summary || "与前文线索形成呼应。",
+      goal: saved?.goal || ["渡口收到另一半船印。", "旧物换来新去向。", "与前卷来信形成呼应。"][i],
+      conflict: saved?.conflict || "新旧证词存在出入。",
+      progression: saved?.progression || "沿着新线索前往下一处地点。",
+      foreshadowing: saved?.foreshadowing || ["半枚船印"] };
+  });
   book.connections = book.chapters.length >= 50 ? [{text:"主角仍不知道兄长下落。",chapter:50},{text:"船印尚未解释。",chapter:47}] : [];
   book.people = [{ name: "沈砚", role: "主角" }, { name: "沈渡", role: "失踪的兄长" }, { name: "叶青岚", role: "同行者" }, { name: "林婆婆", role: "渡口旧识" }].map(p => ({ ...p, description: p.name === "沈砚" ? "沈砚自小在渡口长大。兄长离开后杳无音讯，他撑起渡船，来往在人群与江流之间，寻找线索。" : `${p.name}是故事中的${p.role}。`, facts: p.name === "沈砚" ? [{chapter:1,text:"在渡口长大，与林婆婆相依为命"},{chapter:47,text:"得到半枚船印，尚不知用途"},{chapter:50,text:"决定沿河追查兄长留下的线索"}].filter(f => f.chapter <= book.chapters.length) : [], performance: p.name === "沈砚" ? ["说话克制，不轻易透露来意。", "遇事先观察，信任建立得慢。"] : [] }));
   book.world = [{ title: "渡口与河道", text: "故事发生在沿河相连的渡口。消息随着船只流动，雨季改变来往的路径。" }];
   book.foreshadow = [{ title: "半枚船印", text: book.chapters.length >= 47 ? "已经出现，用途尚未揭晓。" : "计划在后文出现。", ...(book.chapters.length >= 47 ? {chapter:47} : {}) }];
   book.reminders = ["主角还不知道兄长的去向。", "暂不揭晓船印的用途。", "避免突然掌握新能力。"];
+  book.planning = {
+    editable: true,
+    overall: { direction: book.direction || "", endingGoal: book.ending || "", previousConnection: book.chapters.at(-1)?.title || "暂无已确认章节。" },
+    currentVolume: book.planningVolume,
+    volumes: book.volumes.map(volume => ({
+      number: volume.number, title: volume.title, startChapter: volume.start, endChapter: volume.end,
+      goal: volume.goal || "", mainConflict: volume.mainConflict || "",
+      characterChanges: volume.characterChanges || [], endingTurn: volume.endingTurn || "",
+      statusLabel: volume.label || "", editable: (volume.start || 1) > book.chapters.length,
+    })),
+    upcomingChapters: book.upcoming.map(chapter => ({
+      number: chapter.number, title: chapter.title, goal: chapter.goal || chapter.summary || "",
+      conflict: chapter.conflict || "", progression: chapter.progression || "",
+      foreshadowing: chapter.foreshadowing || [], editable: chapter.number > book.chapters.length,
+    })),
+    authorReminders: [...book.reminders],
+  };
 }
 function seeded(): Workspace {
   const river = baseBook("demo-river", "渡河人");
@@ -131,7 +166,7 @@ export function createDemoAdapter(): WorkspaceAdapter {
     }
     // A second tab becomes read-only until reload, avoiding silent mock overwrites.
     if (state.storageWarning.startsWith("演示已在另一")) return;
-    if (cmd.type === "navigate") { state.page = cmd.page; state.bookId = cmd.bookId || state.bookId; state.selectedChapter = cmd.chapter; }
+    if (cmd.type === "navigate") { state.page = cmd.page; state.bookId = cmd.bookId || state.bookId; state.selectedChapter = cmd.chapter; if (cmd.storyTab) state.storyTab = cmd.storyTab; }
     else if (cmd.type === "new-form") state.showNew = cmd.open;
     else if (cmd.type === "resume") {
       state.bookId = cmd.id; const target = book(); state.selectedChapter = undefined;
@@ -149,7 +184,25 @@ export function createDemoAdapter(): WorkspaceAdapter {
     else if (cmd.type === "direction") { b.direction = cmd.text; b.planAdopted = false; }
     else if (cmd.type === "plan") {
       if (b.chapters.length >= b.planningVolume * 50 - 49) { b.notice = "这卷已有正式正文，请到下一卷调整后续规划。"; }
-      else { b.plan = cmd.text; b.planAdopted = false; b.notice = "规划已调整，请重新采纳后再写作。"; if (b.candidate) { b.candidate.canConfirm = false; b.candidate.needsCheck = true; } }
+      else {
+        if (cmd.patch) {
+          b.direction = cmd.patch.overall.direction;
+          b.ending = cmd.patch.overall.endingGoal;
+          b.volumes = (b.volumes || []).map(volume => {
+            const update = cmd.patch!.volumes.find(item => item.number === volume.number);
+            return update ? { ...volume, title: update.title, goal: update.goal, mainConflict: update.mainConflict,
+              characterChanges: update.characterChanges, endingTurn: update.endingTurn } : volume;
+          });
+          b.upcoming = (b.upcoming || []).map(chapter => {
+            const update = cmd.patch!.upcomingChapters.find(item => item.number === chapter.number);
+            return update ? { ...chapter, title: update.title, goal: update.goal, conflict: update.conflict,
+              progression: update.progression } : chapter;
+          });
+          b.plan = `${cmd.patch.overall.direction}\n\n${cmd.patch.volumes.find(item => item.number === b.planningVolume)?.goal || "规划已调整。"}`;
+        } else b.plan = cmd.text ?? b.plan;
+        b.planAdopted = false; b.notice = "规划已调整，请重新采纳后再写作。";
+        if (b.candidate) { b.candidate.canConfirm = false; b.candidate.needsCheck = true; }
+      }
     }
     else if (cmd.type === "adopt") { b.planAdopted = true; b.nextVolume = false; b.notice = "已采纳当前规划。"; state.page = "writing"; state.selectedChapter = undefined; if (!b.candidate) generate(); }
     else if (cmd.type === "generate") generate();
