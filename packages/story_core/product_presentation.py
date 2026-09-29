@@ -27,6 +27,7 @@ def problem(value):
     """Translate known errors; never echo exception text or unknown model output."""
     text = str(value or "")
     pairs = (
+        (("synopsis_invalid",), "简介需要填写正文和 4–8 个不重复标签。", "每个标签不超过 32 字；未通过校验的内容不会保存。"),
         (("generation_interrupted",), "上次创作已中断，已保存的内容仍然保留。", "请重新发起当前创作；不会自动调用模型。"),
         (("plan_acceptance_required", "plan_not_accepted", "plan_changed"), "当前规划尚未采纳，或采纳后又有修改。", "到全书规划查看最新内容并采纳，再继续写作。"),
         (("pending_candidate", "candidate_pending_confirmation"), "这一章已有等待处理的候选。", "先阅读、修改或确认当前候选。"),
@@ -44,6 +45,20 @@ def problem(value):
         (("canon.hard_blocker", "hard_block", "quality_failed", "review_result_blocked"), "正文与已确认的故事事实存在冲突。", "请先修改或重新生成候选，再进行确认。"),
         (("model_preflight", "model_request", "unsupported", "capability", "context_window", "budget"), "当前模型暂时不能完成这项创作。", "请到模型设置中重新测试或更换模型。"),
         (("revision", "source_conflict", "source_changed", "project_world_changed", "state_mismatch"), "相关内容已经修改，请重新查看后再操作。", "刷新页面，确认最新内容后再继续。"),
+        (("foreshadowing_version_conflict", "relationship_graph_conflict"), "相关故事设定已被修改。", "刷新页面后确认最新关系或伏笔，再重新保存。"),
+        (("character_profile_revision_conflict",), "人物设定已被修改。", "刷新人物卡片后确认最新设定，再重新保存。"),
+        (("invalid_character_profile", "character_name_immutable"), "人物设定格式不正确。", "检查姓名、年龄、列表和文字长度后重试。"),
+        (("world_section_revision_conflict",), "世界设定已被修改。", "刷新当前分组后确认最新内容，再重新保存。"),
+        (("confirmed_world_fact_read_only",), "已确认的故事事实不能在这里修改。", "只编辑作者设定；已发生事实保留在对应章节记录中。"),
+        (("invalid_world_section", "world_catalog_create_requires_structured_fields"), "世界设定条目格式不正确。", "检查标题和描述后重试；装备与怪物新增需要完整图鉴信息。"),
+        (("foreshadowing",), "伏笔信息还不完整，或引用章节已经变化。", "检查伏笔状态和章节来源后重新保存。"),
+        (("relationship",), "人物关系包含无效人物或不完整信息。", "只连接本书已有角色，并检查关系描述后重试。"),
+        (("invalid_novel_type", "invalid_writing_style"), "所选作品类型或文风不可用。", "刷新可选项后重新选择。"),
+        (("confirmed_relationship_cannot_be_removed",), "这条关系已有正文记录，不能直接删除。", "保留已确认的关系记录，只修改未来关系状态。"),
+        (("skill_selection_pack_unavailable", "skill_selection_module_unavailable", "invalid_skill_selection"), "所选写作能力已不可用。", "刷新能力列表并重新选择本书使用的包和模块。"),
+        (("global_prompt_confirmation_required", "prompt_template_restore_confirmation_required"), "这个操作会影响模板设置。", "阅读影响范围后明确确认，再执行操作。"),
+        (("prompt_template_content_too_long", "prompt_template_lock_failed"), "模板内容无法保存。", "检查模板长度后重试；当前内容仍未修改。"),
+        (("dissection_source_changed",), "所选章节内容已经变化，体检报告尚未生成。", "刷新章节正文后重新发起体检。"),
         (("consumed", "locked", "frozen"), "这部分内容已被正文使用，暂时不能直接修改。", "请保留已确认的故事内容，继续当前可用的创作步骤。"),
         (("outline_required", "volume_detail", "not_ready", "chapter_not_planned"), "下一章的规划尚未准备好。", "请先完成本卷规划，再生成正文。"),
         (("in_progress", "running"), "已有创作正在进行。", "请等待当前创作完成。"),
@@ -204,6 +219,64 @@ def author_advice(quality, *, body=""):
         if item not in output:
             output.append(item)
     return output
+
+
+def prompt_audit_result(result, *, binding_token=""):
+    """Project a template check without exposing hashes, issue codes, or runtime details."""
+    payload = result.model_dump() if hasattr(result, "model_dump") else result
+    if not isinstance(payload, dict):
+        return {"statusLabel": "需要重新检查", "summary": {}, "issues": [], "bindingToken": binding_token}
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    issues = []
+    for severity, key in (("必须修改", "must_fix"), ("可考虑调整", "suggestions")):
+        for item in payload.get(key, []) if isinstance(payload.get(key), list) else []:
+            if not isinstance(item, dict):
+                continue
+            issues.append({
+                "severityLabel": severity,
+                "title": str(item.get("title") or "提示词检查发现一项内容"),
+                "evidence": str(item.get("evidence") or ""),
+                "location": str(item.get("location") or "模板正文"),
+                "suggestion": str(item.get("suggestion") or "请复核模板内容。"),
+                "estimatedReductionCharacters": item.get("estimated_reduction_characters", 0),
+            })
+    summary_view = {
+        "characters": summary.get("characters", 0),
+        "lines": summary.get("lines", 0),
+        "estimatedRedundantCharacters": summary.get("estimated_redundant_characters", 0),
+        "estimatedReductionPercent": summary.get("estimated_reduction_percent", 0),
+        "sections": [
+            {"title": str(section.get("title") or "内容片段"),
+             "characters": section.get("characters", 0),
+             "percent": section.get("percent", 0)}
+            for section in summary.get("sections", []) if isinstance(section, dict)
+        ],
+    }
+    return {
+        "statusLabel": "需要修改" if payload.get("must_fix") else "检查完成",
+        "summary": summary_view,
+        "issues": issues,
+        "bindingToken": binding_token,
+    }
+
+
+def book_dissection_result(report):
+    """Keep report prose while omitting transport schema and machine mode fields."""
+    if not isinstance(report, dict):
+        return {"statusLabel": "没有可查看的报告", "sections": []}
+    sections = []
+    raw_sections = report.get("sections") if isinstance(report.get("sections"), dict) else {}
+    for title, items in raw_sections.items():
+        if not isinstance(title, str):
+            continue
+        paragraphs = [str(item).strip() for item in items if isinstance(item, str) and item.strip()] if isinstance(items, list) else []
+        sections.append({"title": title, "items": paragraphs})
+    return {
+        "statusLabel": "体检完成" if report.get("mode") == "project" else "拆解完成",
+        "chapterNumber": report.get("chapter_number") if isinstance(report.get("chapter_number"), int) else None,
+        "chapterTitle": str(report.get("chapter_title") or ""),
+        "sections": sections,
+    }
 
 
 def candidate_review(candidate, *, store=None):

@@ -2,7 +2,10 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { CheckCircle2, ChevronDown, ChevronRight, CircleAlert, Search, Settings, X } from "lucide-react";
-import type { Book, Command, PageName, StoryTab, WorkspaceAdapter, PlanningPart, ProductAction, Volume } from "./product";
+import type { Book, Command, PageName, StoryTab, WorkspaceAdapter, ProductAction, Volume } from "./product";
+import { EquipmentCatalog } from "../ws/EquipmentCatalog";
+import { MonsterBestiary } from "../ws/MonsterBestiary";
+import { BookDetailsEditor, CharacterProfileEditor, DissectionPanel, DynamicWorldPanel, ForeshadowingEditor, RelationshipsEditor, WritingAbilitiesEditor, WritingTemplatesEditor, WorldSectionsEditor } from "./AuthorTools";
 import s from "./workspace.module.css";
 
 function Landscape() { return <img className={s.landscape} src="/longform/river-landscape.png" alt="" />; }
@@ -14,6 +17,8 @@ export function LongformWorkspace({ adapter }: { adapter: WorkspaceAdapter }) {
   const live = state.mode === "live";
   const allowed = (name: string, book = b) => !live || !!book.actions?.[name]?.enabled;
   const volumes = b.volumes || [];
+  const structuredVolumes = b.planning?.volumes || [];
+  const upcoming: {number:number;title:string;goal?:string;summary?:string;conflict?:string;progression?:string;foreshadowing?:string[]}[] = b.planning?.upcomingChapters || b.upcoming || [];
   const people = b.people || [];
   const person = people.find(p => p.name === state.person) || people[0];
   const volumeFor = (number: number) => volumes.find(v => typeof v.start === "number" && number >= v.start && (typeof v.end !== "number" || number <= v.end));
@@ -29,6 +34,8 @@ export function LongformWorkspace({ adapter }: { adapter: WorkspaceAdapter }) {
   const [showArchive, setShowArchive] = useState(false);
   const [showDemo, setShowDemo] = useState(false);
   const [openVolumes, setOpenVolumes] = useState<number[]>([]);
+  const [detailsBookId, setDetailsBookId] = useState("");
+  const detailsBook = state.books.find(book => book.id === detailsBookId) || b;
   const directory = useRef<HTMLDivElement>(null);
   const prose = useRef<HTMLElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -38,7 +45,7 @@ export function LongformWorkspace({ adapter }: { adapter: WorkspaceAdapter }) {
   const count = Math.max(0, ...b.chapters.map(ch => ch.number));
   const activeVolume = volumeFor(current?.number || count + 1)?.number || b.planningVolume;
   const crossTab = state.storageWarning.startsWith("演示已在另一");
-  const busy = b.busy || crossTab || !!state.sending;
+  const busy = b.busy || crossTab || !!state.sending || !!state.loading;
 
   useEffect(() => { setOpenVolumes(v => [...new Set([...v, activeVolume])]); }, [b.id, activeVolume]);
   useEffect(() => { setEditing(!!c?.editorDraft); }, [b.id, c?.number]);
@@ -94,7 +101,7 @@ export function LongformWorkspace({ adapter }: { adapter: WorkspaceAdapter }) {
       <button className={s.iconButton} aria-label="打开设置" onClick={() => navigate("settings")}><Settings size={20} /></button>
     </header>
     {draftNotice && <div className={s.notice} role="alert">{draftNotice}</div>}
-    {state.loading && <div className={s.notice}>正在打开工作区…</div>}{state.error && <div className={s.notice} role="alert">{state.error}<button onClick={() => act({ type: "refresh" })}>重新连接</button></div>}
+    {state.loading && <div className={s.notice}>正在同步最新的作品状态…</div>}{state.error && <div className={s.notice} role="alert">{state.error}<button onClick={() => act({ type: "refresh" })}>重新连接</button></div>}
     {state.recoveredDraft !== undefined && <section className={s.notice}><h3>保留的编辑草稿</h3><p>对应的候选已不在当前待确认列表。文字仍保留在此，供你复制。</p><textarea aria-label="保留的编辑草稿" readOnly value={state.recoveredDraft} /><button onClick={() => act({ type: "discard-local-draft" })}>清除本地草稿</button></section>}
     {state.storageWarning && <div className={s.notice} role="alert">{state.storageWarning}</div>}
     {state.page !== "books" && b.notice && <div className={s.notice} role="status">{b.busy && <span className={s.loading} />}{b.notice}</div>}
@@ -106,13 +113,14 @@ export function LongformWorkspace({ adapter }: { adapter: WorkspaceAdapter }) {
         {state.books.filter(book => !!book.archived === showArchive).map(book => <article className={s.bookRow} key={book.id}>
           <div><h3>{book.title}</h3><p>{book.genre} · {book.targetWords ? `目标${book.targetWords / 10000}万字` : "目标篇幅未设置"}</p><small>已确认{book.chapters.length}章{book.candidate ? ` · 第${book.candidate.number}章待处理` : ""}</small></div>
           <div className={s.bookProgress}><h4>{book.candidate ? `第${book.planningVolume}卷　${book.volumes?.find(v => v.number === book.planningVolume)?.title || ""}` : !book.planAdopted ? "准备故事" : "暂停写作"}</h4><p>{book.candidate ? "上次停在候选稿审阅" : !book.planAdopted ? "先把核心设定理清" : "回到最近确认的章节"}</p></div>
-          <div className={s.bookActions}><button className={book.id === "demo-river" ? s.primary : ""} onClick={() => act({ type: "resume", id: book.id })}>继续写作</button><button className={s.textButton} disabled={book.busy || !!state.sending || !allowed("archive", book)} onClick={() => act({ type: "archive", id: book.id, archived: !book.archived })}>{book.archived ? "恢复作品" : "归档"}</button></div>
+          <div className={s.bookActions}><button className={book.id === "demo-river" ? s.primary : ""} onClick={() => act({ type: "resume", id: book.id })}>继续写作</button><button className={s.textButton} onClick={() => {setDetailsBookId(book.id);act({type:"navigate",page:"books",bookId:book.id})}}>作品资料</button><button className={s.textButton} disabled={book.busy || !!state.sending || !allowed("archive", book)} onClick={() => act({ type: "archive", id: book.id, archived: !book.archived })}>{book.archived ? "恢复作品" : "归档"}</button>{live&&!book.archived&&<button className={s.textButton} disabled={book.busy||!!state.sending||!allowed("trash",book)} onClick={()=>{if(window.confirm(`将“${book.title}”移入回收站？`))act({type:"trash",confirm:true})}}>移入回收站</button>}</div>
         </article>)}
         {state.books.every(book => !!book.archived !== showArchive) && <Empty text="这里还没有作品。" />}
+        {!!state.recycleBin?.length&&<section className={s.recycleBin}><h2>回收站</h2><p>彻底删除后无法恢复。删除时需要再次输入完整书名。</p>{state.recycleBin.map(item=><article key={item.id}><strong>{item.title}</strong><div className={s.pair}><button disabled={!!state.sending||!item.actions["restore-trashed"]?.enabled} onClick={()=>act({type:"restore-trashed",id:item.id})}>恢复作品</button><button disabled={!!state.sending||!item.actions["delete-trashed"]?.enabled} onClick={()=>{const entered=window.prompt(`彻底删除“${item.title}”？请输入完整书名确认。`);if(entered===item.title)act({type:"delete-trashed",id:item.id,confirmTitle:entered});else if(entered!==null)window.alert("书名不完全一致，作品没有删除。")}}>彻底删除</button></div></article>)}</section>}
         <button className={s.textButton} onClick={() => setShowArchive(v => !v)}>{showArchive ? "返回我的作品" : "查看已归档作品"}</button>
         <Landscape /><p className={s.caption}>{live ? "每一章由你确认。未完成的工作可以回来继续。" : "演示作品仅保存在当前浏览器。刷新后可以继续。"}</p>{live && state.links?.import && <a href={state.links.import}>导入已有作品</a>}
       </main>
-      {state.showNew && <aside className={s.newBook}><NewBook demo={!live} genres={state.genres} busy={!!state.sending} onCreate={act} onCancel={() => act({ type: "new-form", open: false })} /></aside>}
+      {state.showNew ? <aside className={s.newBook}><NewBook demo={!live} genres={state.genres} busy={!!state.sending} onCreate={act} onCancel={() => act({ type: "new-form", open: false })} /></aside> : detailsBook && <aside className={s.newBook} key={detailsBook.id}><BookDetailsEditor book={detailsBook} busy={busy} act={act} /><a href="/novel-types">管理全局作品类型</a></aside>}
     </div>}
 
     {state.page === "writing" && <div className={s.workLayout}>
@@ -157,16 +165,15 @@ export function LongformWorkspace({ adapter }: { adapter: WorkspaceAdapter }) {
     </div>}
 
     {state.page === "planning" && <div className={s.workLayout}>
-      <aside className={s.sidebar}><h3>全书目录</h3>{volumes.map(v => <section className={s.planVolume} key={v.number}><h4>第{v.number}卷　{v.title}</h4><p>{v.goal}</p><small>{v.label}</small></section>)}<Landscape /></aside>
+      <aside className={s.sidebar}><h3>全书目录</h3>{volumes.map(v => {const detail=structuredVolumes.find(item=>item.number===v.number);return <section className={s.planVolume} key={v.number}><h4>第{v.number}卷　{v.title}</h4><p>{v.goal || detail?.goal}</p>{detail?.mainConflict&&<p>主要冲突：{detail.mainConflict}</p>}{detail&&detail.characterChanges.length>0&&<p>人物变化：{detail.characterChanges.join("、")}</p>}{detail?.endingTurn&&<p>卷末转折：{detail.endingTurn}</p>}<small>{v.label || detail?.statusLabel}</small></section>})}<Landscape /></aside>
       <main className={s.planning}>
         {live && <div className={s.pair}>{["prepare-plan", "sync-plan", "refresh-plan", "continue-plan", "complete-volume", "next-volume"].map(name => b.actions?.[name] && <ActionButton key={name} action={b.actions[name]} busy={busy} act={act} />)}</div>}
         {!b.direction ? <><h1>先选一个故事方向</h1><p>{b.idea}</p>{!b.directions?.length && <button className={s.primary} disabled={busy || !allowed("prepare-directions")} onClick={() => act({ type: "prepare-directions" })}>准备故事方向</button>}{b.directions?.map(d => <button className={s.direction} disabled={busy || !allowed("direction")} key={d.id || d.text} onClick={() => act({ type: "direction", text: d.text, id: d.id })}><span>{d.label && <strong>{d.label}<br /></strong>}{d.text}</span><ChevronRight size={20} /></button>)}</> : <>
           <div className={s.sectionHeading}><h1>全书规划</h1><span>{b.targetWords ? `目标 ${b.targetWords / 10000}万字` : "篇幅未设置"}</span></div>
           <dl className={s.facts}><dt>故事主线</dt><dd>{b.direction}</dd>{b.ending && <><dt>最终走向</dt><dd>{b.ending}</dd></>}</dl>
           <div className={s.sectionHeading}><h1>第{b.planningVolume}卷 · {volumes.find(v => v.number === b.planningVolume)?.title || "当前规划"}</h1><span className={s.badge}>{b.planAdopted ? "你已采纳" : "等待你查看并采纳"}</span></div>
-          <p className={s.bio}>{b.plan || "规划尚未准备完整。"}</p><h3>近期章节安排</h3>{b.upcoming?.length ? <table className={s.table}><thead><tr><th>章数</th><th>章节名</th><th>主要内容</th></tr></thead><tbody>{b.upcoming.map(ch => <tr key={ch.number}><td>第{ch.number}章</td><td>{ch.title}</td><td>{ch.summary}</td></tr>)}</tbody></table> : <Empty text="近期章节尚未准备。" />}
+          <p className={s.bio}>{b.plan || "规划尚未准备完整。"}</p>{b.planning?.overall?.previousConnection&&<section><h3>与前文衔接</h3><p>{b.planning.overall.previousConnection}</p></section>}<h3>近期章节安排</h3>{upcoming.length ? <div className={s.chapterPlanList}>{upcoming.map(ch => <article key={ch.number}><h4>第{ch.number}章　{ch.title}</h4><p>{ch.goal || ch.summary || ""}</p>{ch.conflict&&<p><strong>冲突：</strong>{ch.conflict}</p>}{ch.progression&&<p><strong>推进：</strong>{ch.progression}</p>}{ch.foreshadowing?.length ? <p><strong>关联伏笔：</strong>{ch.foreshadowing.join("、")}</p> : null}</article>)}</div> : <Empty text="近期章节尚未准备。" />}{b.planning?.authorReminders?.map((item,i)=><p className={s.smallNote} key={i}>{item}</p>)}
         </>}
-        {b.planningParts?.map((part, i) => <PlanningSection key={`${b.id}:${part.key || part.selection || i}`} part={part} bookId={b.id} completed={state.lastCompleted} busy={busy} act={act} />)}
         {b.actions?.plan?.reason && <p>{b.actions.plan.reason}</p>}
         {b.actions?.adopt?.reason && <p>{b.actions.adopt.reason}</p>}
       </main>
@@ -176,12 +183,15 @@ export function LongformWorkspace({ adapter }: { adapter: WorkspaceAdapter }) {
     {state.page === "story" && <div className={s.workLayout}>
       <aside className={s.sidebar}><h3>找人物</h3><label className={s.search}><Search size={19} /><input aria-label="搜索人物" placeholder="输入人物名字" value={search} onChange={e => setSearch(e.target.value)} /></label>{people.filter(p => p.name.includes(search)).map(p => <button key={p.name} className={`${s.person} ${person?.name === p.name ? s.selected : ""}`} onClick={() => act({ type: "person", name: p.name })}><span><strong>{p.name}</strong><small>{p.role}</small></span><ChevronRight size={18} /></button>)}{!people.some(p => p.name.includes(search)) && <Empty text="目前没有符合条件的人物。" />}<Landscape /></aside>
       <main className={s.storyContent}><nav className={s.tabs} aria-label="故事设定分类">{(["人物", "世界规则", "伏笔线索", "创作要求"] as StoryTab[]).map(tab => <button className={state.storyTab === tab ? s.navActive : ""} key={tab} onClick={() => act({ type: "story-tab", tab })}>{tab}</button>)}</nav>
-        {state.storyTab === "人物" && (person ? <><h1 className={s.characterName}>{person.name}</h1><p className={s.characterRole}>{person.role}</p><p className={s.bio}>{person.description}</p><section><h3>已在正文中发生</h3>{person.facts.length ? person.facts.map((f, i) => <div className={s.evidence} key={i}><p>{f.text}</p>{f.chapter && <button onClick={() => showChapter(f.chapter!)}>查看第{f.chapter}章</button>}</div>) : <p>目前没有可引用的正文依据。</p>}</section><section><h3>人物表现</h3>{person.performance.map((text, i) => <p key={i}>{text}</p>)}</section><section><h3>后续打算（尚未写入正文）</h3><p>{b.future || "尚未填写"}</p></section></> : <Empty text="人物设定将在规划和写作过程中逐步形成。" />)}
-        {(state.storyTab === "世界规则" || state.storyTab === "伏笔线索") && <><h1>{state.storyTab}</h1>{(state.storyTab === "世界规则" ? b.world : b.foreshadow)?.map((entry, i) => <section key={i}><h3>{entry.title}</h3><p>{entry.text}</p>{entry.chapter && <button onClick={() => showChapter(entry.chapter!)}>查看第{entry.chapter}章</button>}</section>)}<section><h3>后续打算（尚未写入正文）</h3><p>{b.future || "尚未填写"}</p></section></>}
-        {state.storyTab === "创作要求" && <><h1>创作要求</h1><section><h3>必须遵守</h3><p>{b.requirements || "尚未填写"}</p></section><section><h3>篇幅目标</h3><p>{b.targetWords ? `全书约${b.targetWords / 10000}万字` : "全书篇幅未设置"} · {b.chapterWords ? `每章约${b.chapterWords}字` : "每章字数未设置"}</p><p>这是创作目标，每章可以根据情节适当调整。</p></section><button disabled={busy || !allowed("requirements")} onClick={() => openDialog("requirements", b.requirements)}>修改作者要求</button></>}
+        {state.storyTab === "人物" && <>{person ? <><h1 className={s.characterName}>{person.name}</h1><p className={s.characterRole}>{person.role}</p>{b.characterCardsView ? <CharacterProfileEditor card={b.characterCardsView.items.find(item=>item.name===person.name)} busy={busy} act={act} /> : <><p className={s.bio}>{person.description}</p><section><h3>已在正文中发生</h3>{person.facts.map((f,i)=><p key={i}>{f.text}{f.chapter&&<button onClick={()=>showChapter(f.chapter!)}>查看第{f.chapter}章</button>}</p>)}</section><section><h3>人物表现</h3>{person.performance.map((text,i)=><p key={i}>{text}</p>)}</section><section><h3>后续打算</h3><p>{b.future||"尚未填写"}</p></section></>}</> : <Empty text="人物设定将在规划和写作过程中逐步形成。" />}{b.relationshipView&&<RelationshipsEditor items={b.relationshipView.items} people={people} save={b.relationshipView.save} busy={busy} act={act} />}</>}
+        {state.storyTab === "世界规则" && <><h1>世界规则</h1>{b.worldSections ? <WorldSectionsEditor sections={b.worldSections.filter(section=>section.id!=="equipment"&&section.id!=="monsters")} busy={busy} act={act} /> : b.world?.map((entry,i)=><section key={i}><h3>{entry.title}</h3><p>{entry.text}</p></section>)}{b.worldCatalogs&&<><EquipmentCatalog projectId={b.id} blueprint={b.worldCatalogs} onSaved={()=>act({type:"refresh"})} /><MonsterBestiary projectId={b.id} blueprint={b.worldCatalogs} onSaved={()=>act({type:"refresh"})} /></>}{b.worldEnrichment&&<section className={s.productEditor}><h3>AI 补全世界观</h3><p>{b.worldEnrichment.statusLabel} · {b.worldEnrichment.message}</p><ActionButton action={b.worldEnrichment.action} busy={busy} act={act} /></section>}{b.confirmedWorldFacts&&b.confirmedWorldFacts.length>0&&<section><h3>正文中已确认的世界事实</h3>{b.confirmedWorldFacts.map((fact,i)=><p className={s.evidence} key={`${i}:${fact.text}`}>{fact.text}{fact.chapter&&<button onClick={()=>showChapter(fact.chapter!)}>查看第{fact.chapter}章</button>}</p>)}</section>}<DynamicWorldPanel value={b.dynamicWorld} chapters={b.chapters} onSelect={number=>act({type:"navigate",page:"story",chapter:number})} /></>}
+        {state.storyTab === "伏笔线索" && <><h1>伏笔线索</h1>{b.foreshadowingView ? <ForeshadowingEditor items={b.foreshadowingView.items} save={b.foreshadowingView.save} busy={busy} act={act} onChapter={number=>showChapter(number)} /> : b.foreshadow?.map((entry,i)=><section key={i}><h3>{entry.title}</h3><p>{entry.text}</p></section>)}</>}
+        {state.storyTab === "创作要求" && <><h1>创作要求</h1><section><h3>必须遵守</h3><p>{b.requirements || "尚未填写"}</p></section><section><h3>篇幅目标</h3><p>{b.targetWords ? `全书约${b.targetWords / 10000}万字` : "全书篇幅未设置"} · {b.chapterWords ? `每章约${b.chapterWords}字` : "每章字数未设置"}</p><p>这是创作目标，每章可以根据情节适当调整。</p></section><button disabled={busy || !allowed("requirements")} onClick={() => openDialog("requirements", b.requirements)}>修改作者要求</button>{b.writingTemplatesView&&<WritingTemplatesEditor templates={b.writingTemplatesView.templates} busy={busy} act={act} />}{b.writingAbilitiesView&&<WritingAbilitiesEditor value={b.writingAbilitiesView} bookId={b.id} busy={busy} act={act} />}</>}
       </main>
       <aside className={s.concerns}><h3>写作提醒</h3>{b.reminders?.map((text, i) => <p className={s.reminder} key={i}><CircleAlert size={23} />{text}</p>)}<button className={`${s.primary} ${s.wide}`} disabled={busy || !allowed("future")} onClick={() => openDialog("future", b.future)}>修改后续设定</button><button className={s.wide} onClick={() => openDialog("contradiction")}>我发现前文有矛盾</button><p>已确认正文只供回看，不能在这里改写历史。</p></aside>
     </div>}
+
+    {state.page === "writing" && live && b.dissectionView && <main className={s.authorTools}><DissectionPanel value={b.dissectionView} book={b} busy={busy} act={act} onChapter={number=>act({type:"navigate",page:"writing",chapter:number})} /></main>}
 
     {state.page === "settings" && <main className={s.settings}><h1>写作设置</h1><section><h3>正文模型：演示可用</h3><p>这里使用模拟结果，不连接模型，不产生费用。</p><p>真实工作区提供独立设置入口。当前演示不会读取或修改任何模型配置。</p></section><button onClick={() => navigate("books")}>返回作品</button></main>}
 
@@ -199,7 +209,6 @@ export function LongformWorkspace({ adapter }: { adapter: WorkspaceAdapter }) {
     </dialog>}
   </div>;
 }
-
 function NewBook({ onCreate, onCancel, genres, busy, demo }: { demo?: boolean; genres?: { value: string; label: string }[]; busy?: boolean; onCreate: (command: Command) => void; onCancel: () => void }) {
   const formRef = useRef<HTMLFormElement>(null);
   useEffect(() => { if (demo) return; try { const fields = JSON.parse(localStorage.getItem("novelflow.author.new-book") || "null"); if (fields && formRef.current) for (const [name, value] of Object.entries(fields)) { const el = formRef.current.elements.namedItem(name); if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) el.value = String(value); } } catch { /* optional recovery */ } }, []);
@@ -217,20 +226,4 @@ function NewBook({ onCreate, onCancel, genres, busy, demo }: { demo?: boolean; g
 
 function ActionButton({ action, busy, act }: { action: ProductAction; busy: boolean; act: (c: Command) => void }) {
   return <div><button disabled={busy || !action.enabled} onClick={() => act({ type: action.command, token: action.token } as Command)}>{action.label}</button>{action.reason && <p className={s.smallNote}>{action.reason}</p>}</div>;
-}
-
-function PlanningSection({ part, bookId, completed, busy, act }: { part: PlanningPart; bookId: string; completed?: { bookId: string; type: string; token?: string }; busy: boolean; act: (c: Command) => void }) {
-  const form = part.form;
-  const key = `novelflow.author.plan-draft:${bookId}:${part.key || part.selection || part.title}`;
-  const [editing, setEditing] = useState(false);
-  const [values, setValues] = useState<Record<string,string>>({});
-  const [captured, setCaptured] = useState<ProductAction[]>([]);
-  const handled = useRef<typeof completed>();
-  useEffect(() => { try { const saved = JSON.parse(localStorage.getItem(key) || "null"); if (saved?.values) { setValues(saved.values); setCaptured(saved.actions || []); setEditing(true); } } catch { /* optional recovery */ } }, [key]);
-  useEffect(() => { if (!completed || handled.current === completed) return; handled.current = completed; if (completed.bookId === bookId && captured.some(a => a.token === completed.token)) { setEditing(false); setCaptured([]); try { localStorage.removeItem(key); } catch { /* server content saved */ } } }, [completed, bookId, captured, key]);
-  function update(next: Record<string,string>) { setValues(next); try { localStorage.setItem(key, JSON.stringify({ values: next, actions: captured })); } catch { /* keep draft in memory */ } }
-  function open() { if (!form) return; setValues(Object.fromEntries(form.fields.map(f => [f.key, f.value]))); setCaptured(form.actions); setEditing(true); }
-  return <section><h3>{part.title}</h3>{part.description && <p>{part.description}</p>}{part.paragraphs.map((text, i) => <p key={i}>{text}</p>)}{part.issues.map((issue, i) => <div className={s.issue} key={i}><p>{issue.message}</p><p>{issue.suggestion}</p></div>)}<div className={s.pair}>{part.actions.map((action,i) => <ActionButton key={i} action={action} busy={busy || editing} act={act} />)}</div>
-    {form && (!editing ? <button disabled={busy} onClick={open}>{form.title}</button> : <div className={s.editor}>{form.description && <p>{form.description}</p>}{form.fields.map(field => <label key={field.key}>{field.label}<textarea value={values[field.key] ?? ""} required={field.required} onChange={e => update({ ...values, [field.key]: e.target.value })} /></label>)}{captured.map((action,i) => <button key={i} disabled={busy || !action.enabled || form.fields.some(f => f.required && !values[f.key]?.trim())} onClick={() => act({ type: action.command, token: action.token, values } as Command)}>{action.label}</button>)}<button onClick={() => { setEditing(false); try { localStorage.removeItem(key); } catch { /* original draft remains recoverable */ } }}>结束编辑并清除本地草稿</button><p className={s.smallNote}>编辑内容保留在当前浏览器。提交后请查看保存结果；若规划已变化，请保留草稿并重新打开当前内容。</p></div>)}
-  </section>;
 }

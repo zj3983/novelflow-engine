@@ -10,6 +10,8 @@ from fastapi.testclient import TestClient
 
 from apps.api.routes.creation_product import init_creation_product_routes
 from apps.api.routes import file_projects
+from apps.api.routes.longform_product import init_longform_product_routes
+from apps.api.routes.novel_types import init_novel_type_routes
 from packages.story_core import product_presentation as product
 from tests.api.test_build_workbench_edit_route import _setup_project, _wait_orchestration
 from tests.story_core.test_opening_prose import prepared_store, FakeEngine
@@ -82,6 +84,684 @@ def test_longform_planning_projection_reuses_snapshot_without_changing_actions(t
     assert calls.count("get_file_project_build_graph") == 1
     assert "get_file_project_build_graph_task" not in calls
     assert tree(store) == before
+
+
+def test_author_workspace_api_projects_product_sections_from_existing_sources(tmp_path, monkeypatch):
+    store = prepared_store(tmp_path)
+    names = ["林照", "陆遥", "赵衡", "顾长老"]
+    store.update_project({
+        "title": "河灯录",
+        "world_summary": "渡口诸城依水运商路往来。",
+        "author_constraints": ["不提前揭示兄长失踪真相"],
+        "relationship_graph": [{
+            "source": "林照", "target": "陆遥", "relation_type": "互相试探",
+            "current_state": "暂时合作", "last_changed_chapter": 0,
+        }],
+        "character_profiles": [
+            {"name": name, "role": "protagonist" if index == 0 else "supporting",
+             "identity_profile": {"current_identity": f"身份{index}"},
+             "story_drive": {"motivation": f"动机{index}"}}
+            for index, name in enumerate(names)
+        ],
+        "world_blueprint": {
+            "world_rules": ["水路每旬封航一日。"],
+            "locations": [{"name": "南渡口", "description": "旧商路的转运处。"}],
+            "factions": [{"name": "巡河司", "description": "负责水路治安。"}],
+            "writing_style": "冷峻",
+        },
+    })
+    state = store.state()
+    state["current_chapter"] = 1
+    state["characters"] = [{"name": "林照", "role": "protagonist", "location": "南渡口", "memory": []}]
+    state["world_snapshot"] = {"current_focus": "查找失踪的货船", "time_state": {"current_scene_time": "暮春"}, "internal_counter": 911}
+    state_path = store.webnovel_dir / "state.json"
+    state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    chapter_dir = store.story_system_dir / "chapters"
+    chapter_dir.mkdir(parents=True, exist_ok=True)
+    (chapter_dir / "0001.json").write_text(json.dumps({
+        "chapter_number": 1,
+        "chapter_title": "夜船",
+        "body": "林照登上夜船，发现货单已被改写。",
+        "simulation_status": {"world_pulse": {"latest": {
+            "summary": "码头出现新的收购价。",
+            "public_traces": [{"text": "柜台调整了收购价。", "visible_to": ["public_price_board", "npc_counter"]}],
+            "hidden_state": {"chaos_seed_anomaly_score": 3,
+                             "guild_knowledge_state": "weak_pattern_only",
+                             "internal_counter": 911,
+                             "unknown_enum": "opaque_machine_value"},
+            "market_order_book": {
+                "buy_orders": [{"buyer": "village_service_counter", "quantity": 4,
+                                 "price_copper": 12, "visibility": "posted_threshold"}],
+                "sell_orders": [{"seller": "public_newbie_flow", "quantity_hint": 6,
+                                 "price_copper": 15, "visibility": "public_price_board"}],
+                "spread_copper": {"bid": 12, "ask": 15},
+                "sell_pressure": "localized_batch_pressure",
+            },
+        }}}}, ensure_ascii=False), encoding="utf-8")
+    outline_path = store.webnovel_dir / "outline.json"
+    outline_path.write_text(json.dumps({
+        "overall": {"story": "沿河追查旧案", "ending_direction": "兄弟重逢"},
+        "arcs": [{"title": "入城", "start_chapter": 1, "end_chapter": 20,
+                   "goal": "找到商路账册", "main_conflict": "巡河司封锁码头"}],
+        "chapters": [{"chapter_number": 1, "title": "夜船", "chapter_goal": "发现货单被改"},
+                     {"chapter_number": 2, "title": "追踪", "chapter_goal": "查明改写货单的人"}],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    monkeypatch.setattr(file_projects, "_store_for", lambda _: store)
+    monkeypatch.setattr(file_projects, "_stores", lambda *, lifecycle=None: [store] if lifecycle == "active" else [])
+    monkeypatch.setattr(file_projects, "_public_project_id", lambda _: "p-synthetic-build-edit")
+    app = FastAPI()
+    app.include_router(file_projects.init_file_project_routes())
+    app.include_router(init_novel_type_routes())
+    app.include_router(init_longform_product_routes())
+    before = tree(store)
+
+    response = TestClient(app).get("/author-workspace", params={"book_id": "p-synthetic-build-edit"})
+    assert response.status_code == 200, response.text
+    workspace = response.json()
+    book = workspace["books"][0]
+    assert {person["name"] for person in book["people"]} == {*names}
+    assert book["people"][0]["stableProfile"]["identity"] == "身份0"
+    assert book["people"][0]["currentState"]["location"] == "南渡口"
+    assert book["planning"]["overall"]["direction"] == "沿河追查旧案"
+    assert book["planning"]["volumes"][0]["mainConflict"] == "巡河司封锁码头"
+    assert book["planning"]["upcomingChapters"][0]["number"] == 2
+    assert book["planning"]["upcomingChapters"][0]["goal"] == "查明改写货单的人"
+    assert "planningParts" not in book
+    assert book["worldSections"][0]["entries"][0]["text"] == "渡口诸城依水运商路往来。"
+    assert {key: book["worldSections"][2]["entries"][0][key] for key in ("title", "text", "editable")} == {
+        "title": "南渡口", "text": "旧商路的转运处。", "editable": True,
+    }
+    assert book["relationships"][0]["basisLabel"] == "作者设定"
+    assert book["bookDetails"]["targetWords"] == store.project()["target_words"]
+    assert book["bookDetails"]["writingStyle"] == "冷峻"
+    assert "冷峻" in book["bookDetails"]["writingStyleOptions"]
+    assert book["dynamicWorld"]["chapterRecord"]["chapter"] == 1
+    assert book["dynamicWorld"]["chapterRecord"]["authorVisibleUnknowns"] == [
+        {"label": "混沌之种异常值", "value": "3"},
+        {"label": "公会掌握程度", "value": "只掌握到微弱规律"},
+    ]
+    assert book["dynamicWorld"]["chapterRecord"]["publicChanges"] == [
+        {"text": "柜台调整了收购价。", "whoCanKnow": "公开价格牌、人物动态"}
+    ]
+    market_entries = book["dynamicWorld"]["chapterRecord"]["marketMovements"]
+    assert market_entries == [
+        {"label": "收购单", "value": "收购方：村庄服务柜台；收购数量：4；价格：12 铜币；可见范围：公布的收购标准"},
+        {"label": "寄售单", "value": "出售方：新人公开交易；预计出售数量：6；价格：15 铜币；可见范围：公开价格牌"},
+        {"label": "买卖价格", "value": "买入 12 铜币；卖出 15 铜币"},
+        {"label": "出售压力", "value": "局部集中出售"},
+    ]
+    snapshot_entries = {
+        (entry["label"], entry["value"])
+        for entry in book["dynamicWorld"]["currentSnapshot"]["entries"]
+    }
+    assert {("当前焦点", "查找失踪的货船"), ("当前场景时间", "暮春")} <= snapshot_entries
+    assert "internal_counter" not in json.dumps(book["dynamicWorld"], ensure_ascii=False)
+    assert "opaque_machine_value" not in json.dumps(book["dynamicWorld"], ensure_ascii=False)
+    assert "weak_pattern_only" not in json.dumps(book["dynamicWorld"], ensure_ascii=False)
+    assert "public_price_board" not in json.dumps(book["dynamicWorld"], ensure_ascii=False)
+
+    chapter_dissection = book["dissectionView"]["actions"]["inspectChapter"]
+    assert chapter_dissection["enabled"] is True
+    chapter_report = TestClient(app).post("/author-workspace/commands", json={
+        "bookId": "p-synthetic-build-edit", "token": chapter_dissection["token"],
+        "command": {"type": chapter_dissection["command"]},
+    })
+    assert chapter_report.status_code == 200, chapter_report.text
+    assert chapter_report.json()["product"]["modeLabel"] == "本书章节体检"
+    assert chapter_report.json()["product"]["report"]["statusLabel"] == "体检完成"
+    assert "schema_version" not in json.dumps(chapter_report.json()["product"], ensure_ascii=False)
+    reference_action = book["dissectionView"]["actions"]["inspectReference"]
+    reference_report = TestClient(app).post("/author-workspace/commands", json={
+        "bookId": "p-synthetic-build-edit", "token": reference_action["token"],
+        "command": {"type": reference_action["command"], "text": "主角核对货单后发现关键记录被改，决定连夜追查经手人。"},
+    })
+    assert reference_report.status_code == 200, reference_report.text
+    assert reference_report.json()["product"]["modeLabel"] == "参考书拆解"
+    assert tree(store) == before
+
+
+def test_author_workspace_settings_and_story_edits_use_compare_and_swap(tmp_path, monkeypatch):
+    from packages.story_core.models import ForeshadowingState
+
+    store = prepared_store(tmp_path)
+    names = ["林照", "陆遥"]
+    store.update_project({
+        "title": "河灯录",
+        "character_profiles": [{"name": name, "role": "protagonist" if index == 0 else "supporting"} for index, name in enumerate(names)],
+        "relationship_graph": [{
+            "source": "林照", "target": "陆遥", "relation_type": "旧识",
+            "origin": "幼时曾共同守船", "current_state": "暂时合作",
+            "last_changed_chapter": 1,
+        }],
+        "world_blueprint": {"writing_style": "冷峻", "world_rules": ["河道每旬封航一日。"]},
+    })
+    state = store.state()
+    state["current_chapter"] = 1
+    state["characters"] = [{"name": name, "role": "protagonist" if index == 0 else "supporting"} for index, name in enumerate(names)]
+    (store.webnovel_dir / "state.json").write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    chapter_dir = store.story_system_dir / "chapters"
+    chapter_dir.mkdir(parents=True, exist_ok=True)
+    (chapter_dir / "0001.json").write_text(json.dumps({"chapter_number": 1, "chapter_title": "夜船", "body": "正文"}), encoding="utf-8")
+    store.update_foreshadowing_ledger([
+        ForeshadowingState(text="船票背面的暗记", first_chapter=1, last_touched_chapter=1, status="open", payoff_plan="在进城后回应"),
+    ])
+
+    monkeypatch.setattr(file_projects, "_store_for", lambda _: store)
+    monkeypatch.setattr(file_projects, "_stores", lambda *, lifecycle=None: [store] if lifecycle == "active" else [])
+    monkeypatch.setattr(file_projects, "_public_project_id", lambda _: "p-synthetic-build-edit")
+    app = FastAPI()
+    app.include_router(file_projects.init_file_project_routes())
+    app.include_router(init_novel_type_routes())
+    app.include_router(init_longform_product_routes())
+    client = TestClient(app)
+    project_id = "p-synthetic-build-edit"
+
+    workspace = client.get("/author-workspace", params={"book_id": project_id}).json()
+    book = workspace["books"][0]
+    relation = book["relationshipView"]["items"][0]
+    edges = [{
+        "source": relation["source"], "target": relation["target"],
+        "relation_type": relation["relationship"],
+        "current_state": "暂时合作，但仍互相试探",
+        "shared_interest_or_conflict": relation["sharedInterestOrConflict"],
+        "trust": 35, "tension": 45,
+    }]
+    saved = client.post("/author-workspace/commands", json={
+        "bookId": project_id, "token": book["relationshipView"]["save"]["token"],
+        "command": {"type": "relationships", "items": edges},
+    })
+    assert saved.status_code == 200, saved.text
+    updated_edge = store.project()["relationship_graph"][0]
+    assert updated_edge["current_state"] == "暂时合作，但仍互相试探"
+    assert updated_edge["trust"] == 35
+    assert updated_edge["origin"] == "幼时曾共同守船"
+    assert updated_edge["last_changed_chapter"] == 1
+
+    stale_write = client.post("/author-workspace/commands", json={
+        "bookId": project_id, "token": book["relationshipView"]["save"]["token"],
+        "command": {"type": "relationships", "items": [{**edges[0], "current_state": "旧版本覆盖"}]},
+    })
+    assert stale_write.status_code == 409
+    assert store.project()["relationship_graph"][0]["current_state"] == "暂时合作，但仍互相试探"
+
+    chapter_source = client.get("/author-workspace", params={"book_id": project_id}).json()["books"][0]
+    returned = chapter_source["foreshadowingView"]["items"][0]
+    returned["statusLabel"] = "已强化"
+    returned["lastTouchedChapter"] = 1
+    returned["payoffPlan"] = "在第 2 章推进暗记来源"
+    saved_foreshadowing = client.post("/author-workspace/commands", json={
+        "bookId": project_id, "token": chapter_source["foreshadowingView"]["save"]["token"],
+        "command": {"type": "foreshadowing", "items": [{
+            "text": returned["text"], "firstChapter": returned["firstChapter"],
+            "lastTouchedChapter": returned["lastTouchedChapter"],
+            "statusLabel": returned["statusLabel"], "resolvedChapter": returned["resolvedChapter"],
+            "payoffPlan": returned["payoffPlan"],
+        }]},
+    })
+    assert saved_foreshadowing.status_code == 200, saved_foreshadowing.text
+    assert store.foreshadowing_ledger()[0].status == "reinforced"
+    assert store.foreshadowing_ledger()[0].payoff_plan == "在第 2 章推进暗记来源"
+
+    store.update_foreshadowing_ledger([
+        ForeshadowingState(text="暂未确认出处的船票暗记", first_chapter=0, status="open", payoff_plan="找到原始船票后再核对"),
+    ])
+    unplaced = client.get("/author-workspace", params={"book_id": project_id}).json()["books"][0]
+    unplaced_foreshadow = unplaced["foreshadowingView"]["items"][0]
+    assert unplaced_foreshadow["firstChapter"] is None
+    saved_unplaced = client.post("/author-workspace/commands", json={
+        "bookId": project_id, "token": unplaced["foreshadowingView"]["save"]["token"],
+        "command": {"type": "foreshadowing", "items": [{
+            "text": unplaced_foreshadow["text"], "firstChapter": unplaced_foreshadow["firstChapter"],
+            "lastTouchedChapter": unplaced_foreshadow["lastTouchedChapter"],
+            "statusLabel": unplaced_foreshadow["statusLabel"], "resolvedChapter": unplaced_foreshadow["resolvedChapter"],
+            "payoffPlan": unplaced_foreshadow["payoffPlan"],
+        }]},
+    })
+    assert saved_unplaced.status_code == 200, saved_unplaced.text
+    assert store.foreshadowing_ledger()[0].first_chapter == 0
+
+    workspace = client.get("/author-workspace", params={"book_id": project_id}).json()
+    details = workspace["books"][0]["bookDetails"]
+    style_saved = client.post("/author-workspace/commands", json={
+        "bookId": project_id, "token": details["actions"]["saveStyle"]["token"],
+        "command": {"type": "book-style", "writingStyle": "细腻"},
+    })
+    assert style_saved.status_code == 200, style_saved.text
+    assert store.project()["world_blueprint"]["writing_style"] == "细腻"
+    assert store.project()["world_blueprint"]["world_rules"] == ["河道每旬封航一日。"]
+
+    refreshed = client.get("/author-workspace", params={"book_id": project_id}).json()["books"][0]
+    type_id = refreshed["bookDetails"]["novelTypeOptions"][0]["id"]
+    type_saved = client.post("/author-workspace/commands", json={
+        "bookId": project_id, "token": refreshed["bookDetails"]["actions"]["saveType"]["token"],
+        "command": {"type": "book-type", "novelTypeId": type_id},
+    })
+    assert type_saved.status_code == 200, type_saved.text
+    assert store.project()["world_blueprint"]["genre_plugin_ids"] == [type_id]
+
+
+def test_author_workspace_character_profile_edit_is_stable_and_compare_and_swap(tmp_path, monkeypatch):
+    store = prepared_store(tmp_path)
+    store.update_project({
+        "title": "雾港来信",
+        "character_profiles": [
+            {
+                "name": "林照", "role": "protagonist",
+                "identity_profile": {"current_identity": "旧身份"},
+                "story_drive": {"motivation": "查清来信来源"},
+            },
+            {
+                "name": "无状态人物", "role": "supporting",
+                "identity_profile": {"current_identity": "档案中的身份"},
+                "story_drive": {"motivation": "守住旧书店"},
+            },
+        ],
+    })
+    state = store.state()
+    state["current_chapter"] = 1
+    state["characters"] = [{
+        "name": "林照", "role": "protagonist", "location": "旧码头",
+        "emotion": "警惕", "memory": ["第一章确认的目击者信息"],
+    }]
+    state_path = store.webnovel_dir / "state.json"
+    state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    state_before = json.loads(state_path.read_text(encoding="utf-8"))
+
+    monkeypatch.setattr(file_projects, "_store_for", lambda _: store)
+    monkeypatch.setattr(file_projects, "_stores", lambda *, lifecycle=None: [store] if lifecycle == "active" else [])
+    monkeypatch.setattr(file_projects, "_public_project_id", lambda _: "p-synthetic-build-edit")
+    app = FastAPI()
+    app.include_router(file_projects.init_file_project_routes())
+    app.include_router(init_novel_type_routes())
+    app.include_router(init_longform_product_routes())
+    client = TestClient(app)
+    project_id = "p-synthetic-build-edit"
+
+    book = client.get("/author-workspace", params={"book_id": project_id}).json()["books"][0]
+    profiles = book["characterCardsView"]["items"]
+    profile_only = next(item for item in profiles if item["name"] == "无状态人物")
+    assert profile_only["currentState"] == {}
+    assert profile_only["editableProfile"]["identityProfile"]["currentIdentity"] == "档案中的身份"
+    save_action = profile_only["actions"]["save"]
+    saved = client.post("/author-workspace/commands", json={
+        "bookId": project_id,
+        "token": save_action["token"],
+        "command": {
+            "type": save_action["command"],
+            "profile": {
+                "identityProfile": {"currentIdentity": "翻修旧书店的掌柜", "occupation": "书店掌柜"},
+                "storyDrive": {"longTermGoal": "找回失散的家人", "motivation": "守住旧书店"},
+                "performanceProfile": {"speechStyle": "说话克制，先问事实"},
+                "dialogueExamples": ["先把信给我看。"],
+                "futurePlans": ["查访旧码头的邮差"],
+            },
+        },
+    })
+    assert saved.status_code == 200, saved.text
+    persisted = next(item for item in store.project()["character_profiles"] if item["name"] == "无状态人物")
+    assert persisted["identity_profile"]["current_identity"] == "翻修旧书店的掌柜"
+    assert persisted["story_drive"]["long_term_goal"] == "找回失散的家人"
+    assert persisted["performance_profile"]["speech_style"] == "说话克制，先问事实"
+    assert persisted["dialogue_examples"] == ["先把信给我看。"]
+    assert persisted["future_plans"] == ["查访旧码头的邮差"]
+    assert json.loads(state_path.read_text(encoding="utf-8")) == state_before
+
+    stale = client.post("/author-workspace/commands", json={
+        "bookId": project_id,
+        "token": save_action["token"],
+        "command": {
+            "type": save_action["command"],
+            "profile": {"identityProfile": {"currentIdentity": "旧版本覆盖"}},
+        },
+    })
+    assert stale.status_code == 409
+    assert next(item for item in store.project()["character_profiles"] if item["name"] == "无状态人物")["identity_profile"]["current_identity"] == "翻修旧书店的掌柜"
+
+    refreshed = client.get("/author-workspace", params={"book_id": project_id}).json()["books"][0]
+    refreshed_profile = next(item for item in refreshed["characterCardsView"]["items"] if item["name"] == "无状态人物")
+    completed = client.post("/author-workspace/commands", json={
+        "bookId": project_id,
+        "token": refreshed_profile["actions"]["completePortrait"]["token"],
+        "command": {"type": refreshed_profile["actions"]["completePortrait"]["command"]},
+    })
+    assert completed.status_code == 200, completed.text
+    assert json.loads(state_path.read_text(encoding="utf-8")) == state_before
+
+
+def test_author_workspace_publishing_commands_are_explicit_and_revision_bound(tmp_path, monkeypatch):
+    store = prepared_store(tmp_path)
+    store.update_project({"title": "潮声旧信"})
+
+    class FakeSynopsis:
+        calls = 0
+
+        def generate(self, *_args, **_kwargs):
+            from tests.api.test_publishing_asset_routes import _synopsis
+
+            self.calls += 1
+            return _synopsis()
+
+    class FakeCoverPrompt:
+        calls = 0
+
+        def generate(self, *_args, **_kwargs):
+            self.calls += 1
+            return "雨夜海港，一封旧信被放在潮湿的木箱上。"
+
+    synopsis_generator = FakeSynopsis()
+    cover_generator = FakeCoverPrompt()
+    monkeypatch.setattr(file_projects, "synopsis_generator", synopsis_generator)
+    monkeypatch.setattr(file_projects, "cover_prompt_generator", cover_generator)
+    monkeypatch.setattr(file_projects, "resolve_stage_runtime", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(file_projects, "_publishing_context_for", lambda _store: SimpleNamespace(title="潮声旧信"))
+    monkeypatch.setattr(file_projects, "_store_for", lambda _: store)
+    monkeypatch.setattr(file_projects, "_stores", lambda *, lifecycle=None: [store] if lifecycle == "active" else [])
+    monkeypatch.setattr(file_projects, "_public_project_id", lambda _: "p-synthetic-build-edit")
+    app = FastAPI()
+    app.include_router(file_projects.init_file_project_routes())
+    app.include_router(init_novel_type_routes())
+    app.include_router(init_longform_product_routes())
+    client = TestClient(app)
+    project_id = "p-synthetic-build-edit"
+
+    first = client.get("/author-workspace", params={"book_id": project_id}).json()["books"][0]["bookDetails"]
+    assert synopsis_generator.calls == 0
+    assert cover_generator.calls == 0
+    assert first["synopsisStatusLabel"] == "尚无简介"
+    invalid_synopsis = client.post("/author-workspace/commands", json={
+        "bookId": project_id,
+        "token": first["actions"]["saveSynopsis"]["token"],
+        "command": {
+            "type": first["actions"]["saveSynopsis"]["command"],
+            "tags": ["悬疑"],
+            "body": "标签不足时不保存。",
+        },
+    })
+    assert invalid_synopsis.status_code == 422
+    assert "4–8" in invalid_synopsis.json()["detail"]["message"]
+    assert store.publishing_assets().get("synopsis") is None
+    saved = client.post("/author-workspace/commands", json={
+        "bookId": project_id,
+        "token": first["actions"]["saveSynopsis"]["token"],
+        "command": {
+            "type": first["actions"]["saveSynopsis"]["command"],
+            "tags": ["悬疑", "海港", "旧信", "追查"],
+            "body": "掌柜收到一封旧信，决定追查寄件人。",
+        },
+    })
+    assert saved.status_code == 200, saved.text
+    assert store.publishing_assets()["synopsis"]["body"] == "掌柜收到一封旧信，决定追查寄件人。"
+    stale = client.post("/author-workspace/commands", json={
+        "bookId": project_id,
+        "token": first["actions"]["saveSynopsis"]["token"],
+        "command": {
+            "type": first["actions"]["saveSynopsis"]["command"],
+            "tags": ["悬疑", "海港", "旧信", "追查"],
+            "body": "旧版本不能覆盖。",
+        },
+    })
+    assert stale.status_code == 409
+    assert store.publishing_assets()["synopsis"]["body"] == "掌柜收到一封旧信，决定追查寄件人。"
+
+    refreshed = client.get("/author-workspace", params={"book_id": project_id}).json()["books"][0]["bookDetails"]
+    generated = client.post("/author-workspace/commands", json={
+        "bookId": project_id,
+        "token": refreshed["actions"]["generateSynopsis"]["token"],
+        "command": {"type": refreshed["actions"]["generateSynopsis"]["command"], "guidance": "突出旧信来源"},
+    })
+    assert synopsis_generator.calls == 1
+    assert generated.status_code == 200, generated.text
+    assert synopsis_generator.calls == 1
+    assert store.publishing_assets()["synopsis"]["body"].startswith("A young courier")
+
+    cover_action = client.get("/author-workspace", params={"book_id": project_id}).json()["books"][0]["bookDetails"]["actions"]["generateCover"]
+    cover_result = client.post("/author-workspace/commands", json={
+        "bookId": project_id,
+        "token": cover_action["token"],
+        "command": {"type": cover_action["command"]},
+    })
+    assert cover_result.status_code == 200, cover_result.text
+    assert cover_generator.calls == 1
+    assert store.publishing_assets()["cover"]["prompt"] == "雨夜海港，一封旧信被放在潮湿的木箱上。"
+
+
+def test_author_workspace_world_section_edit_only_merges_selected_field(tmp_path, monkeypatch):
+    store = prepared_store(tmp_path)
+    store.update_project({
+        "title": "潮汐城记",
+        "world_summary": "一座靠潮汐运转的港口城。",
+        "world_blueprint": {
+            "world_rules": ["涨潮后旧桥封闭。"],
+            "locations": [{"name": "北堤", "description": "渔船集中停靠。", "secret_note": "保留"}],
+            "factions": [{"name": "巡潮会", "description": "负责港区秩序。"}],
+        },
+    })
+    monkeypatch.setattr(file_projects, "_store_for", lambda _: store)
+    monkeypatch.setattr(file_projects, "_stores", lambda *, lifecycle=None: [store] if lifecycle == "active" else [])
+    monkeypatch.setattr(file_projects, "_public_project_id", lambda _: "p-synthetic-build-edit")
+    app = FastAPI()
+    app.include_router(file_projects.init_file_project_routes())
+    app.include_router(init_novel_type_routes())
+    app.include_router(init_longform_product_routes())
+    client = TestClient(app)
+    project_id = "p-synthetic-build-edit"
+    book = client.get("/author-workspace", params={"book_id": project_id}).json()["books"][0]
+    rules = next(section for section in book["worldSections"] if section["id"] == "rules")
+    target = next(item for item in rules["entries"] if item["text"] == "涨潮后旧桥封闭。")
+    edit = [
+        {**item, "text": "台风预警期间旧桥封闭。" if item["id"] == target["id"] else item["text"]}
+        for item in rules["entries"]
+    ]
+    saved = client.post("/author-workspace/commands", json={
+        "bookId": project_id,
+        "token": rules["save"]["token"],
+        "command": {"type": rules["save"]["command"], "entries": edit},
+    })
+    assert saved.status_code == 200, saved.text
+    updated = store.project()["world_blueprint"]
+    assert updated["world_rules"] == ["台风预警期间旧桥封闭。"]
+    assert updated["locations"] == [{"name": "北堤", "description": "渔船集中停靠。", "secret_note": "保留"}]
+    assert updated["factions"] == [{"name": "巡潮会", "description": "负责港区秩序。"}]
+    stale = client.post("/author-workspace/commands", json={
+        "bookId": project_id,
+        "token": rules["save"]["token"],
+        "command": {"type": rules["save"]["command"], "entries": rules["entries"]},
+    })
+    assert stale.status_code == 409
+    assert store.project()["world_blueprint"]["world_rules"] == ["台风预警期间旧桥封闭。"]
+
+
+def test_game_catalog_projection_keeps_structured_cards_out_of_generic_stories(tmp_path, monkeypatch):
+    store = prepared_store(tmp_path)
+    equipment = {
+        "id": "equipment-silver-tide-sword",
+        "name": "银潮短剑",
+        "equipment_type": "武器",
+        "rarity": "精良",
+        "description": "刃面留有潮汐纹路。",
+    }
+    monster = {
+        "id": "monster-sand-crab",
+        "name": "沙甲蟹",
+        "category": "海岸生物",
+        "rank": "普通",
+        "skills": ["夹击"],
+        "habitats": ["北堤"],
+    }
+    store.update_project({"world_blueprint": {
+        "genre_plugin_ids": ["game_webnovel"],
+        "equipment_cards": [equipment],
+        "monster_profiles": [monster],
+    }})
+    blueprint = store.project()["world_blueprint"]
+    monkeypatch.setattr(file_projects, "_store_for", lambda _: store)
+    monkeypatch.setattr(file_projects, "_stores", lambda *, lifecycle=None: [store] if lifecycle == "active" else [])
+    monkeypatch.setattr(file_projects, "_public_project_id", lambda _: "p-synthetic-build-edit")
+    app = FastAPI()
+    app.include_router(file_projects.init_file_project_routes())
+    app.include_router(init_novel_type_routes())
+    app.include_router(init_longform_product_routes())
+    client = TestClient(app)
+
+    game_book = client.get("/author-workspace", params={"book_id": "p-synthetic-build-edit"}).json()["books"][0]
+    assert game_book["worldCatalogs"] == {
+        "equipment_cards": blueprint["equipment_cards"],
+        "monster_profiles": blueprint["monster_profiles"],
+    }
+    assert {section["id"] for section in game_book["worldSections"]} >= {"equipment", "monsters"}
+
+    store.update_project({"world_blueprint": {"genre_plugin_ids": ["generic_webnovel"]}})
+    generic_book = client.get("/author-workspace", params={"book_id": "p-synthetic-build-edit"}).json()["books"][0]
+    assert "worldCatalogs" not in generic_book
+    assert {section["id"] for section in generic_book["worldSections"]}.isdisjoint({"equipment", "monsters"})
+
+
+def test_author_workspace_projects_and_saves_templates_and_skill_selection(tmp_path, monkeypatch):
+    from apps.api.routes import prompt_audit as prompt_audit_routes
+    from apps.api.routes.prompt_audit import init_prompt_audit_routes
+    from packages.story_core.prompt_audit_deep import DeepPromptAuditResult
+    from packages.story_core.prompt_templates import get_global_prompt_template
+    from packages.story_core.skill_packs import skill_module_key
+
+    store = prepared_store(tmp_path)
+    store.update_project({"title": "河灯录", "world_blueprint": {"writing_style": "冷峻"},
+                          "enabled_skill_ids": ["demo-pack"]})
+    skill_root = tmp_path / "skill-packs" / "demo-pack"
+    (skill_root / "skills" / "scene-craft").mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text(
+        "---\nname: demo-pack\ndescription: 合成根能力\n---\n# 根能力\n## 要求\n生成时保留已经确认的事件结果。\n", encoding="utf-8"
+    )
+    (skill_root / "skills" / "scene-craft" / "SKILL.md").write_text(
+        "---\nname: scene-craft\ndescription: 场景动作拆解\npurposes: writer\n---\n# 场景能力\n## 要求\n每场写出人物动作和可见变化。\n", encoding="utf-8"
+    )
+    global_template_path = tmp_path / "global-templates.json"
+    monkeypatch.setenv("NOVEL_AUTOGROWTH_SKILL_PACKS_DIR", str(tmp_path / "skill-packs"))
+    monkeypatch.setenv("NOVEL_PROMPT_TEMPLATES_PATH", str(global_template_path))
+    monkeypatch.setattr(file_projects, "_store_for", lambda _: store)
+    monkeypatch.setattr(file_projects, "_stores", lambda *, lifecycle=None: [store] if lifecycle == "active" else [])
+    monkeypatch.setattr(file_projects, "_public_project_id", lambda _: "p-synthetic-build-edit")
+
+    deep_calls = []
+
+    class FakeDeepAuditor:
+        def analyze(self, *, content, local_result):
+            deep_calls.append(content)
+            return DeepPromptAuditResult.model_validate({
+                **local_result.model_dump(),
+                "runtime": {"provider": "private-provider", "model": "private-model",
+                            "elapsed_seconds": 0.01, "prompt_characters": 20},
+            })
+
+    monkeypatch.setattr(prompt_audit_routes, "deep_auditor", FakeDeepAuditor())
+    app = FastAPI()
+    app.include_router(file_projects.init_file_project_routes())
+    app.include_router(init_novel_type_routes())
+    app.include_router(init_prompt_audit_routes())
+    app.include_router(init_longform_product_routes())
+    client = TestClient(app)
+    project_id = "p-synthetic-build-edit"
+
+    response = client.get("/author-workspace", params={"book_id": project_id})
+    assert response.status_code == 200, response.text
+    book = response.json()["books"][0]
+    writer_pack = next(item for item in book["writingAbilitiesView"]["packs"] if item["id"] == "demo-pack")
+    assert writer_pack["modules"][0]["id"] == "root"
+    assert all(module["selected"] for module in writer_pack["modules"])
+    abilities = book["writingAbilitiesView"]
+    disabled_module_ids = [skill_module_key("demo-pack", "root")]
+    ability_saved = client.post("/author-workspace/commands", json={
+        "bookId": project_id, "token": abilities["save"]["token"],
+        "command": {"type": "writing-abilities", "packIds": ["demo-pack"], "moduleIds": disabled_module_ids},
+    })
+    assert ability_saved.status_code == 200, ability_saved.text
+    assert store.project()["enabled_skill_module_ids"] == disabled_module_ids
+    packet = store.writing_packet(1)
+    writer_context = json.dumps(packet.get("skill_context", {}).get("writer", []), ensure_ascii=False)
+    assert "保留已经确认的事件结果" not in writer_context
+    assert "人物动作和可见变化" not in writer_context
+
+    book = client.get("/author-workspace", params={"book_id": project_id}).json()["books"][0]
+    template = next(item for item in book["writingTemplatesView"]["templates"] if item["title"] == "整章正文写作")
+    assert "上下文快照" not in json.dumps(book["writingTemplatesView"], ensure_ascii=False)
+    assert "prompt_context" not in json.dumps(book["writingTemplatesView"], ensure_ascii=False)
+    edited_content = template["content"] + "\n写作时保留作者已确认的事实。"
+    project_save = client.post("/author-workspace/commands", json={
+        "bookId": project_id, "token": template["actions"]["saveProject"]["token"],
+        "command": {"type": template["actions"]["saveProject"]["command"], "content": edited_content},
+    })
+    assert project_save.status_code == 200, project_save.text
+    assert store.prompt_template_object("writer").content == edited_content
+    stale_project_save = client.post("/author-workspace/commands", json={
+        "bookId": project_id, "token": template["actions"]["saveProject"]["token"],
+        "command": {"type": template["actions"]["saveProject"]["command"], "content": edited_content + "\n旧稿"},
+    })
+    assert stale_project_save.status_code == 409
+    assert store.prompt_template_object("writer").content == edited_content
+
+    overridden = client.get("/author-workspace", params={"book_id": project_id}).json()["books"][0]
+    template = next(item for item in overridden["writingTemplatesView"]["templates"] if item["title"] == "整章正文写作")
+    restore_action = template["actions"]["restoreGlobal"]
+    denied_restore = client.post("/author-workspace/commands", json={
+        "bookId": project_id, "token": restore_action["token"],
+        "command": {"type": restore_action["command"]},
+    })
+    assert denied_restore.status_code == 409
+    assert store.prompt_template_object("writer").content == edited_content
+    restored = client.post("/author-workspace/commands", json={
+        "bookId": project_id, "token": restore_action["token"],
+        "command": {"type": restore_action["command"], "confirm": True},
+    })
+    assert restored.status_code == 200, restored.text
+    assert store.prompt_template_object("writer").content == get_global_prompt_template("writer").content
+
+    refreshed = client.get("/author-workspace", params={"book_id": project_id}).json()["books"][0]
+    template = next(item for item in refreshed["writingTemplatesView"]["templates"] if item["title"] == "整章正文写作")
+    content_for_check = template["content"] + "\n请检查这一版模板。"
+    checked = client.post("/author-workspace/commands", json={
+        "bookId": project_id, "token": template["actions"]["check"]["token"],
+        "command": {"type": template["actions"]["check"]["command"], "content": content_for_check},
+    })
+    assert checked.status_code == 200, checked.text
+    assert checked.json()["product"]["bindingToken"]
+    assert "content_sha256" not in json.dumps(checked.json()["product"])
+    assert "passed_checks" not in json.dumps(checked.json()["product"])
+    deep_checked = client.post("/author-workspace/commands", json={
+        "bookId": project_id, "token": template["actions"]["deepCheck"]["token"],
+        "command": {"type": template["actions"]["deepCheck"]["command"], "content": content_for_check},
+    })
+    assert deep_checked.status_code == 200, deep_checked.text
+    assert deep_calls == [content_for_check]
+    assert "private-provider" not in json.dumps(deep_checked.json()["product"])
+    assert "private-model" not in json.dumps(deep_checked.json()["product"])
+    assert "runtime" not in deep_checked.json()["product"]
+
+    template_before_global = get_global_prompt_template("writer").version
+    global_action = template["actions"]["saveGlobal"]
+    global_content = get_global_prompt_template("writer").content + "\n全局更新需要用户确认。"
+    denied_global = client.post("/author-workspace/commands", json={
+        "bookId": project_id, "token": global_action["token"],
+        "command": {"type": global_action["command"], "content": global_content},
+    })
+    assert denied_global.status_code == 409
+    assert get_global_prompt_template("writer").version == template_before_global
+    updated_global = client.post("/author-workspace/commands", json={
+        "bookId": project_id, "token": global_action["token"],
+        "command": {"type": global_action["command"], "content": global_content, "confirm": True},
+    })
+    assert updated_global.status_code == 200, updated_global.text
+    assert get_global_prompt_template("writer").content == global_content
+
+    abilities_workspace = client.get("/author-workspace", params={"book_id": project_id}).json()["books"][0]["writingAbilitiesView"]
+    next_selection = client.post("/author-workspace/commands", json={
+        "bookId": project_id, "token": abilities_workspace["save"]["token"],
+        "command": {"type": "writing-abilities", "packIds": ["demo-pack"],
+                    "moduleIds": [skill_module_key("demo-pack", "scene-craft")]},
+    })
+    assert next_selection.status_code == 200, next_selection.text
+    next_packet = store.writing_packet(1)
+    next_writer_context = json.dumps(next_packet["skill_context"]["writer"], ensure_ascii=False)
+    assert "人物动作和可见变化" in next_writer_context
 
 
 def assert_product(value):

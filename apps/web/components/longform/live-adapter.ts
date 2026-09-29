@@ -16,6 +16,7 @@ export function createLiveAdapter(): WorkspaceAdapter {
   let disposed = false, requestNumber = 0, sending = false;
   const listeners = new Set<() => void>();
   const controllers = new Set<AbortController>();
+  const productResults: Record<string, { dissection?: Record<string, any>; templateChecks: Record<string, Record<string, any>> }> = {};
   const publish = () => { state = { ...state }; listeners.forEach(fn => fn()); };
   function persist() {
     try { localStorage.setItem(KEY, JSON.stringify(local)); }
@@ -49,38 +50,67 @@ export function createLiveAdapter(): WorkspaceAdapter {
   }
   async function refresh() {
     if (sending || disposed) return;
+    state = { ...state, loading: true }; publish();
     const n = ++requestNumber;
     const params = new URLSearchParams();
     if (local.bookId) params.set("book_id", local.bookId);
     if (local.selectedChapter) params.set("chapter", String(local.selectedChapter));
-    try { const next = await request(`/author-workspace?${params}`); if (!disposed && n === requestNumber) apply(next); }
+    try {
+      const next = await request<Workspace>(`/author-workspace?${params}`);
+      if (!disposed && n === requestNumber) {
+        const cached = productResults[local.bookId];
+        if (cached) next.books = next.books.map(book => {
+          if (book.id !== local.bookId) return book;
+          const dissection = cached.dissection;
+          const report = dissection?.report;
+          const selectedChapter = local.selectedChapter;
+          const dissectionMatches = !!dissection && (typeof dissection.sourceChapter !== "number" || dissection.sourceChapter === selectedChapter);
+          return {
+            ...book,
+            ...(dissectionMatches && book.dissectionView ? { dissectionView: { ...book.dissectionView, statusLabel: report?.statusLabel || book.dissectionView.statusLabel, report: report || null } } : {}),
+            ...(book.writingTemplatesView ? { writingTemplatesView: { ...book.writingTemplatesView, templates: book.writingTemplatesView.templates.map(template => cached.templateChecks[template.id] ? { ...template, lastCheck: cached.templateChecks[template.id] } : template) } } : {}),
+          };
+        });
+        apply(next);
+      }
+    }
     catch (error) { if (!disposed && n === requestNumber) { state = { ...state, loading: false, error: error instanceof Error ? error.message : "暂时无法连接工作区。" }; publish(); } }
   }
   function navigate() {
-    state = { ...state, ...local, error: "" }; persist(); publish();
+    state = { ...state, ...local, loading: true, error: "" }; persist(); publish();
     const params = new URLSearchParams({ page: local.page }); if (local.bookId) params.set("book", local.bookId); if (local.selectedChapter) params.set("chapter", String(local.selectedChapter));
     history.replaceState(null, "", `/workspace?${params}`); void refresh();
   }
   async function executeRemote(command: Command) {
     if (sending) return;
-    const bookId = command.type === "archive" ? command.id : local.bookId;
+      const bookId = (command.type === "archive" || command.type === "restore-trashed" || command.type === "delete-trashed") ? command.id : local.bookId;
     const book = state.books.find(b => b.id === bookId);
     const name = command.type;
-    const action = command.type === "create" ? state.actions?.create : book?.actions?.[name];
+      const recycleEntry = state.recycleBin?.find(item => item.id === bookId);
+      const action = command.type === "create" ? state.actions?.create : book?.actions?.[name] || recycleEntry?.actions?.[name];
     if (!command.type.startsWith("planning-action:") && !action?.enabled) { state.error = action?.reason || "当前还不能执行这个操作，请刷新查看。"; publish(); return; }
     const draft = local.drafts[bookId];
     const token = "token" in command ? command.token : command.type === "save-draft" && draft ? draft.token : action!.token;
     sending = true; ++requestNumber; state = { ...state, sending: true, error: "" }; publish();
     try {
-      const next = await request<{bookId?: string; message?: string}>("/author-workspace/commands", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ bookId, command, token }) });
+      const next = await request<{bookId?: string; message?: string; product?: Record<string, any>}>("/author-workspace/commands", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ bookId, command, token }) });
       if (disposed) return;
+      if (next.product) {
+        const cached = productResults[bookId] ||= { templateChecks: {} };
+        const commandName = command.type as string;
+        if (commandName === "dissection-chapter" || commandName === "dissection-reference") cached.dissection = next.product;
+        if (commandName.startsWith("template-check-") || commandName.startsWith("template-deep-check-")) {
+          const template = book?.writingTemplatesView?.templates.find(item => item.actions.check.command === commandName || item.actions.deepCheck.command === commandName);
+          if (template) cached.templateChecks[template.id] = { ...next.product, checkedContent: typeof (command as unknown as Record<string, unknown>).content === "string" ? (command as unknown as Record<string, string>).content : "" };
+        }
+      }
       if (command.type === "save-draft") delete local.drafts[bookId];
       if (["plan", "future", "requirements", "ai-edit"].includes(command.type)) { try { localStorage.removeItem(`novelflow.author.dialog:${bookId}:${command.type === "ai-edit" ? "ai" : command.type}`); } catch { /* server saved; browser copy may remain */ } }
       if (command.type === "create") { state.showNew = false; try { localStorage.removeItem("novelflow.author.new-book"); } catch { /* optional cached form */ } }
       if (command.type === "create") { local.bookId = next.bookId || local.bookId; local.page = "planning"; }
       if (["next-volume", "direction", "prepare-plan"].includes(command.type)) local.page = "planning";
       if (["adopt", "generate", "confirm", "retry-next"].includes(command.type)) local.page = "writing";
-      local.selectedChapter = undefined;
+      if (["create", "direction", "prepare-plan", "sync-plan", "refresh-plan", "continue-plan", "complete-volume", "adopt", "generate", "save-draft", "review", "ai-edit", "confirm", "accept-suggestion", "retry-next", "next-volume"].includes(command.type)) local.selectedChapter = undefined;
       state = { ...state, ...local, lastCompleted: { bookId, type: command.type, token }, storageWarning: next.message || "" };
       const params = new URLSearchParams({ page: local.page }); if (local.bookId) params.set("book", local.bookId); if (local.selectedChapter) params.set("chapter", String(local.selectedChapter));
       history.replaceState(null, "", `/workspace?${params}`); persist(); publish();

@@ -294,23 +294,51 @@ def save_global_prompt_template(
     content: str,
     *,
     storage_path: str | Path | None = None,
+    expected_version: str | None = None,
 ) -> PromptTemplate:
     candidate = _template_with_content(key, content)
     path = _global_storage_path(storage_path)
-    overrides = _read_global_overrides(path)
-    overrides[key] = {
-        "content": candidate.content,
-        "version": candidate.version,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
-    _write_json_atomic(path, {"schema_version": "prompt-templates/v1", "templates": overrides})
+    with _global_prompt_templates_lock(path):
+        current = get_global_prompt_template(key, storage_path=path)
+        if expected_version is not None and current.version != expected_version:
+            raise ValueError("prompt_template_revision_conflict")
+        overrides = _read_global_overrides(path)
+        overrides[key] = {
+            "content": candidate.content,
+            "version": candidate.version,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        _write_json_atomic(path, {"schema_version": "prompt-templates/v1", "templates": overrides})
     return candidate
 
 
-def delete_global_prompt_template(key: str, *, storage_path: str | Path | None = None) -> PromptTemplate:
+def delete_global_prompt_template(
+    key: str,
+    *,
+    storage_path: str | Path | None = None,
+    expected_version: str | None = None,
+) -> PromptTemplate:
     base = get_default_prompt_template(key)
     path = _global_storage_path(storage_path)
-    overrides = _read_global_overrides(path)
-    overrides.pop(key, None)
-    _write_json_atomic(path, {"schema_version": "prompt-templates/v1", "templates": overrides})
+    with _global_prompt_templates_lock(path):
+        current = get_global_prompt_template(key, storage_path=path)
+        if expected_version is not None and current.version != expected_version:
+            raise ValueError("prompt_template_revision_conflict")
+        overrides = _read_global_overrides(path)
+        overrides.pop(key, None)
+        _write_json_atomic(path, {"schema_version": "prompt-templates/v1", "templates": overrides})
     return base
+
+
+@contextmanager
+def _global_prompt_templates_lock(path: Path):
+    from packages.story_core.continuation_sessions import secure_named_file_lock
+
+    lock_name = f"{sha256(str(path.resolve()).encode('utf-8')).hexdigest()[:32]}.lock"
+    with secure_named_file_lock(
+        path.parent,
+        directory_name=".prompt-template-locks",
+        lock_name=lock_name,
+        error_code="prompt_template_lock_failed",
+    ):
+        yield

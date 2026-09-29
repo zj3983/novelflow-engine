@@ -1646,8 +1646,17 @@ class FileProjectStore(
         )
 
     @_with_project_update_lock
-    def set_prompt_template_override(self, key: str, content: str) -> dict[str, Any]:
+    def set_prompt_template_override(
+        self,
+        key: str,
+        content: str,
+        *,
+        expected_version: str | None = None,
+    ) -> dict[str, Any]:
         base = get_global_prompt_template(key)
+        current, _ = self._effective_prompt_template_object(key)
+        if expected_version is not None and current.version != expected_version:
+            raise ValueError("prompt_template_revision_conflict")
         candidate = PromptTemplate(
             key=base.key,
             title=base.title,
@@ -1669,8 +1678,16 @@ class FileProjectStore(
         return self.effective_prompt_template(key)
 
     @_with_project_update_lock
-    def delete_prompt_template_override(self, key: str) -> dict[str, Any]:
+    def delete_prompt_template_override(
+        self,
+        key: str,
+        *,
+        expected_version: str | None = None,
+    ) -> dict[str, Any]:
         get_global_prompt_template(key)
+        current, _ = self._effective_prompt_template_object(key)
+        if expected_version is not None and current.version != expected_version:
+            raise ValueError("prompt_template_revision_conflict")
         overrides = self._prompt_template_overrides()
         overrides.pop(key, None)
         self._write_json_atomic(
@@ -6508,18 +6525,17 @@ class FileProjectStore(
 
         return raw_cards[raw_index if raw_index is not None else -1]
 
-    def complete_character_portrait(self, name: str) -> dict[str, Any]:
-        identifier = str(name or "").strip()
-        visible_state = self.state()
-        cards = visible_state.get("characters") if isinstance(visible_state.get("characters"), list) else []
-        current = next(
-            (dict(item) for item in cards if isinstance(item, dict) and self._character_matches(item, identifier)),
-            None,
+    def complete_character_portrait(
+        self,
+        name: str,
+        *,
+        expected_version: str | None = None,
+    ) -> dict[str, Any]:
+        return ProjectProfileStoreMixin.complete_character_portrait(
+            self,
+            name,
+            expected_version=expected_version,
         )
-        if current is None:
-            raise KeyError(f"character_not_found:{identifier}")
-        completed = self._completed_character_card(current, genre=str(visible_state.get("genre") or ""))
-        return self.update_character(str(completed.get("name") or identifier), completed)
 
     def _visible_state_from_chapters(
         self,

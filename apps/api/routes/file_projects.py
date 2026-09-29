@@ -222,12 +222,16 @@ class PromptTemplateUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     content: str = Field(min_length=1)
+    expected_version: str | None = Field(default=None, min_length=1, max_length=80)
 
 
 class PublishingGenerationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     guidance: str = Field(default="", max_length=1000)
+    expected_synopsis_version: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    expected_cover_version: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    expected_cover_title: str | None = Field(default=None, max_length=160)
 
     @field_validator("guidance", mode="before")
     @classmethod
@@ -240,6 +244,7 @@ class SynopsisUpdateRequest(BaseModel):
 
     tags: list[Annotated[str, Field(strict=True, min_length=1, max_length=32)]] = Field(min_length=4, max_length=8)
     body: str = Field(min_length=1, max_length=2000)
+    expected_version: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
     @field_validator("tags", mode="before")
     @classmethod
@@ -1713,6 +1718,17 @@ def _public_synopsis(value: Any) -> dict[str, Any]:
     }
 
 
+def _publishing_asset_version(value: Any) -> str:
+    payload = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return sha256(payload).hexdigest()
+
+
 def _publishing_write_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail="publishing_asset_write_failed")
 
@@ -2471,6 +2487,11 @@ def init_file_project_routes() -> APIRouter:
         store = _store_for(project_id)
         existing = store.publishing_assets()
         synopsis_snapshot = existing.get("synopsis") if isinstance(existing.get("synopsis"), dict) else None
+        if (
+            payload.expected_synopsis_version is not None
+            and _publishing_asset_version(synopsis_snapshot) != payload.expected_synopsis_version
+        ):
+            raise HTTPException(status_code=409, detail="publishing_asset_stale_synopsis")
         try:
             generated = FanqieSynopsis.model_validate(
                 synopsis_generator.generate(
@@ -2505,15 +2526,26 @@ def init_file_project_routes() -> APIRouter:
         payload: SynopsisUpdateRequest,
     ) -> dict[str, Any]:
         store = _store_for(project_id)
+        current_synopsis = store.publishing_assets().get("synopsis")
+        if (
+            payload.expected_version is not None
+            and _publishing_asset_version(current_synopsis) != payload.expected_version
+        ):
+            raise HTTPException(status_code=409, detail="publishing_asset_stale_synopsis")
         try:
-            saved = store.save_synopsis(
-                {
-                    "tags": payload.tags,
-                    "body": payload.body,
-                    "format": "fanqie",
-                    "updated_at": _now_iso(),
-                }
-            )
+            synopsis_payload = {
+                "tags": payload.tags,
+                "body": payload.body,
+                "format": "fanqie",
+                "updated_at": _now_iso(),
+            }
+            if payload.expected_version is not None:
+                saved = store.save_synopsis(
+                    synopsis_payload,
+                    expected_synopsis=current_synopsis,
+                )
+            else:
+                saved = store.save_synopsis(synopsis_payload)
         except ValueError as exc:
             raise _publishing_write_error(exc) from exc
         return {"synopsis": _public_synopsis(saved.get("synopsis"))}
@@ -2528,6 +2560,14 @@ def init_file_project_routes() -> APIRouter:
             cover_title = _cover_title(store)
             existing = store.publishing_assets()
             cover_snapshot = str((existing.get("cover") or {}).get("prompt") or "")
+            current_cover = existing.get("cover")
+            if (
+                payload.expected_cover_version is not None
+                and _publishing_asset_version(current_cover) != payload.expected_cover_version
+            ):
+                raise ValueError("publishing_asset_stale_cover")
+            if payload.expected_cover_title is not None and payload.expected_cover_title != cover_title:
+                raise ValueError("publishing_asset_stale_cover")
             synopsis = existing.get("synopsis") if isinstance(existing.get("synopsis"), dict) else {}
             prompt = cover_prompt_generator.generate(
                 _publishing_context_for(store),
@@ -4589,17 +4629,25 @@ def init_file_project_routes() -> APIRouter:
     ) -> dict[str, Any]:
         store = _store_for(project_id)
         try:
-            return store.set_prompt_template_override(template_key, payload.content)
+            return store.set_prompt_template_override(
+                template_key,
+                payload.content,
+                expected_version=payload.expected_version,
+            )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @router.delete("/file-projects/{project_id}/prompt-templates/{template_key}")
-    def delete_file_project_prompt_template(project_id: str, template_key: str) -> dict[str, Any]:
+    def delete_file_project_prompt_template(
+        project_id: str,
+        template_key: str,
+        expected_version: str | None = None,
+    ) -> dict[str, Any]:
         store = _store_for(project_id)
         try:
-            return store.delete_prompt_template_override(template_key)
+            return store.delete_prompt_template_override(template_key, expected_version=expected_version)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

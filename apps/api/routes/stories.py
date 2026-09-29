@@ -628,6 +628,7 @@ class PromptTemplateUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     content: str = Field(min_length=1)
+    expected_version: str | None = Field(default=None, min_length=1, max_length=80)
 
 
 class AgentContextResponse(BaseModel):
@@ -3869,7 +3870,11 @@ def update_global_prompt_template(
     payload: PromptTemplateUpdateRequest,
 ) -> dict[str, object]:
     try:
-        template = save_global_prompt_template(template_key, payload.content)
+        template = save_global_prompt_template(
+            template_key,
+            payload.content,
+            expected_version=payload.expected_version,
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

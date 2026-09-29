@@ -284,8 +284,11 @@ from fastapi.responses import JSONResponse  # noqa: E402
 @app.middleware("http")
 async def synthetic_boundary(request, call_next):
     # The full application's internal route callbacks remain available to the
-    # product adapter. Public unrelated/import/probe APIs are not exposed here.
-    if request.url.path not in {"/health", "/author-workspace", "/author-workspace/commands"}:
+    # product adapter. Only its file-project update route is additionally
+    # exposed for the existing structured game-catalog editors; _store_for
+    # confines that write to this isolated temporary project root.
+    isolated_catalog_write = request.method in {"OPTIONS", "PUT"} and request.url.path.startswith("/file-projects/")
+    if request.url.path not in {"/health", "/author-workspace", "/author-workspace/commands"} and not isolated_catalog_write:
         return JSONResponse(status_code=403, content={"detail": "离线开发入口仅开放四页创作工作区。"})
     response = await call_next(request)
     if request.method == "GET" and request.url.path == "/author-workspace" and response.status_code == 200:
