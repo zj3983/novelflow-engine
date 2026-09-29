@@ -708,6 +708,9 @@ class AuthorScreen(Screen):
                     raise ValueError("invalid_relationship_graph_endpoint")
                 incoming_pairs.add(pair)
                 previous = previous_by_pair.get(pair)
+                submitted_origin = text(item.get("origin"))
+                if previous is not None and "origin" in item and submitted_origin != text(previous.get("origin")):
+                    raise ValueError("relationship_origin_immutable")
                 edge = deepcopy(previous) if previous is not None else {"source": source, "target": target}
                 edge["source"], edge["target"] = source, target
                 for key in ("relation_type", "current_state", "shared_interest_or_conflict"):
@@ -981,13 +984,19 @@ class AuthorScreen(Screen):
                 current_packs = {pack.skill_id: pack for pack in list_skill_packs()}
                 if any(skill_id not in current_packs for skill_id in next_pack_ids):
                     raise ValueError("skill_selection_pack_unavailable")
-                available_modules = {
-                    f"{skill_id}::{module.module_id}"
-                    for skill_id in next_pack_ids for module in current_packs[skill_id].modules
+                module_pack_ids = {
+                    module_id: skill_id
+                    for skill_id, pack in current_packs.items()
+                    for module_id in [
+                        f"{skill_id}::root",
+                        *(f"{skill_id}::{module.module_id}" for module in pack.modules),
+                    ]
                 }
-                available_modules.update(f"{skill_id}::root" for skill_id in next_pack_ids)
-                if not set(next_module_ids).issubset(available_modules):
+                if not set(next_module_ids).issubset(module_pack_ids):
                     raise ValueError("skill_selection_module_unavailable")
+                derived_pack_ids = list(dict.fromkeys(module_pack_ids[module_id] for module_id in next_module_ids))
+                if next_pack_ids != derived_pack_ids:
+                    raise ValueError("skill_selection_pack_module_mismatch")
                 store.update_project({
                     "enabled_skill_ids": next_pack_ids,
                     "enabled_skill_module_ids": next_module_ids,

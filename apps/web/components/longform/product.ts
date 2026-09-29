@@ -12,7 +12,7 @@ export interface Person { name: string; role: string; description: string; facts
 export interface CharacterCardView extends Person { editableProfile: Record<string, any>; actions: { save: ProductAction; completePortrait: ProductAction } }
 export interface WorldEntry { id: string; title: string; text: string; editable: boolean }
 export interface WorldSection { id: string; title: string; entries: WorldEntry[]; save: ProductAction }
-export interface Relationship { source: string; target: string; relationship: string; history: string; currentState: string; sharedInterestOrConflict: string; trust?: number | null; tension?: number | null; basisLabel?: string; evidenceChapter?: number | null }
+export interface Relationship { source: string; target: string; relationship: string; history: string; historyEditable?: boolean; currentState: string; sharedInterestOrConflict: string; trust?: number | null; tension?: number | null; basisLabel?: string; evidenceChapter?: number | null }
 export interface BookDetails {
   title: string; synopsis: string; synopsisTags: string[]; coverAvailable: boolean; targetWords?: number; targetChapterWords?: number;
   confirmedChapterCount?: number; confirmedWordCount?: number | null; chapterCountComplete?: boolean; currentChapter?: number;

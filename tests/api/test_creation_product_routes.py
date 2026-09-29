@@ -265,8 +265,16 @@ def test_author_workspace_settings_and_story_edits_use_compare_and_swap(tmp_path
         "relation_type": relation["relationship"],
         "current_state": "暂时合作，但仍互相试探",
         "shared_interest_or_conflict": relation["sharedInterestOrConflict"],
-        "trust": 35, "tension": 45,
+        "trust": 35, "tension": 45, "origin": "试图静默覆盖的历史",
     }]
+    immutable_history = client.post("/author-workspace/commands", json={
+        "bookId": project_id, "token": book["relationshipView"]["save"]["token"],
+        "command": {"type": "relationships", "items": edges},
+    })
+    assert immutable_history.status_code == 409, immutable_history.text
+    assert "只读" in immutable_history.text
+    assert store.project()["relationship_graph"][0]["origin"] == "幼时曾共同守船"
+    edges[0]["origin"] = relation["history"]
     saved = client.post("/author-workspace/commands", json={
         "bookId": project_id, "token": book["relationshipView"]["save"]["token"],
         "command": {"type": "relationships", "items": edges},
@@ -753,6 +761,12 @@ def test_author_workspace_projects_and_saves_templates_and_skill_selection(tmp_p
     assert get_global_prompt_template("writer").content == global_content
 
     abilities_workspace = client.get("/author-workspace", params={"book_id": project_id}).json()["books"][0]["writingAbilitiesView"]
+    inconsistent_selection = client.post("/author-workspace/commands", json={
+        "bookId": project_id, "token": abilities_workspace["save"]["token"],
+        "command": {"type": "writing-abilities", "packIds": ["demo-pack"], "moduleIds": []},
+    })
+    assert inconsistent_selection.status_code == 409, inconsistent_selection.text
+    assert "模块" in inconsistent_selection.text
     next_selection = client.post("/author-workspace/commands", json={
         "bookId": project_id, "token": abilities_workspace["save"]["token"],
         "command": {"type": "writing-abilities", "packIds": ["demo-pack"],
