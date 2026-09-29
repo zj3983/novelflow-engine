@@ -17,7 +17,8 @@ const GLOBAL_NAV: NavItem[] = [{ href: "/workspace", label: "作品", exact: tru
 function projectIdFromPath(pathname: string): string | null {
   const match = pathname.match(/^\/projects\/([^/]+)/);
   if (!match || !match[1]) return null;
-  return safeDecodeURIComponent(match[1]);
+  const projectId = safeDecodeURIComponent(match[1]);
+  return projectId === "new" ? null : projectId;
 }
 
 function projectNav(projectId: string): NavItem[] {
