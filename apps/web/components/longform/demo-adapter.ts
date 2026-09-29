@@ -186,19 +186,21 @@ export function createDemoAdapter(): WorkspaceAdapter {
       if (b.chapters.length >= b.planningVolume * 50 - 49) { b.notice = "这卷已有正式正文，请到下一卷调整后续规划。"; }
       else {
         if (cmd.patch) {
-          b.direction = cmd.patch.overall.direction;
-          b.ending = cmd.patch.overall.endingGoal;
+          if (cmd.patch.overall) {
+            b.direction = cmd.patch.overall.direction;
+            b.ending = cmd.patch.overall.endingGoal;
+          }
           b.volumes = (b.volumes || []).map(volume => {
-            const update = cmd.patch!.volumes.find(item => item.number === volume.number);
+            const update = cmd.patch!.volumes?.find(item => item.number === volume.number);
             return update ? { ...volume, title: update.title, goal: update.goal, mainConflict: update.mainConflict,
               characterChanges: update.characterChanges, endingTurn: update.endingTurn } : volume;
           });
           b.upcoming = (b.upcoming || []).map(chapter => {
-            const update = cmd.patch!.upcomingChapters.find(item => item.number === chapter.number);
+            const update = cmd.patch!.upcomingChapters?.find(item => item.number === chapter.number);
             return update ? { ...chapter, title: update.title, goal: update.goal, conflict: update.conflict,
               progression: update.progression } : chapter;
           });
-          b.plan = `${cmd.patch.overall.direction}\n\n${cmd.patch.volumes.find(item => item.number === b.planningVolume)?.goal || "规划已调整。"}`;
+          b.plan = `${cmd.patch.overall?.direction || b.direction}\n\n${cmd.patch.volumes?.find(item => item.number === b.planningVolume)?.goal || "规划已调整。"}`;
         } else b.plan = cmd.text ?? b.plan;
         b.planAdopted = false; b.notice = "规划已调整，请重新采纳后再写作。";
         if (b.candidate) { b.candidate.canConfirm = false; b.candidate.needsCheck = true; }

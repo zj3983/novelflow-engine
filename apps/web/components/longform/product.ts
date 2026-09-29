@@ -32,12 +32,13 @@ export interface Candidate extends Chapter {
   label: string; canConfirm: boolean; needsCheck: boolean; checking: boolean;
   concern?: Concern; pastDrafts: { body: string; label: string }[]; editorDraft?: string;
 }
-export interface PlanningProjection { editable:boolean; overall:{direction:string;endingGoal:string;previousConnection:string}; currentVolume:number; volumes:{number:number;title:string;startChapter?:number;endChapter?:number;goal:string;mainConflict:string;characterChanges:string[];endingTurn:string;statusLabel:string;editable?:boolean}[]; upcomingChapters:{number:number;title:string;goal:string;conflict:string;progression:string;foreshadowing:string[];editable?:boolean}[]; authorReminders:string[] }
+export interface PlanningProjection { editable:boolean; graphManaged?:boolean; overall:{direction:string;endingGoal:string;previousConnection:string;editable?:boolean}; currentVolume:number; volumes:{number:number;title:string;startChapter?:number;endChapter?:number;goal:string;mainConflict:string;characterChanges:string[];endingTurn:string;statusLabel:string;editable?:boolean}[]; upcomingChapters:{number:number;title:string;goal:string;conflict:string;progression:string;foreshadowing:string[];editable?:boolean}[]; authorReminders:string[] }
 export interface PlanningEditPatch {
-  overall: { direction:string; endingGoal:string };
-  volumes: { number:number; title:string; goal:string; mainConflict:string; characterChanges:string[]; endingTurn:string }[];
-  upcomingChapters: { number:number; title:string; goal:string; conflict:string; progression:string }[];
+  overall?: { direction:string; endingGoal:string };
+  volumes?: { number:number; title:string; goal:string; mainConflict:string; characterChanges:string[]; endingTurn:string }[];
+  upcomingChapters?: { number:number; title:string; goal:string; conflict:string; progression:string }[];
 }
+export type PlanningEditScope = "overall" | `volume:${number}` | `chapter:${number}`;
 export interface RecycleBinBook { id:string; title:string; actions:Record<string,ProductAction> }
 export interface Book {
   actions?: Record<string, ProductAction>; volumes?: Volume[]; upcoming?: { number: number; title: string; summary?: string; goal?:string; conflict?:string; progression?:string; foreshadowing?:string[] }[];
@@ -70,7 +71,7 @@ export type Command =
   | { type: `planning-action:${string}`; values?: Record<string,string>; token: string }
   | { type: "prepare-plan" | "sync-plan" | "refresh-plan" | "continue-plan" | "complete-volume" | "retry-next" | "discard" }
   | { type: "prepare-directions" } | { type: "refresh" }
-  | { type: "plan"; text?: string; patch?: PlanningEditPatch; token?: string }
+  | { type: "plan"; text?: string; scope?:PlanningEditScope; patch?: PlanningEditPatch; token?: string }
   | { type: "adopt" } | { type: "generate" } | { type: "next-volume" }
   | { type: "discard-local-draft" }
   | { type: "draft"; text: string } | { type: "save-draft"; text: string }

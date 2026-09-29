@@ -251,6 +251,84 @@ def _planning_patch_outline(outline, patch, *, confirmed, graph_managed):
     return payload
 
 
+def _graph_planning_edit_payload(scope, patch, outline, artifact, *, confirmed):
+    """Apply one planning section to its authoritative Opening graph artifact."""
+    match = re.fullmatch(r"(overall|volume|chapter)(?::([1-9][0-9]*))?", scope or "")
+    if not match:
+        raise ValueError("planning_scope_invalid")
+    kind, raw_number = match.groups()
+    number = int(raw_number) if raw_number else None
+    expected_key = {"overall": "overall", "volume": "volumes", "chapter": "upcomingChapters"}[kind]
+    if (kind == "overall" and number is not None) or (kind != "overall" and number is None):
+        raise ValueError("planning_scope_invalid")
+    if not isinstance(patch, dict) or set(patch) != {expected_key}:
+        raise ValueError("planning_scope_invalid")
+    updates = patch[expected_key]
+    if kind == "overall":
+        if not isinstance(updates, dict):
+            raise ValueError("planning_scope_invalid")
+    else:
+        if (
+            not isinstance(updates, list) or len(updates) != 1
+            or not isinstance(updates[0], dict) or updates[0].get("number") != number
+        ):
+            raise ValueError("planning_scope_invalid")
+
+    changed = _planning_patch_outline(outline, patch, confirmed=confirmed, graph_managed=False)
+    payload = deepcopy(artifact)
+    if kind == "overall":
+        if set(payload) != {"overall"}:
+            raise ValueError("planning_artifact_invalid")
+        overall = deepcopy(payload["overall"])
+        for field in updates:
+            aliases = {
+                "direction": ("story", "foreground_story", "direction"),
+                "endingGoal": ("ending_direction", "ending_image", "ending_goal"),
+            }[field]
+            source_key = next((key for key in aliases if key in changed["overall"]), aliases[0])
+            target_key = next((key for key in aliases if key in overall), aliases[0])
+            overall[target_key] = deepcopy(changed["overall"][source_key])
+        payload["overall"] = overall
+        return "book_outline", payload
+
+    if kind == "volume":
+        if set(payload) != {"arcs"} or number > len(payload["arcs"]):
+            raise ValueError("planning_artifact_invalid")
+        updated_arc = changed["arcs"][number - 1]
+        arc = deepcopy(payload["arcs"][number - 1])
+        for aliases in (
+            ("title",), ("goal", "arc_goal", "summary"),
+            ("obstacle", "main_conflict", "conflict", "central_conflict"),
+            ("relationship_changes", "character_changes"),
+            ("next_arc_entry", "ending_turn", "turning_point", "planned_hook"),
+        ):
+            source_key = next((key for key in aliases if key in updated_arc), None)
+            target_key = next((key for key in aliases if key in arc), aliases[0])
+            if source_key is not None:
+                arc[target_key] = deepcopy(updated_arc[source_key])
+        payload["arcs"][number - 1] = arc
+        return "volume_plan", payload
+
+    chapter = next((item for item in changed["chapters"] if item.get("chapter_number") == number), None)
+    if chapter is None:
+        raise ValueError("planning_scope_invalid")
+    task_id = f"chapter_outline_{number}"
+    if set(payload) != {"chapter"} or payload["chapter"].get("chapter_number") != number:
+        raise ValueError("planning_artifact_invalid")
+    target = deepcopy(payload["chapter"])
+    for aliases in (
+        ("title", "chapter_title"), ("goal", "chapter_goal", "summary"),
+        ("obstacle", "core_conflict", "conflict", "main_conflict"),
+        ("action", "progression", "next_focus", "outcome"),
+    ):
+        source_key = next((key for key in aliases if key in chapter), None)
+        target_key = next((key for key in aliases if key in target), aliases[0])
+        if source_key is not None:
+            target[target_key] = deepcopy(chapter[source_key])
+    payload["chapter"] = target
+    return task_id, payload
+
+
 class PlanningScreen(Screen):
     """Retain this request's already-read details for the four-page projection."""
     def __init__(self, request, project_id):
@@ -338,8 +416,56 @@ class AuthorScreen(Screen):
         setup = opening_content(store)
         selected_direction = next((d for d in setup.get("directions", []) if d.get("id") == setup.get("selected_id")), {})
         future_intent = lifecycle.author_future_intent(store)
+        build = self.build_screen
+        with project_update_lock(store.root):
+            planning_actions = build.build(all_actions=True)
+        graph_managed = runtime.enabled(store)
+        planning_task_artifacts = {}
+        planning_editable_tasks = None
+        planning_outline = None
+        if graph_managed:
+            config = runtime.settings(store) or {}
+            pending = config.get("pending_extension") or {}
+            pending_tasks = {
+                f"chapter_outline_{number}"
+                for number in range(pending.get("start_chapter", 1), pending.get("end_chapter", 0) + 1)
+            }
+            planning_editable_tasks = {}
+            for task_id, detail in build.details.items():
+                artifact = detail.get("artifact") or {}
+                revision = artifact.get("revision")
+                task_status = detail.get("status")
+                execution_config = config.get("execution")
+                safe_window = (
+                    task_id in pending_tasks
+                    if execution_config
+                    else confirmed == 0 and not config.get("sync_pending")
+                )
+                if (
+                    task_status == "completed" and isinstance(revision, int) and revision > 0
+                    and not detail.get("active_run_id") and safe_window
+                ):
+                    planning_task_artifacts[task_id] = {
+                        "revision": revision,
+                        "payload": deepcopy(artifact.get("payload") or {}),
+                    }
+            try:
+                planning_outline = runtime.assembled_plan(store)["outline"]
+            except (ValueError, FileNotFoundError):
+                planning_outline = {}
+                planning_task_artifacts = {}
+            planning_editable_tasks = {
+                task_id: task_id in planning_task_artifacts
+                for task_id in ("book_outline", "volume_plan", *(
+                    f"chapter_outline_{number}"
+                    for number in range(1, int(config.get("chapter_count", 3)) + 1)
+                ))
+            }
         content = project_content(store, future_intent=future_intent, selected_chapter=selected,
-                                  planning_editable=not runtime.enabled(store))
+                                  planning_editable=bool(planning_task_artifacts) if graph_managed else True,
+                                  planning_outline=planning_outline,
+                                  planning_graph_managed=graph_managed,
+                                  planning_editable_tasks=planning_editable_tasks)
         details = book_details(store)
         authority = [source, info, plan["fingerprint"], job.get("job_id"), job.get("status")]
         result = {"id": self.project_id, "title": text(info.get("title")) or "未命名作品",
@@ -676,6 +802,27 @@ class AuthorScreen(Screen):
             lambda values: self.call("trash_file_project"), enabled=not busy)
 
         def save_plan(values):
+            if graph_managed:
+                scope = text(values.get("scope"))
+                match = re.fullmatch(r"(overall|volume|chapter)(?::([1-9][0-9]*))?", scope)
+                if not match or planning_outline is None:
+                    raise ValueError("planning_scope_invalid")
+                kind, raw_number = match.groups()
+                task_id = "book_outline" if kind == "overall" else (
+                    "volume_plan" if kind == "volume" else f"chapter_outline_{raw_number}"
+                )
+                artifact = planning_task_artifacts.get(task_id)
+                if artifact is None:
+                    raise ValueError("opening_consumed_planning_locked" if config.get("execution") else "planning_task_not_editable")
+                task_id, payload = _graph_planning_edit_payload(
+                    scope, values.get("patch"), planning_outline, artifact["payload"], confirmed=confirmed,
+                )
+                return self.call(
+                    "edit_file_project_build_graph_task", task_id=task_id,
+                    request=workbench.BuildWorkbenchArtifactCommitRequest(
+                        expected_revision=artifact["revision"], payload=payload,
+                    ),
+                )
             outline = deepcopy(store.snapshot_store.read_json(store.webnovel_dir / "outline.json", {}))
             if "patch" in values:
                 outline = _planning_patch_outline(
@@ -684,11 +831,13 @@ class AuthorScreen(Screen):
                 outline.setdefault("overall", {})["story"] = text(values.get("text"))
             return lifecycle.save_future_plan(store, payload=outline, expected_source=source)
 
-        edit_reason = "当前分卷和章节安排已纳入正文生成保护。可以继续修改作者要求；规划编辑需从故事准备工具更新。" if runtime.enabled(store) else None
+        edit_reason = None
+        if graph_managed and not planning_task_artifacts:
+            edit_reason = "当前没有可安全修改的规划部分；已写入正文使用的规划保持锁定。"
         self.command("future", "保存后续创作想法", authority,
             lambda values: lifecycle.save_future_intent(store, text(values.get("text")), expected_source=source), enabled=not busy)
         self.command("plan", "保存全书方向", authority, save_plan,
-            enabled=not busy and not runtime.enabled(store), reason=edit_reason)
+            enabled=not busy and (bool(planning_task_artifacts) if graph_managed else True), reason=edit_reason)
         self.command("archive", "归档作品", authority, lambda values: self.call("archive_file_project"), enabled=not busy)
 
         blueprint = info.get("world_blueprint") if isinstance(info.get("world_blueprint"), dict) else {}
@@ -1294,9 +1443,7 @@ class AuthorScreen(Screen):
                 lambda values: confirm(values, True), enabled=not busy and not blocked and warning)
 
         # Reuse each existing build callback, including its commit-time protections.
-        build = self.build_screen
-        with project_update_lock(store.root):
-            planning = build.build(all_actions=True)
+        planning = planning_actions
         if planning.get("refresh_after_ms"):
             result["busy"] = True
             result["notice"] = "正在准备故事规划。"

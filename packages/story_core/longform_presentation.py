@@ -116,7 +116,7 @@ def _world_sections(project, saved_state, *, include_game_catalogs=False):
     return sections
 
 
-def _planning_projection(outline, confirmed, *, editable=True):
+def _planning_projection(outline, confirmed, *, editable=True, editable_tasks=None):
     overall = outline.get("overall") if isinstance(outline.get("overall"), dict) else {}
     arcs = outline.get("arcs") if isinstance(outline.get("arcs"), list) else []
     volumes = []
@@ -134,7 +134,10 @@ def _planning_projection(outline, confirmed, *, editable=True):
             "characterChanges": _text_list(arc.get("character_changes") or arc.get("relationship_changes"), limit=20),
             "endingTurn": _first_text(arc, ("ending_turn", "turning_point", "planned_hook", "next_arc_entry")),
             "statusLabel": "已完成" if isinstance(end, int) and 0 < end <= confirmed else "待创作",
-            "editable": bool(editable and not (isinstance(arc.get("start_chapter"), int) and arc["start_chapter"] <= confirmed)),
+            "editable": bool(
+                editable and (editable_tasks.get("volume_plan", True) if editable_tasks is not None else True)
+                and not (isinstance(arc.get("start_chapter"), int) and arc["start_chapter"] <= confirmed)
+            ),
         })
     chapters = []
     raw_chapters = outline.get("chapters") if isinstance(outline.get("chapters"), list) else []
@@ -151,7 +154,7 @@ def _planning_projection(outline, confirmed, *, editable=True):
             "conflict": _first_text(item, ("obstacle", "core_conflict", "conflict", "main_conflict")),
             "progression": _first_text(item, ("action", "progression", "next_focus", "outcome")),
             "foreshadowing": _text_list(item.get("foreshadowing") or item.get("foreshadowing_in"), limit=12),
-            "editable": bool(editable),
+            "editable": bool(editable and (editable_tasks.get(f"chapter_outline_{number}", True) if editable_tasks is not None else True)),
         })
     chapters.sort(key=lambda item: item["number"])
     current_volume = next((
@@ -164,6 +167,7 @@ def _planning_projection(outline, confirmed, *, editable=True):
             "direction": _first_text(overall, ("story", "foreground_story", "direction")),
             "endingGoal": _first_text(overall, ("ending_direction", "ending_image", "ending_goal")),
             "previousConnection": _first_text(overall, ("previous_connection", "opening_context", "continuation_start")),
+            "editable": bool(editable and (editable_tasks.get("book_outline", True) if editable_tasks is not None else True)),
         },
         "currentVolume": current_volume,
         "volumes": volumes,
@@ -342,7 +346,7 @@ def _dynamic_world_view(store, snapshot, confirmed, selected_chapter):
     snapshot_entries = _state_entries(snapshot)
     chapters = []
     selected_payload = None
-    latest_payload = None
+    confirmed_payload = None
     for number in store.chapter_numbers():
         if number > confirmed:
             continue
@@ -357,7 +361,8 @@ def _dynamic_world_view(store, snapshot, confirmed, selected_chapter):
                 "number": number,
                 "title": text(payload.get("chapter_title")) or f"第 {number} 章",
             })
-            latest_payload = (number, payload)
+            if number == confirmed:
+                confirmed_payload = (number, payload)
         if number == selected_chapter:
             selected_payload = (number, payload)
 
@@ -387,13 +392,13 @@ def _dynamic_world_view(store, snapshot, confirmed, selected_chapter):
 
     record = product_record(*selected_payload) if selected_payload else None
     preparation = None
-    if latest_payload:
-        latest_number, latest = latest_payload
-        latest_record = product_record(latest_number, latest)
-        if latest_record and latest_record["nextChapterInformation"]:
+    if confirmed_payload:
+        confirmed_number, confirmed_chapter = confirmed_payload
+        confirmed_record = product_record(confirmed_number, confirmed_chapter)
+        if confirmed_record and confirmed_record["nextChapterInformation"]:
             preparation = {
-                "sourceChapter": latest_number,
-                "entries": latest_record["nextChapterInformation"],
+                "sourceChapter": confirmed_number,
+                "entries": confirmed_record["nextChapterInformation"],
             }
     return {
         "currentSnapshot": {"chapter": confirmed or None, "entries": snapshot_entries},
@@ -502,9 +507,12 @@ def _person_views(project, state, facts_by_person, fact_sources):
     return result
 
 
-def project_content(store, *, future_intent=None, selected_chapter=None, planning_editable=True):
+def project_content(
+    store, *, future_intent=None, selected_chapter=None, planning_editable=True,
+    planning_outline=None, planning_graph_managed=False, planning_editable_tasks=None,
+):
     # Read the authoritative file without triggering the legacy Markdown sync.
-    outline = store.snapshot_store.read_json(store.webnovel_dir / "outline.json", {})
+    outline = planning_outline if isinstance(planning_outline, dict) else store.snapshot_store.read_json(store.webnovel_dir / "outline.json", {})
     project = store.project()
     overall = outline.get("overall") or {}
     state = store.state()
@@ -541,7 +549,13 @@ def project_content(store, *, future_intent=None, selected_chapter=None, plannin
             facts_by_person.setdefault(fact["subject"], []).append(item)
         else:
             world_records.append({"title": "故事记录", **item})
-    planning = _planning_projection(outline, confirmed, editable=planning_editable)
+    planning = _planning_projection(outline, confirmed, editable=planning_editable, editable_tasks=planning_editable_tasks)
+    planning["editable"] = bool(
+        planning_editable and (
+            any(planning_editable_tasks.values()) if planning_editable_tasks is not None else True
+        )
+    )
+    planning["graphManaged"] = bool(planning_graph_managed)
     volumes = [{"number": item["number"], "title": item["title"], "start": item["startChapter"],
                 "end": item["endChapter"], "goal": item["goal"], "label": item["statusLabel"],
                 "conflict": item["mainConflict"], "characterChanges": item["characterChanges"],

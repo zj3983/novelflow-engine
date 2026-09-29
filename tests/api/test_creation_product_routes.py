@@ -86,7 +86,89 @@ def test_longform_planning_projection_reuses_snapshot_without_changing_actions(t
     assert tree(store) == before
 
 
+def test_next_chapter_visibility_uses_only_the_latest_confirmed_chapter(tmp_path):
+    from packages.story_core.longform_presentation import _dynamic_world_view
+
+    chapter_dir = tmp_path / "chapters"
+    payloads = {
+        chapter_dir / "0001.json": {
+            "chapter_title": "旧安排",
+            "simulation_status": {"visibility_inbox": ["上一章才适用的消息"]},
+        },
+        chapter_dir / "0002.json": {"chapter_title": "最新确认章"},
+    }
+    store = SimpleNamespace(
+        chapter_numbers=lambda: [1, 2],
+        story_system_dir=tmp_path,
+        snapshot_store=SimpleNamespace(read_json=lambda path, default: payloads.get(path, default)),
+    )
+
+    result = _dynamic_world_view(store, {}, confirmed=2, selected_chapter=2)
+
+    assert result["preparationInformation"] is None
+
+
+def test_opening_workspace_saves_planning_edits_to_graph_artifacts(tmp_path, monkeypatch):
+    from tests.story_core.test_opening_build import complete_opening, opening_store
+    from packages.story_core.opening_build import runtime
+
+    store, graph, service = opening_store(tmp_path)
+    complete_opening(store, graph, service)
+    runtime.publish(store, graph, service, runtime.source_revision(store))
+    project_id = store.project()["project_id"]
+    monkeypatch.setattr(file_projects, "_store_for", lambda _: store)
+    monkeypatch.setattr(file_projects, "_stores", lambda *, lifecycle=None: [store] if lifecycle == "active" else [])
+    monkeypatch.setattr(file_projects, "_public_project_id", lambda _: project_id)
+    app = FastAPI()
+    app.include_router(file_projects.init_file_project_routes())
+    app.include_router(init_novel_type_routes())
+    app.include_router(init_longform_product_routes())
+    client = TestClient(app)
+
+    current = client.get("/author-workspace", params={"book_id": project_id}).json()["books"][0]
+    assert current["actions"]["plan"]["enabled"] is True
+    assert current["planning"]["editable"] is True
+    assert current["planning"]["graphManaged"] is True
+    assert current["planning"]["overall"]["editable"] is True
+    assert current["planning"]["upcomingChapters"][0]["editable"] is True
+
+    chapter = current["planning"]["upcomingChapters"][0]
+    saved_chapter = client.post("/author-workspace/commands", json={
+        "bookId": project_id,
+        "token": current["actions"]["plan"]["token"],
+        "command": {
+            "type": "plan",
+            "scope": f"chapter:{chapter['number']}",
+            "patch": {"upcomingChapters": [{"number": chapter["number"], "goal": "從四頁工作台修改的目標"}]},
+        },
+    })
+    assert saved_chapter.status_code == 200, saved_chapter.text
+    chapter_artifact = store.build_graph_store().read_artifact(f"chapter_outline_{chapter['number']}")
+    assert chapter_artifact.payload["chapter"]["goal"] == "從四頁工作台修改的目標"
+    assert service.inspect_task("outline_execution_contract").status == "stale"
+    assert service.inspect_task("chapter_outline_1").status == "completed"
+
+    refreshed = client.get("/author-workspace", params={"book_id": project_id}).json()["books"][0]
+    assert refreshed["actions"]["plan"]["enabled"] is True
+    assert refreshed["planning"]["overall"]["editable"] is True
+    saved_overall = client.post("/author-workspace/commands", json={
+        "bookId": project_id,
+        "token": refreshed["actions"]["plan"]["token"],
+        "command": {
+            "type": "plan",
+            "scope": "overall",
+            "patch": {"overall": {"direction": "四页工作台保存的全书方向"}},
+        },
+    })
+    assert saved_overall.status_code == 200, saved_overall.text
+    outline_artifact = store.build_graph_store().read_artifact("book_outline")
+    assert outline_artifact.payload["overall"]["story"] == "四页工作台保存的全书方向"
+    assert service.inspect_task("volume_plan").status == "stale"
+
+
 def test_author_workspace_api_projects_product_sections_from_existing_sources(tmp_path, monkeypatch):
+    from packages.story_core.opening_build import runtime
+
     store = prepared_store(tmp_path)
     names = ["林照", "陆遥", "赵衡", "顾长老"]
     store.update_project({
@@ -160,13 +242,14 @@ def test_author_workspace_api_projects_product_sections_from_existing_sources(tm
     assert response.status_code == 200, response.text
     workspace = response.json()
     book = workspace["books"][0]
+    canonical_outline = runtime.assembled_plan(store)["outline"]
     assert {person["name"] for person in book["people"]} == {*names}
     assert book["people"][0]["stableProfile"]["identity"] == "身份0"
     assert book["people"][0]["currentState"]["location"] == "南渡口"
-    assert book["planning"]["overall"]["direction"] == "沿河追查旧案"
-    assert book["planning"]["volumes"][0]["mainConflict"] == "巡河司封锁码头"
+    assert book["planning"]["overall"]["direction"] == canonical_outline["overall"]["story"]
+    assert book["planning"]["volumes"][0]["mainConflict"] == canonical_outline["arcs"][0]["obstacle"]
     assert book["planning"]["upcomingChapters"][0]["number"] == 2
-    assert book["planning"]["upcomingChapters"][0]["goal"] == "查明改写货单的人"
+    assert book["planning"]["upcomingChapters"][0]["goal"] == canonical_outline["chapters"][1]["goal"]
     assert "planningParts" not in book
     assert book["worldSections"][0]["entries"][0]["text"] == "渡口诸城依水运商路往来。"
     assert {key: book["worldSections"][2]["entries"][0][key] for key in ("title", "text", "editable")} == {

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { CheckCircle2, ChevronDown, ChevronRight, CircleAlert, Search, Settings, X } from "lucide-react";
-import type { Book, Command, PageName, StoryTab, WorkspaceAdapter, ProductAction, Volume, PlanningEditPatch, PlanningProjection, DissectionReport } from "./product";
+import type { Book, Command, PageName, StoryTab, WorkspaceAdapter, ProductAction, Volume, PlanningEditPatch, PlanningEditScope, PlanningProjection, DissectionReport } from "./product";
 import { EquipmentCatalog } from "../ws/EquipmentCatalog";
 import { MonsterBestiary } from "../ws/MonsterBestiary";
 import { BookDetailsEditor, CharacterProfileEditor, DissectionPanel, DynamicWorldPanel, ForeshadowingEditor, RelationshipsEditor, WritingAbilitiesEditor, WritingTemplatesEditor, WorldSectionsEditor } from "./AuthorTools";
@@ -12,7 +12,9 @@ function Landscape() { return <img className={s.landscape} src="/longform/river-
 function Empty({ text }: { text: string }) { return <p className={s.empty}>{text}</p>; }
 
 
-function planningDraft(value: PlanningProjection): PlanningEditPatch {
+type PlanningDraft = Required<PlanningEditPatch>;
+
+function planningDraft(value: PlanningProjection): PlanningDraft {
   return {
     overall: { direction: value.overall.direction, endingGoal: value.overall.endingGoal },
     volumes: value.volumes.map(({ number, title, goal, mainConflict, characterChanges, endingTurn }) =>
@@ -24,25 +26,27 @@ function planningDraft(value: PlanningProjection): PlanningEditPatch {
 
 function PlanningEditor({ value, busy, reason, onSave, onCancel, onForeshadowing }: {
   value: PlanningProjection; busy:boolean; reason?:string;
-  onSave:(patch:PlanningEditPatch)=>void; onCancel:()=>void; onForeshadowing:()=>void;
+  onSave:(patch:PlanningEditPatch,scope?:PlanningEditScope)=>void; onCancel:()=>void; onForeshadowing:()=>void;
 }) {
   const [draft,setDraft]=useState(()=>planningDraft(value));
   const fingerprint=JSON.stringify(value);
   useEffect(()=>setDraft(planningDraft(value)),[fingerprint]);
-  const updateOverall=(key:keyof PlanningEditPatch["overall"],value:string)=>
+  const updateOverall=(key:keyof NonNullable<PlanningEditPatch["overall"]>,value:string)=>
     setDraft(current=>({...current,overall:{...current.overall,[key]:value}}));
   const updateVolume=(number:number,key:string,value:string|string[])=>
     setDraft(current=>({...current,volumes:current.volumes.map(item=>item.number===number?{...item,[key]:value}:item)}));
   const updateChapter=(number:number,key:string,value:string|string[])=>
     setDraft(current=>({...current,upcomingChapters:current.upcomingChapters.map(item=>item.number===number?{...item,[key]:value}:item)}));
   const lines=(value:string)=>value.split("\n").map(item=>item.trim()).filter(Boolean);
+  const graphManaged=!!value.graphManaged;
   return <section className={s.productEditor} aria-label="编辑全书规划">
     <h3>调整规划内容</h3>
     {reason&&<p className={s.smallNote}>{reason}</p>}
-    <label>全书方向<textarea aria-label="全书方向" disabled={!value.editable||busy} value={draft.overall.direction} onChange={e=>updateOverall("direction",e.target.value)} /></label>
-    <label>结局目标<textarea aria-label="结局目标" disabled={!value.editable||busy} value={draft.overall.endingGoal} onChange={e=>updateOverall("endingGoal",e.target.value)} /></label>
+    <label>全书方向<textarea aria-label="全书方向" disabled={!(graphManaged?value.overall.editable:value.editable)||busy} value={draft.overall.direction} onChange={e=>updateOverall("direction",e.target.value)} /></label>
+    <label>结局目标<textarea aria-label="结局目标" disabled={!(graphManaged?value.overall.editable:value.editable)||busy} value={draft.overall.endingGoal} onChange={e=>updateOverall("endingGoal",e.target.value)} /></label>
     <label>前文衔接<textarea aria-label="前文衔接" readOnly value={value.overall.previousConnection} /></label>
     <p className={s.smallNote}>前文衔接来自已确认章节记录，仅供回看，不在规划编辑中改写。</p>
+    {graphManaged&&value.overall.editable&&<button disabled={busy} onClick={()=>onSave({overall:{...draft.overall}},"overall")}>保存全书方向</button>}
     {draft.volumes.map(volume=>{
       const source=value.volumes.find(item=>item.number===volume.number);
       const editable=value.editable&&!!source?.editable;
@@ -54,6 +58,7 @@ function PlanningEditor({ value, busy, reason, onSave, onCancel, onForeshadowing
         <label>主要冲突<textarea aria-label={"第"+volume.number+"卷主要冲突"} disabled={!editable||busy} value={volume.mainConflict} onChange={e=>updateVolume(volume.number,"mainConflict",e.target.value)} /></label>
         <label>人物变化<textarea aria-label={"第"+volume.number+"卷人物变化"} disabled={!editable||busy} value={volume.characterChanges.join("\n")} onChange={e=>updateVolume(volume.number,"characterChanges",lines(e.target.value))} /></label>
         <label>卷末转折<textarea aria-label={"第"+volume.number+"卷卷末转折"} disabled={!editable||busy} value={volume.endingTurn} onChange={e=>updateVolume(volume.number,"endingTurn",e.target.value)} /></label>
+        {graphManaged&&editable&&<button disabled={busy} onClick={()=>onSave({volumes:[{...volume}]},`volume:${volume.number}`)}>保存第{volume.number}卷规划</button>}
       </article>;
     })}
     {draft.upcomingChapters.map(chapter=>{
@@ -66,10 +71,12 @@ function PlanningEditor({ value, busy, reason, onSave, onCancel, onForeshadowing
         <label>主要冲突<textarea aria-label={"第"+chapter.number+"章主要冲突"} disabled={!editable||busy} value={chapter.conflict} onChange={e=>updateChapter(chapter.number,"conflict",e.target.value)} /></label>
         <label>情节推进<textarea aria-label={"第"+chapter.number+"章情节推进"} disabled={!editable||busy} value={chapter.progression} onChange={e=>updateChapter(chapter.number,"progression",e.target.value)} /></label>
         {source?.foreshadowing?.length ? <section><p><strong>关联伏笔：</strong>{source.foreshadowing.join("、")}</p><button type="button" onClick={onForeshadowing}>查看伏笔线索</button></section> : null}
+        {graphManaged&&editable&&<button disabled={busy} onClick={()=>onSave({upcomingChapters:[{...chapter}]},`chapter:${chapter.number}`)}>保存第{chapter.number}章规划</button>}
       </article>;
     })}
+    {graphManaged&&<p className={s.smallNote}>全书、分卷和单章分别保存。保存后，受影响的后续规划需要更新；确认前不能继续生成正文。</p>}
     <div className={s.pair}>
-      <button className={s.primary} disabled={busy||!value.editable} onClick={()=>onSave(draft)}>保存规划修改</button>
+      {!graphManaged&&<button className={s.primary} disabled={busy||!value.editable} onClick={()=>onSave(draft)}>保存规划修改</button>}
       <button disabled={busy} onClick={onCancel}>取消</button>
     </div>
   </section>;
@@ -247,7 +254,7 @@ export function LongformWorkspace({ adapter }: { adapter: WorkspaceAdapter }) {
           {!!c.pastDrafts.length && <button className={s.textButton} onClick={() => openDialog("history")}>查看保留的旧稿（{c.pastDrafts.length}）</button>}
           <p className={s.smallNote}>修改后重新检查，确认后才加入正式章节。</p>
         </> : <><p>已确认的正文保持原样。可以回看前文，或继续准备新的章节。</p>{c && <button className={s.primary} onClick={() => act({ type: "navigate", page: "writing" })}>回到待确认候选</button>}{b.nextVolume ? <button className={s.primary} disabled={busy || !allowed("next-volume")} onClick={() => act({ type: "next-volume" })}>准备下一卷</button> : !c && <button className={s.primary} disabled={busy || (b.planAdopted && !allowed("generate"))} onClick={() => b.planAdopted ? act({ type: "generate" }) : navigate("planning")}>{b.planAdopted ? "准备下一章" : "查看并采纳规划"}</button>}</>}
-        {b.dynamicWorld?.preparationInformation?.entries.length ? <section className={s.preparationInfo}><h4>下一章角色可获知</h4><p>根据第{b.dynamicWorld.preparationInformation.sourceChapter}章已确认记录整理。</p>{b.dynamicWorld.preparationInformation.entries.map((entry,index)=><p key={index}>{entry.text}{entry.whoCanKnow&&<small> · 可知范围：{entry.whoCanKnow}</small>}</p>)}</section> : null}
+        {b.dynamicWorld && <section className={s.preparationInfo}><h4>下一章角色可获知</h4>{b.dynamicWorld.preparationInformation?.entries.length ? <><p>根据第{b.dynamicWorld.preparationInformation.sourceChapter}章已确认记录整理。</p>{b.dynamicWorld.preparationInformation.entries.map((entry,index)=><p key={index}>{entry.text}{entry.whoCanKnow&&<small> · 可知范围：{entry.whoCanKnow}</small>}</p>)}</> : <p>暂无</p>}</section>}
         {b.dynamicWorld?.chapterRecord?.chapter && <button className={s.wide} onClick={()=>showWorldChapter(b.dynamicWorld!.chapterRecord!.chapter)}>查看第{b.dynamicWorld.chapterRecord.chapter}章世界变化</button>}
         {live && ["retry-next", "complete-volume", "discard"].map(name => b.actions?.[name] && <ActionButton key={name} action={b.actions[name]} busy={busy} act={act} />)}
         {b.canRetry && <button className={s.wide} disabled={busy || !allowed(c ? "review" : "generate")} onClick={() => act({ type: c ? "review" : "generate" })}>{c ? "重试检查" : "重试生成"}</button>}
@@ -268,7 +275,7 @@ export function LongformWorkspace({ adapter }: { adapter: WorkspaceAdapter }) {
           <dl className={s.facts}><dt>故事主线</dt><dd>{b.planning?.overall.direction || b.direction}</dd>{b.ending && <><dt>最终走向</dt><dd>{b.ending}</dd></>}</dl>
           <div className={s.sectionHeading}><h1>第{b.planningVolume}卷 · {volumes.find(v => v.number === b.planningVolume)?.title || "当前规划"}</h1><span className={s.badge}>{b.planAdopted ? "你已采纳" : "等待你查看并采纳"}</span></div>
           <p className={s.bio}>{b.plan || "规划尚未准备完整。"}</p>{b.planning?.overall?.previousConnection&&<section><h3>与前文衔接</h3><p>{b.planning.overall.previousConnection}</p></section>}<h3>近期章节安排</h3>{upcoming.length ? <div className={s.chapterPlanList}>{upcoming.map(ch => <article key={ch.number}><h4>第{ch.number}章　{ch.title}</h4><p>{ch.goal || ch.summary || ""}</p>{ch.conflict&&<p><strong>冲突：</strong>{ch.conflict}</p>}{ch.progression&&<p><strong>推进：</strong>{ch.progression}</p>}{ch.foreshadowing?.length ? <div className={s.foreshadowLink}><p><strong>关联伏笔：</strong>{ch.foreshadowing.join("、")}</p><button onClick={()=>navigate("story","伏笔线索")}>查看伏笔线索</button></div> : null}</article>)}</div> : <Empty text="近期章节尚未准备。" />}{b.planning?.authorReminders?.map((item,i)=><p className={s.smallNote} key={i}>{item}</p>)}
-          {editingPlan&&live&&b.planning&&<PlanningEditor value={b.planning} busy={busy} reason={b.actions?.plan?.reason} onCancel={()=>setEditingPlan(false)} onForeshadowing={()=>navigate("story","伏笔线索")} onSave={patch=>act({type:"plan",patch,...(b.actions?.plan?.token?{token:b.actions.plan.token}:{})})} />}
+          {editingPlan&&live&&b.planning&&<PlanningEditor value={b.planning} busy={busy} reason={b.actions?.plan?.reason} onCancel={()=>setEditingPlan(false)} onForeshadowing={()=>navigate("story","伏笔线索")} onSave={(patch,scope)=>act({type:"plan",patch,...(scope?{scope}:{}),...(b.actions?.plan?.token?{token:b.actions.plan.token}:{})})} />}
         </>}
         {b.actions?.plan?.reason && <p>{b.actions.plan.reason}</p>}
         {b.actions?.adopt?.reason && <p>{b.actions.adopt.reason}</p>}

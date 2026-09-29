@@ -64,7 +64,7 @@ function workspace(candidate = false) {
   };
 }
 
-async function installMock(page: Page, withCandidate = false) {
+async function installMock(page: Page, withCandidate = false, value = workspace(withCandidate)) {
   const commands: Record<string, any>[] = [];
   await page.route("**/author-workspace/commands", async (route: Route) => {
     const body = route.request().postDataJSON() as { command: Record<string, any> };
@@ -76,7 +76,7 @@ async function installMock(page: Page, withCandidate = false) {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ bookId: BOOK_ID, message: "已保存。", ...(product ? { product } : {}) }) });
   });
   await page.route("**/author-workspace?**", async (route: Route) => {
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(workspace(withCandidate)) });
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(value) });
   });
   return commands;
 }
@@ -121,6 +121,24 @@ test("planning edits submit structured fields and related foreshadowing opens it
   await expect(page.getByRole("heading", { name: "伏笔线索" })).toBeVisible();
 });
 
+test("Opening planning edits save one graph-managed chapter from the four-page workspace", async ({ page }) => {
+  const value = workspace();
+  value.books[0].planning.graphManaged = true;
+  value.books[0].planning.overall.editable = true;
+  value.books[0].planning.upcomingChapters[0].editable = true;
+  const commands = await installMock(page, false, value);
+  await page.goto(`/workspace?page=planning&book=${encodeURIComponent(BOOK_ID)}`);
+  await page.getByRole("button", { name: "调整规划内容" }).click();
+  await page.getByLabel("第71章目标").fill("直接在四页工作台修改章节目标。");
+  await page.getByRole("button", { name: "保存第71章规划" }).click();
+  await expect.poll(() => commands.length).toBe(1);
+  expect(commands[0]).toMatchObject({
+    type: "plan",
+    scope: "chapter:71",
+    patch: { upcomingChapters: [{ number: 71, goal: "直接在四页工作台修改章节目标。" }] },
+  });
+});
+
 test("world preparation information exposes who can know it", async ({ page }) => {
   await installMock(page);
   await page.goto(`/workspace?page=writing&book=${encodeURIComponent(BOOK_ID)}&chapter=3`);
@@ -132,6 +150,16 @@ test("world preparation information exposes who can know it", async ({ page }) =
   await page.getByRole("button", { name: "故事设定" }).click();
   await page.getByRole("button", { name: "世界规则" }).click();
   await expect(page.getByRole("heading", { name: "第70章 · 主角得到半枚船印。" })).toBeVisible();
+});
+
+test("world preparation shows an empty state when the latest confirmed chapter has no record", async ({ page }) => {
+  const value = workspace();
+  value.books[0].dynamicWorld.preparationInformation = null;
+  await installMock(page, false, value);
+  await page.goto(`/workspace?page=writing&book=${encodeURIComponent(BOOK_ID)}&chapter=3`);
+  const panel = page.locator("section").filter({ has: page.getByRole("heading", { name: "下一章角色可获知" }) });
+  await expect(panel).toContainText("暂无");
+  await expect(panel).not.toContainText("上一章");
 });
 
 test("candidate inspection survives refresh and its report source token is sent with AI edit", async ({ page }) => {

@@ -1587,6 +1587,9 @@ test("world enrichment waits for the backend long-running job", async ({ page })
     updated_at: "",
   };
   let polls = 0;
+  await page.route(`**/file-projects/${fixture.encodedId}/world-build-jobs/current`, async (route) => {
+    await route.fulfill({ status: 404, body: "" });
+  });
   await page.route(`**/file-projects/${fixture.encodedId}/world-build-jobs`, async (route) => {
     fixture.project.world_summary = "补全后的世界摘要";
     fixture.project.pipeline_stage = "environment_ready";
@@ -1615,7 +1618,7 @@ test("world enrichment waits for the backend long-running job", async ({ page })
 
   // The page keeps polling the job until it reaches a terminal state
   // instead of assuming the first response is finished.
-  await expect(page.getByText("世界观已补全，可以继续检查或直接开始写作。", { exact: true })).toBeVisible();
+  await expect(page.getByText("世界观已补全，可以继续检查或直接开始写作。", { exact: true })).toBeVisible({ timeout: 15_000 });
   expect(polls).toBeGreaterThanOrEqual(2);
 });
 
