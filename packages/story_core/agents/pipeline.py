@@ -418,6 +418,9 @@ def _ensure_writer_context(
         update={
             "project_title": canonical.project_title or legacy.project_title,
             "genre": canonical.genre or legacy.genre,
+            "target_chapter_words": legacy.target_chapter_words or canonical.target_chapter_words,
+            "rewrite_guidance": "\n".join(dict.fromkeys(filter(None,
+                (canonical.rewrite_guidance, legacy.rewrite_guidance)))),
             "previous_tail": canonical.previous_tail or legacy.previous_tail,
             "continuity_facts": (
                 canonical.continuity_facts or legacy.continuity_facts
@@ -540,11 +543,20 @@ def _legacy_writer_context(
         genre_id = project_payload.get("genre_plugin_id") or project_payload.get("genre")
         if isinstance(genre_id, str) and genre_id.strip():
             genre = genre_id.strip()
+    author_guidance = [str(item) for item in project_payload.get("author_constraints", []) if str(item).strip()]
+    if project_payload.get("current_focus"):
+        author_guidance.append(f"后续创作方向（尚未发生，不得当作既定事实）：{project_payload['current_focus']}")
+    if project_payload.get("target_words"):
+        author_guidance.append(f"全书创作目标约 {project_payload['target_words']} 字。")
+    if project_payload.get("target_chapter_words"):
+        author_guidance.append(f"每章创作目标约 {project_payload['target_chapter_words']} 字；这是篇幅目标，不是输出硬上限。")
     return WriterContext(
         chapter_number=chapter_number,
         director_artifact=director_artifact,
         project_title=project_title,
         genre=genre,
+        rewrite_guidance="\n".join(author_guidance),
+        target_chapter_words=project_payload.get("target_chapter_words"),
         previous_tail=str(previous.get("tail") or ""),
         continuity_facts=continuity_facts,
         character_cards=character_cards,
@@ -589,7 +601,7 @@ def plan_director_artifact(
     )
     if rewrite_guidance.strip():
         context = context.model_copy(
-            update={"rewrite_guidance": rewrite_guidance.strip()}
+            update={"rewrite_guidance": "\n".join(filter(None, (context.rewrite_guidance, rewrite_guidance.strip())))}
         )
     runtime = runtime or _default_director_runtime(project_root)
     provider, model = _resolved_stage_provider_model("director")
@@ -748,7 +760,7 @@ def run_writer(
     )
     if rewrite_guidance.strip():
         context = context.model_copy(
-            update={"rewrite_guidance": rewrite_guidance.strip()}
+            update={"rewrite_guidance": "\n".join(filter(None, (context.rewrite_guidance, rewrite_guidance.strip())))}
         )
     canon = _ensure_canon_service(canon_registry, project_root)
 
@@ -768,6 +780,9 @@ def run_writer(
         entity_cards=list(context.entity_cards or []),
         world_rules=list(context.world_rules or []),
     )
+    project_input = legacy_project_view(_system_root(project_root)) or {}
+    canon_review_snapshot["author_requirements"] = list(project_input.get("author_constraints") or []) + (
+        list(director_artifact.outline_contract.must_not_write) if director_artifact.outline_contract else [])
 
     preflight, prepared_entities = _preflight_entities(canon, director_artifact)
     context = _add_prepared_entities_to_context(context, prepared_entities)
@@ -902,6 +917,9 @@ def run_writer(
                     blocking=False,
                 )
             )
+    else:
+        consistency_findings.append(ConsistencyFinding(code="consistency.unavailable",
+            message="事实检查暂时不可用，请配置模型后重新检查。", source="consistency", blocking=False))
     return WriterPipelineResult(
         body=result.body,
         context=context,
@@ -914,6 +932,8 @@ def run_writer(
                 "message": finding.message,
                 "source": finding.source,
                 "blocking": finding.blocking,
+                "quote": finding.quote,
+                "evidence_chapter": finding.evidence_chapter,
             }
             for finding in consistency_findings
         ],
@@ -1296,8 +1316,8 @@ def _build_writer_request(
         # Production length policy is guidance plus review metadata.
         # Preserve the first draft for human judgment instead of
         # asking the writer model to resize it automatically.
-        target_chars=target_chars(),
-        acceptance_chars=acceptance_chars(),
+        target_chars=target_chars(context.target_chapter_words),
+        acceptance_chars=acceptance_chars(context.target_chapter_words),
         repair_length=False,
         previous_tail=context.previous_tail,
         continuity_facts=list(context.continuity_facts),

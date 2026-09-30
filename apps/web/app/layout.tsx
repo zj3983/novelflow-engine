@@ -3,8 +3,8 @@ import "./globals.css";
 import type { ReactNode } from "react";
 
 export const metadata = {
-  title: "小说自动演化工作台",
-  description: "双页写作工作区，统一左侧导航、工作台与配置中心的页面结构。",
+  title: "长篇小说工作台",
+  description: "规划、创作、修改与逐章确认，在一个工作区持续写下你的故事。",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

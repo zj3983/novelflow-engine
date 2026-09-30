@@ -251,6 +251,9 @@ class SyntheticCandidateGenerator:
                 "warnings": [],
             },
             "modular_pipeline": {
+                # This fixture supplies the completed synthetic review above;
+                # bind it to the candidate through the production checks.
+                "consistency_checked": True,
                 "canon_review_snapshot": {
                     "as_of_chapter": int(story.current_chapter or 0),
                     "state_source": "synthetic-confirmed-state",

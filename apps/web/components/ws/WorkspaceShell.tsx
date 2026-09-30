@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 
-import { projectHref, safeDecodeURIComponent } from "../../lib/routing";
+import { safeDecodeURIComponent } from "../../lib/routing";
 
 type NavItem = {
   href: string;
@@ -12,34 +12,21 @@ type NavItem = {
   exact?: boolean;
 };
 
-const GLOBAL_NAV: NavItem[] = [
-  { href: "/projects", label: "作品", exact: true },
-  { href: "/novel-types", label: "小说类型", exact: true },
-  { href: "/config", label: "配置", exact: true },
-];
+const GLOBAL_NAV: NavItem[] = [{ href: "/workspace", label: "作品", exact: true }, { href: "/config", label: "设置", exact: true }];
 
 function projectIdFromPath(pathname: string): string | null {
   const match = pathname.match(/^\/projects\/([^/]+)/);
   if (!match || !match[1]) return null;
-  return safeDecodeURIComponent(match[1]);
+  const projectId = safeDecodeURIComponent(match[1]);
+  return projectId === "new" ? null : projectId;
 }
 
 function projectNav(projectId: string): NavItem[] {
-  const base = projectHref(projectId);
+  const book = encodeURIComponent(projectId);
   return [
-    { href: base, label: "概览", exact: true },
-    { href: `${base}/write`, label: "章节" },
-    { href: `${base}/dissection`, label: "拆书" },
-    { href: `${base}/sim`, label: "世界状态" },
-    { href: `${base}/prompts`, label: "提示词" },
-    { href: `${base}/skills`, label: "Skills" },
-    { href: `${base}/outline`, label: "大纲" },
-    { href: `${base}/build`, label: "开书构建" },
-    { href: `${base}/world`, label: "世界观" },
-    { href: `${base}/relationships`, label: "人物关系" },
-    { href: `${base}/characters`, label: "角色卡" },
-    { href: `${base}/settings`, label: "项目设置" },
-    { href: `${base}/log`, label: "日志" },
+    { href: `/workspace?book=${book}&page=planning`, label: "全书规划" },
+    { href: `/workspace?book=${book}&page=writing`, label: "写作" },
+    { href: `/workspace?book=${book}&page=story`, label: "故事设定" },
   ];
 }
 

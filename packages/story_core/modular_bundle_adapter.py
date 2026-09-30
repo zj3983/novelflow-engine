@@ -150,6 +150,9 @@ def adapt_modular_bundle_to_legacy(
                     "code": str(finding.get("code") or ""),
                     "message": str(finding.get("message") or ""),
                     "source": str(finding.get("source") or "consistency"),
+                    "quote": str(finding.get("quote") or ""),
+                    "evidence_chapter": finding.get("evidence_chapter"),
+                    "blocking": True,
                 }
                 for finding in blocking_findings
             ],
@@ -158,12 +161,17 @@ def adapt_modular_bundle_to_legacy(
                     "code": str(finding.get("code") or ""),
                     "message": str(finding.get("message") or ""),
                     "source": str(finding.get("source") or "consistency"),
+                    "quote": str(finding.get("quote") or ""),
+                    "evidence_chapter": finding.get("evidence_chapter"),
+                    "blocking": False,
                 }
                 for finding in non_blocking_findings
             ],
             "source": "modular_pipeline",
         },
         "modular_pipeline": {
+            "consistency_checked": not any(finding.get("code") in {
+                "consistency.unavailable", "consistency.invalid_response"} for finding in raw_findings),
             "director_artifact_present": True,
             "fact_extractor_chapter": (
                 continuity_delta.chapter_number
@@ -261,5 +269,6 @@ def adapt_modular_bundle_to_legacy(
             "fact_extractor",
         ],
         context_snapshot_id=f"modular-pipeline:chapter-{chapter_number}",
+        director_artifact=director_artifact.model_dump(mode="json"),
         continuity_delta=continuity_delta,
     )

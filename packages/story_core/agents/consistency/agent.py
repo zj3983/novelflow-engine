@@ -165,6 +165,11 @@ def _snapshot_evidence(
         token = _evidence_token(rule)
         if token:
             evidence.add(token)
+    for index, requirement in enumerate(snapshot.get("author_requirements") or []):
+        sources.add(f"author_requirement:{index}")
+        token = _evidence_token(requirement)
+        if token:
+            evidence.add(token)
 
     for index, card in enumerate(snapshot.get("characters") or []):
         if not isinstance(card, dict):
@@ -249,6 +254,11 @@ def _render_canon_snapshot(snapshot: dict[str, Any] | None) -> str:
             )
 
     rules = snapshot.get("world_rules") or []
+    requirements = snapshot.get("author_requirements") or []
+    if requirements:
+        lines.append("### 作者硬要求（创作约束，不是故事中已经发生的事实）")
+        for index, requirement in enumerate(requirements):
+            lines.append(f"- [author_requirement:{index}] {requirement}")
     if rules:
         lines.append("### 世界规则")
         for index, rule in enumerate(rules):
@@ -355,20 +365,21 @@ def build_consistency_prompt(
         "只判断正文是否与既定事实矛盾。导演计划用于理解本章意图，不是已经发生的事实。\n"
         "正文调整导演动作、过程、地点细节或收尾镜头，不算事实冲突；确需指出时使用 "
         "code=plan.deviation、blocking=false、source=director_plan。不要评价文笔、风格、对话自然度。\n"
-        "blocking=true 只允许用于与 Canon 审稿快照中可核验事实的直接矛盾。"
+        "blocking=true 只允许用于与 Canon 审稿快照中可核验事实的直接矛盾，或明确违反列出的作者硬要求。"
         "source 必须指向快照中存在的具体来源；也可用 evidence 原样引用快照证据。"
         "缺少历史快照时不得用当前状态猜测旧章事实；无法精确对应时必须 blocking=false。\n"
         "如果出现矛盾,返回 code / message / blocking / source 四个字段的 JSON 列表，"
-        "必要时附带 evidence 字段。\n"
+        "必要时附带 evidence 字段。定位正文时使用 quote 原样引用本章短句，不得改写引用。\n"
         "如果没有矛盾,返回空列表 []。\n\n"
         f"## 章节目标\n{director_artifact.chapter_goal}\n\n"
         f"## 场景节拍\n{beats}\n\n"
         f"## 收尾状态\n{director_artifact.ending_state}\n\n"
+        f"## 完整章节安排\n{_json_inline(director_artifact.outline_contract.model_dump(mode='json') if director_artifact.outline_contract else {})}\n\n"
         f"## 既定事实\n{facts or '（无）'}\n\n"
         + (f"{character_state_section}\n\n" if character_state_section else "")
         + (f"{canon_snapshot_section}\n\n" if canon_snapshot_section else "")
         + f"## 正文\n{body}\n\n"
-        "只检查：人物身份、位置、职业、等级、属性、装备、库存、任务、已知信息和已确认时间线。"
+        "只检查：人物身份、位置、职业、等级、属性、装备、库存、任务、已知信息、已确认时间线，以及明确提供的作者硬要求和禁止内容。"
         "不要评价文笔、节奏、对话、修辞或爽点。"
     )
 
@@ -446,6 +457,8 @@ class ConsistencyFinding:
     message: str
     source: str = "consistency"
     blocking: bool = True
+    quote: str = ""
+    evidence_chapter: int | None = None
 
     def __post_init__(self) -> None:
         self.blocking = _downgrade_non_factual(self.code, self.source, self.blocking)
@@ -491,6 +504,8 @@ class FocusedConsistencyAgent:
         # but never treat them as proof of a canon contradiction.
         try:
             response = self._runtime.complete(request)
+        except ModelPreflightBlockedError:
+            raise
         except Exception as exc:  # noqa: BLE001 — public boundary
             return [
                 ConsistencyFinding(
@@ -530,12 +545,15 @@ class FocusedConsistencyAgent:
                 )
             ]
         findings: list[ConsistencyFinding] = []
+        malformed = False
         for issue in issues:
             if not isinstance(issue, dict):
+                malformed = True
                 continue
             code = str(issue.get("code") or "").strip()
             message = str(issue.get("message") or "").strip()
             if not code or not message:
+                malformed = True
                 continue
             blocking_raw = issue.get("blocking")
             blocking = bool(blocking_raw) if blocking_raw is not None else True
@@ -561,14 +579,31 @@ class FocusedConsistencyAgent:
                 canon_evidence=canon_evidence,
                 require_canon_evidence=True,
             )
+            quote = str(issue.get("quote") or "").strip()
+            if not quote or len(quote) > 500 or quote not in body:
+                quote = ""
+            evidence_chapter = None
+            for fact in (canon_snapshot or {}).get("facts") or []:
+                if not isinstance(fact, dict):
+                    continue
+                if (canon_evidence and canon_evidence in {str(fact.get(key) or "") for key in ("evidence", "source_sentence", "value")}) or source == fact.get("source"):
+                    number = fact.get("chapter_number")
+                    if isinstance(number, int) and not isinstance(number, bool) and 0 < number < director_artifact.chapter_number:
+                        evidence_chapter = number
+                        break
             findings.append(
                 ConsistencyFinding(
                     code=code,
                     message=message,
                     source=source,
                     blocking=blocking,
+                    quote=quote,
+                    evidence_chapter=evidence_chapter,
                 )
             )
+        if malformed:
+            findings.append(ConsistencyFinding(code="consistency.invalid_response",
+                message="检查结果不完整，请重新检查当前稿件。", blocking=False))
         return findings
 
 

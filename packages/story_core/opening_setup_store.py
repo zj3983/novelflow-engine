@@ -14,7 +14,7 @@ from packages.story_core.opening_directions import (
     OpeningDirectionSet,
     validate_opening_direction_set_primary_tropes,
 )
-from packages.story_core.persistence.project_locking import with_project_update_lock
+from packages.story_core.persistence.project_locking import project_update_lock, with_project_update_lock
 from packages.story_core.project_outline import normalize_project_outline
 from packages.story_core.story_core_card import (
     StoryCoreCard,
@@ -180,23 +180,40 @@ class OpeningSetupStoreMixin:
             raise ValueError("invalid_novel_type")
         return validated_brief.novel_type_id
 
-    @with_project_update_lock
     def generate_opening_directions(
         self,
         generator: Any,
         *,
         guidance: str = "",
+        expected_source: str | None = None,
     ) -> dict[str, Any]:
-        existing = self.opening_directions()
-        if existing and existing.get("selected_id"):
-            raise ValueError("direction_already_selected")
-        brief = OpeningBrief.model_validate(self.opening_brief())
+        from packages.story_core.candidate_editing import digest
+        from packages.story_core.model_gateway.preflight import ModelPreflightBlockedError
+        from packages.story_core.opening_build.execution import source_fingerprint
+
+        # Capture one immutable author input snapshot. The brief accessor can
+        # migrate a legacy blank brief, so validate queued authority before that
+        # local migration, then capture the actual inputs used by the generator.
+        with project_update_lock(self.root):
+            if expected_source is not None and source_fingerprint(self) != expected_source:
+                raise ValueError("opening_direction_source_changed")
+            existing = self.opening_directions()
+            if existing and existing.get("selected_id"):
+                raise ValueError("direction_already_selected")
+            if int(self.state().get("current_chapter") or 0) > 0:
+                raise ValueError("opening_requires_unwritten_project")
+            brief = OpeningBrief.model_validate(self.opening_brief())
+            try:
+                current_type_id = self._current_opening_direction_novel_type_id(brief)
+                effective_brief = brief.model_copy(update={"novel_type_id": current_type_id})
+                trope_candidates = self._opening_direction_trope_candidates(effective_brief)
+            except Exception as exc:
+                raise ValueError("opening_direction_generation_failed") from exc
+            source = source_fingerprint(self)
+            directions_fingerprint = digest(existing)
+            project_fingerprint = digest(self.project())
+        # Network and response validation run entirely outside the project lock.
         try:
-            current_type_id = self._current_opening_direction_novel_type_id(brief)
-            effective_brief = brief.model_copy(
-                update={"novel_type_id": current_type_id}
-            )
-            trope_candidates = self._opening_direction_trope_candidates(effective_brief)
             result = generator.generate(
                 effective_brief,
                 guidance=guidance.strip(),
@@ -208,6 +225,8 @@ class OpeningSetupStoreMixin:
             directions = OpeningDirectionSet.model_validate(
                 generated_directions.model_dump(mode="json")
             )
+        except ModelPreflightBlockedError:
+            raise
         except Exception as exc:
             if isinstance(exc, ValueError) and str(exc) == "invalid_novel_type":
                 raise ValueError("opening_direction_generation_failed") from exc
@@ -217,16 +236,22 @@ class OpeningSetupStoreMixin:
             ):
                 raise
             raise ValueError("opening_direction_generation_failed") from exc
-        project = {**self.project(), "pipeline_stage": "direction_ready"}
-        self._replace_json_transaction(
-            {
+        with project_update_lock(self.root):
+            current_directions = self.opening_directions()
+            if current_directions and current_directions.get("selected_id"):
+                raise ValueError("direction_already_selected")
+            if int(self.state().get("current_chapter") or 0) > 0:
+                raise ValueError("opening_requires_unwritten_project")
+            if (source_fingerprint(self) != source
+                    or digest(current_directions) != directions_fingerprint
+                    or digest(self.project()) != project_fingerprint):
+                raise ValueError("opening_direction_source_changed")
+            project = {**self.project(), "pipeline_stage": "direction_ready"}
+            self._replace_json_transaction({
                 self.webnovel_dir / "project.json": project,
-                self.webnovel_dir / "opening_directions.json": directions.model_dump(
-                    mode="json"
-                ),
-            }
-        )
-        return self.opening_setup()
+                self.webnovel_dir / "opening_directions.json": directions.model_dump(mode="json"),
+            })
+            return self.opening_setup()
 
     @with_project_update_lock
     def select_opening_direction(self, direction_id: str) -> dict[str, Any]:

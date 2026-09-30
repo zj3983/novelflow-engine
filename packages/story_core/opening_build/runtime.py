@@ -94,6 +94,9 @@ def source_revision(store, *, project=None, outline=None):
         "world_blueprint", "character_profiles", "relationship_graph",
     )}
     sources = {name: store.snapshot_store.read_json(store.webnovel_dir / name, None) for name in SOURCE_FILES}
+    # Omitted goals retain the existing fingerprint for legacy projects.
+    fields.update({key: project[key] for key in ("target_words", "target_chapter_words")
+                   if project.get(key) is not None})
     if outline is not None:
         sources["outline.json"] = outline
     sources["current_chapter"] = store.snapshot_store.read_json(store.webnovel_dir / "state.json", {}).get("current_chapter", 0)
@@ -151,6 +154,8 @@ def author_input(store):
     return {
         "title": project.get("title", ""), "seed_outline": project.get("seed_outline", ""),
         "author_constraints": project.get("author_constraints", []),
+        **{key: project[key] for key in ("target_words", "target_chapter_words")
+           if project.get(key) is not None},
         "current_focus": project.get("current_focus", ""),
         "genre_plugin_ids": (project.get("world_blueprint") or {}).get("genre_plugin_ids", []),
         "power_progression_mode": build_world_build_graph(NovelProject.model_validate(project)).power_progression_mode,
@@ -269,18 +274,32 @@ def sync_input(store, expected_graph_revision):
 
 
 def assembled_plan(store):
-    overall = _artifact(store, "book_outline")["overall"]
-    core = StoryCoreCard.model_validate(_artifact(store, "story_core")["story_core"])
-    overall = merge_story_core_into_overall(overall, core, overwrite=False)
-    arcs = _artifact(store, "volume_plan")["arcs"]
-    chains = {item["arc_id"]: item["nodes"] for item in _artifact(store, "event_chains")["event_chains"]}
-    for arc in arcs:
-        arc["story_nodes"] = chains[arc["id"]]
-    return {
-        "outline": {"schema_version": "project-outline/v1", "overall": overall, "arcs": arcs,
-                    "chapters": [_artifact(store, f"chapter_outline_{n}")["chapter"] for n in range(1, settings(store).get("chapter_count", CHAPTER_COUNT) + 1)]},
-        "characters": _artifact(store, "detailed_characters")["characters"],
-    }
+    # Select every revision from one locked snapshot. Reading the complete graph
+    # again for each chapter makes long-volume reads quadratic in chapter count.
+    with project_update_lock(store.root):
+        build_store = store.build_graph_store()
+        state = build_store.read_state()
+
+        def artifact(task_id):
+            task = state.tasks.get(task_id) if state else None
+            revision = task.current_artifact_revision if task else None
+            item = build_store.read_artifact(task_id, revision) if revision is not None else None
+            if item is None:
+                raise ValueError(f"opening_dependency_missing:{task_id}")
+            return deepcopy(item.payload)
+
+        overall = artifact("book_outline")["overall"]
+        core = StoryCoreCard.model_validate(artifact("story_core")["story_core"])
+        overall = merge_story_core_into_overall(overall, core, overwrite=False)
+        arcs = artifact("volume_plan")["arcs"]
+        chains = {item["arc_id"]: item["nodes"] for item in artifact("event_chains")["event_chains"]}
+        for arc in arcs:
+            arc["story_nodes"] = chains[arc["id"]]
+        return {
+            "outline": {"schema_version": "project-outline/v1", "overall": overall, "arcs": arcs,
+                        "chapters": [artifact(f"chapter_outline_{n}")["chapter"] for n in range(1, settings(store).get("chapter_count", CHAPTER_COUNT) + 1)]},
+            "characters": artifact("detailed_characters")["characters"],
+        }
 
 
 def extend_first_volume(store, expected_graph_revision):

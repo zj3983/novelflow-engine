@@ -392,6 +392,17 @@ class ProjectProfileStoreMixin:
             str(panel.get("game_id") or "").strip(),
         }
 
+    @staticmethod
+    def character_profile_version(card: dict[str, Any]) -> str:
+        payload = json.dumps(
+            card,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+        return sha256(payload).hexdigest()
+
     def _completed_character_card(
         self,
         card: dict[str, Any],
@@ -430,6 +441,7 @@ class ProjectProfileStoreMixin:
             is_game_story=self._is_game_story_payload(self.project(), raw_state),
         )
 
+    @with_project_update_lock
     def update_character(
         self,
         name: str,
@@ -538,7 +550,13 @@ class ProjectProfileStoreMixin:
 
         return raw_cards[raw_index if raw_index is not None else -1]
 
-    def complete_character_portrait(self, name: str) -> dict[str, Any]:
+    @with_project_update_lock
+    def complete_character_portrait(
+        self,
+        name: str,
+        *,
+        expected_version: str | None = None,
+    ) -> dict[str, Any]:
         identifier = str(name or "").strip()
         visible_state = self.state()
         cards = (
@@ -546,7 +564,7 @@ class ProjectProfileStoreMixin:
             if isinstance(visible_state.get("characters"), list)
             else []
         )
-        current = next(
+        state_card = next(
             (
                 dict(item)
                 for item in cards
@@ -555,15 +573,87 @@ class ProjectProfileStoreMixin:
             ),
             None,
         )
+        project = self.project()
+        project_cards = project.get("character_profiles") if isinstance(project.get("character_profiles"), list) else []
+        project_card = next(
+            (dict(item) for item in project_cards if isinstance(item, dict) and self._character_matches(item, identifier)),
+            None,
+        )
+        if expected_version is not None:
+            # Product editing is based on the stable project profile. A state-only
+            # character may be promoted into that profile without rewriting the
+            # mutable chapter state.
+            current = project_card or state_card
+            if current is None:
+                raise KeyError(f"character_not_found:{identifier}")
+            if self.character_profile_version(current) != expected_version:
+                raise ValueError("character_profile_revision_conflict")
+            completed = self._completed_character_card(
+                current,
+                genre=str(visible_state.get("genre") or ""),
+            )
+            return self.update_character_profile(
+                identifier,
+                completed,
+                expected_version=expected_version,
+            )
+
+        current = state_card or project_card
+        has_state_card = state_card is not None
         if current is None:
             raise KeyError(f"character_not_found:{identifier}")
         completed = self._completed_character_card(
             current,
             genre=str(visible_state.get("genre") or ""),
         )
+        if not has_state_card:
+            return self.update_character_profile(identifier, completed)
         return self.update_character(
             str(completed.get("name") or identifier),
             completed,
+        )
+
+    @with_project_update_lock
+    def update_character_profile(
+        self,
+        name: str,
+        patch: dict[str, Any],
+        *,
+        expected_version: str | None = None,
+    ) -> dict[str, Any]:
+        identifier = str(name or "").strip()
+        project = dict(self.project())
+        raw_cards = project.get("character_profiles") if isinstance(project.get("character_profiles"), list) else []
+        cards = [dict(item) for item in raw_cards if isinstance(item, dict)]
+        index = next((i for i, item in enumerate(cards) if self._character_matches(item, identifier)), None)
+        state = self.state()
+        state_cards = state.get("characters") if isinstance(state.get("characters"), list) else []
+        state_card = next(
+            (dict(item) for item in state_cards if isinstance(item, dict) and self._character_matches(item, identifier)),
+            None,
+        )
+        if index is None and state_card is None:
+            raise KeyError(f"character_not_found:{identifier}")
+        current = cards[index] if index is not None else state_card
+        current_version = self.character_profile_version(current)
+        if expected_version is not None and current_version != expected_version:
+            raise ValueError("character_profile_revision_conflict")
+        canonical_name = str(current.get("name") or "").strip()
+        if not canonical_name or patch.get("name") not in (None, "", canonical_name):
+            raise ValueError("character_name_immutable")
+        merged = self._merge_character_patch(current, {**patch, "name": canonical_name})
+        state = self._read_json(self.webnovel_dir / "state.json", {}) or {}
+        is_game_story = self._is_game_story_payload(project, state)
+        normalized = normalize_character_persistence_card(merged, is_game_story=is_game_story)
+        if index is None:
+            cards.append(normalized)
+        else:
+            cards[index] = normalized
+        project["character_profiles"] = filter_character_cards(cards)
+        self._replace_json_transaction({self.webnovel_dir / "project.json": project})
+        return next(
+            item for item in project["character_profiles"]
+            if isinstance(item, dict) and self._character_matches(item, canonical_name)
         )
 
     def _valid_foreshadowing_ledger(

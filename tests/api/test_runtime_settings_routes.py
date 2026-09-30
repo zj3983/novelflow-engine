@@ -40,8 +40,10 @@ def runtime_configuration(*, planner="deepseek", writer="codexcli"):
 @pytest.fixture(autouse=True)
 def isolate_runtime(monkeypatch, tmp_path):
     import packages.story_core.runtime_config as runtime_config
+    import packages.story_core.model_gateway.capabilities as capabilities
 
     monkeypatch.setattr(runtime_config, "CONFIG_FILE", tmp_path / "runtime-config.json")
+    monkeypatch.setattr(capabilities, "CAPABILITY_CACHE_FILE", tmp_path / "capabilities.json")
     runtime_config.set_runtime_configuration(runtime_configuration())
 
 

@@ -1,0 +1,85 @@
+{"event": "created", "book": "file:p-d4f25222caa24d2d9425fcc426a2dcf6", "confirmed": 0}
+{"event": "planning", "action": "prepare-plan"}
+{"event": "planning", "action": "prepare-plan"}
+{"event": "planning", "action": "prepare-plan"}
+{"event": "planning", "action": "prepare-plan"}
+{"event": "planning", "action": "prepare-plan"}
+{"event": "planning", "action": "prepare-plan"}
+{"event": "planning", "action": "prepare-plan"}
+{"event": "planning", "action": "complete-volume"}
+{"event": "planning", "action": "refresh-plan"}
+{"event": "planning", "action": "refresh-plan"}
+{"event": "planning", "action": "prepare-plan"}
+{"event": "adopted", "volume": 1}
+{"event": "confirmed", "chapter": 1, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 2, "volume": 1, "duplicate_rejected": true}
+{"event": "adopted", "volume": 1}
+{"event": "manual-edit-rechecked", "chapter": 3}
+{"event": "confirmed", "chapter": 3, "volume": 1, "duplicate_rejected": true}
+{"event": "ai-edit-rechecked", "chapter": 4}
+{"event": "confirmed", "chapter": 4, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 5, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 6, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 7, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 8, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 9, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 10, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 11, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 12, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 13, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 14, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 15, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 16, "volume": 1, "duplicate_rejected": true}
+{"event": "generation-failure", "chapter": 17, "notice": "这部分内容还需要检查。"}
+{"event": "confirmed", "chapter": 17, "volume": 1, "duplicate_rejected": true}
+{"event": "review-failure", "chapter": 18, "confirmation_rejected": true}
+{"event": "review-recovered", "chapter": 18, "body_preserved": true}
+{"event": "confirmed", "chapter": 18, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 19, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 20, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 21, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 22, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 23, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 24, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 25, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 26, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 27, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 28, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 29, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 30, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 31, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 32, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 33, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 34, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 35, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 36, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 37, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 38, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 39, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 40, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 41, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 42, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 43, "volume": 1, "duplicate_rejected": true}
+{"canRetry":true,"read_model_calls":0,"event":"restart-recovered","confirmed":43,"busy":false}
+{"event": "confirmed", "chapter": 44, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 45, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 46, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 47, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 48, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 49, "volume": 1, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 50, "volume": 2, "duplicate_rejected": true}
+{"event": "planning", "action": "next-volume"}
+{"event": "planning", "action": "prepare-plan"}
+{"event": "adopted", "volume": 2}
+{"event": "confirmed", "chapter": 51, "volume": 2, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 52, "volume": 2, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 53, "volume": 2, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 54, "volume": 2, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 55, "volume": 2, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 56, "volume": 2, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 57, "volume": 2, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 58, "volume": 2, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 59, "volume": 2, "duplicate_rejected": true}
+{"event": "confirmed", "chapter": 60, "volume": 2, "duplicate_rejected": true}
+{"event": "complete", "book": "file:p-d4f25222caa24d2d9425fcc426a2dcf6", "chapters": 60, "confirmed_bodies_unchanged": 60}
+{"confirmed":60,"busy":false,"event":"final-cleanup","pending_candidate":false,"active_planning_runs":0}

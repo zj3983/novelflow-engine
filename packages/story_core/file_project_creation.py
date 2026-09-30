@@ -37,6 +37,16 @@ class FileProjectCreateSpec(BaseModel):
     novel_type_id: str
     idea: str = Field(default="", max_length=1000)
     narrative_enhancement_ids: list[str] = Field(default_factory=list, max_length=8)
+    target_words: int | None = Field(default=None, ge=1000, le=10000000)
+    target_chapter_words: int | None = Field(default=None, ge=500, le=20000)
+    author_constraints: list[str] = Field(default_factory=list, max_length=100)
+
+    @field_validator("author_constraints")
+    @classmethod
+    def normalize_author_constraints(cls, value: list[str]) -> list[str]:
+        if any(len(item) > 2000 for item in value):
+            raise ValueError("author_constraint_too_long")
+        return list(dict.fromkeys(item.strip() for item in value if item.strip()))
 
     @field_validator("title", "idea", mode="before")
     @classmethod
@@ -142,7 +152,9 @@ def _project_payload(project_id: str, spec: FileProjectCreateSpec) -> dict[str, 
         "seed_outline": "",
         "world_summary": "",
         "current_focus": "",
-        "author_constraints": [],
+        "author_constraints": list(spec.author_constraints),
+        **{key: getattr(spec, key) for key in ("target_words", "target_chapter_words")
+           if getattr(spec, key) is not None},
         "character_profiles": [],
         "relationship_graph": [],
         "enabled_skill_ids": enabled_skill_ids,
@@ -166,6 +178,7 @@ def _state_payload(project_id: str, spec: FileProjectCreateSpec) -> dict[str, An
         genre_plugin_ids=[novel_type.id],
         style="通俗网文",
         current_chapter=0,
+        author_constraints=list(spec.author_constraints),
         enabled_skill_ids=enabled_skill_ids,
         enabled_skill_module_ids=enabled_module_ids,
     )
@@ -180,6 +193,9 @@ def _opening_brief_payload(spec: FileProjectCreateSpec) -> dict[str, Any]:
         "novel_type_id": spec.novel_type_id,
         "idea": idea,
         "working_title": spec.title,
+        **{key: getattr(spec, key) for key in ("target_words", "target_chapter_words")
+           if getattr(spec, key) is not None},
+        **({"author_constraints": list(spec.author_constraints)} if spec.author_constraints else {}),
     }
 
 

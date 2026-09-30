@@ -698,6 +698,9 @@ class NovelProject(BaseModel):
     world_summary: str = ""
     current_focus: str = ""
     author_constraints: list[str] = Field(default_factory=list)
+    # Author's creative goals, never protocol output limits.
+    target_words: int | None = Field(default=None, ge=1000, le=10000000)
+    target_chapter_words: int | None = Field(default=None, ge=500, le=20000)
     world_blueprint: dict = Field(default_factory=dict)
     character_profiles: list[dict] = Field(default_factory=list)
     relationship_graph: list[dict] = Field(default_factory=list)

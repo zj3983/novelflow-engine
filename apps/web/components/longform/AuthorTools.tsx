@@ -1,0 +1,160 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import type { Book, BookDetails, CharacterCardView, Command, DissectionView, DynamicWorld, ForeshadowItem, ProductAction, Relationship, DissectionReport, WritingAbilities, WritingTemplate, WorldSection } from "./product";
+import s from "./workspace.module.css";
+
+type Act = (command: Command) => void;
+function send(act: Act, action: ProductAction | null | undefined, values: Record<string, unknown> = {}) {
+  if (!action?.command) return;
+  act({ type: action.command, token: action.token, ...values } as unknown as Command);
+}
+function Action({ action, disabled, onClick }: { action?: ProductAction | null; disabled?: boolean; onClick?: () => void }) {
+  if (!action) return null;
+  return <div className={s.productAction}><button disabled={disabled || !action.enabled} onClick={onClick}>{action.label}</button>{action.reason && <p className={s.smallNote}>{action.reason}</p>}</div>;
+}
+function DisplayList({ items }: { items?: string[] }) { return items?.length ? <ul>{items.map((item, i) => <li key={`${i}:${item}`}>{item}</li>)}</ul> : <p className={s.muted}>尚无内容</p>; }
+
+export function BookDetailsEditor({ book, busy, act }: { book: Book; busy: boolean; act: Act }) {
+  const detail = book.bookDetails;
+  const [synopsis, setSynopsis] = useState(detail?.synopsis || "");
+  const [tags, setTags] = useState((detail?.synopsisTags || []).join("、"));
+  const [synopsisGuidance, setSynopsisGuidance] = useState("");
+  const [coverGuidance, setCoverGuidance] = useState("");
+  const [novelType, setNovelType] = useState(detail?.novelTypeId || "");
+  const [style, setStyle] = useState(detail?.writingStyle || "");
+  const fingerprint = `${detail?.synopsis || ""}\n${(detail?.synopsisTags || []).join("、")}\n${detail?.novelTypeId || ""}\n${detail?.writingStyle || ""}`;
+  useEffect(() => { setSynopsis(detail?.synopsis || ""); setTags((detail?.synopsisTags || []).join("、")); setNovelType(detail?.novelTypeId || ""); setStyle(detail?.writingStyle || ""); }, [book.id, fingerprint]);
+  if (!detail) return <><h2>作品资料</h2><p className={s.smallNote}>当前作品没有可编辑的出版资料。</p></>;
+  const actions = detail.actions;
+  const synopsisTagList = tags.split(/[、,，]/).map(x => x.trim()).filter(Boolean);
+  const synopsisValid = synopsis.trim().length > 0 && synopsis.trim().length <= 2000
+    && synopsisTagList.length >= 4 && synopsisTagList.length <= 8
+    && synopsisTagList.every(tag => tag.length <= 32)
+    && new Set(synopsisTagList).size === synopsisTagList.length;
+  return <div className={s.productEditor}>
+    <h2>作品资料</h2><p className={s.subtitle}>{detail.title || book.title}</p>
+    <section><h3>作品简介</h3><label>简介正文<textarea value={synopsis} onChange={e => setSynopsis(e.target.value)} /></label><label>标签（用顿号分隔）<input value={tags} onChange={e => setTags(e.target.value)} /></label><div className={s.pair}><Action action={actions?.saveSynopsis} disabled={busy || !synopsisValid} onClick={() => send(act, actions?.saveSynopsis, { body: synopsis, tags: synopsisTagList })} /><Action action={actions?.generateSynopsis} disabled={busy} onClick={() => send(act, actions?.generateSynopsis, { guidance: synopsisGuidance })} /></div><p className={s.smallNote} role={synopsisValid ? undefined : "status"}>手动保存需填写 1–2000 字简介，并添加 4–8 个不重复标签（每个不超过 32 字）。生成简介是单独操作。</p><label>简介生成补充要求<textarea value={synopsisGuidance} onChange={e => setSynopsisGuidance(e.target.value)} placeholder="可留空；只有点击生成简介时才会提交。" /></label><p className={s.smallNote}>{detail.synopsisStatusLabel || "简介状态未知"}。</p></section>
+    <section><h3>封面</h3><p>{detail.coverStatusLabel || (detail.coverAvailable ? "封面已生成" : "尚无封面")}</p><label>封面生成补充要求<textarea value={coverGuidance} onChange={e => setCoverGuidance(e.target.value)} placeholder="可留空；只有点击生成封面时才会提交。" /></label><Action action={actions?.generateCover} disabled={busy} onClick={() => send(act, actions?.generateCover, { guidance: coverGuidance })} /><p className={s.smallNote}>生成只在你点击后开始。</p></section>
+    <section><h3>类型与文风</h3><label>作品类型<select value={novelType} onChange={e => setNovelType(e.target.value)}><option value="">未设置</option>{detail.novelTypeOptions?.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label><Action action={actions?.saveType} disabled={busy || novelType === (detail.novelTypeId || "")} onClick={() => send(act, actions?.saveType, { novelTypeId: novelType })} /><label>文风<select value={style} onChange={e => setStyle(e.target.value)}><option value="">未设置</option>{detail.writingStyleOptions?.map(option => <option key={option} value={option}>{option}</option>)}</select></label><Action action={actions?.saveStyle} disabled={busy || style === (detail.writingStyle || "")} onClick={() => send(act, actions?.saveStyle, { writingStyle: style })} /></section>
+    <section><h3>创作进度</h3><dl className={s.facts}><dt>全书目标</dt><dd>{detail.targetWords ? `${detail.targetWords.toLocaleString()} 字` : "未设置"}</dd><dt>每章目标</dt><dd>{detail.targetChapterWords ? `${detail.targetChapterWords.toLocaleString()} 字` : "未设置"}</dd><dt>已确认章节</dt><dd>{detail.confirmedChapterCount ?? "—"}</dd><dt>已确认字数</dt><dd>{detail.chapterCountComplete && detail.confirmedWordCount != null ? `${detail.confirmedWordCount.toLocaleString()} 字` : "尚无法完整统计"}</dd></dl></section>
+  </div>;
+}
+
+const profileFields: Record<string, { title: string; fields: [string, string, "text" | "list" | "number"][] }[]> = {
+  identityProfile: [{ title: "身份资料", fields: [["age", "年龄", "number"], ["gender", "性别", "text"], ["aliases", "别名", "list"], ["birthplace", "出生地", "text"], ["origin", "来历", "text"], ["currentIdentity", "当前身份", "text"], ["occupation", "职业", "text"], ["affiliation", "所属势力", "text"]] }],
+  backgroundProfile: [{ title: "经历背景", fields: [["family", "家庭", "text"], ["upbringing", "成长经历", "text"], ["educationOrTraining", "教育或训练", "text"], ["formativeEvents", "重要经历", "list"], ["arrivalReason", "来到当前故事的原因", "text"]] }],
+  storyDrive: [{ title: "人物目标", fields: [["longTermGoal", "长期目标", "text"], ["immediateGoal", "眼前目标", "text"], ["motivation", "核心动机", "text"], ["failureStakes", "失败代价", "text"], ["hiddenMatters", "隐瞒事项", "list"], ["mainConflictReason", "主要冲突缘由", "text"]] }],
+  performanceProfile: [{ title: "人物表现", fields: [["speechStyle", "说话方式", "text"], ["actionStyle", "行动方式", "text"], ["riskPosture", "风险态度", "text"], ["emotionalTriggers", "情绪触发点", "list"], ["decisionRules", "决策习惯", "list"], ["revealLimits", "信息揭示边界", "list"]] }],
+};
+const profileLabels: Record<string, string> = { identityProfile: "身份", backgroundProfile: "背景", storyDrive: "目标与动机", performanceProfile: "表现方式", dialogueExamples: "对话示例", futurePlans: "后续计划" };
+
+export function CharacterProfileEditor({ card, person, busy, act }: { card?: CharacterCardView; person?: CharacterCardView; busy: boolean; act: Act }) {
+  const value = card || person;
+  const [editing, setEditing] = useState(false);
+  const [profile, setProfile] = useState<Record<string, any>>(value?.editableProfile || {});
+  const fingerprint = JSON.stringify(value?.editableProfile || {});
+  useEffect(() => { setProfile(value?.editableProfile || {}); setEditing(false); }, [value?.name, fingerprint]);
+  if (!value) return <p className={s.smallNote}>尚无人可以编辑人物设定。</p>;
+  const update = (section: string, key: string, text: string, type: string) => {
+    const next = { ...profile, [section]: { ...(profile[section] || {}), [key]: type === "list" ? text.split("\n").map(x => x.trim()).filter(Boolean) : type === "number" ? (text ? Number(text) : null) : text } };
+    setProfile(next);
+  };
+  const action = value.actions?.save;
+  return <>
+    <div className={s.sectionHeading}><h3>稳定人物设定</h3>{action && <button onClick={() => setEditing(x => !x)}>{editing ? "取消编辑" : "编辑人物档案"}</button>}</div>
+    {editing ? <div className={s.profileForm}>{Object.entries(profileFields).map(([section, groups]) => groups.map(group => <fieldset key={section}><legend>{group.title}</legend>{group.fields.map(([key, label, type]) => <label key={key}>{label}{type === "number" ? <input type="number" min="0" max="300" value={profile[section]?.[key] ?? ""} onChange={e => update(section,key,e.target.value,type)} /> : type === "text" ? <textarea value={profile[section]?.[key] || ""} onChange={e => update(section,key,e.target.value,type)} /> : <textarea value={(profile[section]?.[key] || []).join("\n")} onChange={e => update(section,key,e.target.value,type)} placeholder="每行一项" />}</label>)}</fieldset>))}{(["dialogueExamples", "futurePlans"] as const).map(key => <label key={key}>{profileLabels[key]}<textarea value={(profile[key] || []).join("\n")} onChange={e => setProfile({ ...profile, [key]: e.target.value.split("\n").map(x => x.trim()).filter(Boolean) })} placeholder="每行一项" /></label>)}<Action action={action} disabled={busy} onClick={() => send(act, action, { profile })} /><button onClick={() => {setProfile(value.editableProfile || {});setEditing(false)}}>取消并恢复已保存内容</button><Action action={value.actions?.completePortrait} disabled={busy} onClick={() => { if (window.confirm("补全人物画像会调用现有补全能力。现在开始吗？")) send(act, value.actions.completePortrait); }} /></div> : <div className={s.profileSummary}>{Object.entries(value.editableProfile || {}).map(([key, fields]) => <section key={key}><h4>{profileLabels[key] || key}</h4>{Object.entries(fields as Record<string, unknown>).filter(([, v]) => (Array.isArray(v) ? v.length : !!v)).map(([field, v]) => <p key={field}><strong>{fieldLabel(field)}：</strong>{Array.isArray(v) ? v.join("、") : String(v)}</p>)}</section>)}<section><h4>当前状态（随正文确认更新）</h4>{Object.entries(value.currentState || {}).length ? Object.entries(value.currentState || {}).map(([key, v]) => <p key={key}><strong>{fieldLabel(key)}：</strong>{v}</p>) : <p>暂无状态记录。</p>}</section><section><h4>正文中已发生的事实</h4>{value.facts?.length ? value.facts.map((item,i) => <p className={s.evidence} key={`${i}:${item.text}`}>{item.text}{item.chapter && <button onClick={() => act({ type:"navigate",page:"writing",chapter:item.chapter })}>查看第{item.chapter}章</button>}</p>) : <p>暂无可引用的正文依据。</p>}</section><section><h4>人物表现</h4><DisplayList items={value.performance} /></section><section><h4>后续计划（尚未写入正文）</h4><DisplayList items={value.futurePlans} /></section></div>}
+  </>;
+}
+
+function fieldLabel(key: string) { return ({ age:"年龄",gender:"性别",aliases:"别名",birthplace:"出生地",origin:"来历",currentIdentity:"当前身份",occupation:"职业",affiliation:"所属势力",family:"家庭",upbringing:"成长经历",educationOrTraining:"教育或训练",formativeEvents:"重要经历",arrivalReason:"来历",longTermGoal:"长期目标",immediateGoal:"眼前目标",motivation:"核心动机",failureStakes:"失败代价",hiddenMatters:"隐瞒事项",mainConflictReason:"主要冲突缘由",speechStyle:"说话方式",actionStyle:"行动方式",riskPosture:"风险态度",emotionalTriggers:"情绪触发点",decisionRules:"决策习惯",revealLimits:"揭示边界",dialogueExamples:"对话示例",futurePlans:"后续计划",location:"当前位置",condition:"身体状况",emotion:"情绪",currentGoal:"眼前目标" } as Record<string,string>)[key] || key; }
+
+export function RelationshipsEditor({ items, people, save, busy, act }: { items: Relationship[]; people: {name:string}[]; save: ProductAction; busy: boolean; act: Act }) {
+  const [rows, setRows] = useState(items);
+  const fingerprint = JSON.stringify(items);
+  useEffect(() => setRows(items), [fingerprint]);
+  const edit = (index:number,key:keyof Relationship,value:string|number) => setRows(rows.map((row,i) => i === index ? {...row,[key]:value} : row));
+  const add = () => setRows([...rows, {source:"",target:"",relationship:"",history:"",historyEditable:true,currentState:"",sharedInterestOrConflict:"",trust:0,tension:0}]);
+  return <section className={s.productEditor}><div className={s.sectionHeading}><h3>人物关系</h3><button disabled={busy} onClick={add}>新增关系</button></div>
+    {rows.map((row,index) => <article className={s.productCard} key={`${row.source}:${row.target}:${index}`}><div className={s.pair}><label>人物甲<select value={row.source} onChange={e => edit(index,"source",e.target.value)}><option value="">选择人物</option>{people.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}</select></label><label>人物乙<select value={row.target} onChange={e => edit(index,"target",e.target.value)}><option value="">选择人物</option>{people.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}</select></label></div><label>关系<textarea value={row.relationship} onChange={e => edit(index,"relationship",e.target.value)} /></label>{row.historyEditable ? <label>关系来源或历史（首次保存）<textarea value={row.history} onChange={e => edit(index,"history",e.target.value)} /></label> : <label>关系来源或历史（只读）<textarea value={row.history || "尚未记录"} readOnly /></label>}<label>当前状态<textarea value={row.currentState} onChange={e => edit(index,"currentState",e.target.value)} /></label><label>共同利益或冲突<textarea value={row.sharedInterestOrConflict} onChange={e => edit(index,"sharedInterestOrConflict",e.target.value)} /></label><div className={s.pair}><label>信任（0–100）<input type="number" min="0" max="100" value={row.trust ?? 0} onChange={e => edit(index,"trust",Number(e.target.value))} /></label><label>张力（0–100）<input type="number" min="0" max="100" value={row.tension ?? 0} onChange={e => edit(index,"tension",Number(e.target.value))} /></label></div><small>{row.basisLabel}{row.evidenceChapter ? ` · 第${row.evidenceChapter}章` : ""}</small><button className={s.textButton} onClick={() => setRows(rows.filter((_,i) => i !== index))}>移除关系</button></article>)}
+    {!rows.length && <p className={s.muted}>还没有人物关系。</p>}<Action action={save} disabled={busy} onClick={() => send(act,save,{items:rows.map(row=>({source:row.source,target:row.target,relation_type:row.relationship,origin:row.history,current_state:row.currentState,shared_interest_or_conflict:row.sharedInterestOrConflict,trust:row.trust,tension:row.tension}))})} /><p className={s.smallNote}>已有关系的来源或历史在创建后只读，用于保留原始关系依据；新关系可在首次保存时填写。涉及已确认章节的关系无法删除，服务端会检查人物端点和并发修改。</p>
+  </section>;
+}
+
+export function WorldSectionsEditor({ sections, busy, act }: { sections: WorldSection[]; busy: boolean; act: Act }) {
+  const [drafts, setDrafts] = useState<Record<string,WorldSection["entries"]>>({});
+  const fingerprint = JSON.stringify(sections);
+  useEffect(() => setDrafts(Object.fromEntries(sections.map(section=>[section.id,section.entries]))), [fingerprint]);
+  return <>{sections.map(section => { const entries = drafts[section.id] || section.entries; const change=(index:number,key:"title"|"text",value:string)=>setDrafts({...drafts,[section.id]:entries.map((entry,i)=>i===index?{...entry,[key]:value}:entry)}); return <section className={s.productEditor} key={section.id}><div className={s.sectionHeading}><h3>{section.title}</h3>{section.id!=="background" && section.id!=="equipment" && section.id!=="monsters" && <button disabled={busy} onClick={()=>setDrafts({...drafts,[section.id]:[...entries,{id:"",title:"",text:"",editable:true}]})}>新增条目</button>}</div>{entries.map((entry,index)=><div className={s.productCard} key={entry.id || `new-${index}`}>{section.id==="rules"?<label>规则内容<textarea disabled={!entry.editable} value={entry.text} onChange={e=>change(index,"text",e.target.value)} /></label>:<><label>标题<input disabled={!entry.editable} value={entry.title} onChange={e=>change(index,"title",e.target.value)} /></label><label>内容<textarea disabled={!entry.editable} value={entry.text} onChange={e=>change(index,"text",e.target.value)} /></label></>}{!entry.editable && <small>正文确认的事实，只读</small>}{entry.editable && <button className={s.textButton} onClick={()=>setDrafts({...drafts,[section.id]:entries.filter((_,i)=>i!==index)})}>移除此条目</button>}</div>)}{!entries.length&&<p className={s.muted}>尚无设定内容。</p>}<Action action={section.save} disabled={busy} onClick={()=>send(act,section.save,{entries:entries.map(entry=>entry.id?entry:{title:entry.title,text:entry.text,editable:true})})} /><p className={s.smallNote}>仅保存本分类列出的字段；已确认事实保持只读。</p></section>;})}</>;
+}
+
+export function ForeshadowingEditor({ items, save, busy, act, onChapter }: { items: ForeshadowItem[]; save: ProductAction; busy: boolean; act: Act; onChapter:(chapter:number)=>void }) {
+  const [rows,setRows]=useState(items); const fingerprint=JSON.stringify(items); useEffect(()=>setRows(items),[fingerprint]);
+  const update=(i:number,key:string,value:unknown)=>setRows(rows.map((row,index)=>index===i?{...row,[key]:value}:row));
+  return <section className={s.productEditor}><div className={s.sectionHeading}><h3>伏笔与线索</h3><button disabled={busy} onClick={()=>setRows([...rows,{key:`new-${Date.now()}`,title:"待回应",text:"",statusLabel:"待回应",payoffPlan:"",editable:true}])}>新增线索</button></div>
+    {rows.map((row,index)=><article className={s.productCard} key={row.key}><label>线索<textarea value={row.text} onChange={e=>update(index,"text",e.target.value)} /></label><label>状态<select value={row.statusLabel || "待回应"} onChange={e=>update(index,"statusLabel",e.target.value)}>{["待回应","已强化","已回收","已过期"].map(x=><option key={x}>{x}</option>)}</select></label><label>后续回应计划<textarea value={row.payoffPlan || ""} onChange={e=>update(index,"payoffPlan",e.target.value)} /></label><div className={s.pair}>{row.firstChapter&&<button onClick={()=>onChapter(row.firstChapter!)}>首次出现：第{row.firstChapter}章</button>}{row.lastTouchedChapter&&<button onClick={()=>onChapter(row.lastTouchedChapter!)}>最近变化：第{row.lastTouchedChapter}章</button>}{row.resolvedChapter&&<button onClick={()=>onChapter(row.resolvedChapter!)}>回收：第{row.resolvedChapter}章</button>}</div><button className={s.textButton} onClick={()=>setRows(rows.filter((_,i)=>i!==index))}>移除</button></article>)}{!rows.length&&<p className={s.muted}>尚无伏笔记录。</p>}<Action action={save} disabled={busy} onClick={()=>send(act,save,{items:rows})} /><p className={s.smallNote}>章节来源只允许引用仍有效的已确认章节。</p>
+  </section>;
+}
+
+export function DynamicWorldPanel({ value, chapters, onSelect }: { value?:DynamicWorld; chapters:Book["chapters"]; onSelect:(n:number)=>void }) {
+  if (!value) return null; const record=value.chapterRecord;
+  const groups:[string,string][]=[["publicChanges","公开变化"],["nextPressures","后续压力"],["nextChapterInformation","角色获知"],["backgroundEvents","幕后变化"],["authorVisibleUnknowns","作者可见的未揭晓信息"],["marketMovements","市场变化"]];
+  return <section className={s.productEditor}><h3>世界局面</h3><p className={s.smallNote}>这是所选已确认章节对应的动态快照；可见范围按记录展示。</p><h4>当前快照{value.currentSnapshot?.chapter?` · 确认至第${value.currentSnapshot.chapter}章`:""}</h4>{value.currentSnapshot?.entries?.length?<dl className={s.facts}>{value.currentSnapshot.entries.map((item,i)=><div className={s.factRow} key={`${item.label}-${i}`}><dt>{item.label}</dt><dd>{item.value}</dd></div>)}</dl>:<p className={s.muted}>暂无当前快照。</p>}<label>查看章节动态<select value={value.selectedChapter || ""} onChange={e=>{const n=Number(e.target.value);if(n)onSelect(n)}}><option value="">选择有记录的章节</option>{value.availableChapters?.map(ch=><option key={ch.number} value={ch.number}>第{ch.number}章 · {ch.title}</option>)}</select></label>{record?<><h4>第{record.chapter}章{record.summary?` · ${record.summary}`:""}</h4>{groups.map(([key,label])=>{const lines=record[key] as ({text?:string;whoCanKnow?:string;label?:string;value?:string}[]|undefined);return lines?.length?<section key={key}><h4>{label}</h4>{lines.map((line,i)=><p key={i}>{line.text || `${line.label || ""}：${line.value || ""}`}{line.whoCanKnow&&<small> · 可知范围：{line.whoCanKnow}</small>}</p>)}</section>:null})}</>:<p className={s.muted}>{value.emptyMessage || "本章暂无可展示的动态记录。"}</p>}</section>;
+}
+
+export function WritingTemplatesEditor({ templates, busy, act }: { templates: WritingTemplate[]; busy:boolean; act:Act }) {
+  const [drafts,setDrafts]=useState<Record<string,string>>({}); const [confirmGlobalUpdate,setConfirmGlobalUpdate]=useState<Record<string,boolean>>({}); const [confirmRestoreProject,setConfirmRestoreProject]=useState<Record<string,boolean>>({});
+  const fingerprint=templates.map(t=>`${t.id}:${t.content}`).join("|"); useEffect(()=>setDrafts(Object.fromEntries(templates.map(t=>[t.id,t.content]))),[fingerprint]);
+  return <div className={s.productEditor}><h3>写作指令模板</h3><p className={s.smallNote}>模板编辑显示作者可改的模板正文和变量。运行上下文与调用记录不在此处展示。</p>{templates.map(template=>{const content=drafts[template.id]??template.content;const report=template.lastCheck?.checkedContent===content?template.lastCheck:undefined;return <article className={s.productCard} key={template.id}><h4>{template.title}</h4><p>{template.purpose} · {template.applicabilityLabel} · {template.sourceLabel}</p><label>模板正文<textarea value={content} onChange={e=>setDrafts({...drafts,[template.id]:e.target.value})} /></label><p className={s.smallNote}>可用变量：{template.placeholders.map(x=>`${x.syntax}（${x.label}）`).join("、") || "无"}</p><label className={s.confirmLine}><input type="checkbox" checked={!!confirmGlobalUpdate[template.id]} onChange={e=>setConfirmGlobalUpdate({...confirmGlobalUpdate,[template.id]:e.target.checked})} />我确认修改全局模板；使用全局模板的其他作品会受到影响</label><div className={s.pair}><Action action={template.actions.saveProject} disabled={busy} onClick={()=>send(act,template.actions.saveProject,{content})} /><Action action={template.actions.saveGlobal} disabled={busy||!confirmGlobalUpdate[template.id]} onClick={()=>send(act,template.actions.saveGlobal,{content,confirm:true})} /></div><div className={s.pair}>{template.actions.restoreGlobal&&<label className={s.confirmLine}><input type="checkbox" checked={!!confirmRestoreProject[template.id]} onChange={e=>setConfirmRestoreProject({...confirmRestoreProject,[template.id]:e.target.checked})} />我确认只移除本书的项目覆盖；全局模板和其他作品不会改变</label>}<Action action={template.actions.restoreGlobal} disabled={busy||!confirmRestoreProject[template.id]} onClick={()=>send(act,template.actions.restoreGlobal,{confirm:true})} /><Action action={template.actions.check} disabled={busy} onClick={()=>send(act,template.actions.check,{content})} /><Action action={template.actions.deepCheck} disabled={busy} onClick={()=>{if(window.confirm("深度检查会额外调用检查能力。现在开始吗？"))send(act,template.actions.deepCheck,{content})}} /></div>{report&&<section className={s.auditReport}><h4>{report.statusLabel}</h4><p>{report.summary?.characters} 字 · {report.summary?.lines} 行 · 预计可精简 {report.summary?.estimatedRedundantCharacters} 字</p>{report.issues?.map((issue: {severityLabel:string;title:string;evidence:string;suggestion:string},i:number)=><article key={i}><strong>{issue.severityLabel} · {issue.title}</strong><p>{issue.evidence}</p><p>{issue.suggestion}</p></article>)}</section>}</article>})}</div>;
+}
+
+export function WritingAbilitiesEditor({ value, bookId, busy, act }: { value:WritingAbilities; bookId:string; busy:boolean; act:Act }) {
+  const [packs,setPacks]=useState(value.packs);const fingerprint=JSON.stringify(value.packs);useEffect(()=>setPacks(value.packs),[bookId,fingerprint]);
+  const toggleModule=(packId:string,moduleId:string,selected:boolean)=>setPacks(packs.map(pack=>pack.id!==packId?pack:{...pack,modules:pack.modules.map(module=>module.id===moduleId?{...module,selected}:module)}));
+  return <section className={s.productEditor}><div className={s.sectionHeading}><h3>本书写作能力</h3><a href={`/projects/${encodeURIComponent(bookId)}/skills`}>{value.managementLabel}</a></div><p>{value.selectionModeLabel}。修改只影响本书后续启动的任务；包状态由已选模块汇总。</p>{packs.map(pack=><article className={s.productCard} key={pack.id}><h4>{pack.name}{!pack.available&&"（暂不可用）"}</h4><p>{pack.description} · {pack.modules.filter(module=>module.selected).length}/{pack.modules.length} 个模块已启用</p>{pack.modules.map(module=><label className={s.checkLine} key={module.id}><input type="checkbox" checked={module.selected} disabled={!pack.available} onChange={e=>toggleModule(pack.id,module.id,e.target.checked)} /><span>{module.title}<small>{module.purpose}</small></span></label>)}</article>)}<Action action={value.save} disabled={busy} onClick={()=>{const selectedModules=packs.filter(pack=>pack.available).flatMap(pack=>pack.modules.filter(module=>module.selected).map(module=>({packId:pack.id,moduleId:`${pack.id}::${module.id}`})));const packIds=[...new Set(selectedModules.map(module=>module.packId))];send(act,value.save,{packIds,moduleIds:selectedModules.map(module=>module.moduleId)});}} /></section>;
+}
+
+export function DissectionPanel({ value, book, busy, act, onChapter, onApplyCandidate }: {
+  value:DissectionView; book:Book; busy:boolean; act:Act; onChapter:(n:number)=>void;
+  onApplyCandidate:(report:DissectionReport,sourceToken:string)=>void;
+}) {
+  const [text,setText]=useState("");
+  const [genre,setGenre]=useState(book.genre||"");
+  const [focus,setFocus]=useState("");
+  const [copyNotice,setCopyNotice]=useState("");
+  const reportText=(report:DissectionReport)=>report.sections.flatMap(section=>section.items.map(item=>section.title+"："+item)).join("\n");
+  async function copyReport(report:DissectionReport) {
+    try { await navigator.clipboard.writeText(reportText(report)); setCopyNotice("已复制体检建议。"); }
+    catch { setCopyNotice("浏览器没有允许复制，请手动选择报告内容。"); }
+  }
+  function displayReport(report:DissectionReport) {
+    return <article className={s.auditReport}>
+      <h4>{report.statusLabel}{report.chapterNumber?" · 第"+report.chapterNumber+"章 "+(report.chapterTitle||""):""}</h4>
+      <button onClick={()=>void copyReport(report)}>复制体检建议</button>
+      {report.sections.map((section,index)=><section key={section.title+"-"+index}><h4>{section.title}</h4><DisplayList items={section.items} /></section>)}
+    </article>;
+  }
+  const record=value.report;
+  const candidateReport=value.candidateReport;
+  return <section className={s.productEditor}>
+    <h3>拆书与章节体检</h3>
+    <p>{value.modeLabel} · 报告只读，不会直接改写作品要求。</p>
+    <label>选择已确认章节<select value={value.selectedChapter||""} onChange={e=>{const n=Number(e.target.value);if(n)onChapter(n)}}>
+      <option value="">请选择章节</option>{book.chapters.map(ch=><option key={ch.number} value={ch.number}>第{ch.number}章 · {ch.title}</option>)}
+    </select></label>
+    <Action action={value.actions.inspectChapter} disabled={busy} onClick={()=>send(act,value.actions.inspectChapter)} />
+    <p className={s.smallNote}>已确认章节只供回看和复制建议，不能在这里改写保存。</p>
+    <section className={s.productCard}>
+      <h4>体检待确认候选</h4>
+      <p>报告会绑定当前候选正文；候选变化后，需要重新体检。</p>
+      <Action action={value.actions.inspectCandidate} disabled={busy} onClick={()=>send(act,value.actions.inspectCandidate)} />
+      {candidateReport&&candidateReport.sections.length>0 ? displayReport(candidateReport) : null}
+      {candidateReport&&value.candidateSourceToken&&<button className={s.primary} disabled={busy} onClick={()=>onApplyCandidate(candidateReport,value.candidateSourceToken!)}>使用报告修改当前候选</button>}
+    </section>
+    <label>参考书片段<textarea value={text} onChange={e=>setText(e.target.value)} placeholder="粘贴希望分析的片段" /></label>
+    <div className={s.pair}><label>题材<input value={genre} onChange={e=>setGenre(e.target.value)} /></label><label>关注重点<input value={focus} onChange={e=>setFocus(e.target.value)} /></label></div>
+    <Action action={value.actions.inspectReference} disabled={busy||!text.trim()} onClick={()=>send(act,value.actions.inspectReference,{text,genre,focus})} />
+    {record?displayReport(record):<p className={s.smallNote}>{value.statusLabel}</p>}
+    {copyNotice&&<p role="status">{copyNotice}</p>}
+  </section>;
+}

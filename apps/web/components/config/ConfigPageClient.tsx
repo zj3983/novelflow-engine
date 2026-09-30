@@ -1,18 +1,18 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { CapabilityPanel } from "../../app/config/CapabilityPanel";
 
 import {
   createDefaultRuntimeSettings,
   fetchRuntimeProviderCatalog,
   fetchRuntimeSettings,
   saveRuntimeSettings,
-  testRuntimeSettingsConnection,
+  testModel,
   type RuntimeProviderDefinition,
   type RuntimeSettings,
-} from "../../lib/api";
+} from "../../lib/config-capabilities";
 import { CoverImageConfigCard } from "./CoverImageConfigCard";
-import { OutlinePlanningCard } from "./OutlinePlanningCard";
 import { ProviderAccountsCard } from "./ProviderAccountsCard";
 import { StageBindingsCard } from "./StageBindingsCard";
 import type { RuntimeConnectionMap } from "./types";
@@ -68,8 +68,8 @@ function validateProviderAccount(
 ): string {
   if (!model.trim()) return `${provider.name} 模型不能为空`;
   if (provider.requires_api_key && !account.api_key.trim()) return `${provider.name} API 密钥不能为空`;
-  if (provider.protocol.endsWith("_cli") && !account.codex_command.trim()) return `${provider.name} 命令不能为空`;
-  if (!provider.protocol.endsWith("_cli") && !isHttpUrl(account.base_url)) return `${provider.name} API 地址格式不正确`;
+  if (provider.uses_local_command && !account.codex_command.trim()) return `${provider.name} 命令不能为空`;
+  if (!provider.uses_local_command && !isHttpUrl(account.base_url)) return `${provider.name} API 地址格式不正确`;
   return "";
 }
 
@@ -81,8 +81,7 @@ function addMissingProviderAccounts(settings: RuntimeSettings, providers: Runtim
         api_key: "",
         base_url: provider.default_base_url,
         custom_models: [],
-        codex_command: provider.protocol === "codex_cli" ? "codex" : provider.protocol === "antigravity_cli" ? "agy" : "",
-        model_capabilities: {},
+        codex_command: provider.default_command,
       };
     }
   }
@@ -97,7 +96,11 @@ export function ConfigPageClient() {
   const [pageStatus, setPageStatus] = useState<"loading" | "idle" | "saving" | "success" | "error">("loading");
   const [pageMessage, setPageMessage] = useState("正在载入配置中心...");
   const mounted = useRef(true);
+  const latestSettings = useRef(settings);
+  latestSettings.current = settings;
   const busy = pageStatus === "loading" || pageStatus === "saving";
+
+  useEffect(() => { setConnections({}); }, [settings]);
 
   useEffect(() => {
     mounted.current = true;
@@ -120,7 +123,7 @@ export function ConfigPageClient() {
 
   async function testProvider(providerId: string, modelOverride?: string) {
     const provider = providers.find((item) => item.provider_id === providerId);
-    const account = settings.accounts[providerId] ?? (provider ? { api_key: "", base_url: provider.default_base_url, custom_models: [], codex_command: provider.protocol === "codex_cli" ? "codex" : provider.protocol === "antigravity_cli" ? "agy" : "", model_capabilities: {} } : null);
+    const account = settings.accounts[providerId] ?? (provider ? { api_key: "", base_url: provider.default_base_url, custom_models: [], codex_command: provider.default_command } : null);
     if (!provider || !account) return;
     const currentStage = (["planner", "writer"] as const).find((stage) => settings.stages[stage].provider_id === providerId) ?? "planner";
     const model = modelOverride || (settings.stages[currentStage].provider_id === providerId
@@ -138,11 +141,11 @@ export function ConfigPageClient() {
     }
     setConnections((current) => ({ ...current, [providerId]: { state: "testing", message: "" } }));
     try {
-      const result = await testRuntimeSettingsConnection(candidate, currentStage);
-      if (!mounted.current) return;
-      setConnections((current) => ({ ...current, [providerId]: { state: result.ok ? "success" : "error", message: result.message } }));
+      const result = await testModel(candidate, currentStage);
+      if (!mounted.current || latestSettings.current !== settings) return;
+      setConnections((current) => ({ ...current, [providerId]: { state: "idle", message: result.message, heading: result.heading } }));
     } catch (error) {
-      if (!mounted.current) return;
+      if (!mounted.current || latestSettings.current !== settings) return;
       setConnections((current) => ({ ...current, [providerId]: { state: "error", message: error instanceof Error ? error.message : "连接测试失败" } }));
     }
   }
@@ -171,7 +174,7 @@ export function ConfigPageClient() {
       if (!mounted.current) return;
       setSettings(saved);
       setPageStatus("success");
-      setPageMessage("配置已保存，后续任务会使用当前阶段绑定。");
+      setPageMessage("配置已保存，后续创作会使用这些设置。");
     } catch (error) {
       if (!mounted.current) return;
       setPageStatus("error");
@@ -184,11 +187,7 @@ export function ConfigPageClient() {
       <div className="config-shell__primary">
         <ProviderAccountsCard value={settings} providers={providers} statuses={connections} disabled={busy} onChange={setSettings} onTest={(providerId, model) => void testProvider(providerId, model)} />
         <StageBindingsCard value={settings} providers={providers} disabled={busy} onChange={setSettings} />
-        <OutlinePlanningCard
-          value={settings.outline_planning}
-          disabled={busy}
-          onChange={(outline_planning) => setSettings((current) => ({ ...current, outline_planning }))}
-        />
+        <CapabilityPanel settings={settings} disabled={busy} />
         <CoverImageConfigCard
           value={settings.image}
           errors={imageErrors}

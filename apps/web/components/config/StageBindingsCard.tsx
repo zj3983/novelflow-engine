@@ -1,7 +1,7 @@
-import type { RuntimeProviderDefinition, RuntimeSettings, RuntimeStageName } from "../../lib/api";
+import type { RuntimeProviderDefinition, RuntimeSettings, RuntimeStageName } from "../../lib/config-capabilities";
 
 const STAGES: Array<{ key: RuntimeStageName; label: string; description: string }> = [
-  { key: "planner", label: "剧情规划", description: "章节规划、分析和状态提取" },
+  { key: "planner", label: "剧情规划", description: "规划故事走向和章节内容" },
   { key: "writer", label: "正文写作", description: "正文生成、扩写和改稿" },
 ];
 
@@ -22,7 +22,7 @@ export function StageBindingsCard({ value, providers, disabled, onChange }: Prop
       <div className="config-card__header">
         <div>
           <h2 className="config-card__title">写作阶段模型</h2>
-          <p className="config-card__subtitle">规划和正文可以使用不同供应商。状态提取跟随剧情规划，无需独立配置。</p>
+          <p className="config-card__subtitle">规划故事与撰写正文可以选择不同模型。</p>
         </div>
       </div>
       <div className="config-stage-list">

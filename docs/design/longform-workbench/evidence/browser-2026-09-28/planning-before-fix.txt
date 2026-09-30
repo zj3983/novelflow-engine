@@ -1,0 +1,756 @@
+- banner:
+  - button "浏览器闭环验收0928"
+  - navigation "主要导航":
+    - button "作品"
+    - button "全书规划"
+    - button "写作"
+    - button "故事设定"
+  - text: 还没有正式章节
+  - button "打开设置":
+- alert: 离线开发数据：模型回答由固定样例提供，不代表真实写作质量。
+- complementary:
+  - heading "全书目录" [level=3]
+  - heading "第1卷 第1卷·旧档查证" [level=4]
+  - paragraph: 确认谁在寻找第三块青砖
+  - text: 待创作
+  - heading "第2卷 第2卷·旧档查证" [level=4]
+  - paragraph: 确认谁在寻找第三块青砖
+  - text: 待创作
+- main:
+  - button "生成规划"
+  - button "继续下一部分"
+  - button "完善本卷规划"
+  - heading "全书规划" [level=1]
+  - generic: 目标 90万字
+  - term: 故事主线
+  - definition: 祖祠旧档
+  - term: 最终走向
+  - definition: 旧案公开，宗门权力重新洗牌。
+  - heading "第1卷 · 第1卷·旧档查证" [level=1]
+  - generic: 等待你查看并采纳
+  - paragraph: 林照借断香炉留下的零碎提醒追查宗门旧案。
+  - heading "近期章节安排" [level=3]
+  - table:
+    - rowgroup:
+      - row "章数 章节名 主要内容":
+        - columnheader "章数"
+        - columnheader "章节名"
+        - columnheader "主要内容"
+    - rowgroup:
+      - row "第1章 第1次核验 查清祖祠异动":
+        - cell "第1章"
+        - cell "第1次核验"
+        - cell "查清祖祠异动"
+      - row "第2章 第2次核验 查清祖祠异动":
+        - cell "第2章"
+        - cell "第2次核验"
+        - cell "查清祖祠异动"
+      - row "第3章 第3次核验 查清祖祠异动":
+        - cell "第3章"
+        - cell "第3次核验"
+        - cell "查清祖祠异动"
+  - heading "世界输入" [level=3]
+  - paragraph: 这一部分已完成，可以查看或继续。
+  - paragraph: 标题：浏览器闭环验收0928
+  - paragraph: 内容：
+  - paragraph: 创作要求 · 第 1 项：不能凭空改变已确认事实，不提前揭晓幕后人。
+  - paragraph: 内容：
+  - paragraph: 内容：
+  - paragraph: 内容：custom
+  - paragraph: 故事核心 · 主要冲突：掌管旧产的人持续销毁证据。
+  - paragraph: 内容 · 第 1 项 · 名称：林照
+  - paragraph: 内容 · 第 1 项 · 内容：protagonist
+  - paragraph: 内容 · 第 1 项 · 内容：protagonist
+  - paragraph: 内容 · 第 1 项 · 内容：core
+  - paragraph: 内容 · 第 1 项 · 内容：protagonist
+  - paragraph: 内容 · 第 1 项 · 内容：ready
+  - paragraph: 内容 · 第 1 项 · 内容：1
+  - paragraph: 内容 · 第 1 项 · 内容：外门弟子
+  - paragraph: 内容 · 第 1 项 · 内容：青石镇
+  - paragraph: 内容 · 第 1 项 · 内容：控制第三块青砖
+  - paragraph: 内容 · 第 1 项 · 内容：被逐出外门
+  - paragraph: 内容 · 第 2 项 · 名称：赵衡
+  - paragraph: 内容 · 第 2 项 · 内容：major
+  - paragraph: 内容 · 第 2 项 · 内容：ready
+  - paragraph: 内容 · 第 2 项 · 内容：1
+  - paragraph: 内容 · 第 2 项 · 内容：外门执事
+  - paragraph: 内容 · 第 2 项 · 内容：青石镇
+  - paragraph: 内容 · 第 2 项 · 内容：控制第三块青砖
+  - paragraph: 内容 · 第 2 项 · 内容：被逐出外门
+  - paragraph: 内容 · 第 3 项 · 名称：周满
+  - paragraph: 内容 · 第 3 项 · 内容：supporting
+  - paragraph: 内容 · 第 3 项 · 内容：supporting
+  - paragraph: 内容 · 第 3 项 · 内容：supporting
+  - paragraph: 内容 · 第 3 项 · 内容：other
+  - paragraph: 内容 · 第 3 项 · 内容：ready
+  - paragraph: 内容 · 第 3 项 · 内容：1
+  - paragraph: 内容 · 第 3 项 · 内容：外门执事
+  - paragraph: 内容 · 第 3 项 · 内容：青石镇
+  - paragraph: 内容 · 第 3 项 · 内容：控制第三块青砖
+  - paragraph: 内容 · 第 3 项 · 内容：被逐出外门
+  - paragraph: 内容 · 第 4 项 · 名称：顾长老
+  - paragraph: 内容 · 第 4 项 · 内容：core
+  - paragraph: 内容 · 第 4 项 · 内容：ready
+  - paragraph: 内容 · 第 4 项 · 内容：0
+  - paragraph: 内容 · 第 4 项 · 内容：外门执事
+  - paragraph: 内容 · 第 4 项 · 内容：青石镇
+  - paragraph: 内容 · 第 4 项 · 内容：控制第三块青砖
+  - paragraph: 内容 · 第 4 项 · 内容：被逐出外门
+  - heading "核心规则" [level=3]
+  - paragraph: 这一部分已完成，可以查看或继续。
+  - paragraph: 故事前提：承诺留下公开记录。
+  - paragraph: 世界规则 · 第 1 项：记录可以被查询，但不能被删除。
+  - paragraph: 内容 · 第 1 项：每次查询都会留下新的可追踪痕迹。
+  - button "让 AI 修复"
+  - button "重新创作这一部分"
+  - button "我来修改"
+  - heading "经济与生活" [level=3]
+  - paragraph: 这一部分已完成，可以查看或继续。
+  - paragraph: 内容 · 第 1 项：信息以时间和信誉交换。
+  - button "让 AI 修复"
+  - button "重新创作这一部分"
+  - button "我来修改"
+  - heading "世界地点" [level=3]
+  - paragraph: 这一部分已完成，可以查看或继续。
+  - paragraph: 内容 · 第 1 项 · 名称：旧档案馆
+  - paragraph: 内容 · 第 1 项 · 说明：保存城市旧记录。
+  - button "让 AI 修复"
+  - button "重新创作这一部分"
+  - button "我来修改"
+  - heading "世界势力" [level=3]
+  - paragraph: 这一部分已完成，可以查看或继续。
+  - paragraph: 内容 · 第 1 项 · 名称：记录署
+  - paragraph: 内容 · 第 1 项 · 说明：维护公开记录。
+  - button "让 AI 修复"
+  - button "重新创作这一部分"
+  - button "我来修改"
+  - heading "社会关系" [level=3]
+  - paragraph: 这一部分已完成，可以查看或继续。
+  - paragraph: 内容 · 内容 · 第 1 项：记录公开与隐私之间的冲突。
+  - paragraph: 内容 · 内容 · 第 1 项：公开记录变化会引发组织反应。
+  - paragraph: 内容 · 第 1 项：组织按权限共享信息。
+  - button "让 AI 修复"
+  - button "重新创作这一部分"
+  - button "我来修改"
+  - heading "故事内容" [level=3]
+  - paragraph: 这一部分已完成，可以查看或继续。
+  - paragraph: 内容：主角收到一条迟到的回复。
+  - paragraph: 内容 · 第 1 项：行动结果必须改变下一步条件。
+  - paragraph: 内容 · 第 1 项：入口、行动、结果、选择。
+  - paragraph: 内容 · 第 1 项：不得绕过已建立的记录规则。
+  - paragraph: 内容 · 目标：查明回复来源。
+  - paragraph: 内容 · 内容：第一卷
+  - paragraph: 内容 · 内容：50
+  - paragraph: 内容 · 内容：记录会反过来塑造城市。
+  - paragraph: 内容 · 内容 · 第 1 项：回复来源
+  - button "让 AI 修复"
+  - button "重新创作这一部分"
+  - button "我来修改"
+  - heading "创作想法" [level=3]
+  - paragraph: 这一部分已完成，可以查看或继续。
+  - paragraph: 标题：浏览器闭环验收0928
+  - paragraph: 内容：
+  - paragraph: 创作要求 · 第 1 项：不能凭空改变已确认事实，不提前揭晓幕后人。
+  - paragraph: 内容：900000
+  - paragraph: 内容：3000
+  - paragraph: 内容：
+  - paragraph: 内容：custom
+  - paragraph: 内容：
+  - paragraph: 故事核心 · 标题：浏览器闭环验收0928
+  - paragraph: 故事核心 · 内容：林照借断香炉留下的零碎提醒追查宗门旧案。
+  - paragraph: 故事核心 · 内容：林照，负责记录和核验的外门弟子。
+  - paragraph: 故事核心 · 内容：祖祠清点时发现旧记录不一致。
+  - paragraph: 故事核心 · 内容：在宗门站稳并查清旧案。
+  - paragraph: 故事核心 · 主要冲突：掌管旧产的人持续销毁证据。
+  - paragraph: 故事核心 · 内容：旧档会被封存，已有证据难以公开。
+  - paragraph: 故事核心 · 内容：从只能守住现场成长为能调动宗门规则。
+  - paragraph: 故事核心 · 内容：每次核对都有可追溯的结果。
+  - paragraph: 故事核心 · 内容：喜欢查证过程的读者。
+  - paragraph: 故事核心 · 内容：每项线索有依据，每次选择保留后果。
+  - paragraph: 故事核心 · 内容：旧案公开，宗门权力重新洗牌。
+  - paragraph: 故事核心 · 内容 · 名称：核验记录
+  - paragraph: 故事核心 · 内容 · 内容：信息
+  - paragraph: 故事核心 · 内容 · 内容：比较已有记录
+  - paragraph: 故事核心 · 内容 · 内容：积累证据
+  - paragraph: 故事核心 · 内容 · 内容：不能推断缺失内容
+  - paragraph: 故事核心 · 内容 · 内容：保住一份副本
+  - paragraph: 故事核心 · 内容 · 内容：名册不一致
+  - paragraph: 故事核心 · 内容 · 内容：旧档曾被替换
+  - paragraph: 故事核心 · 内容 · 内容：相关人的身份受到影响
+  - paragraph: 内容 · 内容 · 第 1 项：核对日期
+  - paragraph: 内容 · 内容 · 第 2 项：查找副本
+  - paragraph: 故事核心 · 内容 · 内容：保住旧档
+  - paragraph: 故事核心 · 内容 · 内容：收到封档通知
+  - paragraph: 故事核心 · 内容 · 内容：核对第一页
+  - paragraph: 故事核心 · 内容 · 内容：原件失去查阅机会
+  - paragraph: 故事核心 · 内容 · 内容：公开旧案
+  - paragraph: 故事核心 · 内容：
+  - paragraph: 内容 · 内容：inspiration
+  - paragraph: 内容 · 内容：林照与周满在旧档中查证第三块青砖的线索，每一步以证据为准。
+  - paragraph: 内容 · 内容：浏览器闭环验收0928
+  - paragraph: 内容 · 内容：900000
+  - paragraph: 内容 · 内容：3000
+  - paragraph: 内容 · 创作要求 · 第 1 项：不能凭空改变已确认事实，不提前揭晓幕后人。
+  - paragraph: 内容：3
+  - heading "故事核心" [level=3]
+  - paragraph: 这一部分已完成，可以查看或继续。
+  - paragraph: 故事核心 · 标题：合成开局
+  - paragraph: 故事核心 · 内容：林照借断香炉留下的零碎提醒追查宗门旧案。
+  - paragraph: 故事核心 · 内容：在宗门站稳并查清旧案。
+  - paragraph: 故事核心 · 主要冲突：掌管旧产的人持续销毁证据。
+  - paragraph: 故事核心 · 内容：证据销毁后主角会被逐出宗门
+  - paragraph: 故事核心 · 内容：旧案公开，宗门权力重新洗牌。
+  - button "让 AI 修复"
+  - button "重新创作这一部分"
+  - button "我来修改"
+  - heading "角色种子" [level=3]
+  - paragraph: 这一部分已完成，可以查看或继续。
+  - paragraph: 内容 · 第 1 项 · 名称：林照
+  - paragraph: 内容 · 第 1 项 · 内容：protagonist
+  - paragraph: 内容 · 第 1 项 · 内容：protagonist
+  - paragraph: 内容 · 第 1 项 · 内容：core
+  - paragraph: 内容 · 第 1 项 · 内容：protagonist
+  - paragraph: 内容 · 第 1 项 · 内容：ready
+  - paragraph: 内容 · 第 1 项 · 内容：1
+  - paragraph: 内容 · 第 1 项 · 内容：外门弟子
+  - paragraph: 内容 · 第 1 项 · 内容：青石镇
+  - paragraph: 内容 · 第 1 项 · 内容：控制第三块青砖
+  - paragraph: 内容 · 第 1 项 · 内容：被逐出外门
+  - paragraph: 内容 · 第 2 项 · 名称：赵衡
+  - paragraph: 内容 · 第 2 项 · 内容：major
+  - paragraph: 内容 · 第 2 项 · 内容：ready
+  - paragraph: 内容 · 第 2 项 · 内容：1
+  - paragraph: 内容 · 第 2 项 · 内容：外门执事
+  - paragraph: 内容 · 第 2 项 · 内容：青石镇
+  - paragraph: 内容 · 第 2 项 · 内容：控制第三块青砖
+  - paragraph: 内容 · 第 2 项 · 内容：被逐出外门
+  - paragraph: 内容 · 第 3 项 · 名称：周满
+  - paragraph: 内容 · 第 3 项 · 内容：supporting
+  - paragraph: 内容 · 第 3 项 · 内容：supporting
+  - paragraph: 内容 · 第 3 项 · 内容：supporting
+  - paragraph: 内容 · 第 3 项 · 内容：other
+  - paragraph: 内容 · 第 3 项 · 内容：ready
+  - paragraph: 内容 · 第 3 项 · 内容：1
+  - paragraph: 内容 · 第 3 项 · 内容：外门执事
+  - paragraph: 内容 · 第 3 项 · 内容：青石镇
+  - paragraph: 内容 · 第 3 项 · 内容：控制第三块青砖
+  - paragraph: 内容 · 第 3 项 · 内容：被逐出外门
+  - paragraph: 内容 · 第 4 项 · 名称：顾长老
+  - paragraph: 内容 · 第 4 项 · 内容：core
+  - paragraph: 内容 · 第 4 项 · 内容：ready
+  - paragraph: 内容 · 第 4 项 · 内容：0
+  - paragraph: 内容 · 第 4 项 · 内容：外门执事
+  - paragraph: 内容 · 第 4 项 · 内容：青石镇
+  - paragraph: 内容 · 第 4 项 · 内容：控制第三块青砖
+  - paragraph: 内容 · 第 4 项 · 内容：被逐出外门
+  - button "让 AI 修复"
+  - button "重新创作这一部分"
+  - button "我来修改"
+  - heading "详细角色" [level=3]
+  - paragraph: 这一部分已完成，可以查看或继续。
+  - paragraph: 人物 · 第 1 项 · 名称：林照
+  - paragraph: 人物 · 第 1 项 · 内容：protagonist
+  - paragraph: 人物 · 第 1 项 · 内容：protagonist
+  - paragraph: 人物 · 第 1 项 · 内容：core
+  - paragraph: 人物 · 第 1 项 · 内容：protagonist
+  - paragraph: 人物 · 第 1 项 · 内容：ready
+  - paragraph: 人物 · 第 1 项 · 内容：100
+  - paragraph: 人物 · 第 1 项 · 内容：1
+  - paragraph: 第 1 项 · 内容 · 内容：
+  - paragraph: 第 1 项 · 内容 · 内容：19
+  - paragraph: 第 1 项 · 内容 · 内容：
+  - paragraph: 第 1 项 · 内容 · 内容：青石镇
+  - paragraph: 第 1 项 · 内容 · 内容：外门弟子
+  - paragraph: 第 1 项 · 内容 · 内容：看守祖祠
+  - paragraph: 第 1 项 · 内容 · 内容：
+  - paragraph: 第 1 项 · 内容 · 内容：家人在外地
+  - paragraph: 第 1 项 · 内容 · 内容：在宗门规矩里长大
+  - paragraph: 第 1 项 · 内容 · 内容：受过外门训练
+  - paragraph: 内容 · 内容 · 第 1 项：见过一次宗门清查
+  - paragraph: 第 1 项 · 内容 · 内容：因差事来到祖祠
+  - paragraph: 第 1 项 · 内容 · 内容：外门西院
+  - paragraph: 第 1 项 · 内容 · 内容：领取宗门份例
+  - paragraph: 第 1 项 · 内容 · 内容：手头不宽裕
+  - paragraph: 第 1 项 · 内容 · 内容：会基础吐纳
+  - paragraph: 第 1 项 · 内容 · 内容：只能处理外门差事
+  - paragraph: 第 1 项 · 内容 · 内容：处理祖祠异动
+  - paragraph: 第 1 项 · 内容 · 内容：替父亲洗去旧案罪名，留下不可撤销的记录
+  - paragraph: 第 1 项 · 内容 · 内容：控制第三块青砖
+  - paragraph: 第 1 项 · 内容 · 动机：替父亲洗去旧案罪名
+  - paragraph: 第 1 项 · 内容 · 内容：被逐出外门
+  - paragraph: 内容 · 内容 · 第 1 项：知道旧名册被换过
+  - paragraph: 第 1 项 · 内容 · 内容：与林照争夺青砖处置权
+  - paragraph: 第 1 项 · 内容 · 内容：说话先报证据出处
+  - paragraph: 第 1 项 · 内容 · 内容：随身抄录每个证人的原话
+  - paragraph: 第 1 项 · 内容 · 内容：不亲自承担可追查的风险
+  - paragraph: 内容 · 内容 · 第 1 项：被人提到旧名册
+  - paragraph: 内容 · 内容 · 第 1 项：先保住身份
+  - paragraph: 内容 · 内容 · 第 1 项：不主动说出幕后长老
+  - paragraph: 内容 · 内容 · 内容：
+  - paragraph: 内容 · 内容 · 内容：
+  - paragraph: 内容 · 内容 · 内容：
+  - paragraph: 第 1 项 · 内容 · 第 1 项：这件事先按规矩登记，谁也别碰青砖。
+  - paragraph: 第 1 项 · 内容 · 第 2 项：你要查可以，先把责任签下来。
+  - paragraph: 内容 · 第 1 项 · 内容：赵衡
+  - paragraph: 内容 · 第 1 项 · 内容：旧案利益冲突
+  - paragraph: 内容 · 第 1 项 · 内容：曾共同参与祖祠清点
+  - paragraph: 内容 · 第 1 项 · 内容：保持警惕
+  - paragraph: 内容 · 第 1 项 · 内容：争夺名册保管权
+  - paragraph: 人物 · 第 2 项 · 名称：赵衡
+  - paragraph: 人物 · 第 2 项 · 内容：major
+  - paragraph: 人物 · 第 2 项 · 内容：ready
+  - paragraph: 人物 · 第 2 项 · 内容：100
+  - paragraph: 人物 · 第 2 项 · 内容：1
+  - paragraph: 第 2 项 · 内容 · 内容：
+  - paragraph: 第 2 项 · 内容 · 内容：35
+  - paragraph: 第 2 项 · 内容 · 内容：
+  - paragraph: 第 2 项 · 内容 · 内容：青石镇
+  - paragraph: 第 2 项 · 内容 · 内容：外门执事
+  - paragraph: 第 2 项 · 内容 · 内容：清点旧产
+  - paragraph: 第 2 项 · 内容 · 内容：
+  - paragraph: 第 2 项 · 内容 · 内容：家人在外地
+  - paragraph: 第 2 项 · 内容 · 内容：在宗门规矩里长大
+  - paragraph: 第 2 项 · 内容 · 内容：受过外门训练
+  - paragraph: 内容 · 内容 · 第 1 项：见过一次宗门清查
+  - paragraph: 第 2 项 · 内容 · 内容：因差事来到祖祠
+  - paragraph: 第 2 项 · 内容 · 内容：外门西院
+  - paragraph: 第 2 项 · 内容 · 内容：领取宗门份例
+  - paragraph: 第 2 项 · 内容 · 内容：手头不宽裕
+  - paragraph: 第 2 项 · 内容 · 内容：会基础吐纳
+  - paragraph: 第 2 项 · 内容 · 内容：只能处理外门差事
+  - paragraph: 第 2 项 · 内容 · 内容：处理祖祠异动
+  - paragraph: 第 2 项 · 内容 · 内容：守住清点祖祠的独占权，留下不可撤销的记录
+  - paragraph: 第 2 项 · 内容 · 内容：控制第三块青砖
+  - paragraph: 第 2 项 · 内容 · 动机：守住清点祖祠的独占权
+  - paragraph: 第 2 项 · 内容 · 内容：被逐出外门
+  - paragraph: 内容 · 内容 · 第 1 项：知道旧名册被换过
+  - paragraph: 第 2 项 · 内容 · 内容：与林照争夺青砖处置权
+  - paragraph: 第 2 项 · 内容 · 内容：把宗门规条逐项念给对方
+  - paragraph: 第 2 项 · 内容 · 内容：先封锁现场再安排人核账
+  - paragraph: 第 2 项 · 内容 · 内容：不亲自承担可追查的风险
+  - paragraph: 内容 · 内容 · 第 1 项：被人提到旧名册
+  - paragraph: 内容 · 内容 · 第 1 项：先保住身份
+  - paragraph: 内容 · 内容 · 第 1 项：不主动说出幕后长老
+  - paragraph: 内容 · 内容 · 内容：
+  - paragraph: 内容 · 内容 · 内容：
+  - paragraph: 内容 · 内容 · 内容：
+  - paragraph: 第 2 项 · 内容 · 第 1 项：这件事先按规矩登记，谁也别碰青砖。
+  - paragraph: 第 2 项 · 内容 · 第 2 项：你要查可以，先把责任签下来。
+  - paragraph: 内容 · 第 1 项 · 内容：周满
+  - paragraph: 内容 · 第 1 项 · 内容：旧案利益冲突
+  - paragraph: 内容 · 第 1 项 · 内容：曾共同参与祖祠清点
+  - paragraph: 内容 · 第 1 项 · 内容：保持警惕
+  - paragraph: 内容 · 第 1 项 · 内容：争夺名册保管权
+  - paragraph: 人物 · 第 3 项 · 名称：周满
+  - paragraph: 人物 · 第 3 项 · 内容：supporting
+  - paragraph: 人物 · 第 3 项 · 内容：supporting
+  - paragraph: 人物 · 第 3 项 · 内容：supporting
+  - paragraph: 人物 · 第 3 项 · 内容：other
+  - paragraph: 人物 · 第 3 项 · 内容：ready
+  - paragraph: 人物 · 第 3 项 · 内容：100
+  - paragraph: 人物 · 第 3 项 · 内容：1
+  - paragraph: 第 3 项 · 内容 · 内容：
+  - paragraph: 第 3 项 · 内容 · 内容：35
+  - paragraph: 第 3 项 · 内容 · 内容：
+  - paragraph: 第 3 项 · 内容 · 内容：青石镇
+  - paragraph: 第 3 项 · 内容 · 内容：外门执事
+  - paragraph: 第 3 项 · 内容 · 内容：清点旧产
+  - paragraph: 第 3 项 · 内容 · 内容：
+  - paragraph: 第 3 项 · 内容 · 内容：家人在外地
+  - paragraph: 第 3 项 · 内容 · 内容：在宗门规矩里长大
+  - paragraph: 第 3 项 · 内容 · 内容：受过外门训练
+  - paragraph: 内容 · 内容 · 第 1 项：见过一次宗门清查
+  - paragraph: 第 3 项 · 内容 · 内容：因差事来到祖祠
+  - paragraph: 第 3 项 · 内容 · 内容：外门西院
+  - paragraph: 第 3 项 · 内容 · 内容：领取宗门份例
+  - paragraph: 第 3 项 · 内容 · 内容：手头不宽裕
+  - paragraph: 第 3 项 · 内容 · 内容：会基础吐纳
+  - paragraph: 第 3 项 · 内容 · 内容：只能处理外门差事
+  - paragraph: 第 3 项 · 内容 · 内容：处理祖祠异动
+  - paragraph: 第 3 项 · 内容 · 内容：保住朋友交托的账册，留下不可撤销的记录
+  - paragraph: 第 3 项 · 内容 · 内容：控制第三块青砖
+  - paragraph: 第 3 项 · 内容 · 动机：保住朋友交托的账册
+  - paragraph: 第 3 项 · 内容 · 内容：被逐出外门
+  - paragraph: 内容 · 内容 · 第 1 项：知道旧名册被换过
+  - paragraph: 第 3 项 · 内容 · 内容：与林照争夺青砖处置权
+  - paragraph: 第 3 项 · 内容 · 内容：先用家乡俗语缓和局面
+  - paragraph: 第 3 项 · 内容 · 内容：把重要材料分别交给邻居
+  - paragraph: 第 3 项 · 内容 · 内容：不亲自承担可追查的风险
+  - paragraph: 内容 · 内容 · 第 1 项：被人提到旧名册
+  - paragraph: 内容 · 内容 · 第 1 项：先保住身份
+  - paragraph: 内容 · 内容 · 第 1 项：不主动说出幕后长老
+  - paragraph: 内容 · 内容 · 内容：
+  - paragraph: 内容 · 内容 · 内容：
+  - paragraph: 内容 · 内容 · 内容：
+  - paragraph: 第 3 项 · 内容 · 第 1 项：这件事先按规矩登记，谁也别碰青砖。
+  - paragraph: 第 3 项 · 内容 · 第 2 项：你要查可以，先把责任签下来。
+  - paragraph: 内容 · 第 1 项 · 内容：顾长老
+  - paragraph: 内容 · 第 1 项 · 内容：旧案利益冲突
+  - paragraph: 内容 · 第 1 项 · 内容：曾共同参与祖祠清点
+  - paragraph: 内容 · 第 1 项 · 内容：保持警惕
+  - paragraph: 内容 · 第 1 项 · 内容：争夺名册保管权
+  - paragraph: 人物 · 第 4 项 · 名称：顾长老
+  - paragraph: 人物 · 第 4 项 · 内容：core
+  - paragraph: 人物 · 第 4 项 · 内容：ready
+  - paragraph: 人物 · 第 4 项 · 内容：100
+  - paragraph: 人物 · 第 4 项 · 内容：0
+  - paragraph: 第 4 项 · 内容 · 内容：
+  - paragraph: 第 4 项 · 内容 · 内容：35
+  - paragraph: 第 4 项 · 内容 · 内容：
+  - paragraph: 第 4 项 · 内容 · 内容：青石镇
+  - paragraph: 第 4 项 · 内容 · 内容：外门执事
+  - paragraph: 第 4 项 · 内容 · 内容：清点旧产
+  - paragraph: 第 4 项 · 内容 · 内容：
+  - paragraph: 第 4 项 · 内容 · 内容：家人在外地
+  - paragraph: 第 4 项 · 内容 · 内容：在宗门规矩里长大
+  - paragraph: 第 4 项 · 内容 · 内容：受过外门训练
+  - paragraph: 内容 · 内容 · 第 1 项：见过一次宗门清查
+  - paragraph: 第 4 项 · 内容 · 内容：因差事来到祖祠
+  - paragraph: 第 4 项 · 内容 · 内容：外门西院
+  - paragraph: 第 4 项 · 内容 · 内容：领取宗门份例
+  - paragraph: 第 4 项 · 内容 · 内容：手头不宽裕
+  - paragraph: 第 4 项 · 内容 · 内容：会基础吐纳
+  - paragraph: 第 4 项 · 内容 · 内容：只能处理外门差事
+  - paragraph: 第 4 项 · 内容 · 内容：处理祖祠异动
+  - paragraph: 第 4 项 · 内容 · 内容：阻止封档规则被公开推翻，留下不可撤销的记录
+  - paragraph: 第 4 项 · 内容 · 内容：控制第三块青砖
+  - paragraph: 第 4 项 · 内容 · 动机：阻止封档规则被公开推翻
+  - paragraph: 第 4 项 · 内容 · 内容：被逐出外门
+  - paragraph: 内容 · 内容 · 第 1 项：知道旧名册被换过
+  - paragraph: 第 4 项 · 内容 · 内容：与林照争夺青砖处置权
+  - paragraph: 第 4 项 · 内容 · 内容：只问对方愿意付出什么代价
+  - paragraph: 第 4 项 · 内容 · 内容：让下属先试探证人的底线
+  - paragraph: 第 4 项 · 内容 · 内容：不亲自承担可追查的风险
+  - paragraph: 内容 · 内容 · 第 1 项：被人提到旧名册
+  - paragraph: 内容 · 内容 · 第 1 项：先保住身份
+  - paragraph: 内容 · 内容 · 第 1 项：不主动说出幕后长老
+  - paragraph: 内容 · 内容 · 内容：
+  - paragraph: 内容 · 内容 · 内容：
+  - paragraph: 内容 · 内容 · 内容：
+  - paragraph: 第 4 项 · 内容 · 第 1 项：这件事先按规矩登记，谁也别碰青砖。
+  - paragraph: 第 4 项 · 内容 · 第 2 项：你要查可以，先把责任签下来。
+  - paragraph: 内容 · 第 1 项 · 内容：林照
+  - paragraph: 内容 · 第 1 项 · 内容：旧案利益冲突
+  - paragraph: 内容 · 第 1 项 · 内容：曾共同参与祖祠清点
+  - paragraph: 内容 · 第 1 项 · 内容：保持警惕
+  - paragraph: 内容 · 第 1 项 · 内容：争夺名册保管权
+  - button "让 AI 修复"
+  - button "重新创作这一部分"
+  - button "我来修改"
+  - heading "角色关系" [level=3]
+  - paragraph: 这一部分已完成，可以查看或继续。
+  - paragraph: 内容 · 第 1 项 · 内容：rel-lin-zhao
+  - paragraph: 内容 · 第 1 项 · 内容：林照
+  - paragraph: 内容 · 第 1 项 · 内容：赵衡
+  - paragraph: 内容 · 第 1 项 · 内容：对手
+  - button "让 AI 修复"
+  - button "重新创作这一部分"
+  - button "我来修改"
+  - heading "故事内容" [level=3]
+  - paragraph: 这一部分已完成，可以查看或继续。
+  - paragraph: 内容 · 内容：取证后承担公开代价
+  - paragraph: 内容 · 内容 · 第 1 项：封档升级
+  - paragraph: 内容 · 内容 · 第 1 项：证人被威胁
+  - paragraph: 内容 · 内容：旧案公开
+  - button "让 AI 修复"
+  - button "重新创作这一部分"
+  - button "我来修改"
+  - heading "全书大纲" [level=3]
+  - paragraph: 这一部分已完成，可以查看或继续。
+  - paragraph: 全书规划 · 故事：林照借断香炉留下的零碎提醒追查宗门旧案。
+  - paragraph: 全书规划 · 内容：守住事实，比赢下一次争斗更重要。
+  - paragraph: 全书规划 · 内容：林照从祖祠失火查到宗门旧案。
+  - paragraph: 全书规划 · 内容：多年前有人借改名和封档重分宗门权力。
+  - paragraph: 全书规划 · 内容：公开旧案证据并改变宗门封档规则。
+  - paragraph: 全书规划 · 内容：旧案名册在议事堂当众展开。
+  - paragraph: 全书规划 · 内容：在宗门站稳并查清旧案。
+  - paragraph: 全书规划 · 主要冲突：掌管旧产的人持续销毁证据。
+  - paragraph: 全书规划 · 内容：从只能守住现场成长为能调动宗门规则。
+  - paragraph: 全书规划 · 内容：旧案公开，宗门权力重新洗牌。
+  - paragraph: 全书规划 · 内容：100
+  - paragraph: 全书规划 · 内容：100
+  - paragraph: 全书规划 · 内容：100
+  - paragraph: 全书规划 · 内容：2
+  - button "让 AI 修复"
+  - button "重新创作这一部分"
+  - button "我来修改"
+  - heading "分卷规划" [level=3]
+  - paragraph: 这一部分已完成，可以查看或继续。
+  - paragraph: 分卷规划 · 第 1 项 · 内容：synthetic-volume-1
+  - paragraph: 分卷规划 · 第 1 项 · 标题：第1卷·旧档查证
+  - paragraph: 分卷规划 · 第 1 项 · 起始章节：1
+  - paragraph: 分卷规划 · 第 1 项 · 结束章节：50
+  - paragraph: 分卷规划 · 第 1 项 · 内容：否
+  - paragraph: 内容 · 第 1 项 · 起始章节：1
+  - paragraph: 内容 · 第 1 项 · 结束章节：15
+  - paragraph: 内容 · 第 1 项 · 内容：查清祖祠异动
+  - paragraph: 内容 · 第 1 项 · 内容：赵衡控制现场
+  - paragraph: 内容 · 第 1 项 · 内容：旧名册出现矛盾
+  - paragraph: 内容 · 第 1 项 · 内容：主角得到可验证线索
+  - paragraph: 内容 · 第 1 项 · 内容：线索指向宗门旧案
+  - paragraph: 内容 · 第 2 项 · 起始章节：16
+  - paragraph: 内容 · 第 2 项 · 结束章节：30
+  - paragraph: 内容 · 第 2 项 · 内容：查清祖祠异动
+  - paragraph: 内容 · 第 2 项 · 内容：赵衡控制现场
+  - paragraph: 内容 · 第 2 项 · 内容：旧名册出现矛盾
+  - paragraph: 内容 · 第 2 项 · 内容：主角得到可验证线索
+  - paragraph: 内容 · 第 2 项 · 内容：线索指向宗门旧案
+  - paragraph: 内容 · 第 3 项 · 起始章节：31
+  - paragraph: 内容 · 第 3 项 · 结束章节：45
+  - paragraph: 内容 · 第 3 项 · 内容：查清祖祠异动
+  - paragraph: 内容 · 第 3 项 · 内容：赵衡控制现场
+  - paragraph: 内容 · 第 3 项 · 内容：旧名册出现矛盾
+  - paragraph: 内容 · 第 3 项 · 内容：主角得到可验证线索
+  - paragraph: 内容 · 第 3 项 · 内容：线索指向宗门旧案
+  - paragraph: 内容 · 第 4 项 · 起始章节：46
+  - paragraph: 内容 · 第 4 项 · 结束章节：50
+  - paragraph: 内容 · 第 4 项 · 内容：查清祖祠异动
+  - paragraph: 内容 · 第 4 项 · 内容：赵衡控制现场
+  - paragraph: 内容 · 第 4 项 · 内容：旧名册出现矛盾
+  - paragraph: 内容 · 第 4 项 · 内容：主角得到可验证线索
+  - paragraph: 内容 · 第 4 项 · 内容：线索指向宗门旧案
+  - paragraph: 分卷规划 · 第 1 项 · 目标：确认谁在寻找第三块青砖
+  - paragraph: 分卷规划 · 第 1 项 · 内容：赵衡掌握清点和封存权
+  - paragraph: 分卷规划 · 第 1 项 · 内容：林照拿到进入旧档房的机会
+  - paragraph: 分卷规划 · 第 1 项 · 内容：赵衡失去对祖祠的独占控制
+  - paragraph: 分卷规划 · 第 1 项 · 内容：受压查证，抓住破绽，取得主动。
+  - paragraph: 第 1 项 · 内容 · 第 1 项：保住现场证据
+  - paragraph: 第 1 项 · 内容 · 第 2 项：取得旧档房资格
+  - paragraph: 第 1 项 · 内容 · 第 3 项：锁定改名记录
+  - paragraph: 分卷规划 · 第 1 项 · 内容：旧名册缺失的一页指向宗门高层。
+  - paragraph: 分卷规划 · 第 1 项 · 内容：赵衡失去对祖祠和旧档房的独占控制。
+  - paragraph: 分卷规划 · 第 1 项 · 内容：赵衡
+  - paragraph: 第 1 项 · 内容 · 第 1 项：旧名册有一页被换过
+  - paragraph: 分卷规划 · 第 2 项 · 内容：synthetic-volume-2
+  - paragraph: 分卷规划 · 第 2 项 · 标题：第2卷·旧档查证
+  - paragraph: 分卷规划 · 第 2 项 · 起始章节：51
+  - paragraph: 分卷规划 · 第 2 项 · 结束章节：100
+  - paragraph: 分卷规划 · 第 2 项 · 内容：是
+  - paragraph: 内容 · 第 1 项 · 起始章节：51
+  - paragraph: 内容 · 第 1 项 · 结束章节：65
+  - paragraph: 内容 · 第 1 项 · 内容：查清祖祠异动
+  - paragraph: 内容 · 第 1 项 · 内容：赵衡控制现场
+  - paragraph: 内容 · 第 1 项 · 内容：旧名册出现矛盾
+  - paragraph: 内容 · 第 1 项 · 内容：主角得到可验证线索
+  - paragraph: 内容 · 第 1 项 · 内容：线索指向宗门旧案
+  - paragraph: 内容 · 第 2 项 · 起始章节：66
+  - paragraph: 内容 · 第 2 项 · 结束章节：80
+  - paragraph: 内容 · 第 2 项 · 内容：查清祖祠异动
+  - paragraph: 内容 · 第 2 项 · 内容：赵衡控制现场
+  - paragraph: 内容 · 第 2 项 · 内容：旧名册出现矛盾
+  - paragraph: 内容 · 第 2 项 · 内容：主角得到可验证线索
+  - paragraph: 内容 · 第 2 项 · 内容：线索指向宗门旧案
+  - paragraph: 内容 · 第 3 项 · 起始章节：81
+  - paragraph: 内容 · 第 3 项 · 结束章节：95
+  - paragraph: 内容 · 第 3 项 · 内容：查清祖祠异动
+  - paragraph: 内容 · 第 3 项 · 内容：赵衡控制现场
+  - paragraph: 内容 · 第 3 项 · 内容：旧名册出现矛盾
+  - paragraph: 内容 · 第 3 项 · 内容：主角得到可验证线索
+  - paragraph: 内容 · 第 3 项 · 内容：线索指向宗门旧案
+  - paragraph: 内容 · 第 4 项 · 起始章节：96
+  - paragraph: 内容 · 第 4 项 · 结束章节：100
+  - paragraph: 内容 · 第 4 项 · 内容：查清祖祠异动
+  - paragraph: 内容 · 第 4 项 · 内容：赵衡控制现场
+  - paragraph: 内容 · 第 4 项 · 内容：旧名册出现矛盾
+  - paragraph: 内容 · 第 4 项 · 内容：主角得到可验证线索
+  - paragraph: 内容 · 第 4 项 · 内容：线索指向宗门旧案
+  - paragraph: 分卷规划 · 第 2 项 · 目标：确认谁在寻找第三块青砖
+  - paragraph: 分卷规划 · 第 2 项 · 内容：赵衡掌握清点和封存权
+  - paragraph: 分卷规划 · 第 2 项 · 内容：林照拿到进入旧档房的机会
+  - paragraph: 分卷规划 · 第 2 项 · 内容：赵衡失去对祖祠的独占控制
+  - paragraph: 分卷规划 · 第 2 项 · 内容：受压查证，抓住破绽，取得主动。
+  - paragraph: 第 2 项 · 内容 · 第 1 项：保住现场证据
+  - paragraph: 第 2 项 · 内容 · 第 2 项：取得旧档房资格
+  - paragraph: 第 2 项 · 内容 · 第 3 项：锁定改名记录
+  - paragraph: 分卷规划 · 第 2 项 · 内容：旧名册缺失的一页指向宗门高层。
+  - paragraph: 分卷规划 · 第 2 项 · 内容：赵衡失去对祖祠和旧档房的独占控制。
+  - paragraph: 分卷规划 · 第 2 项 · 内容：赵衡
+  - paragraph: 第 2 项 · 内容 · 第 1 项：旧名册有一页被换过
+  - button "让 AI 修复"
+  - button "重新创作这一部分"
+  - button "我来修改"
+  - heading "事件链" [level=3]
+  - paragraph: 这一部分已完成，可以查看或继续。
+  - paragraph: 内容 · 第 1 项 · 内容：synthetic-volume-1
+  - paragraph: 内容 · 第 1 项 · 起始章节：1
+  - paragraph: 内容 · 第 1 项 · 结束章节：15
+  - paragraph: 内容 · 第 1 项 · 内容：查清祖祠异动
+  - paragraph: 内容 · 第 1 项 · 内容：赵衡控制现场
+  - paragraph: 内容 · 第 1 项 · 内容：旧名册出现矛盾
+  - paragraph: 内容 · 第 1 项 · 内容：主角得到可验证线索
+  - paragraph: 内容 · 第 1 项 · 内容：线索指向宗门旧案
+  - paragraph: 内容 · 第 2 项 · 起始章节：16
+  - paragraph: 内容 · 第 2 项 · 结束章节：30
+  - paragraph: 内容 · 第 2 项 · 内容：查清祖祠异动
+  - paragraph: 内容 · 第 2 项 · 内容：赵衡控制现场
+  - paragraph: 内容 · 第 2 项 · 内容：旧名册出现矛盾
+  - paragraph: 内容 · 第 2 项 · 内容：主角得到可验证线索
+  - paragraph: 内容 · 第 2 项 · 内容：线索指向宗门旧案
+  - paragraph: 内容 · 第 3 项 · 起始章节：31
+  - paragraph: 内容 · 第 3 项 · 结束章节：45
+  - paragraph: 内容 · 第 3 项 · 内容：查清祖祠异动
+  - paragraph: 内容 · 第 3 项 · 内容：赵衡控制现场
+  - paragraph: 内容 · 第 3 项 · 内容：旧名册出现矛盾
+  - paragraph: 内容 · 第 3 项 · 内容：主角得到可验证线索
+  - paragraph: 内容 · 第 3 项 · 内容：线索指向宗门旧案
+  - paragraph: 内容 · 第 4 项 · 起始章节：46
+  - paragraph: 内容 · 第 4 项 · 结束章节：50
+  - paragraph: 内容 · 第 4 项 · 内容：查清祖祠异动
+  - paragraph: 内容 · 第 4 项 · 内容：赵衡控制现场
+  - paragraph: 内容 · 第 4 项 · 内容：旧名册出现矛盾
+  - paragraph: 内容 · 第 4 项 · 内容：主角得到可验证线索
+  - paragraph: 内容 · 第 4 项 · 内容：线索指向宗门旧案
+  - paragraph: 内容 · 第 2 项 · 内容：synthetic-volume-2
+  - paragraph: 内容 · 第 1 项 · 起始章节：51
+  - paragraph: 内容 · 第 1 项 · 结束章节：65
+  - paragraph: 内容 · 第 1 项 · 内容：查清祖祠异动
+  - paragraph: 内容 · 第 1 项 · 内容：赵衡控制现场
+  - paragraph: 内容 · 第 1 项 · 内容：旧名册出现矛盾
+  - paragraph: 内容 · 第 1 项 · 内容：主角得到可验证线索
+  - paragraph: 内容 · 第 1 项 · 内容：线索指向宗门旧案
+  - paragraph: 内容 · 第 2 项 · 起始章节：66
+  - paragraph: 内容 · 第 2 项 · 结束章节：80
+  - paragraph: 内容 · 第 2 项 · 内容：查清祖祠异动
+  - paragraph: 内容 · 第 2 项 · 内容：赵衡控制现场
+  - paragraph: 内容 · 第 2 项 · 内容：旧名册出现矛盾
+  - paragraph: 内容 · 第 2 项 · 内容：主角得到可验证线索
+  - paragraph: 内容 · 第 2 项 · 内容：线索指向宗门旧案
+  - paragraph: 内容 · 第 3 项 · 起始章节：81
+  - paragraph: 内容 · 第 3 项 · 结束章节：95
+  - paragraph: 内容 · 第 3 项 · 内容：查清祖祠异动
+  - paragraph: 内容 · 第 3 项 · 内容：赵衡控制现场
+  - paragraph: 内容 · 第 3 项 · 内容：旧名册出现矛盾
+  - paragraph: 内容 · 第 3 项 · 内容：主角得到可验证线索
+  - paragraph: 内容 · 第 3 项 · 内容：线索指向宗门旧案
+  - paragraph: 内容 · 第 4 项 · 起始章节：96
+  - paragraph: 内容 · 第 4 项 · 结束章节：100
+  - paragraph: 内容 · 第 4 项 · 内容：查清祖祠异动
+  - paragraph: 内容 · 第 4 项 · 内容：赵衡控制现场
+  - paragraph: 内容 · 第 4 项 · 内容：旧名册出现矛盾
+  - paragraph: 内容 · 第 4 项 · 内容：主角得到可验证线索
+  - paragraph: 内容 · 第 4 项 · 内容：线索指向宗门旧案
+  - button "让 AI 修复"
+  - button "重新创作这一部分"
+  - button "我来修改"
+  - heading "第 1 章规划" [level=3]
+  - paragraph: 这一部分已完成，可以查看或继续。
+  - paragraph: 章节 · 章节序号：1
+  - paragraph: 章节 · 标题：第1次核验
+  - paragraph: 章节 · 目标：查清祖祠异动
+  - paragraph: 章节 · 内容：赵衡控制现场
+  - paragraph: 章节 · 内容：林照留下可核对的证据
+  - paragraph: 章节 · 内容：旧名册出现矛盾
+  - paragraph: 章节 · 内容：主角得到一条可验证线索
+  - paragraph: 章节 · 内容：有人提前找过青砖
+  - paragraph: 章节 · 内容 · 第 1 项：林照
+  - paragraph: 章节 · 内容 · 第 2 项：周满
+  - paragraph: 章节 · 内容 · 内容：林照必须拿到替换镜芯
+  - paragraph: 章节 · 内容 · 内容：买家只给他一夜验货
+  - paragraph: 章节 · 内容 · 内容：他能恢复物品上次完整运行状态
+  - paragraph: 章节 · 内容 · 内容：修复订单并获得父亲失踪线索
+  - paragraph: 章节 · 内容 · 内容：接上铜镜第一次亮起
+  - paragraph: 章节 · 内容 · 内容：镜面恢复一段旧影像
+  - paragraph: 章节 · 内容 · 内容：影像中的人认出了林照
+  - paragraph: 章节 · 内容 · 内容：镜中人叫出林照父亲的名字
+  - button "让 AI 修复"
+  - button "重新创作这一部分"
+  - button "我来修改"
+  - heading "第 2 章规划" [level=3]
+  - paragraph: 这一部分已完成，可以查看或继续。
+  - paragraph: 章节 · 章节序号：2
+  - paragraph: 章节 · 标题：第2次核验
+  - paragraph: 章节 · 目标：查清祖祠异动
+  - paragraph: 章节 · 内容：赵衡控制现场
+  - paragraph: 章节 · 内容：林照留下可核对的证据
+  - paragraph: 章节 · 内容：旧名册出现矛盾
+  - paragraph: 章节 · 内容：主角得到一条可验证线索
+  - paragraph: 章节 · 内容：有人提前找过青砖
+  - paragraph: 章节 · 内容 · 第 1 项：林照
+  - paragraph: 章节 · 内容 · 第 2 项：周满
+  - paragraph: 章节 · 内容 · 内容：林照必须拿到替换镜芯
+  - paragraph: 章节 · 内容 · 内容：买家只给他一夜验货
+  - paragraph: 章节 · 内容 · 内容：他能恢复物品上次完整运行状态
+  - paragraph: 章节 · 内容 · 内容：修复订单并获得父亲失踪线索
+  - paragraph: 章节 · 内容 · 内容：接上铜镜第一次亮起
+  - paragraph: 章节 · 内容 · 内容：镜面恢复一段旧影像
+  - paragraph: 章节 · 内容 · 内容：影像中的人认出了林照
+  - paragraph: 章节 · 内容 · 内容：镜中人叫出林照父亲的名字
+  - button "让 AI 修复"
+  - button "重新创作这一部分"
+  - button "我来修改"
+  - heading "第 3 章规划" [level=3]
+  - paragraph: 这一部分已完成，可以查看或继续。
+  - paragraph: 章节 · 章节序号：3
+  - paragraph: 章节 · 标题：第3次核验
+  - paragraph: 章节 · 目标：查清祖祠异动
+  - paragraph: 章节 · 内容：赵衡控制现场
+  - paragraph: 章节 · 内容：林照留下可核对的证据
+  - paragraph: 章节 · 内容：旧名册出现矛盾
+  - paragraph: 章节 · 内容：主角得到一条可验证线索
+  - paragraph: 章节 · 内容：有人提前找过青砖
+  - paragraph: 章节 · 内容 · 第 1 项：林照
+  - paragraph: 章节 · 内容 · 第 2 项：周满
+  - paragraph: 章节 · 内容 · 内容：林照必须拿到替换镜芯
+  - paragraph: 章节 · 内容 · 内容：买家只给他一夜验货
+  - paragraph: 章节 · 内容 · 内容：他能恢复物品上次完整运行状态
+  - paragraph: 章节 · 内容 · 内容：修复订单并获得父亲失踪线索
+  - paragraph: 章节 · 内容 · 内容：接上铜镜第一次亮起
+  - paragraph: 章节 · 内容 · 内容：镜面恢复一段旧影像
+  - paragraph: 章节 · 内容 · 内容：影像中的人认出了林照
+  - paragraph: 章节 · 内容 · 内容：镜中人叫出林照父亲的名字
+  - button "让 AI 修复"
+  - button "重新创作这一部分"
+  - button "我来修改"
+  - heading "章节安排" [level=3]
+  - paragraph: 这一部分已完成，可以查看或继续。
+  - paragraph: 章节安排 · 第 1 项 · 章节序号：1
+  - paragraph: 章节安排 · 第 1 项 · 内容：赵衡控制现场
+  - paragraph: 章节安排 · 第 1 项 · 内容：主角得到一条可验证线索
+  - paragraph: 章节安排 · 第 1 项 · 代价：旧名册出现矛盾
+  - paragraph: 章节安排 · 第 1 项 · 内容：
+  - paragraph: 章节安排 · 第 1 项 · 本章悬念：有人提前找过青砖
+  - paragraph: 章节安排 · 第 1 项 · 内容：接上铜镜第一次亮起
+  - paragraph: 章节安排 · 第 1 项 · 内容：镜面恢复一段旧影像
+  - paragraph: 章节安排 · 第 1 项 · 内容：影像中的人认出了林照
+  - paragraph: 第 1 项 · 内容 · 内容：林照必须拿到替换镜芯
+  - paragraph: 第 1 项 · 内容 · 内容：买家只给他一夜验货
+  - paragraph: 第 1 项 · 内容 · 内容：他能恢复物品上次完整运行状态
+  - paragraph: 第 1 项 · 内容 · 内容：修复订单并获得父亲失踪线索
+  - paragraph: 章节安排 · 第 2 项 · 章节序号：2
+  - paragraph: 章节安排 · 第 2 项 · 内容：赵衡控制现场
+  - paragraph: 章节安排 · 第 2 项 · 内容：主角得到一条可验证线索
+  - paragraph: 章节安排 · 第 2 项 · 代价：旧名册出现矛盾
+  - paragraph: 章节安排 · 第 2 项 · 内容：
+  - paragraph: 章节安排 · 第 2 项 · 本章悬念：有人提前找过青砖
+  - paragraph: 章节安排 · 第 2 项 · 内容：接上铜镜第一次亮起
+  - paragraph: 章节安排 · 第 2 项 · 内容：镜面恢复一段旧影像
+  - paragraph: 章节安排 · 第 2 项 · 内容：影像中的人认出了林照
+  - paragraph: 第 2 项 · 内容 · 内容：林照必须拿到替换镜芯
+  - paragraph: 第 2 项 · 内容 · 内容：买家只给他一夜验货
+  - paragraph: 第 2 项 · 内容 · 内容：他能恢复物品上次完整运行状态
+  - paragraph: 第 2 项 · 内容 · 内容：修复订单并获得父亲失踪线索
+  - paragraph: 章节安排 · 第 3 项 · 章节序号：3
+  - paragraph: 章节安排 · 第 3 项 · 内容：赵衡控制现场
+  - paragraph: 章节安排 · 第 3 项 · 内容：主角得到一条可验证线索
+  - paragraph: 章节安排 · 第 3 项 · 代价：旧名册出现矛盾
+  - paragraph: 章节安排 · 第 3 项 · 内容：
+  - paragraph: 章节安排 · 第 3 项 · 本章悬念：有人提前找过青砖
+  - paragraph: 章节安排 · 第 3 项 · 内容：接上铜镜第一次亮起
+  - paragraph: 章节安排 · 第 3 项 · 内容：镜面恢复一段旧影像
+  - paragraph: 章节安排 · 第 3 项 · 内容：影像中的人认出了林照
+  - paragraph: 第 3 项 · 内容 · 内容：林照必须拿到替换镜芯
+  - paragraph: 第 3 项 · 内容 · 内容：买家只给他一夜验货
+  - paragraph: 第 3 项 · 内容 · 内容：他能恢复物品上次完整运行状态
+  - paragraph: 第 3 项 · 内容 · 内容：修复订单并获得父亲失踪线索
+  - paragraph: 请在下方相应规划部分修改；已被正文采用的内容不能覆盖。
+- complementary:
+  - heading "前文衔接" [level=3]
+  - paragraph: 目前没有可引用的前文章节。
+  - heading "作者要求" [level=4]
+  - paragraph: 不能凭空改变已确认事实，不提前揭晓幕后人。
+- contentinfo:
+  - button "采纳当前规划" [disabled]
+  - button "调整规划" [disabled]
+  - generic: 采纳规划后，每一章仍由你确认。
+- button "Open Next.js Dev Tools":
+- alert

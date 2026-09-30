@@ -54,10 +54,9 @@ function readJsonLines(filePath: string): any[] {
 }
 
 async function browserGetJson(page: Page, url: string): Promise<JsonResponse> {
-  return await page.evaluate(async (target) => {
-    const response = await fetch(target, { cache: "no-store" });
-    return { status: response.status, body: await response.json() };
-  }, url);
+  // Engineering assertions use a test-owned API client, never the product UI.
+  const response = await page.request.get(url);
+  return { status: response.status(), body: await response.json() };
 }
 
 async function waitForOrchestrationCompletion(page: Page, projectPrefix: string) {
@@ -115,34 +114,32 @@ test("live API: create, plan, preserve blocked candidate, confirm once, refresh,
   await page.getByRole("button", { name: "采用这个方向" }).click();
   await expect(page).toHaveURL(new RegExp(`${encodeURIComponent(projectId)}/outline$`));
 
-  await page.getByRole("link", { name: "开书构建" }).click();
-  await expect(page.getByRole("heading", { name: "构建故事到章节的完整开局" })).toBeVisible();
-  await page.getByRole("button", { name: "启用完整开局图" }).click();
-  await expect(page.getByRole("heading", { name: "完整开局图已启用" })).toBeVisible();
-  await page.getByRole("button", { name: "继续构建" }).click();
+  // The ordinary navigation now leads to the four-page workspace.
+  // Exercise this retained compatibility route directly.
+  await page.goto(`/projects/${encodeURIComponent(projectId)}/build`);
+  await expect(page.getByRole("heading", { name: "准备故事", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "开始准备故事" }).click();
+  await expect(page.getByRole("button", { name: "生成规划", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "生成规划" }).click();
   await waitForOrchestrationCompletion(page, projectPrefix);
-  await expect(page.getByText("全部任务已就绪，世界、角色和前 3 章细纲已发布。", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "开始写作", exact: true })).toBeVisible();
   await page.reload();
-  await expect(page.getByRole("heading", { name: "完整开局图已启用" })).toBeVisible();
-  await expect(page.getByText(/细纲窗口：前 3 章/)).toBeVisible();
-  await page.getByRole("link", { name: "前往正文候选与审查" }).click();
+  await expect(page.getByRole("button", { name: "生成规划", exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "开始写作" }).click();
   await expect(page.getByRole("button", { name: "生成第一章" })).toBeEnabled();
 
   await page.getByRole("button", { name: "生成第一章" }).click();
   const blockedCandidate = await waitForCandidate(page, 1);
-  await expect(blockedCandidate).toContainText("合成 Canon blocker");
-  await expect(page.getByLabel("候选稿审查结果")).toContainText("canon.hard_blocker");
+  await expect(blockedCandidate).toContainText("正文与已确认的故事事实存在冲突");
+  await expect(page.locator("main")).not.toContainText(/canon|artifact|revision|preflight|raw JSON|validation_failed/i);
 
   const beforeConfirmation = await browserGetJson(page, `${projectPrefix}/candidates?chapter_number=1`);
   expect(beforeConfirmation.status).toBe(200);
   const blockedId = beforeConfirmation.body.items.find((item: any) => item.status === "pending")?.candidate_id;
   expect(blockedId).toBeTruthy();
-  const rejectedConfirmationResponse = page.waitForResponse((response) =>
-    response.url().endsWith(`/candidates/${blockedId}/confirm`)
-      && response.request().method() === "POST",
-  );
-  await blockedCandidate.getByRole("button", { name: "确认提交" }).click();
-  const rejectedConfirmation = await rejectedConfirmationResponse;
+  await expect(blockedCandidate.getByRole("button", { name: "确认提交" })).toBeDisabled();
+  // A direct client still cannot bypass the original hard gate.
+  const rejectedConfirmation = await page.request.post(`${projectPrefix}/candidates/${blockedId}/confirm`);
   expect(rejectedConfirmation.status()).toBe(400);
   expect((await rejectedConfirmation.json()).detail).toContain("canon.hard_blocker");
   await expect(blockedCandidate).toBeVisible();
@@ -154,9 +151,17 @@ test("live API: create, plan, preserve blocked candidate, confirm once, refresh,
   const retainedBlocked = afterRejectedConfirmation.body.items.find((item: any) => item.candidate_id === blockedId);
   expect(retainedBlocked?.status).toBe("pending");
 
+  // Verify the migrated author workspace and candidate report against the
+  // isolated FastAPI server before continuing through the compatibility route.
+  await page.goto(`/workspace?page=writing&book=${encodeURIComponent(projectId)}&chapter=1`);
+  await expect(page.getByRole("heading", { name: "拆书与章节体检" })).toBeVisible();
+  await page.getByRole("button", { name: "体检待确认候选" }).click();
+  await expect(page.getByRole("heading", { name: "体检完成" })).toBeVisible();
+
+  await page.goto(`/projects/${encodeURIComponent(projectId)}/write?chapter=1`);
   await page.reload();
   const recoveredCandidate = await waitForCandidate(page, 1);
-  await expect(recoveredCandidate).toContainText("合成 Canon blocker");
+  await expect(recoveredCandidate).toContainText("正文与已确认的故事事实存在冲突");
   await recoveredCandidate.getByRole("button", { name: "丢弃候选稿" }).click();
   await expect(page.getByLabel("候选稿", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "生成第一章" }).click();
@@ -167,7 +172,7 @@ test("live API: create, plan, preserve blocked candidate, confirm once, refresh,
   const cleanId = generatedOnce.body.items.find((item: any) => item.status === "pending")?.candidate_id;
   expect(cleanId).toBeTruthy();
   const confirmedResponse = page.waitForResponse((response) =>
-    response.url().endsWith(`/candidates/${cleanId}/confirm`)
+    response.url().endsWith("/product/actions")
       && response.request().method() === "POST",
   );
   await cleanCandidate.getByRole("button", { name: "确认提交" }).click();
@@ -190,18 +195,19 @@ test("live API: create, plan, preserve blocked candidate, confirm once, refresh,
   expect(afterRefresh.body.branches[0].current_chapter).toBe(1);
 
   await assertBrowserHitRealApi(settled, responses, "/file-projects", "POST", 201);
-  await assertBrowserHitRealApi(settled, responses, "/build-graph/opening", "POST", 200);
-  await assertBrowserHitRealApi(settled, responses, "/build-graph/orchestrations", "POST", 200);
-  await assertBrowserHitRealApi(settled, responses, "/generation-jobs", "POST", 200);
-  await assertBrowserHitRealApi(settled, responses, `/candidates/${blockedId}/confirm`, "POST");
-  await assertBrowserHitRealApi(settled, responses, `/candidates/${cleanId}/confirm`, "POST", 200);
+  await assertBrowserHitRealApi(settled, responses, "/product/actions", "POST", 200);
+  await assertBrowserHitRealApi(settled, responses, "/product/build", "GET", 200);
+  await assertBrowserHitRealApi(settled, responses, "/product/write", "GET", 200);
+  await assertBrowserHitRealApi(settled, responses, "/author-workspace", "GET", 200);
+  await assertBrowserHitRealApi(settled, responses, "/author-workspace/commands", "POST", 200);
+  expect(responses.some(item => /\/public-build|\/build-graph|\/candidates/.test(item.path))).toBe(false);
 
   const syntheticEvents = readJsonLines(syntheticAuditLog);
   expect(syntheticEvents.some((item) => item.kind === "model" && item.task_id === "story_core")).toBe(true);
   expect(syntheticEvents.some((item) => item.kind === "candidate" && item.chapter_number === 1 && item.hard_blocked)).toBe(true);
   expect(syntheticEvents.some((item) => item.kind === "candidate" && item.chapter_number === 2 && !item.hard_blocked)).toBe(true);
   expect(readJsonLines(apiRequestsLog).some((item) => item.method === "POST" && item.path.endsWith(`/candidates/${blockedId}/confirm`) && item.status_code >= 400)).toBe(true);
-  expect(readJsonLines(apiRequestsLog).filter((item) => item.method === "POST" && item.path.endsWith(`/candidates/${cleanId}/confirm`))).toHaveLength(1);
+  expect(confirmedCandidates.body.items.filter((item: any) => item.status === "confirmed")).toHaveLength(1);
   await test.info().attach("real-api-requests.jsonl", { path: apiRequestsLog, contentType: "application/x-ndjson" });
   await test.info().attach("synthetic-injection-audit.jsonl", { path: syntheticAuditLog, contentType: "application/x-ndjson" });
 });
@@ -224,22 +230,23 @@ test("live API: cross-volume planning from a labeled synthetic confirmed-volume 
   expect(graph.status).toBe(200);
   expect(graph.body.opening_confirmed_through).toBe(50);
   expect(graph.body.opening_next_volume_available).toBe(true);
-  await expect(page.getByRole("button", { name: "扩展下一卷细纲任务" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "规划下一卷" })).toBeVisible();
 
-  await page.getByRole("button", { name: "扩展下一卷细纲任务" }).click();
-  await expect(page.getByText("下一卷规划扩展中。完成并发布全部细纲之前，正文候选入口保持关闭。", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "继续构建" }).click();
+  await page.getByRole("button", { name: "规划下一卷" }).click();
+  await expect(page.getByText("正在准备后续章节。完成规划前，暂时不能生成新的正文。", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "生成规划" }).click();
   await waitForOrchestrationCompletion(page, `${apiBaseURL}/file-projects/${encodedId}`);
-  await expect(page.getByText(/规划版本：v1（第 1–50 章）、v2（第 51–60 章）/)).toBeVisible();
-  await page.getByRole("link", { name: "前往正文候选与审查" }).click();
+  await expect(page.getByRole("link", { name: "开始写作", exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "开始写作" }).click();
   await expect(page.getByRole("button", { name: "生成下一章" })).toBeEnabled();
   await page.getByRole("button", { name: "生成下一章" }).click();
   const candidate = await waitForCandidate(page, 51);
   await expect(candidate).toContainText("律师核对第51章");
 
-  await assertBrowserHitRealApi(settled, responses, "/build-graph/opening/next-volume", "POST", 200);
-  await assertBrowserHitRealApi(settled, responses, "/build-graph/orchestrations", "POST", 200);
-  await assertBrowserHitRealApi(settled, responses, "/generation-jobs", "POST", 200);
+  await assertBrowserHitRealApi(settled, responses, "/product/actions", "POST", 200);
+  await assertBrowserHitRealApi(settled, responses, "/product/build", "GET", 200);
+  await assertBrowserHitRealApi(settled, responses, "/product/write", "GET", 200);
+  await expect(page.locator("main")).not.toContainText(/artifact|revision|preflight|provenance|validation_failed/i);
   const syntheticEvents = readJsonLines(syntheticAuditLog);
   expect(syntheticEvents.some((item) => item.kind === "model" && item.task_id === "chapter_outline_51")).toBe(true);
   expect(syntheticEvents.some((item) => item.kind === "candidate" && item.chapter_number === 51 && !item.hard_blocked)).toBe(true);

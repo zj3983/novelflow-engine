@@ -33,6 +33,8 @@ class ChapterBundle(BaseModel):
     quality_report: dict = Field(default_factory=dict)
     pipeline_stages: list[str] = Field(default_factory=list)
     context_snapshot_id: str = ""
+    # Preserve the exact planning consumed by the writer for candidate rechecks.
+    director_artifact: dict = Field(default_factory=dict)
     # The new modular pipeline runs the ``FactExtractor`` against the
     # project's on-disk canon and emits a ``ContinuityDelta`` on the
     # ``ModularChapterBundle``. The legacy save path
