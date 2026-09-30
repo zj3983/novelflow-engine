@@ -28,6 +28,6 @@
 | 故事设定 | [桌面截图](evidence/browser-2026-09-30/故事设定-desktop.jpg) | [手机截图](evidence/browser-2026-09-30/故事设定-mobile.jpg) |
 | 设置 | [桌面截图](evidence/browser-2026-09-30/设置-desktop.jpg) | [手机截图](evidence/browser-2026-09-30/设置-mobile.jpg) |
 
-## 复审边界
+## 复审结论
 
-这组证据覆盖当前阶段的页面、尺寸和浏览器导航验收。是否接受阶段四整体及 PR 后续状态，仍由复审者根据全部阶段四要求判断；PR 维持 Draft。
+2026-09-30 独立复审者按 HEAD `e526d6cd11c27b3e6d9727c9fcafab7d06008c12` 核对本记录、10 张截图、既有 FastAPI／浏览器交互证据、60 章 HTTP 事件与精确 HEAD CI，结论为 **阶段四 ACCEPT**。阶段 0–4 均已 ACCEPT；本记录只补页面验收证据，不改变运行代码。
