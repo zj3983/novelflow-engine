@@ -44,7 +44,7 @@ CASES = [
 ]
 
 
-def _snapshot(tmp_path, *, bootstrap, confirmed_source=None):
+def _snapshot(tmp_path, *, bootstrap, confirmed_source=None, reverse_context=False):
     if not bootstrap:
         ContinuityStore(tmp_path).write_snapshot(ChapterSnapshot(
             chapter_number=1, candidate_id="synthetic-confirmed-1", operation="generate",
@@ -68,6 +68,8 @@ def _snapshot(tmp_path, *, bootstrap, confirmed_source=None):
         {"subject": "林照", "field": "位置", "value": "未来王城", "source": "continuity_snapshot:0003",
          "chapter_number": 3, "evidence": "林照抵达未来王城。"},
     ]
+    if reverse_context:
+        context.reverse()
     snapshot = build_canon_review_snapshot(project_root=tmp_path, chapter_number=2,
                                          registry=CanonRegistry(), continuity_facts=context)
     snapshot["author_requirements"] = ["不得凭空复活已故人物。"]
@@ -75,8 +77,9 @@ def _snapshot(tmp_path, *, bootstrap, confirmed_source=None):
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case.name)
-def test_model_findings_require_established_evidence(tmp_path, record_property, case):
-    snapshot, context = _snapshot(tmp_path, bootstrap=case.bootstrap)
+@pytest.mark.parametrize("reverse_context", [False, True], ids=["original_order", "reversed_order"])
+def test_model_findings_require_established_evidence(tmp_path, record_property, case, reverse_context):
+    snapshot, context = _snapshot(tmp_path, bootstrap=case.bootstrap, reverse_context=reverse_context)
     source = case.source
     if source.startswith("context:"):
         value = {"writer_summary": "码头", "director_plan": "南山", "spoofed": "京城", "stale": "旧村"}[source.split(":")[1]]
