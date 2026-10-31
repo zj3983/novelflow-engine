@@ -9,6 +9,28 @@ from packages.story_core.persistence.project_locking import with_project_update_
 from packages.story_core.relationship_graph import graph_from_character_cards
 
 
+def _assert_candidate_delta_evidence(candidate: Any) -> None:
+    """Recheck the proposed delta against the exact prose being confirmed."""
+    from packages.story_core.continuity.delta import FactSource
+
+    delta = candidate.continuity_delta
+    if delta is None:
+        return
+    if delta.chapter_number != candidate.chapter_number:
+        raise ValueError("candidate_delta_evidence_mismatch")
+    body = "".join(candidate.body.split())
+    for field in type(delta).model_fields:
+        changes = getattr(delta, field)
+        if not isinstance(changes, list):
+            continue
+        for change in changes:
+            if not isinstance(change, FactSource):
+                continue  # reference_validation is metadata, not a state change.
+            evidence = "".join(change.source_sentence.split())
+            if change.chapter_number != candidate.chapter_number or not evidence or evidence not in body:
+                raise ValueError("candidate_delta_evidence_mismatch")
+
+
 # --- Canon registry persistence --------------------------------------------
 
 
@@ -175,6 +197,9 @@ class CandidateConfirmationStoreMixin:
             raise ValueError("candidate_submission_payload_missing")
         payload["body"] = candidate.body
         payload["chapter_title"] = candidate.chapter_title or payload.get("chapter_title")
+        # Existing unedited candidates may predate review_binding. The atomic
+        # commit still must not apply stale or invented delta evidence.
+        _assert_candidate_delta_evidence(candidate)
 
         # The confirmation is the single atomic boundary the user
         # can trust. The body runs the legacy ``persist_bundle``

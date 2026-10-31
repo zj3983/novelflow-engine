@@ -501,7 +501,7 @@ class GeneratedDetailedChapter(ChapterPlan):
     cast: list[str] = Field(min_length=1)
     core_conflict: str = Field(min_length=1)
     gain: str = Field(min_length=1)
-    cost: str = Field(min_length=1)
+    cost: str = Field(default="", description="已确定的成本，可留空或写无新增代价；区分旧伤延续、正常耗时和新增危机，不强制每章追加损失。")
     foreshadowing: list[str] = Field(default_factory=list)
     state_delta_summary: str = Field(min_length=1)
     scene_chain: list[ChapterScenePlan] = Field(min_length=2, max_length=4)
@@ -1016,6 +1016,43 @@ class LLMOutlinePlanningGenerator:
             self._model_gateway = model_gateway
             self._prepare_gateway_settings = lambda runtime: runtime
 
+    def generate_ending_blueprint(
+        self, brief: OutlinePlanningBrief, *, constraints: dict[str, Any], guidance: str = "",
+    ) -> Any:
+        from packages.story_core.ending_planning import EndingBlueprint
+
+        validated = OutlinePlanningBrief.model_validate(brief)
+        runtime = self._runtime_resolver("planner")
+        context = {
+            "generation_phase": "automatic_ending_blueprint",
+            "canon": validated.model_dump(mode="json"),
+            "constraints": constraints, "guidance": guidance,
+            "output_schema": EndingBlueprint.model_json_schema(),
+        }
+        response = _complete_payload(self._model_gateway, {
+            "model": runtime.model,
+            "messages": [
+                {"role": "system", "content": (
+                    "你是中文网文的结尾规划师。根据已写剧情、最近正文、人物现状和未回收伏笔，"
+                    "独立规划收束路线、结局契约和最后一卷。只返回符合output_schema的JSON。"
+                    "已写剧情和正文优先于过时人物卡；保留已发生事件、伤势、牺牲和人物选择。"
+                    "existing_ending_intention是作者意图，不能当成已发生事实。不要推翻已写方向。"
+                    "required_start_chapter是唯一合法起点；如有fixed_end_chapter必须在该章完结，"
+                    "否则自行选择足够兑现剩余承诺的章数，最多maximum_chapter_count章。"
+                    "closing_route写剩余事件的因果顺序，ending_contract写人物去向、主线兑现与代价。"
+                    "volume必须is_final_arc=true、next_arc_entry为空；故事节点连续覆盖全卷，每节点最多15章。"
+                    "用具体人物行动与可见结果结束旧问题；不得再开新卷、新反派或更高世界危机。"
+                    "避免器材盘点、验收报表和说教金句。这里仅规划，不写正文。"
+                )},
+                {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
+            ], "response_format": {"type": "json_object"},
+            "max_tokens": 12000, "temperature": float(runtime.temperature),
+        }, operation="outline_planning_ending_blueprint")
+        data = parse_json_message_content(response)
+        if data is None:
+            raise ValueError("invalid_ending_blueprint_json")
+        return EndingBlueprint.model_validate(data)
+
     def generate_next_volume(
         self,
         brief: OutlinePlanningBrief,
@@ -1102,6 +1139,21 @@ class LLMOutlinePlanningGenerator:
         if previous is not None:
             context["previous_volume"] = previous.model_dump(mode="json")
             context["previous_volume_end_state"] = previous.end_state
+        strategy_route = "Follow the existing core outline."
+        if strategy == "close":
+            strategy_route = str(overall.get("closing_route") or "").strip() or (
+                previous.extension_gate.close_route if previous is not None else ""
+            )
+        elif strategy == "expand":
+            strategy_route = str(overall.get("expansion_route") or "").strip() or (
+                previous.extension_gate.continue_route if previous is not None else ""
+            )
+        context["planning_strategy"] = {
+            "mode": strategy,
+            "route": strategy_route,
+            "ending_contract": str(overall.get("ending_contract") or ""),
+            "target_ending_chapter": overall.get("core_ending_chapter"),
+        }
         payload = {
             "model": runtime.model,
             "messages": [
@@ -1111,6 +1163,11 @@ class LLMOutlinePlanningGenerator:
                         "Design exactly one successor volume for a Chinese long-form webnovel. "
                         "Use only the supplied canon and return one ArcOutline JSON object. "
                         "Do not generate chapter detail, prose, or character cards. "
+                        "Follow planning_strategy: observe continues the existing core plan; "
+                        "expand follows its expansion route; close MUST produce a final volume "
+                        "(is_final_arc=true), follow its closing route, and satisfy ending_contract. "
+                        "For close, resolve the remaining obligations through concrete events, "
+                        "preserve committed facts and costs, and leave no next-volume entry. "
                         "If is_bootstrap_volume is true, this is the first volume "
                         "of a brand-new project — start at required_start_chapter "
                         "(=1), invent a coherent opening arc, and do not invent "
@@ -1132,11 +1189,14 @@ class LLMOutlinePlanningGenerator:
         data = parse_json_message_content(response)
         if data is None:
             raise ValueError("invalid_next_volume_json")
-        return validate_next_volume(
+        volume = validate_next_volume(
             data,
             previous_volume=previous,
             allow_short_final=allow_short_final,
         )
+        if allow_short_final and not volume.is_final_arc:
+            raise ValueError("closing_volume_must_be_final")
+        return volume
 
     def generate_volume_characters(
         self,
@@ -1474,6 +1534,7 @@ class LLMOutlinePlanningGenerator:
             ),
             "validation_rules": [
                 "Return exactly the target_chapter_numbers in order.",
+                "Cost may be empty or 无新增代价. Distinguish existing injuries, ordinary time/resource costs, and new danger; do not invent losses for a teaching, handover, recovery, or payoff chapter. Preserve its emotional_change, including patience, relief, trust, or satisfaction.",
                 "Use the fixed volume and story nodes; do not redesign arcs or volume boundaries.",
                 "Every cast entry must use a name from committed_context.known_character_names; do not invent unnamed roles or new people here.",
                 "Do not use a character before the chapter listed in committed_context.character_first_appearances.",

@@ -436,7 +436,7 @@ def test_first_chapter_packet_contains_contract():
 
     assert packet["schema_version"] == "codex-writing-packet/v1"
     assert packet["chapter_number"] == 1
-    assert packet["target_chars"] == {"min": 4200, "max": 5500}
+    assert packet["target_chars"] == {"min": 3000, "max": 4500}
     assert packet["protagonist"]["real_name"] == "苏叶"
     assert packet["protagonist"]["game_id"] == "夜烬"
     assert packet["prose_renderer"]["skill"] == "chinese-novelist"

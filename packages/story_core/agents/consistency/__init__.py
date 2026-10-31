@@ -1,17 +1,16 @@
 """Focused consistency agent.
 
 The agent answers exactly one question: *does the draft
-contradict the established facts or the approved director
-plan?* It does not grade literary style; style findings stay
+contradict the established Canon facts?* Director plans and
+context summaries remain advisory. It does not grade literary style; style findings stay
 warnings the user can accept and ship with.
 
-The agent is **fail-closed**: a runtime exception or a
-malformed response becomes a blocking
+An unavailable review stays visible: a runtime exception or a
+malformed response becomes an advisory
 ``consistency.unavailable`` or ``consistency.invalid_response``
-finding rather than a silent ``[]`` that lets a contradictory
-draft reach the confirmation gate. Style findings keep the
-original ``blocking=False`` downgrade; only the failure modes
-are treated as blocking.
+finding rather than a silent ``[]``. This is not evidence of a factual
+contradiction. Model findings may block only when backed by established
+snapshot evidence; deterministic contract gates keep their own disposition.
 
 The runtime boundary lives in
 :mod:`packages.story_core.agents.consistency.runtime` and the

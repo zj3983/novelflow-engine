@@ -231,9 +231,9 @@ def test_writer_request_uses_file_project_hard_length_max() -> None:
         director_artifact=artifact,
     )
 
-    assert request.target_chars == {"min": 4200, "max": 5500}
-    assert request.acceptance_chars == {"min": 3800, "max": 5700}
-    assert request.repair_length is False
+    assert request.target_chars == {"min": 3000, "max": 4500}
+    assert request.acceptance_chars == {"min": 3000, "max": 4500}
+    assert request.repair_length is True
 
 
 class _StubDirectorRuntime:
@@ -294,10 +294,11 @@ class _StubWriterRuntime:
     # ``3800`` character hard gate. Tests that need a short body
     # (to exercise the deterministic length finding) pass
     # their own ``body`` argument.
-    # Keep the synthetic body above the production length gate without making
-    # one punctuation-free sentence that forces repeated long-span scans in
-    # deterministic fact extraction.
-    DEFAULT_BODY = "天色已晚，" + ("林昭提灯上山。" * 800)
+    # Keep the body above the production length gate without creating one
+    # punctuation-free sentence.  The latter makes deterministic fact
+    # extraction rescan a 5k-character span for every known entity and turns
+    # this synthetic fixture into an unbounded-looking regex workload.
+    DEFAULT_BODY = "天色已晚，" + ("林昭提灯上山。" * 620)
 
     def __init__(self, body: str | None = None) -> None:
         self.body = body if body is not None else self.DEFAULT_BODY
@@ -1278,6 +1279,128 @@ def test_orchestrator_runs_focused_consistency_review(tmp_path: Path):
     writing_review = legacy_bundle.quality_report["writing_review"]
     assert writing_review["pass"] is True
     assert "canon_violation" not in writing_review["issues"]
+
+
+def test_run_writer_treats_unlanded_planned_hook_as_blocking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_legacy_project(tmp_path, with_outline=False)
+    artifact = DirectorArtifact(
+        chapter_number=1,
+        chapter_goal="查账",
+        opening_state="夜里",
+        scene_beats=[
+            SceneBeat(order=1, location="账房", action="查账", result="发现线索"),
+            SceneBeat(order=2, location="账房", action="离开", result="被人盯上"),
+        ],
+        ending_state="被人盯上",
+        hook="作弊名单最后一个名字是主角",
+        outline_contract=OutlineExecutionContract(
+            chapter_number=1,
+            planned_hook="作弊名单最后一个名字是主角",
+        ),
+    )
+
+    monkeypatch.setattr(
+        "packages.story_core.agents.pipeline._default_consistency_runtime",
+        lambda _project: None,
+    )
+    result = run_writer(
+        project_root=tmp_path,
+        chapter_number=1,
+        director_artifact=artifact,
+        canon_registry=CanonRegistry.empty(),
+        runtime=_StubWriterRuntime(),
+    )
+
+    hook_findings = [
+        finding
+        for finding in result.consistency_findings
+        if finding["code"] == "chapter.hook_not_landed"
+    ]
+    assert len(hook_findings) == 1
+    assert hook_findings[0]["blocking"] is True
+
+
+def test_run_writer_accepts_planned_hook_landed_in_body_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_legacy_project(tmp_path, with_outline=False)
+    artifact = DirectorArtifact(
+        chapter_number=1,
+        chapter_goal="查账",
+        opening_state="夜里",
+        scene_beats=[
+            SceneBeat(order=1, location="账房", action="查账", result="发现线索"),
+            SceneBeat(order=2, location="账房", action="离开", result="被人盯上"),
+        ],
+        ending_state="被人盯上",
+        hook="作弊名单最后一个名字是主角",
+        outline_contract=OutlineExecutionContract(
+            chapter_number=1,
+            planned_hook="作弊名单最后一个名字是主角",
+        ),
+    )
+
+    monkeypatch.setattr(
+        "packages.story_core.agents.pipeline._default_consistency_runtime",
+        lambda _project: None,
+    )
+    body = "前文推进。" * 80 + "账册翻到最后一页，作弊名单最后一个名字是主角。"
+    result = run_writer(
+        project_root=tmp_path,
+        chapter_number=1,
+        director_artifact=artifact,
+        canon_registry=CanonRegistry.empty(),
+        runtime=_StubWriterRuntime(body=body),
+    )
+
+    assert not any(
+        finding["code"] == "chapter.hook_not_landed"
+        for finding in result.consistency_findings
+    )
+
+
+def test_run_writer_checks_contract_hook_even_when_artifact_hook_differs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_legacy_project(tmp_path, with_outline=False)
+    artifact = DirectorArtifact(
+        chapter_number=1,
+        chapter_goal="查账",
+        opening_state="夜里",
+        scene_beats=[
+            SceneBeat(order=1, location="账房", action="查账", result="发现线索"),
+            SceneBeat(order=2, location="账房", action="离开", result="被人盯上"),
+        ],
+        ending_state="被人盯上",
+        hook="旧的 artifact 钩子",
+        outline_contract=OutlineExecutionContract(
+            chapter_number=1,
+            planned_hook="真正的幕后名单曝光",
+        ),
+    )
+
+    monkeypatch.setattr(
+        "packages.story_core.agents.pipeline._default_consistency_runtime",
+        lambda _project: None,
+    )
+    body = "过渡段落。" * 900 + "旧的 artifact 钩子已经落地。"
+    result = run_writer(
+        project_root=tmp_path,
+        chapter_number=1,
+        director_artifact=artifact,
+        canon_registry=CanonRegistry.empty(),
+        runtime=_StubWriterRuntime(body=body),
+    )
+
+    hook_findings = [
+        finding
+        for finding in result.consistency_findings
+        if finding["code"] == "chapter.hook_not_landed"
+    ]
+    assert len(hook_findings) == 1
+    assert hook_findings[0]["blocking"] is True
 
 
 def test_writer_consistency_uses_previous_chapter_canon_snapshot(tmp_path: Path):

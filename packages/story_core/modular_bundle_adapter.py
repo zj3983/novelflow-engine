@@ -7,6 +7,7 @@ from typing import Any
 from packages.story_core.chapter_history import apply_chapter_history
 from packages.story_core.engine import ChapterBundle
 from packages.story_core.models import StoryState
+from packages.story_core.review.prose_checks import run_prose_checks, contextualize_rule_checks
 
 
 def adapt_modular_bundle_to_legacy(
@@ -140,6 +141,7 @@ def adapt_modular_bundle_to_legacy(
         ):
             character_cards.append(dict(card))
     quality_report: dict[str, Any] = {
+        **run_prose_checks(str(modular_bundle.body or ""), genre_context={"genre": story.genre}),
         "ok": writing_review_pass,
         "schema_version": "file-writing-review/v1",
         "writing_review": {
@@ -206,6 +208,7 @@ def adapt_modular_bundle_to_legacy(
             },
         },
     }
+    quality_report = contextualize_rule_checks(quality_report)
     scene_results = [
         str(beat.result or "").strip()
         for beat in scene_beats

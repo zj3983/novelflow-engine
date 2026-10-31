@@ -137,6 +137,15 @@ def test_writer_agent_takes_one_request_and_returns_one_result() -> None:
     assert result.notes == ""
 
 
+def test_writer_prompt_explains_character_count_and_plans_below_ceiling() -> None:
+    prompt = build_writer_prompt(_writer_request())
+    assert "去除空白后的字符数" in prompt
+    assert "汉字、标点、数字和英文字母均各计1个字符" in prompt
+    assert "token数不能代替字符数" in prompt
+    assert "约3750" in prompt
+    assert "4500字上限" in prompt
+
+
 def test_writer_agent_rewrites_once_when_first_draft_exceeds_hard_max() -> None:
     runtime = _RecordingRuntime(responses=["甲" * 31, "乙" * 18])
     agent = WriterAgent(runtime=runtime, allow_automatic_repair=True)
@@ -158,7 +167,7 @@ def test_writer_agent_rewrites_once_when_first_draft_exceeds_hard_max() -> None:
     assert runtime.requests[1].metadata["attempt"] == 2
 
 
-def test_writer_agent_does_not_rewrite_without_human_approval() -> None:
+def test_writer_agent_keeps_single_call_when_automatic_repair_is_disabled() -> None:
     first_draft = "甲" * 31
     runtime = _RecordingRuntime(responses=[first_draft, "乙" * 18])
     agent = WriterAgent(runtime=runtime)
@@ -235,21 +244,20 @@ def test_writer_agent_can_expand_after_two_overlong_compactions() -> None:
     assert runtime.requests[3].metadata["reason"] == "under_acceptance_min"
 
 
-def test_writer_agent_alternates_repair_direction_but_returns_closest_draft() -> None:
+def test_writer_agent_rejects_unconverged_length_after_bounded_attempts() -> None:
     runtime = _RecordingRuntime(
         responses=["甲" * 31, "乙" * 7, "丙" * 30, "丁" * 6]
     )
     agent = WriterAgent(runtime=runtime, allow_automatic_repair=True)
 
-    result = agent.run(
-        _writer_request(
-            target_chars={"min": 10, "max": 20},
-            acceptance_chars={"min": 8, "max": 24},
-            repair_length=True,
+    with pytest.raises(RuntimeError, match="writer_length_not_converged"):
+        agent.run(
+            _writer_request(
+                target_chars={"min": 10, "max": 20},
+                acceptance_chars={"min": 8, "max": 24},
+                repair_length=True,
+            )
         )
-    )
-
-    assert result.body == "乙" * 7
     assert runtime.call_count == 5
     assert runtime.requests[4].metadata["attempt"] == 5
     assert runtime.requests[2].metadata["reason"] == "under_acceptance_min"
@@ -431,7 +439,7 @@ def test_writer_agent_gets_one_final_repair_after_length_oscillation() -> None:
     assert runtime.requests[4].metadata["reason"] == "over_hard_max"
 
 
-def test_writer_agent_trims_small_final_overflow_without_cutting_hook() -> None:
+def test_writer_agent_never_deletes_sentences_to_hide_unconverged_length() -> None:
     opening = "陈默推开仓库门。"
     expendable = "墙边堆着多年没人处理的破木箱，灰尘落得很厚。"
     hook = "门外忽然传来脚步声。"
@@ -440,19 +448,15 @@ def test_writer_agent_trims_small_final_overflow_without_cutting_hook() -> None:
     runtime = _RecordingRuntime(responses=[draft, "短。", "短。", "短。", "短。"])
     agent = WriterAgent(runtime=runtime, allow_automatic_repair=True)
 
-    result = agent.run(
-        _writer_request(
-            target_chars={"min": 10, "max": compact_length - 6},
-            acceptance_chars={"min": 10, "max": compact_length - 5},
-            repair_length=True,
+    with pytest.raises(RuntimeError, match="writer_length_not_converged"):
+        agent.run(
+            _writer_request(
+                target_chars={"min": 10, "max": compact_length - 6},
+                acceptance_chars={"min": 10, "max": compact_length - 5},
+                repair_length=True,
+            )
         )
-    )
-
-    assert len("".join(result.body.split())) <= compact_length - 5
-    assert opening in result.body
-    assert hook in result.body
-    assert expendable not in result.body
-    assert "deterministic_length_trim" in result.notes
+    assert runtime.call_count == 5
 
 
 def test_writer_agent_uses_same_request_contract_for_cli_and_api_runtimes() -> None:
@@ -1154,3 +1158,31 @@ def test_gateway_writer_runtime_does_not_rewrite_preexisting_prompt_log(
     historical_payload = recorder.get(historical_id)
     assert historical_payload["user_prompt"] == "历史 prompt"
     assert historical_payload["status"] == "succeeded"
+
+
+
+
+def test_writer_prompt_contains_upstream_outline_execution_contract() -> None:
+    artifact = _director_artifact().model_copy(
+        update={
+            "outline_contract": OutlineExecutionContract(
+                chapter_number=7,
+                opening_carry="接住门外脚步声",
+                gain="拿到黑账",
+                cost="暴露身份",
+                state_delta="从查账转为被追捕",
+                planned_hook="作弊名单最后一个名字是主角",
+                must_not_write=["不要抓到账房主谋"],
+            )
+        }
+    )
+    prompt = build_writer_prompt(_writer_request(director_artifact=artifact))
+    for value in (
+        "接住门外脚步声",
+        "拿到黑账",
+        "暴露身份",
+        "从查账转为被追捕",
+        "作弊名单最后一个名字是主角",
+        "不要抓到账房主谋",
+    ):
+        assert value in prompt

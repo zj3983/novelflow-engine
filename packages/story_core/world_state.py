@@ -77,8 +77,13 @@ def append_continuity_facts(
     *,
     chapter_number: int,
     facts: Iterable[str],
+    replace_chapter: bool = False,
 ) -> list[dict[str, Any]]:
     records = _fact_records(existing)
+    if replace_chapter:
+        # A fully rechecked repair replaces this chapter's prior assertions;
+        # otherwise obsolete facts are reintroduced from the project blueprint.
+        records = [item for item in records if item.get("source_chapter") != chapter_number]
     by_key = {_fact_key(item["text"]): item for item in records}
     order = [_fact_key(item["text"]) for item in records]
     for value in facts:

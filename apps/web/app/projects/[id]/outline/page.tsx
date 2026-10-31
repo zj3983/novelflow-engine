@@ -6,6 +6,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
 import { PageHeader } from "../../../../components/ws/PageHeader";
+import { SceneOutlineEditor } from "../../../../components/ws/SceneOutlineEditor";
+import { EndingAuditChecklist } from "../../../../components/ws/EndingAuditChecklist";
 import { useProjectWorkspace } from "../../../../components/ws/ProjectWorkspaceProvider";
 import {
   fetchProjectForeshadowing,
@@ -35,6 +37,7 @@ import {
   type VolumeWorkflowResponse,
 } from "../../../../lib/api";
 import { isGameWebnovel } from "../../../../lib/worldDisplay";
+import { fetchEndingPlan, startEndingPlan, type EndingPlanningJob } from "../../../../lib/project-outline-api";
 
 type OutlineTab = "overall" | "arcs" | "chapters" | "foreshadowing";
 type ForeshadowingFilter = "active" | "ended" | "all";
@@ -243,7 +246,7 @@ function rangesOverlap(left: ProjectOutlineArc, right: ProjectOutlineArc): boole
 }
 
 export default function OutlinePage() {
-  const { project, story, error: projectError, encodedProjectId, projectId } = useProjectWorkspace();
+  const { project, story, chapterIndex, error: projectError, encodedProjectId, projectId } = useProjectWorkspace();
   const searchParams = useSearchParams();
   const requestedTab = searchParams?.get("tab");
   const requestedOutlineTab = TABS.some((tab) => tab.id === requestedTab)
@@ -280,6 +283,10 @@ export default function OutlinePage() {
   const [volumeWorkflow, setVolumeWorkflow] = useState<VolumeWorkflowResponse | null>(null);
   const [volumeWorkflowBusy, setVolumeWorkflowBusy] = useState(false);
   const [volumeWorkflowError, setVolumeWorkflowError] = useState("");
+  const [endingJob, setEndingJob] = useState<EndingPlanningJob | null>(null);
+  const [endingStarting, setEndingStarting] = useState(false);
+  const [auditRefreshKey, setAuditRefreshKey] = useState(0);
+  const endingBusy = endingStarting || endingJob?.status === "queued" || endingJob?.status === "running";
   const currentChapterNumber = Number(story?.current_chapter ?? 0);
   const requestedChapterNumber = Number(searchParams?.get("chapter") || 0);
   const nextChapter = Number.isInteger(requestedChapterNumber) && requestedChapterNumber > 0
@@ -424,7 +431,7 @@ export default function OutlinePage() {
   }, [bootstrapStatus, projectId]);
 
   useEffect(() => {
-    if (!bootstrapRequested) return;
+    if (!bootstrapRequested && !project?.continuation) return;
     let cancelled = false;
     fetchContinuationBootstrap(projectId)
       .then((response) => {
@@ -436,7 +443,7 @@ export default function OutlinePage() {
     return () => {
       cancelled = true;
     };
-  }, [bootstrapRequested, projectId]);
+  }, [bootstrapRequested, projectId, project?.continuation?.start_after_chapter]);
 
   async function startBootstrap() {
     setBootstrapBusy(true);
@@ -464,7 +471,27 @@ export default function OutlinePage() {
   const activeArc = draft?.arcs.find(
     (arc) => arc.start_chapter <= nextChapter && nextChapter <= arc.end_chapter,
   );
-  const closeRouteMissing = !activeArc?.extension_gate.close_route.trim();
+  const closingArc = draft?.arcs.find(
+    (arc) => arc.is_final_arc && arc.end_chapter === draft.overall.core_ending_chapter,
+  );
+  const endingReached = Boolean(
+    draft && closingArc && draft.overall.current_strategy === "close"
+    && currentChapterNumber >= draft.overall.core_ending_chapter,
+  );
+  const closeRouteMissing = !draft?.overall.closing_route.trim()
+    && !(activeArc ?? (endingReached ? closingArc : undefined))?.extension_gate.close_route.trim();
+  const detailRange = endingReached && closingArc
+    ? [closingArc.start_chapter, closingArc.end_chapter]
+    : volumeWorkflow?.volume_range ?? (activeArc ? [activeArc.start_chapter, activeArc.end_chapter] : null);
+  const visibleSceneChapters = rollingChapters.filter(chapter =>
+    (!detailRange || (detailRange[0] <= chapter.chapter_number && chapter.chapter_number <= detailRange[1]))
+    && (endingReached || chapter.chapter_number > currentChapterNumber),
+  );
+  const historicalSceneChapters = rollingChapters.filter(chapter => chapter.chapter_number <= currentChapterNumber && !visibleSceneChapters.includes(chapter));
+  const visibleChapterRecords = (draft?.chapters ?? []).map((chapter, index) => ({ chapter, index })).filter(({ chapter }) =>
+    !rollingChapters.some(row => row.chapter_number === chapter.chapter_number)
+    && (!endingReached || (closingArc && closingArc.start_chapter <= chapter.chapter_number && chapter.chapter_number <= closingArc.end_chapter)),
+  );
 
   const workflowVolume = volumeWorkflow?.volume_id
     ? draft?.arcs.find((arc) => arc.id === volumeWorkflow.volume_id) ?? null
@@ -713,9 +740,10 @@ export default function OutlinePage() {
       const { source: _source, ...payload } = draft;
       const saved = await updateProjectOutline(projectId, payload);
       setDraft(withOutlineDefaults(saved));
+      setAuditRefreshKey(key => key + 1);
       setMessage("大纲已保存，下一次剧情规划会读取这版内容。");
     } catch (err) {
-      setMessage(`保存失败：${err instanceof Error ? err.message : String(err)}`);
+      setMessage(`保存失败：${userFacingErrorMessage(err)}`);
     } finally {
       setSaving(false);
     }
@@ -769,6 +797,7 @@ export default function OutlinePage() {
     ]);
     setDraft(withOutlineDefaults(outline));
     setRollingChapters(rollingOutline.chapters ?? []);
+    setAuditRefreshKey(key => key + 1);
     setVolumeWorkflow(workflow);
     setOverallNumbers({
       core: String(outline.overall.core_ending_chapter),
@@ -790,6 +819,59 @@ export default function OutlinePage() {
       setVolumeWorkflowError(err instanceof Error ? err.message : String(err));
     } finally {
       setVolumeWorkflowBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchEndingPlan(projectId).then(({ job }) => {
+      if (!cancelled) setEndingJob((current) => current ?? job);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!endingJob || !["queued", "running"].includes(endingJob.status)) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    async function poll() {
+      try {
+        const { job } = await fetchEndingPlan(projectId);
+        if (cancelled || !job) return;
+        if (job.status === "completed") {
+          await refreshVolumeWorkspace();
+          if (cancelled) return;
+          setActiveTab("chapters");
+          setMessage(`结尾规划已保存：第${job.result?.chapter_range[0]}—${job.result?.chapter_range[1]}章。可以继续编辑细纲，再到写作页写正文。`);
+          setEndingJob(job);
+        } else if (job.status === "failed") {
+          setEndingJob(job);
+        } else {
+          setEndingJob(job);
+          timer = setTimeout(poll, 2000);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setLocalError(`读取规划进度失败：${userFacingErrorMessage(err)}`);
+          timer = setTimeout(poll, 5000);
+        }
+      }
+    }
+    timer = setTimeout(poll, 1000);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [projectId, endingJob?.job_id, endingJob?.status]);
+
+  async function handlePlanEnding() {
+    if (!draft || endingBusy) return;
+    setEndingStarting(true);
+    setLocalError("");
+    setMessage("");
+    try {
+      setEndingJob(await startEndingPlan(projectId, draft, guidance.trim()));
+    } catch (err) {
+      setLocalError(`结尾规划未启动：${userFacingErrorMessage(err)}`);
+    } finally {
+      setEndingStarting(false);
     }
   }
 
@@ -828,6 +910,9 @@ export default function OutlinePage() {
         </div>
       ) : null}
 
+      {endingBusy ? <div className="ws-card" role="status">{endingJob?.progress || "正在启动结尾规划…"} 页面可以刷新，完成后自动保存。</div> : null}
+      {endingJob?.status === "failed" ? <div className="ws-card" role="alert">结尾规划失败：{userFacingErrorMessage(endingJob.error)} 原大纲保留，可以重试。</div> : null}
+      <fieldset disabled={endingBusy} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
       <section className="ws-outline-workspace" aria-label="三级大纲编辑器">
         <div className="ws-section-head">
           <div>
@@ -861,9 +946,11 @@ export default function OutlinePage() {
             {volumeWorkflow ? (
               <section className="ws-outline-generation-progress" aria-label="当前卷写作流程">
                 <strong>
-                  {workflowVolume?.title || (volumeWorkflow.volume_range ? "当前卷" : "下一卷")}
+                  {endingReached ? "已到设定的完结章" : workflowVolume?.title || (volumeWorkflow.volume_range ? "当前卷" : "下一卷")}
                 </strong>
-                {volumeWorkflow.volume_range ? (
+                {endingReached ? (
+                  <p>全书规划在第 {draft.overall.core_ending_chapter} 章收尾。可以查看结尾细纲，或逐章修订现有正文。</p>
+                ) : volumeWorkflow.volume_range ? (
                   <p>
                     第 {volumeWorkflow.volume_range[0]}-{volumeWorkflow.volume_range[1]} 章，
                     章节细纲已完成 {workflowProgress.completed}/{workflowProgress.total} 章。
@@ -877,7 +964,16 @@ export default function OutlinePage() {
                   <p>你刚才要生成第 {nextChapter} 章，但这一卷的章节细纲还没有全部完成。</p>
                 ) : null}
                 <div className="ws-outline-generation__actions">
-                  {volumeWorkflow.status === "volume_missing" ? (
+                  {endingReached ? (
+                    <>
+                      <button className="ws-btn" type="button" onClick={() => selectOutlineTab("chapters")}>
+                        查看结尾细纲
+                      </button>
+                      <Link className="ws-btn ws-btn--primary" href={`/projects/${encodedProjectId}/write?chapter=${draft.overall.core_ending_chapter}`}>
+                        修订第 {draft.overall.core_ending_chapter} 章
+                      </Link>
+                    </>
+                  ) : volumeWorkflow.status === "volume_missing" ? (
                     <button
                       className="ws-btn ws-btn--primary"
                       type="button"
@@ -908,7 +1004,7 @@ export default function OutlinePage() {
               </section>
             ) : null}
             {volumeWorkflowError ? <p className="ws-error">卷纲流程加载失败：{volumeWorkflowError}</p> : null}
-            <div className="ws-outline-generation__actions">
+            {!endingReached ? <div className="ws-outline-generation__actions">
               {draft.arcs.length === 0 && draft.chapters.length === 0 ? (
                 <button className="ws-btn" type="button" disabled={generating !== null || saving} onClick={() => void runGeneration("initial")}>
                   {generating === "initial" ? "生成中..." : "生成大纲"}
@@ -916,7 +1012,7 @@ export default function OutlinePage() {
               ) : (
                 <>
                   <button className="ws-btn" type="button" disabled={generating !== null || saving} onClick={() => void runGeneration("regenerate")}>
-                    {generating === "regenerate" ? "生成中..." : "重新生成"}
+                    {generating === "regenerate" ? "生成中..." : "重新规划全书大纲"}
                   </button>
                 </>
               )}
@@ -925,7 +1021,7 @@ export default function OutlinePage() {
                   下一步：完善世界观
                 </Link>
               ) : null}
-            </div>
+            </div> : null}
             {generationCheckpoints && (
               generating !== null
               || generationCheckpoints.phases.some((phase) => phase.status !== "waiting")
@@ -958,7 +1054,7 @@ export default function OutlinePage() {
                 </div>
               </section>
             ) : null}
-            {bootstrapStatus ? (
+            {!endingReached && bootstrapStatus ? (
               <section
                 className="ws-outline-generation-progress"
                 aria-label="续写导入资料补齐"
@@ -1009,7 +1105,7 @@ export default function OutlinePage() {
                   </button>
                 )}
               </section>
-            ) : continuationStart ? (
+            ) : !endingReached && continuationStart ? (
               <section
                 className="ws-outline-generation-progress"
                 aria-label="续写导入资料补齐"
@@ -1203,51 +1299,68 @@ export default function OutlinePage() {
               <span>扩展路线</span>
               <textarea className="ws-input" rows={3} value={draft.overall.expansion_route} onChange={(event) => setDraft({ ...draft, overall: { ...draft.overall, expansion_route: event.target.value } })} />
             </label>
-            <label className="ws-outline-field">
-              <span>收束路线</span>
-              <textarea className="ws-input" rows={3} value={draft.overall.closing_route} onChange={(event) => setDraft({ ...draft, overall: { ...draft.overall, closing_route: event.target.value } })} />
-            </label>
-            <label className="ws-outline-field ws-outline-field--wide">
-              <span>核心结局契约</span>
-              <textarea
-                className="ws-input"
-                rows={3}
-                value={draft.overall.ending_contract}
-                onChange={(event) =>
-                  setDraft({ ...draft, overall: { ...draft.overall, ending_contract: event.target.value } })
-                }
-              />
-            </label>
-            <div className="ws-outline-field ws-outline-field--wide">
-              <span>长篇策略</span>
-              <div className="ws-outline-strategy" role="radiogroup" aria-label="长篇策略">
-                {([
-                  ["observe", "观察中"],
-                  ["expand", "扩展"],
-                  ["close", "收束"],
-                ] as const).map(([value, label]) => (
-                  <label key={value}>
-                    <input
-                      type="radio"
-                      name="outline-strategy"
-                      value={value}
-                      checked={draft.overall.current_strategy === value}
-                      disabled={value === "close" && closeRouteMissing}
-                      onChange={() =>
-                        setDraft({
-                          ...draft,
-                          overall: { ...draft.overall, current_strategy: value },
-                        })
-                      }
-                    />
-                    <span>{label}</span>
-                  </label>
-                ))}
+            <section className="ws-outline-field ws-outline-field--wide ws-outline-generation-progress" aria-label="完结与续写">
+              <h2>完结与续写</h2>
+              <p className="ws-card__hint">自动读取已写剧情、人物现状和未回收伏笔，填好收束路线、结局契约与逐章细纲，并切换到收束。正文保留。</p>
+              {endingReached ? <p className="ws-card__hint">结尾正文已经存在。再次规划会更新结尾细纲，请在章节大纲中逐章对照正文，记录核对结论后再修订。</p> : null}
+              <button className="ws-btn ws-btn--primary" type="button" onClick={() => void handlePlanEnding()} disabled={saving || generating !== null || volumeWorkflowBusy || bootstrapBusy || currentChapterNumber < 1}>
+                自动规划结尾
+              </button>
+              <p className="ws-card__hint">{!story ? "正在读取章节进度…" : endingReached && closingArc ? `以第${closingArc.start_chapter - 1}章为承接点，重新规划第${closingArc.start_chapter}—${closingArc.end_chapter}章结尾细纲。` : `从第${currentChapterNumber + 1}章接着收尾，自动安排需要的章节。`}</p>
+              <div className="ws-outline-grid">
+                <label className="ws-outline-field">
+                  <span>收束路线</span>
+                  <small>接下来怎样走到结尾：写清剩余事件和先后顺序。</small>
+                  <textarea className="ws-input" aria-label="收束路线" rows={3} placeholder="例如：完成最后的任务，交接责任，再返家休养。" value={draft.overall.closing_route} onChange={(event) => setDraft({ ...draft, overall: { ...draft.overall, closing_route: event.target.value } })} />
+                </label>
+                <label className="ws-outline-field ws-outline-field--wide">
+                  <span>核心结局契约</span>
+                  <small>结尾必须兑现的结果与限制：人物去向、未结主线、保留的代价。</small>
+                  <textarea
+                    aria-label="核心结局契约"
+                    className="ws-input"
+                    rows={3}
+                    placeholder="例如：旧任务完成；人物代价保留；不再开启新危机或下一卷。"
+                    value={draft.overall.ending_contract}
+                    onChange={(event) =>
+                      setDraft({ ...draft, overall: { ...draft.overall, ending_contract: event.target.value } })
+                    }
+                  />
+                </label>
+                <div className="ws-outline-field ws-outline-field--wide">
+                  <span>长篇策略</span>
+                  <small>观察中沿现有规划推进；扩展规划后续新卷；收束按上述路线准备结尾。</small>
+                  <div className="ws-outline-strategy" role="radiogroup" aria-label="长篇策略">
+                    {([
+                      ["observe", "观察中"],
+                      ["expand", "扩展"],
+                      ["close", "收束"],
+                    ] as const).map(([value, label]) => (
+                      <label key={value}>
+                        <input
+                          type="radio"
+                          name="outline-strategy"
+                          value={value}
+                          checked={draft.overall.current_strategy === value}
+                          disabled={value === "close" && closeRouteMissing}
+                          onChange={() =>
+                            setDraft({
+                              ...draft,
+                              overall: { ...draft.overall, current_strategy: value },
+                            })
+                          }
+                        />
+                        <span>{label}</span>
+                      </label>
+                    ))}
+                  </div>
+                  {closeRouteMissing ? (
+                    <span className="ws-outline-strategy__reason">先填写上面的收束路线，就可以选择收束。</span>
+                  ) : null}
+                  <p className="ws-card__hint">当前选择：{draft.overall.current_strategy === "close" ? "收束" : draft.overall.current_strategy === "expand" ? "扩展" : "观察中"}；目标完结章：第 {draft.overall.core_ending_chapter} 章。修改后请点击“保存大纲”。</p>
+                </div>
               </div>
-              {closeRouteMissing ? (
-                <span className="ws-outline-strategy__reason">请先填写当前阶段的收束路线。</span>
-              ) : null}
-            </div>
+            </section>
             <label className="ws-outline-field">
               <span>主角长期目标</span>
               <textarea
@@ -1517,39 +1630,27 @@ export default function OutlinePage() {
           </div>
         ) : null}
 
+        {draft && activeTab === "overall" && draft.overall.current_strategy === "close" ? <EndingAuditChecklist projectId={projectId} refreshKey={auditRefreshKey} /> : null}
         {draft && activeTab === "chapters" ? (
           <div role="tabpanel" id="outline-panel-chapters" aria-labelledby="outline-tab-chapters">
-            <h2>待写章节细纲</h2>
-            <p className="ws-card__hint">这里显示当前整卷的待写章节细纲，不会混入已经完成的章节记录。</p>
+            <h2>{endingReached ? "结尾章节细纲" : "当前卷待写细纲"}</h2>
+            {draft.overall.current_strategy === "close" ? <EndingAuditChecklist projectId={projectId} refreshKey={auditRefreshKey} /> : null}
+            <p className="ws-card__hint">{endingReached ? `仅显示结尾第${detailRange?.[0]}—${detailRange?.[1]}章。新规划会保留已有正文，请逐章核对后再修订。` : "只显示当前卷尚未写出的章节。每章可单独编辑场景并保存。"}</p>
             <div className="ws-outline-list">
-              {rollingChapters.length > 0 ? rollingChapters.map((chapter) => (
-                <article className="ws-outline-item" key={`rolling-${chapter.chapter_number}`}>
-                  <div className="ws-outline-item__head">
-                    <strong>第 {chapter.chapter_number} 章 · {chapter.title}</strong>
-                    {chapter.source === "manual" ? <span>已人工确认</span> : null}
-                  </div>
-                  <div className="ws-outline-grid">
-                    <div className="ws-outline-field"><span>本章目标</span><p>{chapter.chapter_goal}</p></div>
-                    <div className="ws-outline-field"><span>核心冲突</span><p>{chapter.core_conflict}</p></div>
-                    <div className="ws-outline-field"><span>出场人物</span><p>{chapter.cast.map((member) => member.name).filter(Boolean).join("、") || "未指定"}</p></div>
-                    <div className="ws-outline-field"><span>本章得失</span><p>获得：{chapter.gain || "未指定"}<br />代价：{chapter.cost || "未指定"}</p></div>
-                    <div className="ws-outline-field ws-outline-field--wide">
-                      <span>场景推进</span>
-                      {chapter.scenes.length > 0 ? (
-                        <ol>{chapter.scenes.map((scene, sceneIndex) => <li key={`${chapter.chapter_number}-scene-${sceneIndex}`}>{scene.location}：{scene.action}，结果是{scene.result}。</li>)}</ol>
-                      ) : <p>尚未安排场景。</p>}
-                    </div>
-                    <div className="ws-outline-field"><span>伏笔</span><p>{chapter.foreshadowing.join("；") || "无"}</p></div>
-                    <div className="ws-outline-field"><span>章末钩子</span><p>{chapter.hook || "未指定"}</p></div>
-                    <div className="ws-outline-field ws-outline-field--wide"><span>状态变化</span><p>{chapter.state_delta || "未指定"}</p></div>
-                  </div>
-                </article>
-              )) : <p className="ws-card__hint">还没有待写章节细纲，请先生成当前整卷的完整细纲。</p>}
+              {visibleSceneChapters.map(chapter => <SceneOutlineEditor key={chapter.chapter_number} chapter={chapter}
+                written={chapterIndex.find(c => c.chapter_number === chapter.chapter_number)} projectId={projectId}
+                onSaved={saved => { setRollingChapters(rows => rows.map(c => c.chapter_number === saved.chapter_number ? saved : c)); setAuditRefreshKey(key => key + 1);
+                  fetchProjectOutline(projectId).then(outline => setDraft(current => current ? { ...current, chapters: [...current.chapters.filter(c => c.chapter_number !== saved.chapter_number), ...outline.chapters.filter(c => c.chapter_number === saved.chapter_number)].sort((a, b) => a.chapter_number - b.chapter_number) } : withOutlineDefaults(outline))).catch(() => setLocalError("细纲已保存，但大纲刷新失败，请刷新页面。")); }} />)}
+              {!visibleSceneChapters.length ? <p className="ws-card__hint">当前范围尚无场景细纲。</p> : null}
             </div>
-            <h2>已完成章节记录</h2>
-            <p className="ws-card__hint">导入作品的旧章节只保留事实记录，不把事后摘要伪装成事前细纲。</p>
+            {historicalSceneChapters.length ? <details className="ws-writing-details"><summary>历史细纲（{historicalSceneChapters.length}章）</summary><div className="ws-outline-list">
+              {historicalSceneChapters.map(chapter => <article className="ws-outline-item" key={chapter.chapter_number}><strong>第 {chapter.chapter_number} 章 · {chapter.title}</strong><p>{chapter.chapter_goal}</p><p className="ws-card__hint">历史规划，正文以已确认版本为准。</p></article>)}
+            </div></details> : null}
+            {visibleChapterRecords.length ? <>
+            <h2>{endingReached ? "其他结尾记录" : "其他章级记录"}</h2>
+            <p className="ws-card__hint">已有场景细纲的章节统一在上方编辑；这里保留尚未建立场景细纲的章级记录。</p>
             <div className="ws-outline-list">
-              {draft.chapters.map((chapter, index) => (
+              {visibleChapterRecords.map(({ chapter, index }) => (
                 <article className="ws-outline-item" key={`${chapter.chapter_number}-${index}`}>
                   <div className="ws-outline-item__head">
                     <strong>第 {chapter.chapter_number} 章</strong>
@@ -1610,9 +1711,8 @@ export default function OutlinePage() {
                 </article>
               ))}
             </div>
-            <button className="ws-btn" type="button" onClick={addChapter}>
-              新增章节
-            </button>
+            </> : null}
+            {!endingReached ? <button className="ws-btn" type="button" onClick={addChapter}>新增章节</button> : null}
           </div>
         ) : null}
 
@@ -1715,6 +1815,7 @@ export default function OutlinePage() {
           </div>
         ) : null}
       </section>
+      </fieldset>
     </div>
   );
 }

@@ -1106,7 +1106,7 @@ def _reviewable_body(text: str) -> str:
 
 @pytest.mark.parametrize(
     ("body_chars", "expected_ceiling", "expected_tokens"),
-    [(3000, 4200, 4700), (5000, 5000, 5500), (6000, 5500, 6000)],
+    [(3000, 3000, 3500), (5000, 4500, 5000), (6000, 4500, 5000)],
 )
 def test_revision_char_ceiling_tracks_original_without_exceeding_chapter_limits(
     body_chars, expected_ceiling, expected_tokens
@@ -1164,7 +1164,7 @@ def test_over_length_body_is_fixed_in_single_revise_without_compression_model_ca
     # range. ``_should_compress_chapter`` is intentionally NOT
     # monkeypatched — the orchestrator no longer asks.
     over_length_body = "原" * 5800
-    in_range_body = "正" * 4800
+    in_range_body = "正" * 4400
 
     captured_kwargs: dict = {}
 

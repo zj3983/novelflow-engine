@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from packages.story_core.book_style import render_book_writing_preferences
 from packages.story_core.chapter_length_policy import (
     CHAPTER_HARD_MAX_CHARS,
     CHAPTER_HARD_MIN_CHARS,
@@ -68,7 +69,8 @@ def _render_director_artifact(request: WriterRequest) -> str:
     lines.extend(["", "## 场景节拍"])
     for beat in artifact.scene_beats:
         lines.append(
-            f"- 顺序{beat.order} · 地点：{beat.location} · 动作：{beat.action} · 结果：{beat.result}"
+            f"- 顺序{beat.order} · 地点：{beat.location} · 目的：{beat.purpose} · 冲突：{beat.conflict} · "
+            f"参与者：{', '.join(beat.participants)} · 动作：{beat.action} · 结果：{beat.result}"
         )
         if beat.purpose:
             lines.append(f"  场景目的：{beat.purpose}")
@@ -94,6 +96,8 @@ def _render_director_artifact(request: WriterRequest) -> str:
             lines.append(f"  关系变化：{beat.relationship_shift}")
         if beat.ending_pressure:
             lines.append(f"  收尾压力：{beat.ending_pressure}")
+        if beat.next_pressure:
+            lines.append(f"  下一步（如有）：{beat.next_pressure}")
     lines.extend(["", "## 收尾状态", artifact.ending_state])
     if artifact.hook:
         lines.extend(["", "## 章末钩子", artifact.hook])
@@ -105,6 +109,35 @@ def _render_director_artifact(request: WriterRequest) -> str:
                 f"{'（次要行内人物）' if requirement.inline_minor else ''}"
             )
     return "\n".join(lines)
+
+
+def _render_outline_contract(request: WriterRequest) -> str:
+    contract = request.director_artifact.outline_contract
+    if contract is None:
+        return ""
+    return "\n".join(
+        [
+            "## 上游章节执行合同",
+            f"开场必须承接：{contract.opening_carry}",
+            f"核心冲突：{contract.core_conflict}",
+            f"本章必须推进：{contract.state_delta}",
+            f"本章必须获得：{contract.gain}",
+            f"本章已确定的成本：{contract.cost or '无新增代价'}",
+            f"本章情绪方向：{contract.emotional_change or '依人物处境自然变化，不默认升级紧张'}",
+            f"本章最终状态变化：{contract.state_delta}",
+            f"中段反馈：{contract.mid_feedback}",
+            f"计划转折：{contract.planned_turn}",
+            f"本章禁止提前解决：{'；'.join(contract.must_not_write)}",
+            f"章末必须交出：{contract.planned_hook}",
+            f"收益合同：{contract.payoff_contract}",
+            "Director scene beats 是执行步骤；本合同是剧情边界。planned_hook 需自然落地，不能机械照抄，"
+            "也不能越过本章 ending boundary 去解决后续内容。",
+            "若导演的动作强度、人物意图、情绪或下一步压力与本合同冲突，以本合同为准：保留事件和结果，"
+            "自行纠正不相符的表达方式。导演新增的喝令、恐吓、暴力扣腕或反复伤痛不是必须执行的事实。"
+            "原有险情与真实战斗后果仍需兑现，不能将所有章节一律写得轻松。",
+            "已有伤势只需保持连续，不强制恶化；正常时间和资源消耗不自动升级为生死危机。未规划新增成本时不得额外追加损失。按本章情绪方向呈现耐心、缓和、信任或满足，不用反复呵斥、惊惧和伤痛证明情节有分量。",
+        ]
+    )
 
 
 def _render_previous_handoff(request: WriterRequest) -> str:
@@ -162,6 +195,7 @@ def _relevant_character_names(request: WriterRequest) -> set[str]:
                 beat.emotional_turn,
                 beat.relationship_shift,
                 beat.ending_pressure,
+                beat.next_pressure,
             )
         )
         text_parts.extend(beat.participants)
@@ -314,6 +348,12 @@ def _render_craft_modules(request: WriterRequest) -> str:
     return "\n".join(blocks)
 
 
+def _render_writing_preferences(request: WriterRequest) -> str:
+    return render_book_writing_preferences(
+        request.writing_style, request.writing_guidance, request.writing_reference
+    )
+
+
 def build_writer_prompt(request: WriterRequest) -> str:
     """Render a self-contained writer prompt from a ``WriterRequest``.
 
@@ -333,9 +373,9 @@ def build_writer_prompt(request: WriterRequest) -> str:
         "",
         "## 成稿要求\n"
         "- 直接写人物在场景中的行动、观察和交流，不要用报告口吻复述剧情。\n"
-        "- 对话服从人物当下目的和关系，不要求每个人完整陈述逻辑；可以打断、沉默、回避、反问、故意误解、答非所问、转移话题或用动作回应。需要讲清事实时再自然说完整。\n"
-        "- 禁止为了体现群像而让出场人物依次发表观点；没有当前意图的人可以沉默、旁观或只产生动作反应。\n"
-        "- character_intents 是作者侧写作控制，不是角色公开说出的事实；尤其不要把 want/withhold 直接改写成解释性旁白，让动作、停顿、措辞和选择把它表现出来。\n"
+        "- 对话服从人物当前目的和关系，不要求每个人完整表达逻辑；人物可以打断、沉默、回避、反问、故意误解、答非所问、转移话题、用动作回应或不回应。需要交代事实时，仍要使用自然完整的中文。\n"
+        "- 禁止为了体现群像而让出场人物依次发表观点。\n"
+        "- character_intents 是作者侧写作控制，不是角色公开说出的事实；want、withhold、emotional_turn 不得直接改写成旁白解释。优先通过动作、停顿、措辞、答非所问、回避、抢话、距离变化、关注点和选择让读者看出来。\n"
         "- 优先级：上游章节执行合同 > 导演公开场景计划 > Director 最终 scene-level character intents；只执行场景节拍中最终保留或改写的人物意图。\n"
         "- Director 最终人物意图只能控制行动、台词、停顿、潜台词和受阻后的反应；不得改写收益、代价、状态变化、禁止事项或章末钩子。\n"
         "- 描写只保留会影响人物判断、情绪或后续行动的细节；整章只在必要处保留一两处比喻，其余直接写动作和结果。\n"
@@ -346,6 +386,9 @@ def build_writer_prompt(request: WriterRequest) -> str:
         "- 按场景节拍分配篇幅，核心异常和章末钩子必须在目标篇幅内完整出现。\n"
         "- 严格停在导演给出的收尾状态，不自行推进到下一时间、地点或下一章行动。",
     ]
+    preferences = _render_writing_preferences(request)
+    if preferences:
+        sections.append(preferences)
     if request.project_title or request.genre:
         sections.append(
             "## 项目元数据"
@@ -357,6 +400,9 @@ def build_writer_prompt(request: WriterRequest) -> str:
             "## 本次写作指导（优先执行）\n" + request.rewrite_guidance.strip()
         )
     sections.append(_render_director_artifact(request))
+    contract = _render_outline_contract(request)
+    if contract:
+        sections.append(contract)
     handoff = _render_previous_handoff(request)
     if handoff:
         sections.append(handoff)
@@ -373,14 +419,32 @@ def build_writer_prompt(request: WriterRequest) -> str:
     if modules:
         sections.append(modules)
     beat_count = max(1, len(request.director_artifact.scene_beats))
-    beat_budget = max(1, target_max // beat_count)
+    token_budget = getattr(request, "draft_token_budget", None) or {}
+    planning_chars = int(token_budget.get("planned_chars") or (target_min + target_max) // 2)
+    beat_budget = max(1, planning_chars // beat_count) if token_budget else max(1, target_max // beat_count)
     sections.append(
         f"## 篇幅\n"
         f"正文目标{target_min}至{target_max}字；"
         f"低于{hard_min}字或超过{hard_max}字不能交稿。\n"
+        "计数按去除空白后的字符数：汉字、标点、数字和英文字母均各计1个字符；空格、换行不计。"
+        "token数不能代替字符数，分词方式不同；没有当前模型实测数据时不使用固定比例换算，已有校准也仅用于规划。\n"
+        f"先按约{planning_chars}个字符安排整章，不把{target_max}字上限当作必须写满的目标。"
+        "达到最低字数后，情节已经完整就收尾，不为靠近目标或上限补写。"
+        "对白、环境、动作、转场和收尾都包含在同一份篇幅预算内。\n"
         f"本章共{beat_count}个节拍，每个节拍平均不超过{beat_budget}字；"
         "一个节拍的结果写清后立即转入下一节拍，不重复解释同一判断。"
     )
+    if token_budget:
+        tokens = int(token_budget["tokens"])
+        sections.append(
+            "## 当前模型实测的首稿输出预算\n"
+            f"本章可见正文按约{tokens}个输出token规划，来自当前模型{token_budget['sample_count']}次中文正文实测。"
+            "这份预算只用于最终可见正文，不包含输入及内部思考token。"
+            f"按约{planning_chars}字收束，少写重复反应、解释和文书；优先确保场景结果与章末钩子写完。"
+            f"{beat_count}个节拍平均约{max(1,tokens//beat_count)} token，"
+            f"其中至少预留{max(1,int(tokens*.12))} token给最终转折和收尾，全部合计包含在{tokens} token预算中。"
+            "这是当前模型的估算规划，最终仍按程序实测字符验收。只输出正文，不输出预算或计数说明。"
+        )
     return "\n\n".join(sections)
 
 

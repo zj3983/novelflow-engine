@@ -326,6 +326,11 @@ class LLMOpeningDirectionGenerator:
                 "如有示例，只参考结构，不得照抄。"
                 "从给定候选中为每项选择一个 primary_trope_id；候选为空时才返回 null。"
             )
+            system_prompt += (
+                "字段类型必须遵循输出格式；protagonist_profile 必须是文本，不能是对象。"
+                "每个候选简洁表达，避免重复背景说明。输出 JSON Schema："
+                + json.dumps(GeneratedOpeningDirectionSet.model_json_schema(), ensure_ascii=False)
+            )
             response = self._model_gateway.complete_stage(
                 "planner",
                 ModelRequest(
@@ -335,6 +340,8 @@ class LLMOpeningDirectionGenerator:
                     model="",
                     operation="opening_directions",
                     json_mode=True,
+                    # Three full story cores share the budget with reasoning.
+                    max_tokens=8192,
                 ),
             )
             if not response.ok:

@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from packages.story_core.file_project_store import FileProjectStore
+from apps.api.services.ending_planning import ending_planning_jobs
 
 
 class OutlinePlanGenerationRequest(BaseModel):
@@ -36,6 +37,10 @@ class VolumeWorkflowGenerationRequest(BaseModel):
     @classmethod
     def trim_guidance(cls, value: Any) -> Any:
         return value.strip() if isinstance(value, str) else value
+
+
+class EndingPlanningRequest(VolumeWorkflowGenerationRequest):
+    outline: dict[str, Any] | None = None
 
 
 def _raise_volume_workflow_write_error(
@@ -71,7 +76,40 @@ def register_file_project_outline_routes(
     *,
     store_for: Callable[[str], FileProjectStore],
     planning_generator: Callable[[], Any],
+    assert_mutation_allowed: Callable[[FileProjectStore], None] = lambda _: None,
 ) -> None:
+    @router.get("/file-projects/{project_id}/outline/ending-audit")
+    def get_ending_audit(project_id: str) -> dict[str, Any]:
+        from packages.story_core.ending_audit import read_ending_audit
+        return read_ending_audit(store_for(project_id))
+
+    @router.put("/file-projects/{project_id}/outline/ending-audit")
+    def update_ending_audit(project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        from packages.story_core.ending_audit import save_ending_audit
+        store = store_for(project_id)
+        if not isinstance(payload.get("item"), dict) or not isinstance(payload.get("base_version"), str):
+            raise HTTPException(status_code=422, detail="ending_audit_invalid_payload")
+        try:
+            return save_ending_audit(store, item=payload["item"], base_version=payload["base_version"],
+                                     assert_allowed=lambda: assert_mutation_allowed(store))
+        except ValueError as exc:
+            raise HTTPException(status_code=409 if str(exc) == "ending_audit_changed" else 422, detail=str(exc)) from exc
+
+    @router.get("/file-projects/{project_id}/outline/ending-plan")
+    def get_ending_plan(project_id: str) -> dict[str, Any]:
+        return {"job": ending_planning_jobs.current(store_for(project_id))}
+
+    @router.post("/file-projects/{project_id}/outline/ending-plan")
+    def start_ending_plan(project_id: str, payload: EndingPlanningRequest) -> dict[str, Any]:
+        store = store_for(project_id)
+        try:
+            return ending_planning_jobs.start(
+                store, planning_generator(), draft=payload.outline, guidance=payload.guidance,
+                assert_mutation_allowed=lambda: assert_mutation_allowed(store),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     @router.get("/file-projects/{project_id}/outline")
     def get_file_project_outline(project_id: str) -> dict[str, Any]:
         try:

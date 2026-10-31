@@ -144,7 +144,15 @@ class ChapterGenerationWorkflowMixin:
             self.prompt_call_log()
         ):
             bundle = generator.generate_next_chapter(story)
-        if not persist:
+        from packages.story_core.file_project_store import _chapter_length_review
+
+        draft_body = str(bundle.get("body", "") if isinstance(bundle, dict) else getattr(bundle, "body", ""))
+        keep_length_candidate = (
+            accept_quality_warnings
+            and bool(draft_body.strip())
+            and not _chapter_length_review(draft_body)["acceptance_pass"]
+        )
+        if not persist or keep_length_candidate:
             project_id = str(
                 project.get("project_id")
                 or project.get("active_story_id")
@@ -178,14 +186,25 @@ class ChapterGenerationWorkflowMixin:
             "persisted": persisted,
         }
 
+    def run_contextual_prose_review(self, chapter_number: int, *, source_candidate_id: str | None = None, model_gateway: Any = None) -> dict[str, Any]:
+        from packages.story_core.contextual_prose_review import run_chapter_context_review
+
+        return run_chapter_context_review(self, chapter_number, source_candidate_id=source_candidate_id, model_gateway=model_gateway)
+
+    def repair_chapter_review(self, chapter_number: int, *, source_candidate_id: str | None = None, orchestrator: Any | None = None) -> dict[str, Any]:
+        from packages.story_core.review_repair import repair_chapter_review
+
+        return repair_chapter_review(self, chapter_number, source_candidate_id=source_candidate_id, orchestrator=orchestrator)
+
     @_with_project_update_lock
     def polish_chapter(
         self,
         chapter_number: int,
         *,
         orchestrator: Any | None = None,
+        source_candidate_id: str | None = None,
     ) -> dict[str, Any]:
-        """Adaptively polish one confirmed chapter into a pending candidate."""
+        """Adaptively polish confirmed prose or an explicitly selected pending draft."""
 
         from packages.story_core.opening_build.runtime import enabled
         if enabled(self):
@@ -209,7 +228,21 @@ class ChapterGenerationWorkflowMixin:
 
         if chapter_number < 1:
             raise ValueError("chapter_number_must_be_positive")
-        chapter = self.chapter(chapter_number)
+        operation = "regenerate"
+        if source_candidate_id:
+            source = self.candidate_store.get(source_candidate_id)
+            project_id = str(self.project().get("project_id") or self.root.name).removeprefix("file:")
+            if (source is None or source.status != "pending" or source.chapter_number != chapter_number
+                    or source.project_id.removeprefix("file:") != project_id):
+                raise ValueError("polish_source_candidate_invalid")
+            # Carry planning, never state or extracted facts from the old body.
+            chapter = {key: deepcopy(source.submission_payload[key]) for key in (
+                "event_plan", "chapter_seed", "scene_cards", "director_artifact", "opening_authority",
+            ) if key in source.submission_payload}
+            chapter.update(chapter_number=chapter_number, body=source.body, chapter_title=source.chapter_title)
+            operation = source.operation
+        else:
+            chapter = self.chapter(chapter_number)
         source_body = str(chapter.get("body") or "")
         if not source_body.strip():
             raise ValueError("chapter_body_required")
@@ -442,8 +475,20 @@ class ChapterGenerationWorkflowMixin:
             bundle,
             project_id=project_id,
             quality_report=quality_report,
-            operation="regenerate",
+            operation=operation,
+            preserve_existing=bool(source_candidate_id),
+            bind_review=bool(source_candidate_id),
         )
+        if source_candidate_id:
+            from hashlib import sha256
+            from packages.story_core.candidate_editing import digest
+
+            candidate.review_binding.update(
+                kind="legacy-review-repair/v1", state="unchecked", chapter_number=chapter_number,
+                parent=source_candidate_id, source_body_sha256=sha256(source_body.encode("utf-8")).hexdigest(),
+                base_chapter=digest(self.chapter(chapter_number)) if operation == "regenerate" else None,
+            )
+            self.candidate_store.save(candidate)
         report_generation_progress(
             {
                 "message": f"第{chapter_number}章润色候选稿已生成，等待人工确认",

@@ -610,6 +610,10 @@ def test_generator_uses_planner_gateway_model_request():
     assert calls[0][0] == "planner"
     assert calls[0][1].operation == "opening_directions"
     assert calls[0][1].json_mode is True
+    # Three complete story cores plus reasoning exceed the 4096 default cap.
+    assert calls[0][1].max_tokens == 8192
+    schema = json.loads(calls[0][1].system_prompt.split("输出 JSON Schema：", 1)[1])
+    assert schema["$defs"]["GeneratedOpeningDirection"]["properties"]["protagonist_profile"]["type"] == "string"
     assert "An idea" in calls[0][1].prompt
 
 

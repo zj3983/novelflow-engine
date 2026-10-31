@@ -387,6 +387,66 @@ def test_director_agent_returns_director_artifact_not_prose(tmp_path: Path) -> N
     assert "每项都要填写 notes" in runtime.requests[0].prompt
 
 
+def test_director_renders_current_outline_contract_and_previous_tail(tmp_path: Path) -> None:
+    runtime = _RecordingRuntime(
+        responses=[_executable_director_payload(hook="无关的新钩子")]
+    )
+    agent = DirectorAgent(runtime=runtime, project_root=tmp_path)
+    context = _context_with_outline(chapter_number=7).model_copy(
+        update={
+            "nearby_outline": [
+                {
+                    "number": 7,
+                    "title": "目标章",
+                    "summary": "查账",
+                    "core_conflict": "账房拒绝交账",
+                    "gain": "拿到黑账",
+                    "cost": "暴露身份",
+                    "state_delta": "从查账转为被追捕",
+                    "hook": "顶层旧格式钩子",
+                    "chapter_sop": {
+                        "opening_carry": "接住门外脚步声",
+                        "mid_feedback": "铜镜亮起",
+                        "turn": "账房突然关门",
+                        "ending_hook": "SOP正式钩子：作弊名单最后一个名字是主角",
+                    },
+                    "payoff_contract": {"need": "黑账必须到手"},
+                    "must_not_write": ["不要抓到账房主谋"],
+                },
+                {
+                    "number": 6,
+                    "title": "邻章",
+                    "summary": "邻章",
+                    "hook": "邻章顶层旧钩子",
+                    "chapter_sop": {
+                        "opening_carry": "不应完整展开",
+                        "ending_hook": "邻章 SOP 正式钩子",
+                    },
+                    "payoff_contract": {"secret": "不应完整展开"},
+                },
+            ]
+        }
+    )
+
+    artifact = agent.plan(context)
+    prompt = runtime.requests[0].prompt
+
+    assert "本章上游细纲合同" in prompt
+    for value in ("账房拒绝交账", "拿到黑账", "暴露身份", "从查账转为被追捕", "铜镜亮起", "黑账必须到手"):
+        assert value in prompt
+    assert "上章实际收尾" in prompt
+    assert "林照按住左肩喘息。" in prompt
+    assert "不应完整展开" in prompt
+    assert "secret" not in prompt
+    assert "邻章 SOP 正式钩子" in prompt
+    assert "邻章顶层旧钩子" not in prompt
+    assert "SOP正式钩子：作弊名单最后一个名字是主角" in prompt
+    assert "顶层旧格式钩子" not in prompt
+    assert artifact.hook == "SOP正式钩子：作弊名单最后一个名字是主角"
+    assert artifact.outline_contract is not None
+    assert artifact.outline_contract.planned_hook == artifact.hook
+
+
 def test_director_agent_accepts_json_fenced_text_response(tmp_path: Path) -> None:
     payload = _executable_director_payload()
 

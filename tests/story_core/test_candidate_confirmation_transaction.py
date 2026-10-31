@@ -57,6 +57,31 @@ def _seed_candidate(
 
 
 @pytest.mark.parametrize(
+    ("source_sentence", "fact_chapter", "delta_chapter"),
+    [("林昭抵达正文没有出现的王城。", 1, 1), ("", 1, 1), ("正文片段", 2, 1), ("正文片段", 1, 2)],
+)
+def test_confirm_rejects_delta_without_current_body_evidence(
+    tmp_path, source_sentence, fact_chapter, delta_chapter,
+):
+    from packages.story_core.continuity.delta import ContinuityDelta, EntityAddition
+
+    store = FileProjectStore(tmp_path)
+    candidate = _seed_candidate(
+        store, chapter_number=1, title="第一章", body=_long_body("正文片段"),
+        continuity_delta_payload=ContinuityDelta(chapter_number=delta_chapter, entity_additions=[
+            EntityAddition(chapter_number=fact_chapter, source_sentence=source_sentence,
+                           entity_id="char-unverified", kind="character", canonical_name="林昭"),
+        ]).model_dump(mode="json"),
+    )
+    with pytest.raises(ValueError, match="candidate_delta_evidence_mismatch"):
+        store.confirm_candidate(candidate.candidate_id)
+
+    assert store.chapter_numbers() == []
+    assert not (store.story_system_dir / "canon" / "registry.json").exists()
+    assert store.candidate_store.get(candidate.candidate_id).status == "pending"
+
+
+@pytest.mark.parametrize(
     ("code", "source"),
     [
         ("fact.contradiction", "canon.entity:item-123"),
@@ -207,7 +232,7 @@ def test_confirm_rejects_v2_blocked_review_even_when_legacy_ok_is_true(tmp_path)
 # repeated enough times to clear the gate while staying inside the
 # production hard maximum.
 def _long_body(tag: str) -> str:
-    return (f"{tag}章节。" * 800)[:5200]
+    return (f"{tag}章节。" * 800)[:4400]
 
 
 def _read_managed_json(path: Path) -> dict:
@@ -549,7 +574,7 @@ def test_confirm_candidate_applies_continuity_delta_to_canon_registry(tmp_path):
         store,
         chapter_number=1,
         title="第一章",
-        body=_long_body("Canon"),
+        body=_long_body("Canon") + "\n林昭首次出场。",
         continuity_delta_payload=delta.model_dump(mode="json"),
     )
 
@@ -949,7 +974,7 @@ def test_canon_apply_rolls_back_when_transaction_aborts(tmp_path, monkeypatch):
         store,
         chapter_number=1,
         title="第一章",
-        body=_long_body("回滚"),
+        body=_long_body("回滚") + "\n林昭首次出场。",
         continuity_delta_payload=delta.model_dump(mode="json"),
     )
     canon_registry_path = (

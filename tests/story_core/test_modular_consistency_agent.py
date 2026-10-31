@@ -91,6 +91,33 @@ def test_consistency_prompt_includes_relevant_character_state() -> None:
     assert "新手短剑" in prompt
 
 
+def test_model_length_guesses_are_not_factual_findings():
+    class WrongCount:
+        def complete(self, request):
+            assert "程序实测为3025" in request.prompt
+            return {"issues": [
+                {"code": "author_requirement.length", "message": "不足3000字", "blocking": True},
+                {"code": "canon.injury", "message": "伤势待复核", "blocking": False},
+            ]}
+
+    findings = focused_consistency_review("字" * 3025, director_artifact=_artifact(),
+        active_facts=[], runtime=WrongCount())
+    assert [item.code for item in findings] == ["canon.injury"]
+
+
+def test_snapshot_facts_and_character_cards_are_not_serialized_twice():
+    snapshot = _canon_snapshot()
+    snapshot["facts"][0]["value"] = "唯一的事实值"
+    snapshot["characters"] = [{"name": "林照", "current_state": {"location": "唯一的当前位置"}}]
+    prompt = build_consistency_prompt("正文", _artifact(), snapshot["facts"] + [
+        {"subject": "苏婉", "field": "任务", "value": "额外的事实"}],
+        character_states=snapshot["characters"], canon_snapshot=snapshot)
+    assert prompt.count("唯一的事实值") == 1
+    assert prompt.count("唯一的当前位置") == 1
+    assert "额外的事实" in prompt
+    assert "continuity_snapshot:0001" in prompt
+
+
 def test_consistency_prompt_renders_canon_snapshot_with_provenance() -> None:
     prompt = build_consistency_prompt(
         body="林照说自己从未见过苏婉。",

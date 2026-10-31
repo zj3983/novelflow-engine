@@ -30,6 +30,7 @@ from ...context.director_context import DirectorContext
 from ...context.contracts import ArtifactRead, ContextTrace
 from ...persistence.director_store import DirectorStore
 from .prompt import (
+    build_outline_execution_contract,
     build_director_prompt,
     build_outline_execution_contract,
     outline_chapter_number,

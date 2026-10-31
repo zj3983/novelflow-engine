@@ -36,6 +36,41 @@ def user_facing_generation_error(exc: Exception) -> str:
     from packages.story_core.model_gateway.preflight import ModelPreflightBlockedError
 
     text = str(exc or "").strip()
+    if text.startswith("writer_length_not_converged:"):
+        return "写手多次自动修订后，字数仍未达标，已停止生成，原稿和现有候选稿未改动。可重试生成。"
+    if text.startswith("automatic_context_revision_not_converged"):
+        return "上下文问题经自动精修后仍未通过复审，已停止生成，原稿和现有候选稿未改动。"
+    if text.startswith("automatic_context_revision_invalid_patch"):
+        return "自动精修的局部修改无法准确验证，已停止生成，原稿和现有候选稿未改动。"
+    if text.startswith("automatic_context_review_"):
+        return "自动上下文审稿未完成，不能判定通过；原稿和现有候选稿未改动，请重试或检查审稿模型。"
+    if text.startswith("context_review_"):
+        return "上下文审稿未完成，原文未改动。请重试或检查审稿模型配置。"
+    if text.startswith("review_repair_"):
+        if text.startswith("review_repair_model_failed:"):
+            reason = text.rsplit(":", 1)[-1].strip()
+            advice = {
+                "model_not_found": "当前账号或 CLI 对所选模型不支持，请检查模型选择和 CLI 版本。",
+                "authentication_failed": "模型登录已失效或权限不足，请重新登录并检查账号权限。",
+                "quota_exhausted": "模型额度已用尽，请等待额度恢复或调整模型配置。",
+                "rate_limited": "模型请求频率受限，请稍后重试。",
+                "cli_cache_incompatible": "CLI 与模型缓存格式不兼容，请更新 CLI 并检查缓存兼容性。",
+                "cli_not_found": "找不到配置的 CLI 程序，请检查安装及程序路径。",
+                "request_timed_out": "模型调用超时，请稍后重试。",
+                "invalid_provider_response": "模型没有返回有效回复，请检查 CLI 输出或模型配置。",
+                "provider_unavailable": "模型服务暂时不可用，请检查连接或稍后重试。",
+            }.get(reason)
+            if advice:
+                return f"审查精修失败，原稿未改动。{advice}"
+        if "no_edits" in text or "no_change" in text:
+            return "模型没有返回有效的局部修改，原稿未改动。可调整要求后重试。"
+        if "scope" in text:
+            return "这次修改范围过大，已停止精修，原稿未改动。请缩小问题范围或使用重新生成。"
+        if "length_out_of_range" in text:
+            return "精修稿经一次自动退修仍未达到3000–4500字，已停止保存新候选；原稿和现有候选稿未改动，不会为凑字数强行扩写。"
+        if any(code in text for code in ("original_not_found", "ambiguous", "overlap", "invalid")):
+            return "局部修改无法准确定位到原文，已停止精修，原稿未改动。请重试。"
+        return "审查精修失败，原稿未改动。请查看模型配置或稍后重试。"
     if isinstance(exc, ChapterQualityError):
         review = build_simplified_review(exc.quality_report or {})
         categories = review.get("categories") if isinstance(review.get("categories"), dict) else {}
@@ -56,6 +91,18 @@ def user_facing_generation_error(exc: Exception) -> str:
     if isinstance(exc, ModelPreflightBlockedError):
         report = exc.report
         reason = str(report.get("reason") or "能力或预算检查未通过")
+        if reason in {"required_input_over_limit", "input_over_limit", "required_context_over_limit",
+                      "context_limit_unknown_or_optional_context_not_declared"}:
+            estimates = report.get("estimates") or {}
+            limits = report.get("effective_preflight_guards") or {}
+            input_limit = limits.get("input_token_limit") or limits.get("input_guard")
+            context_limit = limits.get("context_window") or limits.get("context_guard")
+            return (f"模型预检阻断：上下文预算超限（{reason}）。"
+                    f"估算输入{estimates.get('required_input_tokens', '?')} token，"
+                    f"预留输出{estimates.get('reserved_output_tokens', '?')} token，"
+                    f"安全余量{estimates.get('safety_margin_tokens', '?')} token；"
+                    f"当前预检输入阈值{input_limit or '?'}、总上下文阈值{context_limit or '?'} token。"
+                    "未调用模型，原稿和已有候选稿未改动。请减少无关上下文，或核实并配置当前模型容量后重试；未配置容量时使用保守阈值。")
         actions = report.get("repair_actions")
         action = (
             str(actions[0]).strip()

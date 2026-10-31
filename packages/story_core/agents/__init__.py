@@ -10,6 +10,7 @@ from .contracts import (
     DirectorArtifact,
     EntityRequirement,
     SceneBeat,
+    SceneCharacterIntent,
     WriterRequest,
     WriterResult,
 )
@@ -26,6 +27,7 @@ __all__ = [
     "EntityRequirement",
     "ModularChapterBundle",
     "SceneBeat",
+    "SceneCharacterIntent",
     "WriterRequest",
     "WriterResult",
     "plan_director_artifact",

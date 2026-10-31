@@ -2,6 +2,26 @@ from packages.story_core.orchestrator import _should_run_full_revision
 from packages.story_core.simplified_review import build_simplified_review
 
 
+def test_confirmed_legacy_review_keeps_full_review_advice_visible():
+    result = build_simplified_review({
+        "ok": True, "issues": [], "writing_review": {"pass": True},
+        "complete_writing_review": {"pass": True, "issues": ["对话不自然。"],
+                                   "prose_style_review": {"pass": False, "issues": ["对话不自然。"], "revision_plan": ["补清对话对象。"]}},
+    })
+    assert result["pass"] is True
+    assert result["total_issues"] == 1
+    assert result["issues"][0]["suggestion"] == "补清对话对象。"
+
+
+def test_explicit_v2_review_does_not_resurrect_old_complete_review():
+    from packages.story_core.review.contracts import ReviewResult
+    result = build_simplified_review({
+        "review_result": ReviewResult.from_findings([]).to_dict(),
+        "complete_writing_review": {"issues": ["旧版本对话不自然。"]},
+    })
+    assert result["total_issues"] == 0
+
+
 def test_attribute_allocation_mismatch_is_a_hard_error() -> None:
     report = build_simplified_review(
         {"writing_review": {"issues": ["attribute_allocation_mismatch: 正文同章重复加点。"]}}
@@ -74,6 +94,58 @@ def test_simplified_review_treats_excess_length_as_advisory():
     assert report["has_hard_errors"] is False
     assert report["categories"]["hard"]["count"] == 0
     assert report["categories"]["prose"]["count"] == 1
+
+
+def test_simplified_review_preserves_modular_length_blocker_and_readable_message():
+    result = build_simplified_review({
+        "ok": False,
+        "manual_quality_override": True,
+        "writing_review": {
+            "pass": False,
+            "issues": ["chapter.length_too_long"],
+            "blocking": [{"code": "chapter.length_too_long", "message": "正文约7050字，超过5700字。", "source": "deterministic"}],
+        },
+    })
+    assert result["status"] == "blocked"
+    assert result["has_hard_errors"] is True
+    assert result["pass"] is False
+    assert result["total_issues"] == 1
+    assert result["issues"][0]["message"] == "正文约7050字，超过5700字。"
+
+
+def test_simplified_review_keeps_structured_blocker_without_string_issue():
+    result = build_simplified_review({"writing_review": {
+        "issues": [],
+        "blocking": [{"code": "new.deterministic_failure", "message": "本章确定性检查失败。", "source": "deterministic"}],
+    }})
+    assert result["status"] == "blocked"
+    assert result["issues"][0]["severity"] == "blocking"
+
+
+def test_style_blocker_keeps_ai_category_and_blocking_severity():
+    result = build_simplified_review({"writing_review": {
+        "issues": ["style.simile_stacking"],
+        "blocking": [{"code": "style.simile_stacking", "message": "正文使用了11处显式比喻，密度过高。", "source": "deterministic"}],
+    }})
+    assert result["categories"]["ai_flavor"]["count"] == 1
+    assert result["categories"]["hard"]["count"] == 0
+    assert result["status"] == "blocked"
+    assert result["pass"] is False
+    assert result["issues"][0]["code"] == "style.simile_stacking"
+    assert result["issues"][0]["blocking"] is True
+
+
+def test_legacy_review_distinguishes_missing_ai_check_from_zero_findings():
+    unchecked = build_simplified_review({"writing_review": {"pass": True}})
+    checked = build_simplified_review({"ai_flavor_review": {"pass": True, "issues": []}, "prose_style_review": {"pass": True, "issues": []}})
+    assert unchecked["diagnostics"]["ai_flavor_check_executed"] is False
+    assert checked["diagnostics"]["ai_flavor_check_executed"] is True
+
+
+def test_length_advice_uses_readable_text_and_retains_code_for_annotations():
+    report = build_simplified_review({"writing_review": {"issues": ["chapter.length_above_target"]}})
+    assert report["issues"][0]["code"] == "chapter.length_above_target"
+    assert report["issues"][0]["message"] == "正文字数超过目标上限，建议适当压缩。"
 
 
 def test_simplified_review_marks_elliptical_dialogue_for_targeted_revision():

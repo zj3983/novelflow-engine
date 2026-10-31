@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-import re
 from threading import RLock
 from typing import Any
 from uuid import uuid4
@@ -14,35 +13,6 @@ ACTIVE_STATUSES = frozenset({"queued", "running", "stopping"})
 TERMINAL_STATUSES = frozenset({"completed", "stopped", "failed"})
 SAFE_RECOVERY_PHASES = frozenset({"queued", "between_chapters"})
 _JOB_FILE_LOCK = RLock()
-_MIN_CHAPTER_CHARS = 3800
-_MAX_CHAPTER_CHARS = 5700
-_MIN_AUTOMATIC_ACCEPT_RATIO = 0.90
-_MAX_AUTOMATIC_ACCEPT_RATIO = 1.25
-_MAX_CATASTROPHIC_RETRIES = 2
-
-
-def _length_error_body_chars(error: str) -> int | None:
-    for pattern in (
-        r"body_chars\s+(\d+)",
-        r"当前约\s*(\d+)\s*字",
-        r"正文约\s*(\d+)\s*字",
-    ):
-        match = re.search(pattern, error)
-        if match:
-            return int(match.group(1))
-    return None
-
-
-def _is_catastrophic_length_error(error: str) -> bool:
-    if not error.startswith("generate_length_failed:"):
-        return False
-    body_chars = _length_error_body_chars(error)
-    if body_chars is None:
-        return False
-    return (
-        body_chars < int(_MIN_CHAPTER_CHARS * _MIN_AUTOMATIC_ACCEPT_RATIO)
-        or body_chars > int(_MAX_CHAPTER_CHARS * _MAX_AUTOMATIC_ACCEPT_RATIO)
-    )
 
 
 def _now_iso() -> str:
@@ -212,7 +182,6 @@ class ContinuousGenerationRunner:
             status="running",
             progress="准备连续生成",
         )
-        catastrophic_retries: dict[int, int] = {}
 
         while True:
             job = job_store.load(job_id) or job
@@ -249,6 +218,15 @@ class ContinuousGenerationRunner:
                     current_chapter=next_chapter,
                     error=f"outline_read_failed:{type(exc).__name__}:{exc}",
                     progress=f"第 {next_chapter} 章细纲状态读取失败",
+                )
+            if workflow.get("status") == "ending_reached":
+                return job_store.update(
+                    job_id,
+                    status="stopped",
+                    phase="checking_outline",
+                    current_chapter=next_chapter,
+                    stop_reason="ending_chapter_reached",
+                    progress="已到设定的完结章，请审阅或修订现有结尾",
                 )
             # Pre-flight: the rolling outline is the cheapest gate and
             # the most user-actionable.  Run it after the workflow read
@@ -359,40 +337,15 @@ class ContinuousGenerationRunner:
                 )
             except ValueError as exc:
                 quality_error = str(exc)
-                if _is_catastrophic_length_error(quality_error):
-                    retries = catastrophic_retries.get(next_chapter, 0)
-                    if retries >= _MAX_CATASTROPHIC_RETRIES:
-                        return job_store.update(
-                            job_id,
-                            status="stopped",
-                            stop_reason="candidate_confirmation_required",
-                            error=quality_error,
-                            progress=f"第 {next_chapter} 章连续生成异常，请人工检查",
-                        )
-                    try:
-                        project_store.discard_candidate(candidate_id)
-                    except Exception as discard_exc:
-                        return job_store.update(
-                            job_id,
-                            status="failed",
-                            error=f"{type(discard_exc).__name__}:{discard_exc}",
-                            progress=f"第 {next_chapter} 章异常候选稿丢弃失败",
-                        )
-                    catastrophic_retries[next_chapter] = retries + 1
-                    job_store.update(
+                if quality_error.startswith(("generate_length_failed:", "regenerate_length_failed:")):
+                    return job_store.update(
                         job_id,
-                        candidate_id="",
-                        phase="between_chapters",
-                        error="",
-                        progress=(
-                            f"第 {next_chapter} 章返回内容异常，"
-                            f"正在重新生成（{retries + 1}/{_MAX_CATASTROPHIC_RETRIES}）"
-                        ),
+                        status="stopped",
+                        stop_reason="candidate_length_revision_required",
+                        error=quality_error,
+                        progress=f"第 {next_chapter} 章字数未达标，候选稿已保留，请修订后继续",
                     )
-                    continue
-                if quality_error.startswith(
-                    ("generate_quality_failed:", "generate_length_failed:")
-                ):
+                if quality_error.startswith("generate_quality_failed:"):
                     try:
                         project_store.confirm_candidate(
                             candidate_id,

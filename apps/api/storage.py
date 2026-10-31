@@ -25,7 +25,7 @@ from packages.story_core.models import (
     WorldBible,
 )
 from packages.story_core.dual_state import normalize_dual_state
-from packages.story_core.book_style import normalize_book_style
+from packages.story_core.book_style import book_writing_preferences
 from packages.story_core.genre_plugins import select_genre_plugins
 from packages.story_core.novel_type_catalog import normalize_novel_type_ids
 from packages.story_core.runtime_config import get_runtime_strategy_settings
@@ -597,7 +597,10 @@ def _sync_project_generation_context(story: StoryState, project: NovelProject, *
     if primary_genre:
         story.genre = primary_genre
     world_blueprint = project.world_blueprint if isinstance(project.world_blueprint, dict) else {}
-    story.style = normalize_book_style(world_blueprint.get("writing_style"))
+    writing_preferences = book_writing_preferences({"world_blueprint": world_blueprint})
+    story.style = writing_preferences["writing_style"]
+    story.writing_guidance = writing_preferences["writing_guidance"]
+    story.writing_reference = writing_preferences["writing_reference"]
 
     ledger = project.world_blueprint.get("progression_ledger") if isinstance(project.world_blueprint, dict) else None
     ledger_keys = set(ledger) if isinstance(ledger, dict) else set()

@@ -23,6 +23,7 @@ from packages.story_core.novel_type_catalog import (
 from packages.story_core.novel_type_ids import canonical_novel_type_id
 from packages.story_core.skill_packs import skill_pack_prompt_context
 from packages.story_core.writing_taskbook import ensure_writing_taskbook, writer_facing_text
+from packages.story_core.book_style import render_book_writing_preferences
 from packages.story_core.world_blueprint_context import flatten_selected_rules
 
 
@@ -134,7 +135,7 @@ def _genre_context_for_prompt(story: Any, chapter_number: int, plan: dict[str, A
     elif family == "fantasy":
         context.update(
             genre_method=[
-                "玄幻/修仙写法：成长要有境界、资源、代价和外部压力，不要无代价顿悟。",
+                "玄幻/修仙写法：成长遵守既有境界、资源和能力限制；呈现计划中的成本，不为教学、交接、休整强加损失或外部压力。",
                 "能力变化要落到身体反应、招式效果、资源消耗、旁人判断和下一层阻碍。",
                 "势力反应要按信息可见性推进，不要让高层无缘无故全知。",
             ],
@@ -273,6 +274,7 @@ def _compact_writer_taskbook_section(taskbook: dict[str, Any]) -> str:
         "兑现一点收益",
         "付出可见代价",
         "形成下一场压力",
+        "让行动产生具体结果，按计划呈现收益与成本",
         "完成本章推进",
         "推进当前目标",
     )
@@ -294,6 +296,7 @@ def _compact_writer_taskbook_section(taskbook: dict[str, Any]) -> str:
     generic_surface = (
         "地点、行动、反馈、代价",
         "形成下一场压力",
+        "承接本场结果，可推进或缓和",
         "下一场必须承接本场结果",
     )
 
@@ -355,14 +358,13 @@ def _plan_target_chars(plan: dict[str, Any] | None) -> str:
         amount = 0
     if amount < CHAPTER_TARGET_MIN_CHARS:
         return (
-            f"{CHAPTER_TARGET_MIN_CHARS}到5000字，"
+            f"{CHAPTER_TARGET_MIN_CHARS}到{CHAPTER_TARGET_MAX_CHARS}字，"
             f"绝对不要超过{CHAPTER_TARGET_MAX_CHARS}字"
         )
-    if amount > 5200:
-        return f"5000到5400字，绝对不要超过{CHAPTER_TARGET_MAX_CHARS}字"
+    amount = min(amount, CHAPTER_TARGET_MAX_CHARS)
     return (
         f"{max(CHAPTER_TARGET_MIN_CHARS, amount - 300)}到"
-        f"{min(5400, amount + 300)}字，"
+        f"{min(CHAPTER_TARGET_MAX_CHARS, amount + 300)}字，"
         f"绝对不要超过{CHAPTER_TARGET_MAX_CHARS}字"
     )
 
@@ -743,7 +745,7 @@ def _writer_craft_section(genre_context: dict[str, Any], skill_context: dict[str
 
 def build_common_writer_sections(context: WriterContext) -> dict[str, list[str]]:
     genre_context = _genre_context_for_prompt(context.story, context.chapter_number, context.plan)
-    return {
+    sections = {
         "output_section": _writer_output_section(context.chapter_number, context.plan),
         "chapter_direction": _writer_direction_section(context.chapter_number, context.plan),
         "chapter_facts": _writer_fact_section_from_context(context),
@@ -755,3 +757,11 @@ def build_common_writer_sections(context: WriterContext) -> dict[str, list[str]]
             style_guidance=context.style_guidance,
         ),
     }
+    preferences = render_book_writing_preferences(
+        "",  # The legacy craft section already carries the selected preset.
+        getattr(context.story, "writing_guidance", ""),
+        getattr(context.story, "writing_reference", ""),
+    )
+    if preferences:
+        sections["prose_method"].append(preferences)
+    return sections

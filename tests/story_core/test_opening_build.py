@@ -86,7 +86,11 @@ def test_complete_opening_canonical_handoff_and_atomic_publication(tmp_path):
     outline = json.loads((store.webnovel_dir / "outline.json").read_text(encoding="utf-8"))
     assert [item["chapter_number"] for item in outline["chapters"]] == [1, 2, 3]
     handoff = store.build_artifact("outline_execution_contract")["payload"]["outline_execution_contract"]
-    assert handoff[0]["planned_hook"] == outline["chapters"][0]["ending_hook"]
+    first_chapter = outline["chapters"][0]
+    assert handoff[0]["planned_hook"] == (
+        first_chapter.get("chapter_sop", {}).get("ending_hook")
+        or first_chapter["ending_hook"]
+    )
     assert store.project()["pipeline_stage"] == "environment_ready"
     assert len(store.project()["character_profiles"]) == 4
     assert set(store.build_graph_materialization()["artifact_revisions"]) == set(graph.specs)

@@ -51,7 +51,6 @@ _REQUIRED_CHAPTER_FIELDS: tuple[str, ...] = (
     "cast",
     "scenes",
     "gain",
-    "cost",
     "foreshadowing",
     "hook",
     "state_delta",
@@ -65,7 +64,9 @@ _MIN_SCENES = 2
 _MAX_SCENES = 4
 
 
-def rolling_chapter_to_outline_entry(payload: Any) -> dict[str, Any]:
+def rolling_chapter_to_outline_entry(
+    payload: Any, *, base_entry: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Adapt one rolling chapter to the legacy outline chapter shape.
 
     Rolling outlines are the chapter-level source of truth, while some
@@ -113,7 +114,8 @@ def rolling_chapter_to_outline_entry(payload: Any) -> dict[str, Any]:
         "obstacle": str(payload.get("core_conflict") or "").strip(),
         "action": "；".join(action_parts),
         "payoff": str(payload.get("gain") or "").strip(),
-        "turn": str(payload.get("cost") or "").strip(),
+        "emotional_change": str(payload.get("emotional_change") or (base_entry or {}).get("emotional_change") or "").strip(),
+        "must_not_write": payload.get("must_not_write", (base_entry or {}).get("must_not_write", [])),
         "ending_hook": str(payload.get("hook") or "").strip(),
         "cast_cards": raw_cast,
         "cast": cast_names,
@@ -249,11 +251,15 @@ def validate_rolling_chapter(
         "chapter_goal",
         "core_conflict",
         "gain",
-        "cost",
         "hook",
         "state_delta",
     ):
         _coerce_non_empty_str(payload, field)
+
+    cost = payload.get("cost", "")
+    if not isinstance(cost, str):
+        raise RollingValidationError("rolling_chapter_cost_invalid")
+    payload = {**payload, "cost": cost.strip()}
 
     cast = payload.get("cast")
     if not isinstance(cast, list) or not cast:

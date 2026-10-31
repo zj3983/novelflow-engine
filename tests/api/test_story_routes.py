@@ -1988,7 +1988,8 @@ def test_file_project_generation_log_survives_in_memory_job_reset(tmp_path, monk
     assert payload["steps"] == started_payload["steps"]
 
 
-def test_file_generation_job_persists_new_chapter_without_candidate(monkeypatch):
+@pytest.mark.parametrize("candidate_chars", [None, 5812, 7050])
+def test_file_generation_job_distinguishes_persisted_chapter_from_length_candidate(monkeypatch, candidate_chars):
     captured: dict[str, object] = {}
 
     class FakeStore:
@@ -2002,6 +2003,11 @@ def test_file_generation_job_persists_new_chapter_without_candidate(monkeypatch)
             captured["chapter_direction_id"] = chapter_direction_id
             captured["persist"] = persist
             captured["accept_quality_warnings"] = accept_quality_warnings
+            if candidate_chars is not None:
+                return {"chapter_number": 2, "chapter_title": "Overlong draft", "candidate": {
+                    "candidate_id": "cd-length-review", "status": "pending",
+                    "quality_report": {"length_review": {"acceptance_pass": False, "body_chars": candidate_chars}},
+                }}
             return {"chapter_number": 2, "chapter_title": "New chapter"}
 
     job_id = "fgj-direct-new-chapter"
@@ -2025,6 +2031,7 @@ def test_file_generation_job_persists_new_chapter_without_candidate(monkeypatch)
             "file:p-direct-new-chapter",
             chapter_direction_id="continue-main-line",
         )
+        result = dict(file_projects._file_generation_jobs[job_id])
     finally:
         with file_projects._file_generation_jobs_lock:
             file_projects._file_generation_jobs.pop(job_id, None)
@@ -2035,6 +2042,13 @@ def test_file_generation_job_persists_new_chapter_without_candidate(monkeypatch)
         "persist": True,
         "accept_quality_warnings": True,
     }
+    assert result["status"] == "completed"
+    if candidate_chars is None:
+        assert result["progress"] == "生成完成"
+    else:
+        assert result["progress"] == "字数未达标，候选稿已保留，请修订后提交"
+        assert result["steps"][-1]["artifact"]["outputs"]["chapter_persisted"] is False
+        assert result["steps"][-1]["artifact"]["outputs"]["candidate_id"] == "cd-length-review"
 
 
 def test_file_generation_job_dispatches_manual_expansion(monkeypatch):
@@ -3012,12 +3026,78 @@ def test_world_build_error_translation_hides_provider_details() -> None:
     assert "Authorization" not in message
 
 
-def test_file_generation_job_dispatches_adaptive_polish(monkeypatch):
+@pytest.mark.parametrize("source_candidate_id", [None, "candidate-source"])
+@pytest.mark.parametrize("operation", ["review_repair", "context_review"])
+def test_file_generation_job_dispatches_review_repair(monkeypatch, source_candidate_id, operation):
+    captured = {}
+
+    class FakeStore:
+        def run_contextual_prose_review(self, chapter_number, *, source_candidate_id=None):
+            captured.update(chapter_number=chapter_number, source_candidate_id=source_candidate_id)
+            return {"chapter_number": chapter_number, "contextual_review": {"issues": []}}
+
+        def repair_chapter_review(self, chapter_number, *, source_candidate_id=None):
+            captured.update(chapter_number=chapter_number, source_candidate_id=source_candidate_id)
+            return {"chapter_number": chapter_number, "candidate": {"candidate_id": "repaired", "body": "修订稿"}}
+
+    job_id = "fgj-review-repair"
+    monkeypatch.setattr(file_projects, "_store_for", lambda _: FakeStore())
+    monkeypatch.setattr(file_projects, "_persist_file_generation_job", lambda _: None)
+    with file_projects._file_generation_jobs_lock:
+        file_projects._file_generation_jobs[job_id] = {"job_id": job_id, "story_id": "file:p-repair", "steps": []}
+    try:
+        file_projects._run_file_generation_job(job_id, "file:p-repair", chapter_number=1, operation=operation, source_candidate_id=source_candidate_id)
+        assert captured == {"chapter_number": 1, "source_candidate_id": source_candidate_id}
+        job = file_projects._file_generation_jobs[job_id]
+        assert job["status"] == "completed"
+        assert job["steps"][-1]["artifact"]["outputs"]["chapter_persisted"] is False
+    finally:
+        with file_projects._file_generation_jobs_lock:
+            file_projects._file_generation_jobs.pop(job_id, None)
+            file_projects._active_file_generation_jobs.pop("file:p-repair", None)
+
+
+@pytest.mark.parametrize("operation", ["review_repair", "context_review", "polish"])
+def test_review_repair_job_queues_candidate_source_and_survives_reload(tmp_path, monkeypatch, operation):
+    root = tmp_path / "review-repair-queue"
+    _make_file_project(root, project_id="p-review-queue", state={"story_id": "s-review-queue", "current_chapter": 1})
+    store = file_projects.FileProjectStore(root)
+    submitted = []
+
+    class Executor:
+        def submit(self, *args, **kwargs):
+            submitted.append((args, kwargs))
+
+    monkeypatch.setattr(file_projects, "_store_for", lambda _: store)
+    monkeypatch.setattr(file_projects, "_file_generation_executor", Executor())
+    payload = file_projects.FileProjectGenerationJobRequest(chapter_number=1, operation=operation, source_candidate_id="candidate-source")
+    response = file_projects.start_file_generation_job("file:p-review-queue", payload)
+    job_id = response["job_id"]
+    try:
+        assert submitted[0][1]["operation"] == operation
+        assert submitted[0][1]["source_candidate_id"] == "candidate-source"
+        with file_projects._file_generation_jobs_lock:
+            file_projects._file_generation_jobs.pop(job_id)
+            file_projects._active_file_generation_jobs.pop("file:p-review-queue", None)
+        file_projects.start_file_generation_job("file:p-review-queue", reserved_job_id=job_id)
+        assert len(submitted) == 2
+        assert submitted[1][1]["operation"] == operation
+        assert submitted[1][1]["chapter_number"] == 1
+        assert submitted[1][1]["source_candidate_id"] == "candidate-source"
+    finally:
+        with file_projects._file_generation_jobs_lock:
+            file_projects._file_generation_jobs.pop(job_id, None)
+            file_projects._active_file_generation_jobs.pop("file:p-review-queue", None)
+
+
+@pytest.mark.parametrize("source_candidate_id", [None, "candidate-source"])
+def test_file_generation_job_dispatches_adaptive_polish(monkeypatch, source_candidate_id):
     captured: dict[str, object] = {}
 
     class FakeStore:
-        def polish_chapter(self, chapter_number):
+        def polish_chapter(self, chapter_number, **kwargs):
             captured["chapter_number"] = chapter_number
+            captured.update(kwargs)
             return {
                 "chapter_number": chapter_number,
                 "chapter_title": "Polished",
@@ -3045,13 +3125,17 @@ def test_file_generation_job_dispatches_adaptive_polish(monkeypatch):
             "file:p-manual-polish",
             chapter_number=1,
             operation="polish",
+            source_candidate_id=source_candidate_id,
         )
     finally:
         with file_projects._file_generation_jobs_lock:
             file_projects._file_generation_jobs.pop(job_id, None)
             file_projects._active_file_generation_jobs.pop("file:p-manual-polish", None)
 
-    assert captured == {"chapter_number": 1}
+    expected = {"chapter_number": 1}
+    if source_candidate_id:
+        expected["source_candidate_id"] = source_candidate_id
+    assert captured == expected
 
 
 def test_reserved_generation_job_reuses_completed_persisted_job(tmp_path, monkeypatch):

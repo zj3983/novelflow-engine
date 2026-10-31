@@ -207,3 +207,134 @@ def test_put_rolling_chapter_returns_404_for_missing_project(rolling_api) -> Non
         json={"title": "x"},
     )
     assert response.status_code == 404
+
+
+def test_scene_edit_syncs_all_views_and_rejects_stale_or_invalid_save(rolling_api):
+    client, export_root = rolling_api
+    project_id = _seed_minimal_file_project(export_root)
+    store = FileProjectStore(export_root / "p-rolling-test")
+    _write_rolling_outline(store, [1, 2])
+    old_outline = store.project_outline()
+    old_outline["chapters"] = [{
+        "chapter_number": 1, "title": "旧细纲",
+        "must_not_write": ["旧伤不能凭空治愈"],
+        "scene_chain": [
+            {"location": "旧宅", "action": "检查香炉", "change": "发现暗纹"},
+            {"location": "后巷", "action": "追踪暗纹", "change": "找到线索"},
+            {"location": "界外", "action": "接下一张维修单", "change": "开启新篇"},
+        ],
+    }]
+    store.update_project_outline(old_outline)
+    state_before = (store.webnovel_dir / "state.json").read_bytes()
+    first = client.get(f"/file-projects/{project_id}/outline/rolling").json()["chapters"][0]
+    scenes = [{"location": "街边", "action": "检查炉子", "result": "找到裂缝"}, {"location": "灶间", "action": "补缝", "result": "火焰稳定"}]
+    result = client.put(f"/file-projects/{project_id}/outline/rolling-chapter/1", json={"title": "补炉", "scenes": scenes, "foreshadowing": [], "base_version": first["edit_version"]})
+    assert result.status_code == 200, result.text
+    rolling = client.get(f"/file-projects/{project_id}/outline/rolling").json()["chapters"]
+    assert rolling[0]["scenes"] == scenes and rolling[0]["foreshadowing"] == []
+    assert rolling[1]["title"] == "第2章"
+    legacy = store.project_outline()["chapters"][0]
+    assert legacy["title"] == "补炉" and "检查炉子" in legacy["action"]
+    expected_chain = [
+        {"location": scene["location"], "action": scene["action"], "change": scene["result"]}
+        for scene in scenes
+    ]
+    assert [
+        {key: scene[key] for key in ("location", "action", "change")}
+        for scene in legacy["scene_chain"]
+    ] == expected_chain
+    assert legacy["must_not_write"] == ["旧伤不能凭空治愈"]
+    canonical = json.loads((store.story_system_dir / "outline.json").read_text(encoding="utf-8"))
+    assert canonical["chapters"][0]["scenes"] == scenes
+    assert canonical["chapters"][0]["scene_chain"] == legacy["scene_chain"]
+    stale = client.put(f"/file-projects/{project_id}/outline/rolling-chapter/1", json={"title": "覆盖", "base_version": first["edit_version"]})
+    assert stale.status_code == 409
+    invalid = client.put(f"/file-projects/{project_id}/outline/rolling-chapter/1", json={"scenes": [{"location": "", "action": "", "result": ""}]})
+    assert invalid.status_code == 422
+    assert store.project_outline()["chapters"][0]["title"] == "补炉"
+    assert (store.webnovel_dir / "state.json").read_bytes() == state_before
+
+
+@pytest.mark.parametrize("submit_all_fields", [False, True], ids=["title-only", "unchanged-scenes"])
+def test_title_edit_preserves_emotional_change_and_scene_metadata(rolling_api, submit_all_fields):
+    client, export_root = rolling_api
+    project_id = _seed_minimal_file_project(export_root)
+    store = FileProjectStore(export_root / "p-rolling-test")
+    _write_rolling_outline(store, [1])
+    row = _outline_row(1)
+    outline = store.project_outline()
+    outline["chapters"] = [{
+        "chapter_number": 1, "title": row["title"], "emotional_change": "从戒备到信任",
+        "scene_chain": [{
+            "location": scene["location"], "action": scene["action"], "change": scene["result"],
+            "pov": "林修", "goal": "查明裂纹", "obstacle": "旧伤限制行动",
+            "next": "与同伴交流线索", "state_delta": {"injury": "旧伤仍在"},
+        } for scene in row["scenes"]],
+    }]
+    store.update_project_outline(outline)
+    previous = store.project_outline()["chapters"][0]
+    payload = {**row, "title": "新章名"} if submit_all_fields else {"title": "新章名"}
+    response = client.put(f"/file-projects/{project_id}/outline/rolling-chapter/1", json=payload)
+    assert response.status_code == 200, response.text
+    updated = store.project_outline()["chapters"][0]
+    assert updated["title"] == "新章名"
+    assert updated["emotional_change"] == previous["emotional_change"]
+    assert updated["scene_chain"] == previous["scene_chain"]
+    canonical = json.loads((store.story_system_dir / "outline.json").read_text(encoding="utf-8"))
+    assert canonical["chapters"][0]["emotional_change"] == previous["emotional_change"]
+    assert canonical["chapters"][0]["scene_chain"] == previous["scene_chain"]
+
+
+def test_scene_edit_rolls_back_all_views_on_failure(rolling_api, monkeypatch):
+    from packages.story_core.outline_manual_edit import edit_scene_outline
+    from packages.story_core.persistence.snapshot_store import SnapshotStore
+    client, export_root = rolling_api
+    _seed_minimal_file_project(export_root)
+    store = FileProjectStore(export_root / "p-rolling-test")
+    _write_rolling_outline(store, [1])
+    edit_scene_outline(store, 1, {"title": "首次"})
+    paths = [store.webnovel_dir / "outline.json", store.story_system_dir / "outline.json", store.story_system_dir / "outline-generation/rolling_outline.json"]
+    before = {path: path.read_bytes() for path in paths}
+    replace = SnapshotStore._replace_file
+    failed = False
+    def fail_once(source, target):
+        nonlocal failed
+        if Path(target) == paths[1] and not failed:
+            failed = True
+            raise OSError("simulated disk failure")
+        replace(source, target)
+    monkeypatch.setattr(SnapshotStore, "_replace_file", staticmethod(fail_once))
+    with pytest.raises(OSError):
+        edit_scene_outline(store, 1, {"title": "不能半保存"})
+    assert {path: path.read_bytes() for path in paths} == before
+
+
+def test_completion_checks_require_evidence_and_invalidate_after_prose_changes(rolling_api):
+    client, export_root = rolling_api
+    project_id = _seed_minimal_file_project(export_root)
+    store = FileProjectStore(export_root / "p-rolling-test")
+    state = store.state()
+    state["current_chapter"] = 1
+    store._write_json_atomic(store.webnovel_dir / "state.json", state)
+    body_path = store.root / "chapters/0001.md"
+    body_path.write_text("原来的正文。", encoding="utf-8")
+    store._write_json_atomic(store.story_system_dir / "chapters/0001.json", {"chapter_number": 1, "chapter_title": "已有章", "body_path": "chapters/0001.md"})
+    outline = store.project_outline()
+    outline["overall"]["protagonist_goal"] = "修好旧炉"
+    store.update_project_outline(outline)
+    route = f"/file-projects/{project_id}/outline/ending-audit"
+    audit = client.get(route).json()
+    row = next(item for item in audit["items"] if item["title"] == "主角长期目标")
+    payload = {"base_version": audit["version"], "item": {**row, "disposition": "resolved", "note": "炉子已修好。"}}
+    assert client.put(route, json=payload).status_code == 422
+    payload["item"]["chapter"] = 1
+    state_before = (store.webnovel_dir / "state.json").read_bytes()
+    saved = client.put(route, json=payload)
+    assert saved.status_code == 200, saved.text
+    assert next(item for item in saved.json()["items"] if item["id"] == row["id"])["disposition"] == "resolved"
+    assert client.put(route, json=payload).status_code == 409
+    body_path.write_text("正文已被修订。", encoding="utf-8")
+    fresh = client.get(route).json()
+    assert next(item for item in fresh["items"] if item["id"] == row["id"])["disposition"] == "pending"
+    assert (store.webnovel_dir / "state.json").read_bytes() == state_before
+    assert body_path.read_text(encoding="utf-8") == "正文已被修订。"

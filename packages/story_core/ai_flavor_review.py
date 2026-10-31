@@ -211,6 +211,21 @@ def review_ai_flavor(text: str) -> dict[str, Any]:
         issues.append("AI味偏重：具体动作、物件、对白或界面反馈太少，读起来像判断清单。")
         revision_plan.append("每一小段至少落一个可见东西：手、物件、价格、背包格、NPC台词、面板变化或身体反应。")
 
+    annotations = []
+    for issue in issues:
+        quotes: list[str] = []
+        if "不是X" in issue:
+            quotes = formula_hits
+        elif "抽象审稿词" in issue:
+            quotes = abstract_hits
+        elif "抽象判断词" in issue:
+            quotes = [*abstract_hits, *report_hits]
+        elif "报告式连接词" in issue:
+            quotes = report_hits
+        elif "作者判词" in issue:
+            quotes = author_verdict_hits
+        annotations.append({"message": issue, "quotes": list(dict.fromkeys(quotes)),
+                            "scope": "local" if quotes else "global"})
     return {
         "reviewer": "ai_flavor/v1",
         "pass": not issues,
@@ -219,6 +234,7 @@ def review_ai_flavor(text: str) -> dict[str, Any]:
         "scores": {"ai_flavor": score},
         "metrics": metrics,
         "cuts": cuts,
+        "annotations": annotations,
         "hits": {
             "formula": formula_hits,
             "abstract_terms": abstract_hits,

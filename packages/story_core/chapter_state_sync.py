@@ -109,6 +109,8 @@ class ChapterStateSyncMixin:
             normalized_world.continuity_facts,
             chapter_number=chapter_number,
             facts=summary["facts"],
+            replace_chapter=((chapter.get("quality_report") or {}).get("review_repair") or {}).get("fact_review") == "completed"
+                and ((chapter.get("quality_report") or {}).get("candidate_semantic_review") or {}).get("status") in {"completed", "no_changes"},
         )
         foreshadowing = self._parse_foreshadowing_ledger(synced.get("foreshadowing"))
         reconciled_foreshadowing = reconcile_foreshadowing(
@@ -232,7 +234,7 @@ class ChapterStateSyncMixin:
             if not isinstance(item, dict):
                 continue
             profile = dict(item)
-            name = self._canonical_character_name(str(profile.get("name") or ""))
+            name = self._canonical_character_name(str(profile.get("name") or ""), synced.get("character_profiles") or [])
             if not name:
                 continue
             profile["name"] = name
@@ -244,7 +246,7 @@ class ChapterStateSyncMixin:
             if not isinstance(character, dict):
                 continue
             character = dict(character)
-            name = self._canonical_character_name(str(character.get("name") or ""))
+            name = self._canonical_character_name(str(character.get("name") or ""), existing_profiles)
             if not name:
                 continue
             character["name"] = name

@@ -1,3 +1,9 @@
+import pytest
+
+from packages.story_core.chapter_length_policy import (
+    CHAPTER_TARGET_MAX_CHARS,
+    CHAPTER_TARGET_MIN_CHARS,
+)
 from packages.story_core.revision_safety import choose_best_revision, score_quality_report
 from packages.story_core.orchestrator import StoryOrchestrator
 from packages.story_core.engine import ChapterBundle
@@ -16,6 +22,25 @@ def _quality(passed: bool, scores: dict[str, int], issues: list[str] | None = No
             "world_state_review": {"pass": passed, "issues": [] if passed else [{"type": "bad"}]},
         },
     }
+
+
+@pytest.mark.parametrize(
+    ("candidate_chars", "accepted"),
+    [(2999, False), (3000, True), (3200, True), (3899, True), (4500, True), (4501, False)],
+)
+def test_choose_best_revision_uses_current_chapter_length_bounds(candidate_chars, accepted):
+    result = choose_best_revision(
+        original_body="原" * 4000,
+        original_quality=_quality(False, {"genre_rules": 6}, ["段落重复"]),
+        candidate_body="改" * candidate_chars,
+        candidate_quality=_quality(True, {"genre_rules": 8}),
+    )
+
+    assert result["accepted"] is accepted
+    if candidate_chars < CHAPTER_TARGET_MIN_CHARS:
+        assert result["report"]["reason"] == "candidate_below_chapter_minimum"
+    elif candidate_chars > CHAPTER_TARGET_MAX_CHARS:
+        assert result["report"]["reason"] == "candidate_above_chapter_maximum"
 
 
 def test_score_quality_report_rewards_passes_and_penalizes_issues():
@@ -210,9 +235,9 @@ def test_choose_best_revision_rejects_chapter_rewrite_that_falls_below_minimum()
     candidate = _quality(True, {"genre_rules": 8, "prose_style_meta_language": 8})
 
     result = choose_best_revision(
-        original_body="原稿正文" * 1200,
+        original_body="原" * 4000,
         original_quality=original,
-        candidate_body="短稿正文" * 800,
+        candidate_body="短" * (CHAPTER_TARGET_MIN_CHARS - 1),
         candidate_quality=candidate,
     )
 
@@ -240,9 +265,9 @@ def test_choose_best_revision_keeps_in_range_draft_when_failed_candidate_grows_o
     candidate = _quality(False, {"genre_rules": 8, "prose_style_meta_language": 8}, ["对话仍不自然"])
 
     result = choose_best_revision(
-        original_body="原" * 5211,
+        original_body="原" * 4000,
         original_quality=original,
-        candidate_body="改" * 6197,
+        candidate_body="改" * (CHAPTER_TARGET_MAX_CHARS + 1),
         candidate_quality=candidate,
     )
 
@@ -256,9 +281,9 @@ def test_choose_best_revision_rejects_failed_candidate_without_fewer_issues():
     candidate = _quality(False, {"genre_rules": 8, "prose_style_meta_language": 8}, ["新问题一", "新问题二"])
 
     result = choose_best_revision(
-        original_body="原" * 5730,
+        original_body="原" * 4300,
         original_quality=original,
-        candidate_body="改" * 5200,
+        candidate_body="改" * 4000,
         candidate_quality=candidate,
     )
 
@@ -321,9 +346,9 @@ def test_choose_best_revision_structural_length_preference_handles_overlong_orig
     candidate["has_hard_errors"] = False
 
     result = choose_best_revision(
-        original_body="原" * 6000,
+        original_body="原" * 5000,
         original_quality=original,
-        candidate_body="改" * 5200,
+        candidate_body="改" * 4000,
         candidate_quality=candidate,
     )
 
@@ -359,13 +384,13 @@ def test_choose_best_revision_rejects_structural_repair_candidate_outside_prefer
     below = choose_best_revision(
         original_body="原" * 46,
         original_quality=original,
-        candidate_body="改" * 4199,
+        candidate_body="改" * (CHAPTER_TARGET_MIN_CHARS - 1),
         candidate_quality=candidate,
     )
     above = choose_best_revision(
-        original_body="原" * 5600,
+        original_body="原" * (CHAPTER_TARGET_MAX_CHARS + 100),
         original_quality=original,
-        candidate_body="改" * 5501,
+        candidate_body="改" * (CHAPTER_TARGET_MAX_CHARS + 1),
         candidate_quality=candidate,
     )
 
@@ -400,9 +425,9 @@ def test_choose_best_revision_does_not_apply_structural_preference_to_in_range_o
     candidate["has_hard_errors"] = False
 
     result = choose_best_revision(
-        original_body="原" * 5000,
+        original_body="原" * 4000,
         original_quality=original,
-        candidate_body="改" * 5000,
+        candidate_body="改" * 4000,
         candidate_quality=candidate,
     )
 
@@ -417,9 +442,9 @@ def test_choose_best_revision_rejects_severe_quality_regression_even_when_hard_e
     candidate["has_hard_errors"] = False
 
     result = choose_best_revision(
-        original_body="原" * 5000,
+        original_body="原" * 4000,
         original_quality=original,
-        candidate_body="改" * 5000,
+        candidate_body="改" * 4000,
         candidate_quality=candidate,
     )
 
@@ -436,9 +461,9 @@ def test_choose_best_revision_accepts_bounded_soft_regression_when_hard_errors_r
     candidate["has_hard_errors"] = False
 
     result = choose_best_revision(
-        original_body="原" * 5000,
+        original_body="原" * 4000,
         original_quality=original,
-        candidate_body="改" * 5000,
+        candidate_body="改" * 4000,
         candidate_quality=candidate,
     )
 
@@ -474,9 +499,9 @@ def test_choose_best_revision_rejects_too_short_candidate_even_when_hard_errors_
     candidate["has_hard_errors"] = False
 
     result = choose_best_revision(
-        original_body="原" * 5000,
+        original_body="原" * 4000,
         original_quality=original,
-        candidate_body="改" * 3800,
+        candidate_body="改" * (CHAPTER_TARGET_MIN_CHARS - 1),
         candidate_quality=candidate,
     )
 
@@ -492,9 +517,9 @@ def test_choose_best_revision_does_not_prioritize_candidate_with_hard_errors_rem
     candidate["has_hard_errors"] = True
 
     result = choose_best_revision(
-        original_body="原" * 5000,
+        original_body="原" * 4000,
         original_quality=original,
-        candidate_body="改" * 5000,
+        candidate_body="改" * 4000,
         candidate_quality=candidate,
     )
 
@@ -509,9 +534,9 @@ def test_choose_best_revision_prefers_candidate_with_fewer_blocking_findings():
     candidate["has_hard_errors"] = False
 
     result = choose_best_revision(
-        original_body="原" * 5000,
+        original_body="原" * 4000,
         original_quality=original,
-        candidate_body="新" * 5000,
+        candidate_body="新" * 4000,
         candidate_quality=candidate,
     )
     assert result["accepted"] is True
@@ -538,10 +563,11 @@ def test_choose_best_revision_rejects_candidate_with_new_blocking_code():
     }
 
     result = choose_best_revision(
-        original_body="原" * 5000,
+        original_body="原" * 4000,
         original_quality=original,
-        candidate_body="新" * 5000,
+        candidate_body="新" * 4000,
         candidate_quality=candidate,
     )
     assert result["accepted"] is False
     assert result["selected"] == "original"
+    assert result["report"]["reason"] == "candidate_introduced_new_blocking_code"

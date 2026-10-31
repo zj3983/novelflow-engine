@@ -862,3 +862,353 @@ def test_character_intent_stage_survives_both_provider_failures() -> None:
         )
         == []
     )
+
+
+import packages.story_core.agents.pipeline as modular_pipeline
+from packages.story_core.agents.contracts import DirectorArtifact, SceneBeat
+from packages.story_core.agents.director.prompt import parse_director_response
+from packages.story_core.agents.fact_extractor.agent import FactExtractorContext, _safe_model_extract
+from packages.story_core.agents.pipeline import _attach_character_intents, _select_relevant_cast
+from packages.story_core.character_agent import CharacterAgent, OpenAICharacterProposalProvider, RuleBasedCharacterProposalProvider
+from packages.story_core.context.director_context import DirectorContext, _concise_character_card
+
+def _story(characters: list[CharacterState], *, outline: str = "林渊赢下宗门比试") -> StoryState:
+    return StoryState(
+        story_id="intent-fixture",
+        outline=outline,
+        genre="xuanhuan",
+        style="自然中文",
+        characters=characters,
+    )
+
+
+def _character(name: str, role: str, *, chapter_role: str = "") -> CharacterState:
+    return CharacterState(name=name, role=role, chapter_role=chapter_role)
+
+
+def test_character_proposal_and_scene_beat_keep_new_fields_optional() -> None:
+    story = _story([_character("林渊", "protagonist")])
+    proposal = CharacterAgent(
+        llm_provider=type("NoopProvider", (), {"propose_all": lambda self, story: []})(),
+        rule_provider=RuleBasedCharacterProposalProvider(),
+    ).propose_all(story)[0]
+    assert proposal.target == ""
+    assert proposal.dramatic_function == ""
+
+    legacy = SceneBeat(order=1, location="擂台", action="获胜", result="名次确定")
+    assert legacy.character_intents == []
+    assert DirectorArtifact(
+        chapter_number=1,
+        chapter_goal="赢下比赛",
+        opening_state="比赛开始",
+        scene_beats=[legacy, SceneBeat(order=2, location="台下", action="收尾", result="局势改变")],
+        ending_state="新的压力出现",
+    ).schema_version == "director-artifact/v1"
+
+
+def test_relevant_cast_does_not_activate_labels_without_chapter_signal() -> None:
+    characters = [
+        _character("林渊", "protagonist"),
+        _character("苏瑶", "love_interest"),
+        _character("王胖子", "comic_relief"),
+        _character("赵天衡", "stage_antagonist"),
+    ]
+    selected = _select_relevant_cast(_story(characters))
+    assert [item.name for item in selected] == ["林渊"]
+
+
+def test_relevant_cast_uses_target_chapter_fields_not_book_level_names() -> None:
+    characters = [
+        _character("林渊", "protagonist"),
+        _character("苏瑶", "love_interest"),
+        _character("王胖子", "comic_relief"),
+        _character("赵天衡", "stage_antagonist"),
+    ]
+    story = _story(characters)
+    story.outline_context = {
+        "overall": {"story": "苏瑶、王胖子和赵天衡都将在长线中出现"},
+        "chapter": {
+            "chapter_number": 1,
+            "goal": "林渊赢下宗门比试",
+            "obstacle": "对手只想拖延时间",
+            "action": "林渊独自迎战",
+            "summary": "单人战斗",
+        },
+    }
+
+    selected = _select_relevant_cast(story)
+    assert [item.name for item in selected] == ["林渊"]
+
+
+def test_character_agent_prompt_contains_chapter_pressure_and_privacy_boundary() -> None:
+    story = _story([_character("苏瑶", "love_interest")])
+    story.outline_context = {
+        "chapter": {
+            "chapter_number": 1,
+            "goal": "确认林渊昨晚发生了什么",
+            "obstacle": "林渊拒绝解释",
+            "action": "借检查伤势试探",
+            "summary": "叶青衣从林渊房间出来",
+        }
+    }
+
+    prompt = OpenAICharacterProposalProvider()._build_prompt(
+        story, story.characters
+    )
+    assert "确认林渊昨晚发生了什么" in prompt
+    assert "秘密和未公开信息只允许影响人物决策" in prompt
+    assert "可以给出低优先级、观察、等待、回避或不行动" in prompt
+
+
+def test_director_character_card_is_a_decision_slice() -> None:
+    card = _concise_character_card(
+        {
+            "id": "char-su",
+            "name": "苏瑶",
+            "role": "love_interest",
+            "story_function": "关系压力",
+            "location": "擂台边",
+            "current_state": {"summary": "刚看见林渊受伤"},
+            "lifecycle": "active",
+            "summary": "嘴硬心软",
+            "story_drive": {
+                "immediate_goal": "确认林渊是否受伤",
+                "motivation": "不想让他把伤势藏起来",
+                "main_conflict_reason": "不愿在人前示弱",
+                "hidden_matters": ["private"],
+            },
+            "personality_portrait": {
+                "psychology": {"desire": "被重视", "fear": "失去主动"},
+                "behavior": {
+                    "pressure_mode": "嘴硬",
+                    "conflict_response": "先回避再试探",
+                },
+            },
+            "performance_profile": {
+                "speech_style": "少用直白表白",
+                "decision_rules": ["先确认伤势"],
+                "reveal_limits": ["不承认吃醋"],
+            },
+            "relationships": [
+                {"target": "林渊", "trust": 0.7, "tension": 0.8, "bond": "暧昧"}
+            ],
+            "secrets": ["private"],
+            "behavioral_notes": "不得整段泄露",
+        }
+    )
+
+    assert card["narrative_function"] == "关系压力"
+    assert card["story_drive"]["immediate_goal"] == "确认林渊是否受伤"
+    assert card["personality"] == {
+        "desire": "被重视",
+        "fear": "失去主动",
+        "pressure_mode": "嘴硬",
+        "conflict_response": "先回避再试探",
+    }
+    assert card["performance"]["speech_style"] == "少用直白表白"
+    assert card["relationships"][0]["target"] == "林渊"
+    assert "secrets" not in card
+    assert "behavioral_notes" not in card
+
+
+def test_character_agent_failure_falls_back_to_rule_provider() -> None:
+    class FailingProvider:
+        def propose_all(self, story):
+            raise RuntimeError("provider unavailable")
+
+    story = _story([_character("林渊", "protagonist")])
+    proposals = CharacterAgent(llm_provider=FailingProvider()).propose_all(story)
+    assert proposals and proposals[0].name == "林渊"
+
+
+def test_rule_proposals_keep_personality_drives_structurally_distinct() -> None:
+    story = _story(
+        [
+            CharacterState(
+                name="林渊",
+                role="protagonist",
+                goals=["守住胜利并查清赵家动机"],
+            ),
+            CharacterState(
+                name="苏瑶",
+                role="love_interest",
+                goals=["确认林渊伤势"],
+                current_emotion="介意",
+                relationships={
+                    "lin": CharacterRelationship(target="林渊", tension=0.8)
+                },
+            ),
+            CharacterState(
+                name="王胖子",
+                role="ally",
+                goals=["弄清两人气氛"],
+                relationships={
+                    "lin": CharacterRelationship(target="林渊", trust=0.8)
+                },
+            ),
+            CharacterState(
+                name="赵天衡",
+                role="stage_antagonist",
+                goals=["查清林渊实力提升的原因"],
+                relationships={
+                    "lin": CharacterRelationship(target="林渊", tension=0.9)
+                },
+            ),
+        ]
+    )
+
+    proposals = RuleBasedCharacterProposalProvider().propose_all(story)
+    by_name = {proposal.name: proposal for proposal in proposals}
+
+    assert by_name["苏瑶"].target == "林渊"
+    assert by_name["苏瑶"].emotion == "介意"
+    assert by_name["王胖子"].action != by_name["苏瑶"].action
+    assert by_name["赵天衡"].target == "林渊"
+    assert by_name["赵天衡"].priority > by_name["王胖子"].priority
+
+
+def test_story_state_is_sliced_once_and_attached_to_director_context(monkeypatch) -> None:
+    characters = [
+        _character("林渊", "protagonist"),
+        _character("苏瑶", "love_interest"),
+        _character("王胖子", "comic_relief"),
+        _character("赵天衡", "stage_antagonist"),
+    ]
+    story = _story(characters)
+    story.outline_context = {
+        "chapter": {
+            "chapter_number": 1,
+            "cast": ["林渊", "苏瑶", "王胖子"],
+            "goal": "林渊赢下比试",
+        }
+    }
+    captured: list[StoryState] = []
+
+    class StubCharacterAgent:
+        def propose_all(self, selected_story: StoryState):
+            captured.append(selected_story)
+            return [
+                CharacterProposal(
+                    name=character.name,
+                    goal=f"{character.name} 的本章目标",
+                    action=f"{character.name} 的本章行动",
+                )
+                for character in selected_story.characters
+            ]
+
+    monkeypatch.setattr(modular_pipeline, "CharacterAgent", StubCharacterAgent)
+    context = DirectorContext(
+        chapter_number=1,
+        volume={},
+        book_outline_summary="",
+    )
+
+    enriched = _attach_character_intents(context, story)
+
+    assert len(captured) == 1
+    assert {character.name for character in captured[0].characters} == {
+        "林渊",
+        "苏瑶",
+        "王胖子",
+    }
+    assert {intent["name"] for intent in enriched.character_intents} == {
+        "林渊",
+        "苏瑶",
+        "王胖子",
+    }
+    assert enriched.character_cards[1]["story_drive"]["immediate_goal"] == ""
+
+
+def test_director_and_writer_preserve_distinct_scene_intents() -> None:
+    artifact = parse_director_response(
+        {
+            "chapter_number": 1,
+            "chapter_goal": "赢下比赛",
+            "opening_state": "比赛开始",
+            "scene_beats": [
+                {
+                    "order": 1,
+                    "location": "擂台边",
+                    "purpose": "让胜利改变关系",
+                    "conflict": "苏瑶试探，王胖子看热闹",
+                    "participants": ["林渊", "苏瑶", "王胖子"],
+                    "action": "林渊获胜后被两人围住",
+                    "result": "气氛出现分歧",
+                    "character_intents": [
+                        {"name": "苏瑶", "want": "确认伤势", "move": "借问伤势试探"},
+                        {"name": "王胖子", "want": "看出两人气氛", "move": "插入一句玩笑"},
+                    ],
+                },
+                {"order": 2, "location": "看台", "action": "赵天衡离场", "result": "开始调查"},
+            ],
+            "ending_state": "新的调查开始",
+        }
+    )
+    assert len(artifact.scene_beats[0].character_intents) == 2
+    assert artifact.scene_beats[0].character_intents[0].move != artifact.scene_beats[0].character_intents[1].move
+    prompt = build_writer_prompt(
+        type("Request", (), {
+            "director_artifact": artifact,
+            "project_title": "测试",
+            "genre": "玄幻",
+            "writing_style": "",
+            "writing_guidance": "",
+            "writing_reference": "",
+            "rewrite_guidance": "",
+            "target_chars": {"min": 100, "max": 200},
+            "acceptance_chars": {"min": 50, "max": 300},
+            "repair_length": False,
+            "previous_tail": "",
+            "continuity_facts": [],
+            "character_cards": [],
+            "entity_cards": [],
+            "world_rules": [],
+            "craft_modules": [],
+            "enabled_skill_ids": [],
+            "enabled_skill_module_ids": None,
+        })()
+    )
+    assert "确认伤势" in prompt and "插入一句玩笑" in prompt
+    assert "不得直接改写成旁白解释" in prompt
+
+
+def test_fact_extractor_model_receives_safe_view_without_private_intents() -> None:
+    artifact = DirectorArtifact(
+        chapter_number=1,
+        chapter_goal="赢下比赛",
+        opening_state="比赛开始",
+        scene_beats=[
+            SceneBeat(
+                order=1,
+                location="擂台",
+                action="获胜",
+                result="名次确定",
+                character_intents=[{"name": "苏瑶", "withhold": "不承认在意"}],
+            ),
+            SceneBeat(order=2, location="看台", action="散场", result="赵天衡开始调查"),
+        ],
+        ending_state="调查开始",
+    )
+    captured = []
+
+    class Runtime:
+        def complete(self, request):
+            captured.append(request)
+            return {"relationship_changes": [], "foreshadowing_changes": []}
+
+    context = FactExtractorContext(
+        body="林渊赢下比赛。",
+        chapter_number=1,
+        director_artifact=artifact,
+        fact_artifact=DirectorArtifact(
+            chapter_number=1,
+            chapter_goal=artifact.chapter_goal,
+            opening_state=artifact.opening_state,
+            scene_beats=[SceneBeat(order=1, location="擂台", action="获胜", result="名次确定")],
+            ending_state=artifact.ending_state,
+        ),
+    )
+    _safe_model_extract(context, Runtime())
+    safe = captured[0]["director_artifact"]
+    assert "character_intents" not in safe["scene_beats"][0]
+    assert safe["scene_beats"][0]["action"] == "获胜"

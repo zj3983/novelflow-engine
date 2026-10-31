@@ -315,7 +315,15 @@ def test_validate_rolling_batch_rejects_empty_chapters() -> None:
 
 
 def test_rolling_validation_and_outline_adaptation_preserve_chapter_contracts() -> None:
-    payload = {**_valid_chapter_payload(148), **CHAPTER_CONTRACT}
+    payload = {
+        **_valid_chapter_payload(148),
+        "core_conflict": "买家逼林修一夜验货",
+        "gain": "拿到替换镜芯",
+        "cost": "暴露恢复能力",
+        "state_delta": "从接单转为追查父亲线索",
+        "hook": "镜中人叫出林修父亲的名字",
+        **CHAPTER_CONTRACT,
+    }
 
     validated = validate_rolling_chapter(
         payload,
@@ -327,12 +335,11 @@ def test_rolling_validation_and_outline_adaptation_preserve_chapter_contracts() 
 
     assert validated["payoff_contract"] == CHAPTER_CONTRACT["payoff_contract"]
     assert validated["chapter_sop"] == CHAPTER_CONTRACT["chapter_sop"]
+    for field in ("gain", "cost", "state_delta", "hook"):
+        assert adapted[field] == payload[field]
     assert adapted["payoff_contract"] == CHAPTER_CONTRACT["payoff_contract"]
     assert adapted["chapter_sop"] == CHAPTER_CONTRACT["chapter_sop"]
-    assert adapted["gain"] == "升级到 Lv.3"
-    assert adapted["cost"] == "灰狼毒腺 8 份"
-    assert adapted["state_delta"] == "level=Lv.3"
-    assert adapted["ending_hook"] == "流霜打断狼王冲锋"
+    assert adapted["ending_hook"] == payload["hook"]
 
 
 def test_rolling_validation_remains_compatible_without_chapter_sop() -> None:

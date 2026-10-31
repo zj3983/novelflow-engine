@@ -290,6 +290,8 @@ class ProjectOutline(_OutlineModel):
             for arc in self.arcs:
                 if arc.end_chapter > self.overall.core_ending_chapter:
                     continue
+                if self.overall.current_strategy == "close" and self.overall.closing_route.strip():
+                    continue
                 if (
                     not arc.extension_gate.continue_route.strip()
                     or not arc.extension_gate.close_route.strip()

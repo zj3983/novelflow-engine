@@ -93,7 +93,7 @@ def render_generic_compression_prompt(*, context: LengthPromptContext) -> str:
         {
             "opening_line": "下面这章正文超过目标篇幅，请在不改变剧情事实、人物选择、世界规则、结尾钩子的前提下压缩。",
             "target_chars": context.compression_target_chars
-            or f"保留完整网文章节感，调整到5000到5400字，绝对不要超过{context.max_chapter_chars}字",
+            or f"保留完整网文章节感，调整到{context.target_chars}，绝对不要超过{context.max_chapter_chars}字",
             "compression_method": compression_method,
             "chapter_scope": "不得新增原文或章节计划之外的设定、能力、人物关系、事件结算。",
             "source_body": context.source_body,

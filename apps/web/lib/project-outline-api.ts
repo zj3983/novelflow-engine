@@ -10,6 +10,7 @@ import type {
   ProjectOutline,
   ProjectOutlineUpdate,
   RollingOutline,
+  RollingOutlineChapter,
   VolumeDesignResponse,
   VolumeDetailGenerationResponse,
   VolumeWorkflowResponse,
@@ -17,6 +18,39 @@ import type {
 
 const OUTLINE_GENERATION_TIMEOUT_MS = 420_000;
 const VOLUME_DETAIL_TIMEOUT_MS = 1_800_000;
+
+export type EndingPlanningJob = {
+  job_id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  progress: string;
+  error: string;
+  result: { base_chapter: number; chapter_range: [number, number]; chapter_count: number } | null;
+};
+
+export type EndingAuditItem = {
+  id: string; kind: "mainline" | "foreshadowing" | "chapter";
+  title: string; context: string; disposition: "pending" | "resolved" | "retained" | "expired";
+  chapter: number | null; note: string;
+};
+export type EndingAudit = { items: EndingAuditItem[]; version: string; current_chapter: number; pending_count: number };
+export async function fetchEndingAudit(projectId: string): Promise<EndingAudit> {
+  return await fetchJson(`${fileProjectPath(projectId)}/outline/ending-audit`, { method: "GET" });
+}
+export async function saveEndingAuditItem(projectId: string, item: EndingAuditItem, baseVersion: string): Promise<EndingAudit> {
+  return await fetchJson(`${fileProjectPath(projectId)}/outline/ending-audit`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ item, base_version: baseVersion }) });
+}
+
+export async function fetchEndingPlan(projectId: string): Promise<{ job: EndingPlanningJob | null }> {
+  return await fetchJson(`${fileProjectPath(projectId)}/outline/ending-plan`, { method: "GET" });
+}
+
+export async function startEndingPlan(projectId: string, outline: ProjectOutline, guidance = ""): Promise<EndingPlanningJob> {
+  const { source: _source, ...payload } = outline;
+  return await fetchJson(`${fileProjectPath(projectId)}/outline/ending-plan`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ outline: payload, guidance }),
+  });
+}
 
 function requireFileProject(projectId: string, message: string): void {
   if (!isFileProjectId(projectId)) throw new Error(message);
@@ -30,6 +64,15 @@ export async function fetchProjectOutline(projectId: string): Promise<ProjectOut
 export async function fetchProjectRollingOutline(projectId: string): Promise<RollingOutline> {
   requireFileProject(projectId, "rolling_outline_requires_file_project");
   return await fetchJson(`${fileProjectPath(projectId)}/outline/rolling`, { method: "GET" });
+}
+
+export async function saveSceneOutline(projectId: string, chapter: RollingOutlineChapter): Promise<RollingOutlineChapter> {
+  const fields = Object.fromEntries(["chapter_number", "title", "chapter_goal", "core_conflict", "cast", "scenes", "gain", "cost", "foreshadowing", "hook", "state_delta"].map(key => [key, chapter[key as keyof RollingOutlineChapter]]));
+  const response = await fetchJson<{ chapter: RollingOutlineChapter }>(
+    `${fileProjectPath(projectId)}/outline/rolling-chapter/${chapter.chapter_number}`,
+    { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...fields, base_version: chapter.edit_version }) },
+  );
+  return response.chapter;
 }
 
 export async function fetchVolumeWorkflow(

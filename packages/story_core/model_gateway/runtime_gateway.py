@@ -14,6 +14,7 @@ from .provider_adapters import (
     AnthropicAdapter,
     CodexCLIAdapter,
     GeminiAdapter,
+    GeminiCLIAdapter,
     JsonTransport,
     OpenAICompatibleAdapter,
 )
@@ -218,6 +219,8 @@ class RuntimeModelGateway:
                 adapter = GeminiAdapter(base_url=settings.base_url, api_key=settings.api_key, **common)
             elif protocol == "codex_cli":
                 adapter = CodexCLIAdapter(command=settings.codex_command)
+            elif protocol == "gemini_cli":
+                adapter = GeminiCLIAdapter(command=settings.codex_command)
             elif protocol == "antigravity_cli":
                 adapter = AntigravityCLIAdapter(command=settings.codex_command)
             else:

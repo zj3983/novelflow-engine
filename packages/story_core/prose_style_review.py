@@ -387,7 +387,7 @@ def _mechanical_short_paragraph_ratio(body: str) -> float:
     return short_count / len(paragraphs)
 
 
-def _panel_explanation_problems(body: str) -> list[str]:
+def _panel_explanation_problems(body: str, *, evidence: list[str] | None = None) -> list[str]:
     """Catch a UI panel followed by an author-facing explanation.
 
     A panel is a reader-visible event. Repeating its meaning in a sentence
@@ -404,10 +404,12 @@ def _panel_explanation_problems(body: str) -> list[str]:
         hits = [term for term in PANEL_EXPLANATION_TERMS if term in window]
         if hits:
             problems.append(f"面板后重复解释：{'、'.join(hits[:3])}")
+            if evidence is not None:
+                evidence.append(window)
     return problems
 
 
-def _transaction_process_explanation_problems(body: str) -> list[str]:
+def _transaction_process_explanation_problems(body: str, *, evidence: list[str] | None = None) -> list[str]:
     """Catch backend transaction rules narrated instead of shown on screen."""
 
     problems: list[str] = []
@@ -417,6 +419,8 @@ def _transaction_process_explanation_problems(body: str) -> list[str]:
         hits = [term for term in TRANSACTION_PROCESS_EXPLANATION_TERMS if term in window]
         if len(hits) >= 3:
             problems.append(f"交易流程说明：{'、'.join(hits[:4])}")
+            if evidence is not None:
+                evidence.append(window)
     return problems
 
 
@@ -513,7 +517,8 @@ def review_prose_style(body: str, *, genre_context: Any = None) -> dict[str, Any
         )
 
     mechanical_terms = _repeated_terms(body, MECHANICAL_EXPLANATION_TERMS)
-    panel_explanations = _panel_explanation_problems(body)
+    panel_evidence: list[str] = []
+    panel_explanations = _panel_explanation_problems(body, evidence=panel_evidence)
     if panel_explanations:
         _append_issue(
             issues=issues,
@@ -524,7 +529,8 @@ def review_prose_style(body: str, *, genre_context: Any = None) -> dict[str, Any
             plan="面板只保留角色当场看见的字段；面板结束后直接接动作、选择或对话，删掉重复解释数字和规则的句子。",
             score=5,
         )
-    transaction_explanations = _transaction_process_explanation_problems(body)
+    transaction_evidence: list[str] = []
+    transaction_explanations = _transaction_process_explanation_problems(body, evidence=transaction_evidence)
     if transaction_explanations:
         _append_issue(
             issues=issues,
@@ -574,9 +580,39 @@ def review_prose_style(body: str, *, genre_context: Any = None) -> dict[str, Any
             score=5,
         )
 
+    # Keep all exact examples for annotations, independently of the short
+    # human-readable samples above. Never highlight proposed replacements.
+    dialogue_evidence: list[str] = []
+    for problem in modern_dialogue:
+        examples = re.findall(r"“([^”]+)”", problem) or [problem]
+        for example in examples:
+            for quote in [example, *example.split(" / ")]:
+                if quote and quote in body:
+                    dialogue_evidence.append(quote)
+    evidence_groups = (
+        ("AI高频套话进入正文", cliches),
+        ("创作层术语进入正文", meta_terms),
+        ("对话偏书面或模板化", stiff_dialogue),
+        ("现代中文对话不自然", dialogue_evidence),
+        ("章末反打写成旧式口号", old_slogans),
+        ("面板后重复解释", panel_evidence),
+        ("交易流程说明", transaction_evidence),
+        ("正文有机械切段或解释腔", mechanical_terms),
+        ("正文带出后台硬词", stiff_terms),
+        ("装备称呼不自然", bad_staff_terms),
+    )
+    annotations = []
+    for issue in issues:
+        quotes = list(dict.fromkeys(
+            quote for prefix, examples in evidence_groups if issue.startswith(prefix)
+            for quote in examples if quote and quote in body
+        ))
+        annotations.append({"message": issue, "quotes": quotes,
+                            "scope": "local" if quotes else ("global" if "机械切段" in issue else "unlocated")})
     return {
         "pass": all(score >= 8 for score in scores.values()) and not issues,
         "scores": scores,
         "issues": issues,
         "revision_plan": revision_plan,
+        "annotations": annotations,
     }

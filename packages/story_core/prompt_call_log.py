@@ -21,7 +21,7 @@ from packages.story_core.genre_stages.base import GenreStageProfile
 _current_recorder: ContextVar["PromptCallLog | None"] = ContextVar("current_prompt_call_recorder", default=None)
 _index_lock = Lock()
 
-_STANDARD_USAGE_KEYS = ("prompt_tokens", "completion_tokens", "total_tokens")
+_STANDARD_USAGE_KEYS = ("prompt_tokens", "completion_tokens", "total_tokens", "input_tokens", "output_tokens", "thinking_tokens")
 
 
 def _safe_usage(value: Any) -> dict[str, int | float]:
@@ -185,6 +185,9 @@ class PromptCallLog:
                 "error",
                 "genre_stage_profile",
                 "genre_stage_modules",
+                "max_output_tokens",
+                "usage",
+                "token_budget_transport",
             )
         }
         with _index_lock:
@@ -219,6 +222,7 @@ class PromptCallLog:
         json_mode: bool = False,
         resolved_model: str = "",
         genre_stage: str = "",
+        max_output_tokens: int | None = None,
     ) -> str:
         call_id = f"pc-{uuid4().hex}"
         payload: dict[str, Any] = {
@@ -234,6 +238,7 @@ class PromptCallLog:
             "protocol": str(protocol),
             "model": str(model),
             "temperature": temperature,
+            "max_output_tokens": max_output_tokens,
             "temperature_omitted": False,
             "requested_max_tokens": requested_max_tokens,
             "json_mode": bool(json_mode),
@@ -286,6 +291,7 @@ class PromptCallLog:
         raw: Any = None,
         usage: Mapping[str, Any] | None = None,
         preflight_report: Mapping[str, Any] | None = None,
+        token_budget_transport: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload = self.get(call_id)
         output_text = str(output or "")
@@ -319,6 +325,7 @@ class PromptCallLog:
                     else None
                 ),
                 "error": str(error),
+                "token_budget_transport": dict(token_budget_transport or {}),
             }
         )
         if requested_max_tokens is not None:
@@ -385,6 +392,9 @@ class PromptCallLog:
                         "error",
                         "genre_stage_profile",
                         "genre_stage_modules",
+                        "max_output_tokens",
+                        "usage",
+                        "token_budget_transport",
                     )
                 }
             )

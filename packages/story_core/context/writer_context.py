@@ -27,6 +27,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from packages.story_core.book_style import book_writing_preferences
 from packages.story_core.skill_packs import (
     resolve_enabled_skill_ids,
     resolve_enabled_skill_module_ids,
@@ -117,6 +118,9 @@ class WriterContext(BaseModel):
     # one).
     project_title: str = ""
     genre: str = ""
+    writing_style: str = ""
+    writing_guidance: str = ""
+    writing_reference: str = ""
     rewrite_guidance: str = ""
     target_chapter_words: int | None = None
     previous_tail: str = ""
@@ -255,6 +259,7 @@ def build_writer_context(
         director_artifact=director_artifact,
         project_title=project_title,
         genre=genre,
+        **book_writing_preferences(project_payload, state_payload),
         previous_tail=previous_tail,
         continuity_facts=continuity_facts,
         character_cards=character_cards,

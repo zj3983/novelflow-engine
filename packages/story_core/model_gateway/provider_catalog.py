@@ -11,6 +11,7 @@ ProviderProtocol = Literal[
     "gemini",
     "codex_cli",
     "antigravity_cli",
+    "gemini_cli",
 ]
 
 
@@ -222,6 +223,18 @@ _PROVIDERS = (
         False,
         False,
         "调用已登录的 Antigravity CLI，认证与可用模型由 CLI 自身管理。",
+    ),
+    ProviderDefinition(
+        "geminicli",
+        "Gemini CLI（Google 账号登录）",
+        "gemini_cli",
+        "",
+        ("gemini-3.5-flash", "gemini-3.1-pro-preview"),
+        ("gemini-3.5-flash", "gemini-3.1-pro-preview"),
+        (),
+        False,
+        False,
+        "调用本机官方 Gemini CLI，使用 Google 账号登录，无需 API 密钥。首次使用请在终端运行 gemini 并选择 Login with Google，登录后测试连接。模型可用性以账号权限为准。",
     ),
     ProviderDefinition(
         "custom_openai",

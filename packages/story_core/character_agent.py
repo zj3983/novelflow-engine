@@ -188,6 +188,42 @@ def _constraint_texts(story: StoryState) -> list[str]:
     return [item.strip() for item in story.author_constraints if item.strip()]
 
 
+def _chapter_pressure(story: StoryState) -> str:
+    """Render the target chapter's situation, including its emotional direction."""
+    context = story.outline_context if isinstance(story.outline_context, dict) else {}
+    chapter = context.get("chapter")
+    if isinstance(chapter, dict):
+        selected = {
+            key: chapter.get(key)
+            for key in (
+                "chapter_number",
+                "emotional_change",
+                "cost",
+                "summary",
+                "goal",
+                "chapter_goal",
+                "obstacle",
+                "action",
+                "turn",
+                "payoff",
+                "ending_hook",
+            )
+            if chapter.get(key) not in (None, "", [], {})
+        }
+        if selected:
+            return compact_text(json.dumps(selected, ensure_ascii=False), 760)
+
+    ledger = story.progression_ledger if isinstance(story.progression_ledger, dict) else {}
+    selected = {
+        key: ledger.get(key)
+        for key in ("chapter_direction", "chapter_goal", "goal", "obstacle", "action", "summary")
+        if ledger.get(key) not in (None, "", [], {})
+    }
+    if selected:
+        return compact_text(json.dumps(selected, ensure_ascii=False), 760)
+    return "未提供本章细纲处境；不要凭空制造必须发生的行动。"
+
+
 class CharacterProposalProvider(Protocol):
     def propose_all(self, story: StoryState) -> list[CharacterProposal]:
         pass
@@ -402,14 +438,16 @@ class OpenAICharacterProposalProvider(BaseOpenAIProvider):
                     if raw_chapter.get(key) not in (None, "", [], {})
                 }
 
+        chapter_pressure = _chapter_pressure(story)
         character_lines: list[str] = []
         for character in characters:
+            relationship_values = sorted(character.relationships.values(), key=lambda relationship: (relationship.tension, relationship.trust), reverse=True)[:3]
             relationships = "; ".join(
                 compact_text(
                     f"{relationship.target}(trust={relationship.trust}, tension={relationship.tension}, bond={relationship.bond})",
                     90,
                 )
-                for relationship in list(character.relationships.values())[:3]
+                for relationship in relationship_values
             ) or "none"
             relationship_notes = "; ".join(
                 compact_text(
@@ -446,6 +484,7 @@ class OpenAICharacterProposalProvider(BaseOpenAIProvider):
                 f"Current chapter: {story.current_chapter + 1}",
                 "Chapter execution contract (highest authority): "
                 + json.dumps(chapter_context, ensure_ascii=False),
+                f"Target chapter situation and emotional direction: {chapter_pressure}",
                 f"Latest chapter summary: {current_summary}",
                 "Candidate characters:",
                 *character_lines,
@@ -457,11 +496,14 @@ class OpenAICharacterProposalProvider(BaseOpenAIProvider):
                 "For each candidate, decide what this person independently wants to do in the current contracted chapter situation.",
                 "Ground the proposal in personal interest, relationship pressure, personality, current emotion, and what this character actually knows.",
                 "Secrets/private knowledge may influence only their own decision; never assume other characters know them.",
+                "秘密和未公开信息只允许影响人物决策，不得因为角色知道而假设其他人物也知道。",
                 "A character may observe, wait, withdraw, stay silent, or receive a low priority when there is no strong trigger.",
+                "没有足够刺激时，可以给出低优先级、观察、等待、回避或不行动。",
                 "Do not force love interests to be jealous, antagonists to attack, or comic characters to joke in every chapter.",
                 "Do not complete the chapter plot. Do not make every character serve the protagonist or share the same goal.",
                 "dramatic_function describes a useful possible scene function, not a mandatory beat.",
                 "activation_reason explains why that function is appropriate now; leave it empty when it should stay dormant.",
+                "Answer what this person wants to do in this chapter's situation; preserve its emotional direction and planned costs rather than inventing pressure, worsening old injuries, or adding threats.",
                 "Return concrete current moves, not abstract arc summaries.",
                 "Return JSON with this structure:",
                 '{ "proposals": [ { "name": "...", "goal": "...", "target": "...", "trigger": "...", "emotion": "...", "action": "...", "speech_strategy": "...", "withhold": "...", "blocked_reaction": "...", "dramatic_function": "...", "activation_reason": "...", "priority": 0, "new_character_candidates": [] } ] }',

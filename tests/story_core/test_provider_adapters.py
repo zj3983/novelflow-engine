@@ -430,7 +430,7 @@ def test_antigravity_cli_adapter_uses_its_own_provider(monkeypatch):
 
     def fake_cli(payload, *, command, config):
         captured.update(payload=payload, command=command, config=config)
-        return {"choices": [{"message": {"content": "from antigravity"}}]}
+        return {"choices": [{"message": {"content": "from antigravity"}}],"usage":{"output_tokens":17}}
 
     monkeypatch.setattr(
         "packages.story_core.antigravity_cli_provider.post_json_via_antigravity_cli",
@@ -443,6 +443,22 @@ def test_antigravity_cli_adapter_uses_its_own_provider(monkeypatch):
     assert captured["command"] == "agy-custom"
     assert captured["payload"]["response_format"] == {"type": "json_object"}
     assert response.ok and response.text == "from antigravity"
+    assert response.usage['output_tokens']==17
+
+
+def test_antigravity_timeout_failure_retains_only_safe_transport_diagnostics(monkeypatch):
+    from types import SimpleNamespace
+    from packages.story_core import antigravity_cli_provider
+    monkeypatch.setattr(antigravity_cli_provider,"_run",lambda *a,**k:SimpleNamespace(returncode=0,
+        stdout=json.dumps({"status":"SUCCESS","response":"PRIVATE_PARTIAL", "duration_seconds":180,
+            "usage":{"output_tokens":40,"thinking_tokens":40,"api_key":"SECRET"}}),
+        stderr="[agy] print timeout after 3m0s with turn in progress; returning partial output\nSECRET"))
+    response=AntigravityCLIAdapter(retry_config=RetryConfig(max_retries=1)).complete(
+        request(provider="antigravity",max_tokens=None))
+    assert not response.ok and response.text == "" and response.error == "request_timed_out"
+    assert response.raw["transport_metadata"]["failure_reason"] == "antigravity_cli_print_timeout"
+    assert response.usage["thinking_tokens"] == 40
+    assert "PRIVATE_PARTIAL" not in json.dumps(response.raw) and "SECRET" not in json.dumps(response.raw)
 
 
 def test_antigravity_cli_adapter_fails_closed_when_output_limit_is_requested(monkeypatch):

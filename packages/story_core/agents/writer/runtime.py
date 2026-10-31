@@ -50,6 +50,20 @@ class GatewayWriterRuntime:
     def __init__(self, gateway: Any) -> None:
         self._gateway = gateway
 
+    def draft_token_budget(self, request: Any) -> dict[str,Any] | None:
+        import re
+        from packages.story_core.writer_token_budget import calibrated_draft_budget
+        if not re.search(r"[\u4e00-\u9fff]",str(request.project_title)+str(request.genre)+str(request.director_artifact.chapter_goal)):
+            return None  # These profiles are measured on Chinese prose.
+        resolver = getattr(self._gateway,"runtime_resolver",None)
+        if not callable(resolver):
+            return None
+        try:
+            settings = resolver("writer")
+            return calibrated_draft_budget(settings,target_chars=request.target_chars,acceptance_chars=request.acceptance_chars)
+        except Exception:
+            return None
+
     def complete(self, request: Any) -> Any:
         response, _provider, _model, _protocol = call_with_logging(
             gateway=self._gateway, stage="writer", request=request

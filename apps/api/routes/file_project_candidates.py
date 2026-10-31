@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 from packages.story_core.file_project_store import FileProjectStore
 from packages.story_core.persistence.project_locking import project_update_lock
 from packages.story_core.simplified_review import build_simplified_review
+from packages.story_core.review.prose_checks import run_prose_checks, with_prose_annotation_evidence
 
 
 def _strip_file_prefix(value: str) -> str:
@@ -41,8 +42,21 @@ def _candidate_project_ids(
 
 
 def _candidate_payload(candidate: Any) -> dict[str, Any]:
-    payload = candidate.to_dict()
+    payload = dict(candidate.to_dict())
     quality = dict(payload.get("quality_report") or {})
+    # Older modular candidates skipped these checks. Backfill the read view
+    # only, keeping candidate files and accepted historical reviews intact.
+    if (
+        payload.get("status") == "pending"
+        and "modular_pipeline" in quality
+        and (quality.get("review_result") or {}).get("schema_version") != "review-result/v2"
+        and any(not isinstance(quality.get(key), dict) for key in ("ai_flavor_review", "prose_style_review"))
+    ):
+        for key, report in run_prose_checks(str(payload.get("body") or "")).items():
+            if not isinstance(quality.get(key), dict):
+                quality[key] = report
+        quality["prose_checks_backfilled_on_read"] = True
+    quality = with_prose_annotation_evidence(str(payload.get("body") or ""), quality)
     quality["simplified_review"] = build_simplified_review(quality)
     payload["quality_report"] = quality
     return payload

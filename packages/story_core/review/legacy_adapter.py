@@ -14,6 +14,8 @@ from typing import Any
 
 HARD_TOKENS = (
     "body_too_short",
+    "chapter.length_too_short",
+    "chapter.length_too_long",
     "正文为空",
     "字数不足",
     "章节字数偏少",
@@ -77,6 +79,7 @@ NESTED_REVIEW_KEYS = (
     "editor_agent_review",
     "reviewer_agent_review",
     "ai_flavor_review",
+    "contextual_prose_review",
     "cold_reader_review",
     "reader_feel_review",
     "prose_style_review",
@@ -111,9 +114,14 @@ def _review_sources(report: dict[str, Any]) -> list[tuple[dict[str, Any], int]]:
     sources: list[tuple[dict[str, Any], int]] = [(report, 0)]
     writing = _as_dict(report.get("writing_review"))
     sources.append((writing, 0))
+    # Confirmed historical drafts may keep the full review beside the
+    # acceptance decision. Acceptance does not erase its advisory findings.
+    complete = _as_dict(report.get("complete_writing_review"))
+    sources.append((complete, 0))
     for key in NESTED_REVIEW_KEYS:
         sources.append((_as_dict(report.get(key)), 1))
         sources.append((_as_dict(writing.get(key)), 1))
+        sources.append((_as_dict(complete.get(key)), 1))
     return sources
 
 
@@ -127,7 +135,17 @@ def _collect_issue_records(report: dict[str, Any]) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for source, source_specificity in _review_sources(report):
         plans = source.get("revision_plan") if isinstance(source.get("revision_plan"), list) else []
-        for index, issue in enumerate(source.get("issues") or []):
+        blockers = [item for item in (source.get("blocking") or []) if isinstance(item, dict)]
+        blockers_by_code = {str(item.get("code") or ""): item for item in blockers if item.get("code")}
+        issues = [*list(source.get("issues") or []), *blockers]
+        for index, issue in enumerate(issues):
+            if isinstance(issue, str) and issue in blockers_by_code:
+                issue = blockers_by_code[issue]
+            if isinstance(issue, str) and issue in {"chapter.length_above_target", "chapter.length_below_target"}:
+                issue = {
+                    "code": issue,
+                    "message": "正文字数超过目标上限，建议适当压缩。" if issue.endswith("above_target") else "正文字数低于目标下限，建议适当补充。",
+                }
             message = _issue_text(issue)
             if not message or message in INTERNAL_ISSUES:
                 continue
@@ -141,6 +159,11 @@ def _collect_issue_records(report: dict[str, Any]) -> list[dict[str, Any]]:
                     "message": message,
                     "suggestion": suggestion,
                     "suggestion_priority": suggestion_priority,
+                    "blocking": (
+                        isinstance(issue, dict)
+                        and (issue in blockers or issue.get("blocking") is True)
+                    ),
+                    **({key: issue[key] for key in ("code", "category", "source", "evidence") if key in issue} if isinstance(issue, dict) else {}),
                 }
             )
         # Treat ``warnings`` as advisory issues too.  A draft with
@@ -163,6 +186,7 @@ def _collect_issue_records(report: dict[str, Any]) -> list[dict[str, Any]]:
                     "suggestion": suggestion,
                     "suggestion_priority": suggestion_priority,
                     "from_warning": True,
+                    **({key: warning[key] for key in ("code", "category", "source", "evidence") if key in warning} if isinstance(warning, dict) else {}),
                 }
             )
     return records
@@ -226,6 +250,7 @@ def build_legacy_simplified_review(quality_report: Any, *, limit: int = 3) -> di
             continue
         existing = records_by_key.get(key)
         if existing:
+            existing["blocking"] = bool(existing.get("blocking") or record.get("blocking"))
             if int(record["suggestion_priority"]) > int(existing["suggestion_priority"]):
                 existing["suggestion"] = record["suggestion"]
                 existing["suggestion_priority"] = record["suggestion_priority"]
@@ -236,11 +261,21 @@ def build_legacy_simplified_review(quality_report: Any, *, limit: int = 3) -> di
     for record in unique_records:
         message = record["message"]
         category = _category(message)
+        if record.get("category") in grouped:
+            category = record["category"]
+        elif record.get("code") == "style.simile_stacking" or str(record.get("code") or "").startswith("ai_flavor."):
+            category = "ai_flavor"
+        elif record.get("blocking") and category == "prose":
+            category = "hard"
         blocking_dialogue = category == "dialogue" and any(token in message for token in BLOCKING_DIALOGUE_TOKENS)
         grouped[category].append(
             {
                 "category": category,
-                "severity": "blocking" if category == "hard" or blocking_dialogue else "advisory",
+                "severity": "blocking" if record.get("blocking") or category == "hard" or blocking_dialogue else "advisory",
+                # Legacy elliptical-dialogue advice triggers full revision
+                # through has_blocking_dialogue, not the acceptance gate.
+                "blocking": bool(record.get("blocking") or category == "hard"),
+                **{key: record[key] for key in ("code", "source", "evidence") if key in record},
                 "message": message,
                 "suggestion": record["suggestion"] or _suggestion(category),
             }
@@ -248,7 +283,7 @@ def build_legacy_simplified_review(quality_report: Any, *, limit: int = 3) -> di
 
     ordered = [*grouped["hard"], *grouped["dialogue"], *grouped["ai_flavor"], *grouped["prose"]]
     selected = ordered[: min(3, max(1, limit))]
-    has_hard_errors = bool(grouped["hard"])
+    has_hard_errors = bool(grouped["hard"]) or any(record.get("blocking") for record in unique_records)
     has_blocking_dialogue = any(item["severity"] == "blocking" for item in grouped["dialogue"])
     # ``issues``-derived ``prose`` advice is intentionally NOT enough to
     # force a revision (the writer already passed the prose review).
@@ -262,6 +297,7 @@ def build_legacy_simplified_review(quality_report: Any, *, limit: int = 3) -> di
         or bool(grouped["dialogue"])
         or bool(grouped["ai_flavor"])
         or has_warning_records
+        or any(record.get("source") == "contextual_prose" for record in unique_records)
     )
     status = "blocked" if has_hard_errors else ("needs_revision" if needs_revision else "passed")
     revision_plan = [item["suggestion"] for item in selected]
@@ -273,7 +309,7 @@ def build_legacy_simplified_review(quality_report: Any, *, limit: int = 3) -> di
         "has_hard_errors": has_hard_errors,
         "has_blocking_dialogue": has_blocking_dialogue,
         "needs_revision": needs_revision,
-        "summary": "存在必须修复的硬伤" if has_hard_errors else (
+        "summary": "存在必须修复的问题" if has_hard_errors else (
             "发现需要定向改写的问题" if needs_revision else ("可以继续，建议局部修改" if ordered else "未发现需要处理的问题")
         ),
         "categories": {
@@ -283,6 +319,24 @@ def build_legacy_simplified_review(quality_report: Any, *, limit: int = 3) -> di
             "ai_flavor": {"label": "AI味", "count": len(grouped["ai_flavor"])},
         },
         "issues": selected,
+        "findings": ordered,
         "revision_plan": revision_plan,
         "total_issues": len(ordered),
+        "diagnostics": {
+            "requires_contextual_prose_review": bool(report.get("requires_contextual_prose_review")),
+            "contextual_prose_review_executed": bool(
+                _as_dict(report.get("contextual_prose_review")).get("executed")
+                and _as_dict(report.get("contextual_prose_review")).get("status") == "completed"
+            ),
+            "contextual_prose_review_summary": str(_as_dict(report.get("contextual_prose_review")).get("summary") or ""),
+            "contextual_prose_review_model": str(_as_dict(report.get("contextual_prose_review")).get("model") or ""),
+            "ai_flavor_check_executed": any(
+                isinstance(source.get("ai_flavor_review"), dict)
+                for source in (report, _as_dict(report.get("writing_review")), _as_dict(report.get("complete_writing_review")))
+            ),
+            "prose_style_check_executed": any(
+                isinstance(source.get("prose_style_review"), dict)
+                for source in (report, _as_dict(report.get("writing_review")), _as_dict(report.get("complete_writing_review")))
+            ),
+        },
     }

@@ -108,6 +108,7 @@ class ReviewResult:
             "has_hard_errors": self.has_hard_errors,
             "needs_revision": self.needs_revision,
             "issues": [item.to_dict() for item in selected],
+            "findings": [item.to_dict() for item in self.findings],
             "revision_plan": self.revision_plan,
             "total_issues": len(self.findings),
             "categories": {

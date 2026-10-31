@@ -245,22 +245,23 @@ def test_chapter_review_enables_economy_checks_for_mixed_game_plugin_context():
 
 def test_rebalanced_short_draft_can_grow_into_target_range():
     short = "短" * 3300
-    candidate = "正文" * 2300
+    candidate = "正文" * 2150
 
     assert _rebalanced_body_is_acceptable(short, candidate) is True
     assert _rebalanced_body_is_acceptable(short, "正文" * 1500) is False
 
 
-def test_rebalanced_draft_allows_small_upper_length_tolerance():
-    assert _rebalanced_body_is_acceptable("短" * 2700, "新" * 5587) is True
+def test_rebalanced_draft_rejects_upper_length_overrun():
+    assert _rebalanced_body_is_acceptable("短" * 2700, "新" * 4500) is True
+    assert _rebalanced_body_is_acceptable("短" * 2700, "新" * 4501) is False
 
 
 def test_hard_length_fallback_accepts_publishable_draft_outside_preferred_range():
     assert _chapter_body_is_hard_length_acceptable("字" * 3849) is True
-    assert _chapter_body_is_hard_length_acceptable("字" * 5640) is True
-    assert _chapter_body_is_hard_length_acceptable("字" * 5700) is True
+    assert _chapter_body_is_hard_length_acceptable("字" * 4400) is True
+    assert _chapter_body_is_hard_length_acceptable("字" * 4500) is True
     assert _chapter_body_is_hard_length_acceptable("字" * 2993) is False
-    assert _chapter_body_is_hard_length_acceptable("字" * 5701) is False
+    assert _chapter_body_is_hard_length_acceptable("字" * 4501) is False
 
 
 def test_compression_accepts_small_lower_boundary_tolerance():
@@ -502,9 +503,10 @@ def test_expansion_candidate_must_land_inside_target_range():
 def test_compression_candidate_must_land_inside_target_range():
     original = "原" * 8763
 
-    assert _compressed_body_is_acceptable(original, "新" * 5000) is True
+    assert _compressed_body_is_acceptable(original, "新" * 4400) is True
     assert _compressed_body_is_acceptable(original, "新" * 8020) is False
-    assert _compressed_body_is_acceptable(original, "新" * 3500) is False
+    assert _compressed_body_is_acceptable(original, "新" * 3500) is True
+    assert _compressed_body_is_acceptable(original, "新" * 2500) is False
 
 
 def test_compression_keeps_a_shorter_reviewable_intermediate_draft():
@@ -512,7 +514,8 @@ def test_compression_keeps_a_shorter_reviewable_intermediate_draft():
 
     assert _compressed_body_is_progress(original, "新" * 6235) is True
     assert _compressed_body_is_progress(original, "新" * 10000) is False
-    assert _compressed_body_is_progress(original, "新" * 3500) is False
+    assert _compressed_body_is_progress(original, "新" * 3500) is True
+    assert _compressed_body_is_progress(original, "新" * 2500) is False
 
 
 def test_compression_retries_when_model_overcompresses():
@@ -523,14 +526,14 @@ def test_compression_retries_when_model_overcompresses():
 
 
 def test_final_memory_runs_only_for_a_reviewable_in_range_body():
-    assert _should_extract_final_memory("正文" * 2300, {"needs_revision": False}) is True
+    assert _should_extract_final_memory("正文" * 2150, {"needs_revision": False}) is True
     assert _should_extract_final_memory("正文" * 3001, {"needs_revision": False}) is False
-    assert _should_extract_final_memory("正文" * 2751 + "字", {"needs_revision": False}) is True
-    assert _should_extract_final_memory("正文" * 2300, {"needs_revision": True}) is False
+    assert _should_extract_final_memory("正文" * 2250 + "字", {"needs_revision": False}) is False
+    assert _should_extract_final_memory("正文" * 2150, {"needs_revision": True}) is False
 
 
 def test_final_memory_accepts_advisory_review_but_rejects_hard_errors():
-    body = "正文" * 2300
+    body = "正文" * 2150
 
     assert _should_extract_final_memory(
         body,
@@ -596,7 +599,7 @@ def test_compression_review_counts_resolved_overlength_as_an_improvement():
         before,
         candidate,
         before_body="原" * 6060,
-        candidate_body="改" * 4665,
+        candidate_body="改" * 4400,
     ) is True
 
 
@@ -1876,7 +1879,7 @@ def test_second_chapter_rejects_level_one_transfer_or_trial_start():
     assert any("Lv.1越级" in issue for issue in review["issues"])
 
 
-def test_later_low_level_chapter_rejects_transfer_or_trial_start():
+def test_later_low_level_chapter_reports_transfer_or_trial_start():
     body = (
         "夜烬打开角色面板，当前等级：4，经验210/500，职业：元素法师学徒。"
         "他刚从后坡交完一轮材料，就被职业导师艾伦叫进法师塔。"
@@ -1892,7 +1895,6 @@ def test_later_low_level_chapter_rejects_transfer_or_trial_start():
         genre_context=GAME_GENRE_CONTEXT,
     )
 
-    assert review["pass"] is False
     assert any("低等级越级" in issue for issue in review["issues"])
 
 
@@ -1915,7 +1917,7 @@ def test_game_review_rejects_unexplained_full_exp_without_level_up():
     assert any("经验账本不清" in issue for issue in review["issues"])
 
 
-def test_game_review_rejects_task_submission_contradiction():
+def test_game_review_reports_task_submission_contradiction():
     body = (
         "夜烬打开角色面板，等级：Lv.1，职业：元素法师学徒，经验：15/100，钱袋：空。"
         "他心里记着清道夫委托也没有提交，先绕到柜台前看价牌。"
@@ -1930,7 +1932,6 @@ def test_game_review_rejects_task_submission_contradiction():
         genre_context=GAME_GENRE_CONTEXT,
     )
 
-    assert review["pass"] is False
     assert any("任务账本自相矛盾" in issue for issue in review["issues"])
 
 

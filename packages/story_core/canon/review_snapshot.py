@@ -262,7 +262,9 @@ def _context_facts(
             as_of_chapter=as_of_chapter,
         )
         if normalized is not None:
-            # Context labels are supplied by callers, not proof of committed Canon.
+            # Caller context is a useful hint, not proof that its source label
+            # points at committed Canon. Keep it visible without allowing a
+            # model-authored source string to promote it to established fact.
             normalized["context_origin"] = normalized["source"]
             normalized["source"] = source
             normalized["authority"] = "context"
@@ -671,4 +673,38 @@ def build_canon_review_snapshot(
     }
 
 
-__all__ = ["SNAPSHOT_SCHEMA_VERSION", "build_canon_review_snapshot"]
+def select_review_entities(snapshot: dict[str, Any], reference_text: str) -> dict[str, Any]:
+    """Retrieve whole entity cards for a local edit; keep all other authority."""
+    result = deepcopy(snapshot)
+    entities = result.get("entities") or []
+    selected = set()
+    references = reference_text + json.dumps(
+        {key: value for key, value in snapshot.items() if key != "entities"}, ensure_ascii=False)
+    while True:
+        added = []
+        for index, entity in enumerate(entities):
+            if index in selected:
+                continue
+            names = [entity.get("name"), *entity.get("aliases", [])]
+            entity_id = entity.get("entity_id")
+            if (any(name and name in reference_text for name in names)
+                    or entity_id and entity_id in references):
+                selected.add(index)
+                added.append(entity)
+        if not added:
+            break
+        # Follow explicit entity IDs without recursively loading every name
+        # mentioned in historical descriptions and thus the whole registry.
+        references += json.dumps(added, ensure_ascii=False)
+    result["entities"] = [entity for index, entity in enumerate(entities) if index in selected]
+    result["entity_selection"] = {
+        "mode": "body_plan_and_explicit_references",
+        "total_entities": len(entities),
+        "selected_entities": len(selected),
+        "omitted_entities": len(entities) - len(selected),
+        "note": "仅按当前正文、章纲和显式引用选取实体；未列出的实体不代表不存在。人物卡、事实、伏笔及来源完整保留。",
+    }
+    return result
+
+
+__all__ = ["SNAPSHOT_SCHEMA_VERSION", "build_canon_review_snapshot", "select_review_entities"]

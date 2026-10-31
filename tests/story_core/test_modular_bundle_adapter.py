@@ -8,7 +8,7 @@ from packages.story_core.models import StoryState
 from packages.story_core.modular_bundle_adapter import adapt_modular_bundle_to_legacy
 
 
-def test_adapt_modular_bundle_to_legacy_preserves_workbench_contract() -> None:
+def test_adapt_modular_bundle_to_legacy_preserves_workbench_contract(monkeypatch) -> None:
     story = StoryState.model_validate(
         {
             "story_id": "adapter-test",
@@ -96,3 +96,27 @@ def test_adapt_modular_bundle_to_legacy_preserves_workbench_contract() -> None:
     assert result.character_cards == [
         {"name": "the traveler", "role": "protagonist"},
     ]
+
+    # The real modular path must run the existing deterministic prose checks.
+    modular_bundle.body = "不是胆怯，而是谨慎。他推开门。不是退让，而是等待。他握住刀。"
+    reviewed = adapt_modular_bundle_to_legacy(story=story, modular_bundle=modular_bundle, chapter_number=2)
+    assert reviewed.body == modular_bundle.body
+    assert reviewed.quality_report["ai_flavor_review"]["issues"] == []
+    assert reviewed.quality_report["ai_flavor_review"]["rule_signals"]
+    assert reviewed.quality_report["ai_flavor_review"]["metrics"]["formula_count"] == 2
+    assert "prose_style_review" in reviewed.quality_report
+
+    from packages.story_core.orchestrator import StoryOrchestrator
+    from packages.story_core import contextual_prose_review
+    calls = []
+    def contextual_review(body, context):
+        calls.append((body, context))
+        return {"executed": True, "status": "completed", "issues": [], "annotations": [], "pass": True}
+    monkeypatch.setattr(contextual_prose_review, "review_contextual_prose", contextual_review)
+    orchestrator = StoryOrchestrator(use_modular_agents=True)
+    monkeypatch.setattr(orchestrator, "generate_next_chapter_via_modular_pipeline", lambda **kwargs: modular_bundle)
+    automatic = orchestrator._generate_next_chapter_bundle_via_modular_agents(story, project_root="unused")
+    assert len(calls) == 1
+    assert calls[0][1]["chapter_number"] == 2
+    assert calls[0][1]["character_cards"] == reviewed.character_cards
+    assert automatic.quality_report["contextual_prose_review"]["status"] == "completed"

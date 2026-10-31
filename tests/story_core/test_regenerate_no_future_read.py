@@ -78,7 +78,7 @@ def _stub_chapter_payload(number: int) -> dict:
     return {
         "chapter_number": number,
         "chapter_title": f"第{number}章 stub",
-        "body": "Long body text content " * 300,  # >= 4200 chars to pass length gate
+        "body": "Long body text content " * 220,  # Within the 3000-4500 character gate
         "chapter_summary": {
             "summary": f"Summary {number}",
             "facts": [f"fact-{number}"],
@@ -98,7 +98,7 @@ class _FakeEngine:
         return SimpleNamespace(
             chapter_number=story.current_chapter + 1,
             chapter_title="stub",
-            body="Long body text content " * 300,  # >= 4200 chars to pass length gate
+            body="Long body text content " * 220,  # Within the 3000-4500 character gate
             cadence="manual",
             next_outline="continue",
             updated_story=story.model_copy(update={"current_chapter": story.current_chapter + 1}),
@@ -111,7 +111,7 @@ class _FakeEngine:
         return SimpleNamespace(
             chapter_number=chapter_number,
             chapter_title="regen stub",
-            body="Regen body text content " * 300,  # >= 4200 chars to pass length gate
+            body="Regen body text content " * 220,  # Within the 3000-4500 character gate
             cadence="manual",
             next_outline="continue",
             updated_story=story,

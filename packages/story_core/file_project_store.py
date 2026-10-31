@@ -59,6 +59,7 @@ from packages.story_core.attribute_allocation import (
     rebuild_attribute_progression,
 )
 from packages.story_core.chapter_continuity import build_continuity_interface
+from packages.story_core.book_style import book_writing_preferences
 from packages.story_core.chapter_history import replace_chapter_record
 from packages.story_core.chapter_length_policy import (
     CHAPTER_HARD_MAX_CHARS,
@@ -163,7 +164,10 @@ from packages.story_core.outline_plan_store import OutlinePlanStoreMixin
 from packages.story_core.chapter_read_model import FileProjectReadMixin
 from packages.story_core.chapter_normalization import ChapterNormalizationMixin
 from packages.story_core.project_profile_store import ProjectProfileStoreMixin
-from packages.story_core.persistence.candidate_confirmation_store import CandidateConfirmationStoreMixin
+from packages.story_core.persistence.candidate_confirmation_store import (
+    CandidateConfirmationStoreMixin,
+    _assert_candidate_delta_evidence,
+)
 from packages.story_core.chapter_state_sync import ChapterStateSyncMixin
 from packages.story_core.chapter_entity_projection import ChapterEntityProjectionMixin
 from packages.story_core.writing_context_store import WritingContextStoreMixin
@@ -1095,7 +1099,7 @@ def _synthesize_v2_review_result(simplified: dict[str, Any]) -> dict[str, Any]:
         if text and text not in revision_plan_items:
             revision_plan_items.append(text)
     findings: list[ReviewFinding] = []
-    issues = simplified.get("issues") or []
+    issues = simplified.get("findings") or simplified.get("issues") or []
     for index, issue in enumerate(issues):
         if isinstance(issue, str):
             message = issue.strip()
@@ -1120,19 +1124,23 @@ def _synthesize_v2_review_result(simplified: dict[str, Any]) -> dict[str, Any]:
         if isinstance(issue, dict) and "blocking" in issue:
             explicit_blocking = bool(issue.get("blocking"))
         blocking = explicit_blocking if explicit_blocking is not None else has_hard_errors
-        category = "hard" if blocking else "prose"
+        category = str(issue.get("category") or "") if isinstance(issue, dict) else ""
+        if category not in {"hard", "dialogue", "ai_flavor", "prose"}:
+            category = "hard" if blocking else "prose"
         findings.append(
             ReviewFinding(
-                code=f"legacy.{_slugify_text(message)}",
+                code=str(issue.get("code") or f"legacy.{_slugify_text(message)}") if isinstance(issue, dict) else f"legacy.{_slugify_text(message)}",
                 category=category,
                 blocking=blocking,
                 message=message,
                 suggestion=suggestion,
-                source="legacy_v1_projection",
+                source=str(issue.get("source") or "legacy_v1_projection") if isinstance(issue, dict) else "legacy_v1_projection",
+                evidence=str(issue.get("evidence") or "") if isinstance(issue, dict) else "",
             )
         )
     result = ReviewResult.from_findings(findings)
     payload = result.to_dict()
+    payload["diagnostics"] = {**payload["diagnostics"], **(simplified.get("diagnostics") or {})}
     # Carry the v1 report-level booleans through so callers that read
     # them directly (front-end fallback, downstream checks) keep
     # working.
@@ -2656,6 +2664,7 @@ class FileProjectStore(
         opening_authority: dict[str, Any] | None = None,
         bind_review: bool = False,
         emit_progress: bool = True,
+        preserve_existing: bool = False,
     ) -> CandidateDraft:
         submission_payload = self._bundle_to_dict(bundle)
         if opening_authority is not None:
@@ -2732,7 +2741,10 @@ class FileProjectStore(
                                         "source": source_fingerprint(self)}
             if not unavailable:
                 candidate.review_binding["result"] = review_digest(candidate)
-        self.candidate_store.save_latest(candidate)
+        if preserve_existing:
+            self.candidate_store.save(candidate)
+        else:
+            self.candidate_store.save_latest(candidate)
         if emit_progress:
             self._report_candidate_output(candidate)
         return candidate
@@ -3960,24 +3972,6 @@ class FileProjectStore(
                 "active": True,
             },
             {
-                "name": "药剂师NPC",
-                "triggers": ("药剂师", "药剂铺"),
-                "role": "服务NPC",
-                "location": "起始村药剂铺",
-                "goal": "按规则收取任务材料、出售法力药水并提示下一环任务",
-                "memory": "药剂师NPC负责委托、药水价格和材料提交，话术机械且边界明确。",
-                "active": True,
-            },
-            {
-                "name": "药剂铺老妇人",
-                "triggers": ("灰头巾老妇人", "老妇人", "药剂铺"),
-                "role": "服务NPC",
-                "location": "起始村药剂铺",
-                "goal": "执行药剂铺收货规则：十份一批，少了不收",
-                "memory": "药剂铺老妇人明确毒腺十份一批，不零收；单份交易需走交易木牌。",
-                "active": False,
-            },
-            {
                 "name": "清道夫委托",
                 "triggers": ("清道夫委托", "提交十份灰狼毒腺"),
                 "role": "任务线",
@@ -4091,19 +4085,20 @@ class FileProjectStore(
             )
         return cards
 
-    def _canonical_character_name(self, name: str) -> str:
-        aliases = {
-            "药剂师NPC": "药剂师洛婶",
-            "药剂师": "药剂师洛婶",
-            "药剂铺老妇人": "药剂师洛婶",
-            "灰头巾老妇人": "药剂师洛婶",
-            "老妇人": "药剂师洛婶",
-            "洛婶": "药剂师洛婶",
-            "补给商·铁栓": "仓库管理员铁栓",
-            "补给商铁栓": "仓库管理员铁栓",
-            "铁栓": "仓库管理员铁栓",
-        }
-        return aliases.get(name.strip(), name.strip())
+    def _canonical_character_name(self, name: str, cards: list[Any] | None = None) -> str:
+        """Resolve only aliases explicitly declared in the supplied book roster."""
+        name = name.strip()
+        roster = [card for card in (cards or []) if isinstance(card, dict)]
+        if any(str(card.get("name") or "").strip() == name for card in roster):
+            return name
+        matches: set[str] = set()
+        for card in roster:
+            identity = card.get("identity_profile") if isinstance(card.get("identity_profile"), dict) else {}
+            aliases = [*(card.get("aliases") or []), *(identity.get("aliases") or [])]
+            canonical = str(card.get("name") or "").strip()
+            if canonical and name in [str(alias).strip() for alias in aliases]:
+                matches.add(canonical)
+        return next(iter(matches)) if len(matches) == 1 else name
 
     def _is_character_card(self, card: dict[str, Any]) -> bool:
         name = self._canonical_character_name(str(card.get("name") or ""))
@@ -4120,7 +4115,7 @@ class FileProjectStore(
             if not isinstance(item, dict):
                 continue
             item = dict(item)
-            name = self._canonical_character_name(str(item.get("name") or ""))
+            name = self._canonical_character_name(str(item.get("name") or ""), existing)
             if name:
                 item["name"] = name
             if not self._is_character_card(item):
@@ -4129,7 +4124,7 @@ class FileProjectStore(
                 by_name[name] = dict(item)
         for card in additions:
             card = dict(card)
-            name = self._canonical_character_name(str(card.get("name") or ""))
+            name = self._canonical_character_name(str(card.get("name") or ""), existing)
             if not name:
                 continue
             card["name"] = name
@@ -4296,6 +4291,8 @@ class FileProjectStore(
             normalized_world.continuity_facts,
             chapter_number=chapter_number,
             facts=summary["facts"],
+            replace_chapter=((chapter.get("quality_report") or {}).get("review_repair") or {}).get("fact_review") == "completed"
+                and ((chapter.get("quality_report") or {}).get("candidate_semantic_review") or {}).get("status") in {"completed", "no_changes"},
         )
         foreshadowing = self._parse_foreshadowing_ledger(synced.get("foreshadowing"))
         reconciled_foreshadowing = reconcile_foreshadowing(
@@ -4449,7 +4446,7 @@ class FileProjectStore(
             if not isinstance(item, dict):
                 continue
             profile = dict(item)
-            name = self._canonical_character_name(str(profile.get("name") or ""))
+            name = self._canonical_character_name(str(profile.get("name") or ""), synced.get("character_profiles") or [])
             if not name:
                 continue
             profile["name"] = name
@@ -4461,7 +4458,7 @@ class FileProjectStore(
             if not isinstance(character, dict):
                 continue
             character = dict(character)
-            name = self._canonical_character_name(str(character.get("name") or ""))
+            name = self._canonical_character_name(str(character.get("name") or ""), existing_profiles)
             if not name:
                 continue
             character["name"] = name
@@ -7211,8 +7208,11 @@ class FileProjectStore(
             chapter_number=chapter_number,
             chapter_title=title,
         )
-        if not accept_quality_warnings:
+        # Character limits are a persistence invariant, including forced
+        # confirmation. Accepting style advice must never bypass this gate.
+        if operation in {"generate", "regenerate"} or not accept_quality_warnings:
             _assert_auto_chapter_length(body, operation=operation, goal=self.project().get("target_chapter_words"))
+        quality_report["length_review"] = _chapter_length_review(body, goal=self.project().get("target_chapter_words"))
 
         review = quality_report
         if "writing_review" not in review:
@@ -7511,7 +7511,13 @@ class FileProjectStore(
             self.prompt_call_log()
         ):
             bundle = generator.generate_next_chapter(story)
-        if not persist:
+        draft_body = str(bundle.get("body", "") if isinstance(bundle, dict) else getattr(bundle, "body", ""))
+        keep_length_candidate = (
+            accept_quality_warnings
+            and bool(draft_body.strip())
+            and not _chapter_length_review(draft_body, goal=project.get("target_chapter_words"))["acceptance_pass"]
+        )
+        if not persist or keep_length_candidate:
             project_id = str(
                 project.get("project_id")
                 or project.get("active_story_id")
@@ -7585,6 +7591,7 @@ class FileProjectStore(
         payload["chapter_title"] = candidate.chapter_title or payload.get("chapter_title")
         _assert_explicit_quality_blocking(candidate.quality_report, operation=candidate.operation)
         _assert_explicit_quality_blocking(payload.get("quality_report"), operation=candidate.operation)
+        _assert_candidate_delta_evidence(candidate)
 
         # The confirmation is the single atomic boundary the user
         # can trust. The body runs the legacy ``persist_bundle``
@@ -7606,6 +7613,33 @@ class FileProjectStore(
             managed_paths=self._managed_paths_for_transaction(),
             managed_directories=self._managed_directories_for_transaction(),
         ):
+            historical_expression_repair = (candidate.operation == "generate" and candidate.chapter_number <=
+                int(self.persisted_state().get("current_chapter") or 0))
+            if historical_expression_repair:
+                # assert_review_current above admitted only a source-bound,
+                # semantically expression-only repair with an empty delta.
+                # Preserve later chapter snapshots and all live story state.
+                from hashlib import sha256
+                chapter_path = self.story_system_dir / "chapters" / f"{candidate.chapter_number:04d}.json"
+                chapter = self._read_json(chapter_path)
+                confirmed = self.chapter(candidate.chapter_number)
+                if candidate.chapter_title != confirmed.get("chapter_title"):
+                    raise ValueError("candidate_historical_edit_locked")
+                body_path = (self.root / str(chapter.get("body_path") or "")).resolve()
+                if body_path.parent != self.chapters_dir.resolve() or not body_path.is_file():
+                    raise ValueError("candidate_review_source_changed")
+                _assert_auto_chapter_length(candidate.body, operation="regenerate", goal=self.project().get("target_chapter_words"))
+                chapter["body_sha256"] = sha256(candidate.body.encode("utf-8")).hexdigest()
+                chapter["body_chars"] = sum(not c.isspace() for c in candidate.body)
+                chapter["quality_report"] = deepcopy(candidate.quality_report)
+                self._write_text(body_path, candidate.body)
+                self._replace_json_transaction({chapter_path: chapter,
+                    self.story_system_dir / "reviews" / f"{candidate.chapter_number:04d}.json": candidate.quality_report})
+                self.commit(message=f"reviewed expression repair chapter {candidate.chapter_number}",
+                            operation="regenerate", chapter_number=candidate.chapter_number)
+                candidate.confirm()
+                self.candidate_store.save(candidate)
+                return {"schema_version": "file-project-candidate-confirm/v1", "candidate": candidate.to_dict()}
             self.persist_bundle(
                 payload,
                 operation=candidate.operation,
@@ -8109,6 +8143,8 @@ class FileProjectStore(
                 or []
             ),
             "style": str(current_state.get("style") or project.get("style") or ""),
+            "writing_guidance": book_writing_preferences(project, current_state)["writing_guidance"],
+            "writing_reference": book_writing_preferences(project, current_state)["writing_reference"],
             "current_chapter": 0,
             "author_constraints": deepcopy(
                 project.get("author_constraints")

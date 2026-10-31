@@ -116,7 +116,6 @@ class ProviderAccount(_StrictModel):
     # It is separate from provider metadata and runtime observations.
     model_capabilities: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
-
 class StageBinding(_StrictModel):
     provider_id: str
     model: str
@@ -155,6 +154,7 @@ def _default_accounts() -> dict[str, ProviderAccount]:
     }
     accounts["codexcli"].codex_command = _default_codex_command()
     accounts["antigravity"].codex_command = _default_antigravity_command()
+    accounts["geminicli"].codex_command = os.getenv("NOVEL_GEMINI_COMMAND", "gemini")
     return accounts
 
 
