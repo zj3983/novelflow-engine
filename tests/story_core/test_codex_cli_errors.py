@@ -93,4 +93,3 @@ def test_review_repair_shows_model_failure_reason(code, detail):
     ))
     assert detail in message
     assert "原稿未改动" in message
-
