@@ -14,6 +14,52 @@ from typing import Any
 from packages.story_core.http_retry import RetryConfig
 
 
+class CodexCLIError(RuntimeError):
+    """A classified CLI failure containing no prompt, credentials, or raw stderr."""
+
+    def __init__(self, code: str) -> None:
+        allowed = {
+            "model_not_found", "authentication_failed", "quota_exhausted",
+            "rate_limited", "cli_cache_incompatible", "cli_not_found",
+            "invalid_provider_response", "provider_unavailable",
+        }
+        self.code = code if code in allowed else "provider_unavailable"
+        super().__init__(f"codexcli_failed:{self.code}")
+
+
+def _cli_error_code(detail: str) -> str:
+    # Read terminal errors before startup warnings. A cache warning must not hide
+    # a later model/account rejection, even when it follows a long CLI banner.
+    for line in reversed(detail.splitlines()):
+        start = line.find("{")
+        if start < 0:
+            continue
+        try:
+            payload, _ = json.JSONDecoder().raw_decode(line[start:])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict) or not isinstance(payload.get("error"), dict):
+            continue
+        error = payload["error"]
+        code = str(error.get("code") or error.get("type") or "").lower()
+        status = payload.get("status", error.get("status"))
+        if code in {"model_not_found", "unsupported_model"}:
+            return "model_not_found"
+        if code in {"insufficient_quota", "quota_exhausted", "usage_limit_reached"}:
+            return "quota_exhausted"
+        if code in {"invalid_api_key", "authentication_error", "token_expired", "refresh_token_reused"} or status in (401, 403):
+            return "authentication_failed"
+        if code == "rate_limit_exceeded" or status == 429:
+            return "rate_limited"
+        if status == 404:
+            return "model_not_found"
+        # A structured service error is stronger evidence than cache warnings.
+        return "provider_unavailable"
+    if "failed to load models cache" in detail.lower() and "missing field" in detail.lower():
+        return "cli_cache_incompatible"
+    return "provider_unavailable"
+
+
 def _message_text(message: dict[str, Any]) -> str:
     content = message.get("content", "")
     if isinstance(content, list):
@@ -197,24 +243,29 @@ def post_json_via_codex_cli(
             args.extend(["--config", f'model_reasoning_effort="{reasoning_effort}"'])
         args.append("-")
 
-        completed = subprocess.run(
-            args,
-            input=prompt,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            capture_output=True,
-            timeout=cfg.timeout,
-            cwd=temp_dir,
-            env=subprocess_env,
-        )
+        try:
+            completed = subprocess.run(
+                args,
+                input=prompt,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                timeout=cfg.timeout,
+                cwd=temp_dir,
+                env=subprocess_env,
+            )
+        except FileNotFoundError:
+            raise CodexCLIError("cli_not_found") from None
         if completed.returncode != 0:
-            detail = (completed.stderr or completed.stdout or "").strip()
-            raise RuntimeError(f"codexcli_failed:{detail[:500]}")
+            detail = "\n".join((completed.stderr or "", completed.stdout or ""))
+            raise CodexCLIError(_cli_error_code(detail))
 
         content = output_path.read_text(encoding="utf-8").strip() if output_path.exists() else ""
         if not content:
-            content = (completed.stdout or "").strip()
+            # --output-last-message is the final-answer contract; stdout can be
+            # a CLI banner, progress, or tool output even on a zero exit code.
+            raise CodexCLIError("invalid_provider_response")
 
     return {
         "choices": [

@@ -19,6 +19,7 @@ from packages.story_core.http_retry import (
     RetryConfig,
     read_bounded_response_bytes,
 )
+from packages.story_core.codex_cli_provider import CodexCLIError
 
 from .capabilities import CapabilityObservation, ModelIdentity
 from .contracts import ModelRequest, ModelResponse
@@ -187,6 +188,8 @@ def _redact_raw(value: Any, secret: str = "") -> Any:
 
 
 def _stable_error(exc: Exception) -> str:
+    if isinstance(exc, CodexCLIError):
+        return exc.code
     if isinstance(exc, ResponseTooLargeError):
         return "response_too_large"
     if isinstance(exc, urllib.error.HTTPError):
@@ -520,12 +523,18 @@ class AntigravityCLIAdapter(_Adapter):
     def complete(self, request: ModelRequest) -> ModelResponse:
         if request.output_limit_requirement == "required":
             return ModelResponse.failure(request, "max_output_limit_not_enforceable")
-        from packages.story_core.antigravity_cli_provider import post_json_via_antigravity_cli
+        from packages.story_core.antigravity_cli_provider import (
+            AntigravityCLIResponseError,
+            AntigravityCLITimeoutError,
+            post_json_via_antigravity_cli,
+        )
 
         payload: dict[str, Any] = {
             "model": request.model,
             "messages": list(request.normalized_messages()),
         }
+        if request.metadata.get("draft_token_budget"):
+            payload["draft_token_budget"] = dict(request.metadata["draft_token_budget"])
         if request.json_mode:
             payload["response_format"] = {"type": "json_object"}
         reasoning_effort = request.metadata.get("reasoning_effort")
@@ -540,6 +549,32 @@ class AntigravityCLIAdapter(_Adapter):
             text = _content_text(raw["choices"][0]["message"]["content"])
             if not text:
                 raise ValueError("empty_content")
+            return ModelResponse.success(request, text=text, usage=raw.get("usage") or {}, raw=_redact_raw(raw))
+        except Exception as exc:
+            if isinstance(exc, (AntigravityCLITimeoutError, AntigravityCLIResponseError)):
+                return replace(self._failure(request, exc), usage=exc.usage,
+                    raw={"transport_metadata": exc.diagnostics})
+            if isinstance(exc, RuntimeError) and "user location is not supported" in str(exc).lower():
+                return ModelResponse.failure(request, "antigravity_cli_location_unsupported")
+            return self._failure(request, exc)
+
+
+class GeminiCLIAdapter(_Adapter):
+    def __init__(self, *, command: str = "gemini", retry_config: RetryConfig | None = None) -> None:
+        super().__init__(retry_config=retry_config)
+        self.command = command or "gemini"
+
+    def complete(self, request: ModelRequest) -> ModelResponse:
+        from packages.story_core.gemini_cli_provider import post_json_via_gemini_cli
+
+        payload: dict[str, Any] = {"model": request.model, "messages": list(request.normalized_messages())}
+        if request.json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        try:
+            raw = post_json_via_gemini_cli(payload, command=self.command, config=_request_config(request, self._retry_config))
+            text = _content_text(raw["choices"][0]["message"]["content"])
             return ModelResponse.success(request, text=text, raw=_redact_raw(raw))
         except Exception as exc:
+            if isinstance(exc, RuntimeError) and str(exc) in {"gemini_cli_login_required", "gemini_cli_not_installed", "gemini_cli_account_unsupported", "gemini_cli_config_invalid"}:
+                return ModelResponse.failure(request, str(exc))
             return self._failure(request, exc)

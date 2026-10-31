@@ -20,6 +20,26 @@ def _runtime_story(story_id: str) -> StoryState:
     return StoryState(story_id=story_id, outline="outline", genre="fantasy", style="plain")
 
 
+def test_timed_chat_logs_the_exact_preflight_block_without_calling_provider(tmp_path, monkeypatch):
+    from packages.story_core.prompt_call_log import PromptCallLog, prompt_call_recording
+
+    settings = StageRuntimeSettings(provider_id="openai", protocol="openai_compatible",
+        model="unknown-test-model", api_key="test-only", base_url="https://example.test/v1", temperature=0.2)
+    monkeypatch.setattr(orchestrator_module, "resolve_stage_runtime", lambda stage: settings)
+    monkeypatch.setattr(StoryOrchestrator, "_chat", _REAL_ORCHESTRATOR_CHAT)
+    gateway = RuntimeModelGateway(transport=lambda **kwargs: pytest.fail("blocked request contacted provider"))
+    log = PromptCallLog(tmp_path, project_id="file:p-test")
+    with prompt_call_recording(log):
+        text, error = _REAL_ORCHESTRATOR_TIMED_CHAT(StoryOrchestrator(model_gateway=gateway),
+            _runtime_story("preflight-log"), "字" * 40000, max_tokens=6200,
+            json_mode=True, agent="writer", stage="审查精修 第312章")
+    assert not text and "model_preflight_blocked" in error
+    record = log.list()[0]
+    assert record["status"] == "failed"
+    assert record["preflight_report"]["reason"] == "required_input_over_limit"
+    assert record["preflight_report"]["estimates"]["required_input_tokens"] >= 40000
+
+
 @pytest.mark.parametrize(
     ("agent", "runtime_stage"),
     [("planner", "planner"), ("writer", "writer"), ("memory", "planner")],
@@ -232,6 +252,7 @@ def test_orchestrator_maps_character_compatibility_to_planner(monkeypatch):
 
 
 def _patch_three_stage_generation(monkeypatch, responses):
+    executed_stages: list[str] = []
     runtime = {
         "planner": SimpleNamespace(provider="openai", model="planner-live"),
         "writer": SimpleNamespace(provider="codexcli", model="writer-live"),
@@ -247,10 +268,12 @@ def _patch_three_stage_generation(monkeypatch, responses):
     )
 
     def fake_chat(self, story, prompt, *, max_tokens, json_mode, agent="planner", **kwargs):
+        executed_stages.append(agent)
         response = responses[agent]
         return response(story) if callable(response) else response
 
     monkeypatch.setattr(StoryOrchestrator, "_chat", fake_chat)
+    return executed_stages
 
 
 def _runtime_generation_responses():
@@ -294,7 +317,7 @@ def _runtime_generation_responses():
 
 
 def test_successful_generation_records_only_actual_writing_stages(monkeypatch, passing_review_service):
-    _patch_three_stage_generation(monkeypatch, _runtime_generation_responses())
+    executed_stages = _patch_three_stage_generation(monkeypatch, _runtime_generation_responses())
 
     bundle = StoryOrchestrator().generate_next_chapter(_runtime_story("stage-success"))
 
@@ -323,7 +346,9 @@ def test_successful_generation_records_only_actual_writing_stages(monkeypatch, p
     assert "character_agent" not in runtime
     assert set(bundle.simulation_status["agents"]) == {"planner", "writer", "memory"}
     assert runtime["recent_events"][0] == "规划阶段：模型，第 1 章"
-    assert runtime["recent_events"][-1] == "规划阶段：模型，第 1 章"
+    assert runtime["recent_events"][-1] == "写作阶段：模型，第 1 章"
+    assert executed_stages == ["planner", "writer"]
+    assert bundle.simulation_plan["memory_sync"]["reason"] == "final_body_not_accepted"
     assert all(
         event.startswith(("规划阶段", "写作阶段"))
         for event in runtime["recent_events"]
@@ -378,8 +403,11 @@ def test_new_chapter_clears_previous_stage_runtime_before_planner_request(monkey
 
 def test_memory_parse_failure_only_marks_memory_fallback(monkeypatch, passing_review_service):
     responses = _runtime_generation_responses()
+    # Exercise the parser with an accepted-length body; overlong drafts skip
+    # memory extraction before any model request, so they cannot parse-fail.
+    responses["writer"] = ("主角确认线索后离开现场。" * 300, "")
     responses["memory"] = ("not-json", "")
-    _patch_three_stage_generation(monkeypatch, responses)
+    executed_stages = _patch_three_stage_generation(monkeypatch, responses)
 
     bundle = StoryOrchestrator().generate_next_chapter(_runtime_story("stage-memory-failure"))
 
@@ -387,6 +415,7 @@ def test_memory_parse_failure_only_marks_memory_fallback(monkeypatch, passing_re
     assert bundle.updated_story.agent_runtime.writer.source == "llm"
     assert bundle.updated_story.agent_runtime.memory.source == "fallback"
     assert bundle.updated_story.agent_runtime.memory.fallback_reason == "memory_invalid_json"
+    assert executed_stages == ["planner", "writer", "memory"]
 
 
 def test_world_enrichment_uses_planner_stage_runtime(monkeypatch):

@@ -15,6 +15,7 @@ def _outline(*, strategy: str = "observe", last_chapter: int = 30) -> dict:
             "extension_ceiling_chapter": 500,
             "current_strategy": strategy,
             "ending_contract": "两条线完整收束。",
+            "closing_route": "",
         },
         "arcs": [
             {
@@ -187,4 +188,36 @@ def test_close_strategy_requires_route_for_next_chapters_arc() -> None:
     )
 
     with pytest.raises(ValueError, match="close_route_required_for_active_arc"):
+        validate_outline_for_project(outline, current_chapter=30)
+
+
+def test_completed_closing_volume_can_be_saved_without_a_successor() -> None:
+    outline = _outline(strategy="close")
+    outline["overall"]["core_ending_chapter"] = 30
+    outline["arcs"][0]["is_final_arc"] = True
+
+    saved = validate_outline_for_project(outline, current_chapter=30)
+
+    assert saved["overall"]["current_strategy"] == "close"
+    assert len(saved["arcs"]) == 1
+
+
+def test_overall_closing_route_can_select_close_before_the_next_volume_exists() -> None:
+    outline = _outline(strategy="close")
+    outline["overall"]["closing_route"] = "交还旧账本，再回家休养。"
+    outline["arcs"][0]["extension_gate"]["close_route"] = ""
+    outline["arcs"][0]["extension_gate"]["continue_route"] = ""
+
+    saved = validate_outline_for_project(outline, current_chapter=30)
+
+    assert saved["overall"]["current_strategy"] == "close"
+
+
+def test_completed_closing_volume_still_requires_its_own_route() -> None:
+    outline = _outline(strategy="close")
+    outline["overall"]["core_ending_chapter"] = 30
+    outline["arcs"][0]["is_final_arc"] = True
+    outline["arcs"][0]["extension_gate"]["close_route"] = ""
+
+    with pytest.raises(ValueError, match="missing_arc_extension_route|close_route_required_for_active_arc"):
         validate_outline_for_project(outline, current_chapter=30)

@@ -36,7 +36,7 @@ def game_chapter_phase(chapter_number: int) -> str:
         return "黄金三章第2章：把本书核心优势转成任务、装备、关系或路线上的具体领先"
     if chapter_number == 3:
         return "黄金三章第3章：第一个小高潮、明确敌对压力、确立长期成长路线"
-    return "常规连载章节：目标、行动、收益、压力、钩子循环"
+    return "常规连载章节：目标、行动、收益、后果与下一步，不强制升级压力"
 
 
 def review_game_director_plan(*, context: Any) -> list[str]:

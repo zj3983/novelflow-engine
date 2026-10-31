@@ -657,6 +657,8 @@ class StoryState(BaseModel):
     genre: str
     genre_plugin_ids: list[str] = Field(default_factory=list)
     style: str
+    writing_guidance: str = ""
+    writing_reference: str = ""
     current_chapter: int = 0
     agent_settings: AgentSettings = Field(default_factory=AgentSettings)
     agent_runtime: AgentRuntimeState = Field(default_factory=AgentRuntimeState)

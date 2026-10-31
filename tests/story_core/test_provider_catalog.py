@@ -26,6 +26,7 @@ EXPECTED_PROVIDER_IDS = (
     "ollama",
     "codexcli",
     "antigravity",
+    "geminicli",
     "custom_openai",
 )
 
@@ -45,6 +46,7 @@ def test_provider_definitions_are_frozen_and_use_all_supported_protocols():
         "gemini",
         "codex_cli",
         "antigravity_cli",
+        "gemini_cli",
     }
     with pytest.raises(FrozenInstanceError):
         definitions[0].name = "changed"
@@ -104,7 +106,7 @@ def test_presets_have_complete_metadata_and_model_suggestions():
         assert definition.provider_id == provider_id
         assert definition.name
         assert definition.help_text
-        if provider_id not in {"codexcli", "antigravity", "custom_openai"}:
+        if provider_id not in {"codexcli", "antigravity", "geminicli", "custom_openai"}:
             assert definition.host_patterns
         if provider_id != "custom_openai":
             assert definition.planner_models

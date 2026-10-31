@@ -59,6 +59,12 @@ class SceneBeat(BaseModel):
     emotional_turn: str = ""
     relationship_shift: str = ""
     ending_pressure: str = ""
+    next_pressure: str = ""
+
+    def model_dump(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Keep legacy JSON shape compact while emitting populated extensions."""
+        kwargs.setdefault("exclude_defaults", True)
+        return super().model_dump(*args, **kwargs)
 
 
 class EntityRequirement(BaseModel):
@@ -102,6 +108,7 @@ class OutlineExecutionContract(BaseModel):
     core_conflict: str = ""
     gain: str = ""
     cost: str = ""
+    emotional_change: str = ""
     state_delta: str = ""
     planned_hook: str = ""
     opening_carry: str = ""
@@ -147,7 +154,8 @@ class WriterRequest(BaseModel):
     The orchestrator hands the writer a fully approved director
     artifact plus a context view; the writer has no need to read
     anything else. ``director_artifact`` is the only thing the
-    writer treats as ground truth for *what* should happen.
+    writer treats as execution steps. Its attached upstream outline contract
+    remains authoritative when proposed tone or costs conflict with that plan.
 
     The slice fields are typed as ``list[Any]`` because the
     role-specific context builders emit heterogeneous payloads
@@ -164,6 +172,9 @@ class WriterRequest(BaseModel):
     # length ranges to keep prose on the hard production target.
     project_title: str = ""
     genre: str = ""
+    writing_style: str = ""
+    writing_guidance: str = ""
+    writing_reference: str = ""
     rewrite_guidance: str = ""
     target_chars: dict[str, int] = Field(
         default_factory=default_target_chars
@@ -172,6 +183,7 @@ class WriterRequest(BaseModel):
         default_factory=default_acceptance_chars
     )
     repair_length: bool = False
+    draft_token_budget: dict = Field(default_factory=dict)
     previous_tail: str = ""
     continuity_facts: list[Any] = Field(default_factory=list)
     # Kept for compatibility with older direct WriterRequest callers. The
@@ -200,6 +212,7 @@ class WriterResult(BaseModel):
     proposed_facts: list[dict] = Field(default_factory=list)
     word_count: int = 0
     notes: str = ""
+    revision_history: list[dict] = Field(default_factory=list)
 
 
 __all__ = [

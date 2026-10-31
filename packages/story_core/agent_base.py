@@ -174,7 +174,7 @@ class BaseOpenAIProvider:
     
     def available(self) -> bool:
         settings = self._runtime_settings()
-        return settings.provider in {"codexcli", "antigravity"} or bool(settings.api_key)
+        return settings.provider in {"codexcli", "antigravity", "geminicli"} or bool(settings.api_key)
 
     def _set_last_error(self, reason: str) -> None:
         self._last_error = compact_text(reason, 160)

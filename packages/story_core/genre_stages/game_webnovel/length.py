@@ -92,7 +92,7 @@ def render_game_compression_prompt(*, context: LengthPromptContext) -> str:
         {
             "opening_line": "下面这章正文超过目标篇幅，请在不改变剧情事实、人物选择、游戏账本、结尾钩子的前提下压缩。",
             "target_chars": context.compression_target_chars
-            or f"保留完整网文章节感，调整到5000到5400字，绝对不要超过{context.max_chapter_chars}字",
+            or f"保留完整网文章节感，调整到{context.target_chars}，绝对不要超过{context.max_chapter_chars}字",
             "compression_method": compression_method,
             "chapter_scope": chapter_scope,
             "source_body": context.source_body,

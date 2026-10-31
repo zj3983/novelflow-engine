@@ -20,7 +20,7 @@ def test_validate_bundle_flags_body_over_hard_tolerance():
     bundle = {
         "chapter_number": 2,
         "chapter_title": "过长章节",
-        "body": "字" * 5701,
+        "body": "字" * 4501,
         "cadence": "measured",
         "next_outline": "continue",
         "updated_story": {"timeline": ["x"], "chapter_summaries": ["x"]},
@@ -39,14 +39,14 @@ def test_validate_bundle_flags_body_over_hard_tolerance():
 
     assert report["ok"] is False
     assert "body_too_long" in report["issues"]
-    assert report["metrics"]["target_max_chars"] == 5500
+    assert report["metrics"]["target_max_chars"] == 4500
 
 
 def test_validate_bundle_allows_hard_upper_limit_without_rewrite():
     bundle = {
         "chapter_number": 2,
         "chapter_title": "边界篇幅",
-        "body": "字" * 5700,
+        "body": "字" * 4500,
         "cadence": "measured",
         "next_outline": "continue",
         "updated_story": {"timeline": ["x"], "chapter_summaries": ["x"]},
@@ -58,11 +58,11 @@ def test_validate_bundle_allows_hard_upper_limit_without_rewrite():
     assert "body_too_long" not in report["issues"]
 
 
-def test_validate_bundle_allows_small_generation_length_tolerance():
+def test_validate_bundle_rejects_small_generation_overrun():
     bundle = {
         "chapter_number": 2,
         "chapter_title": "边界篇幅",
-        "body": "字" * 5503,
+        "body": "字" * 4503,
         "cadence": "measured",
         "next_outline": "continue",
         "updated_story": {"timeline": ["x"], "chapter_summaries": ["x"]},
@@ -79,10 +79,10 @@ def test_validate_bundle_allows_small_generation_length_tolerance():
 
     report = validate_bundle(bundle)
 
-    assert "body_too_long" not in report["issues"]
+    assert "body_too_long" in report["issues"]
 
 
-def test_validate_bundle_allows_small_upper_length_tolerance():
+def test_validate_bundle_rejects_old_upper_length_tolerance():
     bundle = {
         "chapter_number": 2,
         "chapter_title": "边界篇幅",
@@ -99,14 +99,14 @@ def test_validate_bundle_allows_small_upper_length_tolerance():
 
     report = validate_bundle(bundle)
 
-    assert "body_too_long" not in report["issues"]
+    assert "body_too_long" in report["issues"]
 
 
 def test_validate_bundle_flags_body_under_target_range():
     bundle = {
         "chapter_number": 1,
         "chapter_title": "篇幅不足",
-        "body": "字" * 3799,
+        "body": "字" * 2999,
         "enforce_target_chars": True,
         "cadence": "measured",
         "next_outline": "continue",
@@ -126,7 +126,7 @@ def test_validate_bundle_flags_body_under_target_range():
 
     assert report["ok"] is False
     assert "body_too_short" in report["issues"]
-    assert report["metrics"]["target_min_chars"] == 3800
+    assert report["metrics"]["target_min_chars"] == 3000
 
 
 def test_validate_bundle_accepts_engine_output_with_compressed_memory():

@@ -157,9 +157,9 @@ def test_expansion_timeout_can_be_overridden(monkeypatch):
 
 def test_should_compress_chapter_when_body_exceeds_target_max():
     assert not _should_compress_chapter("正文" * 1000)
-    assert not _should_compress_chapter("正" * 5656)
-    assert not _should_compress_chapter("正" * 5700)
-    assert _should_compress_chapter("正" * 5701)
+    assert not _should_compress_chapter("正" * 4499)
+    assert not _should_compress_chapter("正" * 4500)
+    assert _should_compress_chapter("正" * 4501)
     assert _should_compress_chapter("正文" * 3001)
 
 

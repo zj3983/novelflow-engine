@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import json
+import math
 import re
 import shutil
 import subprocess
@@ -10,6 +12,75 @@ from pathlib import Path
 from typing import Any
 
 from packages.story_core.http_retry import RetryConfig
+
+
+# agy 1.4.7 explicitly returns SUCCESS with partial output at its print
+# deadline. Only its precise diagnostic marks an incomplete turn; ordinary
+# log lines mentioning a timeout must not invalidate a final answer.
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_PRINT_TIMEOUT = re.compile(
+    r"^\[agy\] print timeout after [^\r\n]{1,40} with turn in progress; returning partial output\r?$",
+    re.MULTILINE,
+)
+_TOKEN_USAGE_FIELDS = frozenset({
+    "input_tokens", "output_tokens", "thinking_tokens", "cache_read_tokens",
+    "total_tokens", "visible_output_tokens",
+})
+
+
+class AntigravityCLITimeoutError(TimeoutError):
+    """An unfinished CLI turn, with no prompt or partial output in diagnostics."""
+
+    def __init__(self, reason: str, diagnostics: dict[str, Any], usage: dict[str, Any]):
+        super().__init__(reason)
+        self.diagnostics = diagnostics
+        self.usage = usage
+
+
+class AntigravityCLIResponseError(ValueError):
+    """A successful envelope that contains no usable final answer."""
+
+    def __init__(self, reason: str, diagnostics: dict[str, Any], usage: dict[str, Any]):
+        super().__init__(reason)
+        self.diagnostics = diagnostics
+        self.usage = usage
+
+
+def _normalized_usage(envelope: dict[str, Any]) -> dict[str, Any]:
+    usage = envelope.get("usage")
+    if not isinstance(usage, dict):
+        return {}
+    normalized = {key: value for key, value in usage.items()
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+        and (not isinstance(value, float) or math.isfinite(value)) and value >= 0}
+    if "output_tokens" in normalized:
+        # Thinking is a subset of output_tokens in agy's accounting.
+        normalized["visible_output_tokens"] = max(
+            0, normalized["output_tokens"] - normalized.get("thinking_tokens", 0))
+    return normalized
+
+
+def _failure_details(reason: str, envelope: dict[str, Any], *,
+                     timeout_seconds: int, attempt: int, returncode: int | None):
+    status = envelope.get("status")
+    response = envelope.get("response")
+    diagnostics: dict[str, Any] = {
+        "failure_reason": reason,
+        "cli_status": status if status in ("SUCCESS", "ERROR") else "UNKNOWN",
+        "timeout_seconds": timeout_seconds,
+        "attempt": attempt,
+        "response_chars": len(response.strip()) if isinstance(response, str) else 0,
+        "timed_out": reason in {"antigravity_cli_print_timeout", "antigravity_cli_process_timeout"},
+    }
+    if isinstance(returncode, int) and not isinstance(returncode, bool):
+        diagnostics["returncode"] = returncode
+    for key in ("duration_seconds", "num_turns"):
+        value = envelope.get(key)
+        if (isinstance(value, (int, float)) and not isinstance(value, bool)
+                and (not isinstance(value, float) or math.isfinite(value)) and value >= 0):
+            diagnostics[key] = value
+    usage = {key: value for key, value in _normalized_usage(envelope).items() if key in _TOKEN_USAGE_FIELDS}
+    return diagnostics, usage
 
 
 def _message_text(message: dict[str, Any]) -> str:
@@ -137,7 +208,7 @@ def post_json_via_antigravity_cli(
             "--model",
             model,
             "--output-format",
-            "text",
+            "json",
             "--print-timeout",
             f"{timeout_seconds}s",
             "--sandbox",
@@ -146,7 +217,8 @@ def post_json_via_antigravity_cli(
         ]
         reasoning_effort = str(payload.get("reasoning_effort") or "").strip().lower()
         model_encodes_effort = re.search(r"-(?:low|medium|high)$", model.lower()) is not None
-        if not model_encodes_effort:
+        # Claude's CLI entries choose their own thinking mode and reject --effort.
+        if not model_encodes_effort and not model.lower().startswith("claude-"):
             effort = reasoning_effort if reasoning_effort in {"low", "medium", "high"} else "high"
             args.extend(["--effort", effort])
         attempts = max(1, int(cfg.max_retries))
@@ -154,16 +226,54 @@ def post_json_via_antigravity_cli(
         content = ""
         detail = ""
         for attempt in range(1, attempts + 1):
-            completed = _run(
-                command or "agy",
-                args,
-                timeout=cfg.timeout + 10,
-                cwd=temp_dir,
-                env=os.environ.copy(),
-            )
+            try:
+                completed = _run(
+                    command or "agy",
+                    args,
+                    timeout=cfg.timeout + 10,
+                    cwd=temp_dir,
+                    env=os.environ.copy(),
+                )
+            except subprocess.TimeoutExpired:
+                reason = "antigravity_cli_process_timeout"
+                diagnostics, usage = _failure_details(reason, {}, timeout_seconds=timeout_seconds,
+                    attempt=attempt, returncode=None)
+                raise AntigravityCLITimeoutError(reason, diagnostics, usage) from None
             content = (completed.stdout or "").strip()
+            try:
+                parsed = json.loads(content)
+            except (ValueError, TypeError):
+                parsed = None
+            envelope = parsed if isinstance(parsed, dict) else {}
+            if _PRINT_TIMEOUT.search(_ANSI_ESCAPE.sub("", completed.stderr or "")):
+                reason = "antigravity_cli_print_timeout"
+                diagnostics, usage = _failure_details(reason, envelope, timeout_seconds=timeout_seconds,
+                    attempt=attempt, returncode=completed.returncode)
+                # Restarting would spend the full deadline again and still would
+                # not finish this turn. Never publish its partial text as final.
+                raise AntigravityCLITimeoutError(reason, diagnostics, usage)
             if completed.returncode == 0 and content:
-                break
+                try:
+                    if not isinstance(parsed, dict) or envelope.get("status") != "SUCCESS" or not isinstance(envelope.get("response"), str):
+                        raise ValueError("antigravity_cli_invalid_envelope")
+                    content = envelope["response"].strip()
+                    if not content:
+                        reason = "antigravity_cli_no_final_response"
+                        diagnostics, usage = _failure_details(reason, envelope, timeout_seconds=timeout_seconds,
+                            attempt=attempt, returncode=completed.returncode)
+                        raise AntigravityCLIResponseError(reason, diagnostics, usage)
+                    break
+                except AntigravityCLIResponseError:
+                    if attempt >= attempts:
+                        raise
+                    time.sleep(delay)
+                    delay = min(delay * cfg.backoff_factor, cfg.max_delay)
+                    continue
+                except (ValueError,TypeError) as exc:
+                    if attempt >= attempts:
+                        raise ValueError("antigravity_cli_invalid_json_result") from exc
+                    time.sleep(delay)
+                    continue
             detail = (completed.stderr or completed.stdout or "").strip()
             if attempt >= attempts:
                 if completed.returncode != 0:
@@ -172,4 +282,11 @@ def post_json_via_antigravity_cli(
             time.sleep(delay)
             delay = min(delay * cfg.backoff_factor, cfg.max_delay)
 
-    return {"choices": [{"message": {"role": "assistant", "content": content}}]}
+    normalized_usage = _normalized_usage(envelope)
+    return {"choices": [{"message": {"role": "assistant", "content": content}}],
+            "usage": normalized_usage,
+            "transport_metadata": {"output_token_limit_supported":False,
+                                   "requested_max_output_tokens":payload.get("max_tokens"),
+                                   "budget_mode":"prompt_guidance" if payload.get("draft_token_budget") else "unsupported",
+                                   "output_tokens_include_thinking":True,
+                                   "num_turns":envelope.get("num_turns")}}

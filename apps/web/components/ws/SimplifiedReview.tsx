@@ -28,11 +28,14 @@ export function SimplifiedReview({ report, compact = false }: Props) {
   }
 
   const categories = [report.categories.hard, report.categories.dialogue, report.categories.ai_flavor, report.categories.prose];
+  const aiCheckExecuted = report.diagnostics?.ai_flavor_check_executed;
+  const contextRequired = report.diagnostics?.requires_contextual_prose_review === true;
+  const contextExecuted = report.diagnostics?.contextual_prose_review_executed === true;
   const statusLabel = report.status === "blocked"
-    ? "存在硬伤"
+    ? "有必须修改的问题"
     : report.status === "warning" || report.status === "needs_revision"
       ? "有修改建议"
-      : "通过";
+      : contextRequired && !contextExecuted ? "文风待审" : "通过";
   return (
     <section className={compact ? "" : "ws-card"} data-testid="simplified-review">
       <div className="ws-section-head">
@@ -43,8 +46,18 @@ export function SimplifiedReview({ report, compact = false }: Props) {
         <span className="ws-badge">{statusLabel}</span>
       </div>
       <p className="ws-card__hint">
-        {categories.map((category) => `${category.label} ${category.count}`).join(" · ")}
+        {categories.map((category) => category === report.categories.ai_flavor && contextRequired && !contextExecuted
+          ? "AI味 待上下文审稿"
+          : category === report.categories.ai_flavor && aiCheckExecuted === false
+          ? `${category.label} ${category.count ? `${category.count}（未专项检查）` : "未检查"}`
+          : `${category.label} ${category.count}`).join(" · ")}
       </p>
+      {contextRequired ? <p className="ws-card__hint">{contextExecuted ? "上下文审稿已完成：结合全文、人物口吻和叙事用途判断。" : "尚未完成上下文审稿；关键词命中仅作线索，不作为正文问题。"}</p> : typeof aiCheckExecuted === "boolean" ? (
+        <p className="ws-card__hint">
+          {aiCheckExecuted ? "AI味规则检查已执行：检查固定句式、套话和报告腔。" : "AI味专项检查未执行，不能据此判断正文没有问题。"}
+        </p>
+      ) : null}
+      {contextExecuted && typeof report.diagnostics?.contextual_prose_review_summary === "string" ? <p className="ws-card__hint">上下文结论：{report.diagnostics.contextual_prose_review_summary}</p> : null}
       {report.issues.length ? (
         <ul className="ws-plain-list">
           {report.issues.slice(0, 3).map((issue, index) => (
@@ -56,9 +69,17 @@ export function SimplifiedReview({ report, compact = false }: Props) {
           ))}
         </ul>
       ) : (
-        <p className="ws-card__hint">当前章节没有需要处理的问题。</p>
+        <p className="ws-card__hint">{contextRequired && !contextExecuted ? "上下文文风结论待确认。" : "当前审稿未发现需要处理的问题。"}</p>
       )}
-      {report.total_issues > report.issues.length ? (
+      {(report.findings?.length ?? 0) > report.issues.length ? (
+        <details>
+          <summary>查看其余 {report.findings!.length - report.issues.length} 条审稿问题</summary>
+          <ul className="ws-plain-list">{report.findings!.slice(report.issues.length).map((issue, index) => <li key={index}>
+            <strong>{CATEGORY_LABELS[issue.category] || issue.category}：</strong>{issue.message}
+            <span className="ws-card__hint"> 修改：{issue.suggestion}</span>
+          </li>)}</ul>
+        </details>
+      ) : report.total_issues > report.issues.length ? (
         <p className="ws-card__hint">其余 {report.total_issues - report.issues.length} 条保留在内部明细中，改稿先处理上面的问题。</p>
       ) : null}
     </section>

@@ -212,7 +212,7 @@ def read_product_providers():
         "requires_api_key": definition.requires_api_key,
         "base_url_editable": definition.base_url_editable,
         "uses_local_command": definition.protocol.endswith("_cli"),
-        "default_command": "codex" if definition.protocol == "codex_cli" else "agy" if definition.protocol == "antigravity_cli" else "",
+        "default_command": "codex" if definition.protocol == "codex_cli" else "agy" if definition.protocol == "antigravity_cli" else "gemini" if definition.protocol == "gemini_cli" else "",
         "account_label": "待检测",
     } for definition in (provider_definition(key) for key in BUILTIN_PROVIDER_IDS)]}
 
@@ -382,6 +382,11 @@ def _resolve_candidate_provider_runtime(
 
 
 _CONNECTION_DIAGNOSES = {
+    "antigravity_cli_location_unsupported": ("location_unsupported", "Antigravity 返回当前用户所在地区不支持 API。请先让 CLI 使用可访问 Google 的代理出口，再重新测试。"),
+    "gemini_cli_account_unsupported": ("account_unsupported", "Google 已拒绝当前账号使用 Gemini CLI，提示迁移到 Antigravity；重新登录无法解决该限制。"),
+    "gemini_cli_config_invalid": ("invalid_configuration", "Gemini CLI 配置无效，请检查 CLI 版本与配置字段。"),
+    "gemini_cli_login_required": ("authentication_failed", "请先在本机 Gemini CLI 中选择 Login with Google，登录后重新测试连接"),
+    "gemini_cli_not_installed": ("provider_unavailable", "未找到 Gemini CLI，请检查安装及命令路径"),
     "authentication_failed": (
         "authentication_failed",
         "API 密钥无效或没有访问权限",

@@ -243,7 +243,9 @@ class WritingContextStoreMixin:
         )
         outline_context = dict(select_outline_context(project_outline, target_chapter))
         rolling_chapter = RollingOutlineStore(self.root).read_chapter(target_chapter)
-        adapted_rolling_chapter = rolling_chapter_to_outline_entry(rolling_chapter)
+        adapted_rolling_chapter = rolling_chapter_to_outline_entry(
+            rolling_chapter, base_entry=outline_context.get("chapter"),
+        )
         if adapted_rolling_chapter:
             outline_context["chapter"] = adapted_rolling_chapter
         known_chapter_numbers = self.chapter_numbers()
@@ -647,7 +649,9 @@ class WritingContextStoreMixin:
             rolling_chapter = RollingOutlineStore(self.root).read_chapter(int(target or 0))
             if rolling_chapter:
                 next_chapter_outline = rolling_chapter
-                adapted_rolling_chapter = rolling_chapter_to_outline_entry(rolling_chapter)
+                adapted_rolling_chapter = rolling_chapter_to_outline_entry(
+                    rolling_chapter, base_entry=chapter_outline,
+                )
                 if adapted_rolling_chapter:
                     chapter_outline = adapted_rolling_chapter
                     outline_context["chapter"] = adapted_rolling_chapter

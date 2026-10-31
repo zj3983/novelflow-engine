@@ -6,7 +6,7 @@ from copy import deepcopy
 from hashlib import sha256
 from typing import Any
 
-from packages.story_core.elastic_outline import outline_window_status
+from packages.story_core.elastic_outline import completed_closing_volume, outline_window_status
 from packages.story_core.outline_extension_readiness import inspect_outline_extension_readiness
 from packages.story_core.outline_generation_checkpoints import OutlineCheckpointStore
 from packages.story_core.outline_planning import CHAPTER_SOP_MODULE_ID
@@ -175,6 +175,19 @@ class VolumeOutlineWorkflowMixin:
             raise ValueError("invalid_chapter_number")
         outline = dict(self.project_outline())
         outline.pop("source", None)
+        state = self._read_json(self.webnovel_dir / "state.json", {}) or {}
+        current_chapter = int(state.get("current_chapter") or 0)
+        closing_volume = completed_closing_volume(outline, current_chapter=current_chapter)
+        if closing_volume is not None and target_chapter > int(closing_volume["end_chapter"]):
+            return {
+                "schema_version": "volume-workflow/v1",
+                "target_chapter": target_chapter,
+                "status": "ending_reached",
+                "detail_status": "ending_reached",
+                "next_action": "review_ending",
+                "volume_id": str(closing_volume["id"]),
+                "volume_range": [int(closing_volume["start_chapter"]), int(closing_volume["end_chapter"])],
+            }
         volume = find_volume_for_chapter(outline.get("arcs", []), target_chapter)
         if volume is None:
             return {
@@ -237,6 +250,8 @@ class VolumeOutlineWorkflowMixin:
         volume_id = str(workflow.get("volume_id") or "").strip()
         if status == "detail_complete":
             return workflow
+        if status == "ending_reached":
+            raise ValueError("ending_chapter_reached")
         if status == "volume_missing":
             raise ValueError(f"next_volume_required:{target_chapter}")
         if status == "volume_plan_ready":
@@ -269,6 +284,8 @@ class VolumeOutlineWorkflowMixin:
         target_chapter = current_chapter + 1
         original = dict(self.project_outline())
         original.pop("source", None)
+        if completed_closing_volume(original, current_chapter=current_chapter) is not None:
+            raise ValueError("ending_chapter_reached")
         existing = find_volume_for_chapter(original.get("arcs", []), target_chapter)
         if existing is not None:
             return {
@@ -314,6 +331,8 @@ class VolumeOutlineWorkflowMixin:
             previous_volume=previous,
             allow_short_final=allow_short_final,
         )
+        if allow_short_final and not volume.is_final_arc:
+            raise ValueError("closing_volume_must_be_final")
 
         latest = dict(self.project_outline())
         latest.pop("source", None)

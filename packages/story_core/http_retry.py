@@ -106,6 +106,10 @@ def post_json_with_retry(
             command=codex_command or "codex",
             config=config,
         )
+    if provider == "geminicli":
+        from packages.story_core.gemini_cli_provider import post_json_via_gemini_cli
+
+        return post_json_via_gemini_cli(payload, command=codex_command or "gemini", config=config)
     if provider == "antigravity":
         from packages.story_core.antigravity_cli_provider import post_json_via_antigravity_cli
 

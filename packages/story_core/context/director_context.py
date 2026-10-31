@@ -6,12 +6,14 @@ happen next. The view it gets is therefore structural:
 * the previous chapter's summary and the active continuity
   ledger,
 * active plot threads and unresolved foreshadowing,
-* concise (identity + role + state) cards for characters that
-  are in scope for the target chapter.
+* concise decision slices (identity + current state + bounded
+  drive/personality/performance/relationship fields) for
+  characters that are in scope for the target chapter.
 
 The director must *not* see craft-module text (those are the
-writer's tools) or retired entities. Concise cards keep the
-director's prompt focused on planning rather than prose cues.
+writer's tools), retired entities, or private secrets. Bounded
+slices keep the director's prompt focused on planning rather than
+prose cues.
 """
 
 from __future__ import annotations
@@ -25,87 +27,139 @@ from ..outline_rolling import rolling_chapter_to_outline_entry
 from .project_reader import ProjectContextReader
 
 
-def _concise_character_card(card: dict[str, Any]) -> dict[str, Any]:
-    """Project a bounded decision-oriented card for the director."""
+def _plain_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump(mode="json")
+        return dumped if isinstance(dumped, dict) else {}
+    return {}
 
-    drive = card.get("story_drive") if isinstance(card.get("story_drive"), dict) else {}
-    portrait = (
-        card.get("personality_portrait")
-        if isinstance(card.get("personality_portrait"), dict)
-        else {}
+
+def _bounded_items(value: Any, limit: int = 3) -> list[Any]:
+    if isinstance(value, list):
+        return value[:limit]
+    if value in (None, ""):
+        return []
+    return [value]
+
+
+def _project_relationships(card: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = card.get("relationships")
+    if raw is None:
+        raw = card.get("relationship_notes")
+
+    entries: list[dict[str, Any]] = []
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            entry = _plain_dict(value)
+            entry.setdefault("target", str(key))
+            entries.append(entry)
+    elif isinstance(raw, list):
+        entries = [_plain_dict(item) for item in raw]
+
+    def score(entry: dict[str, Any]) -> tuple[float, float]:
+        try:
+            tension = float(entry.get("tension") or 0.0)
+        except (TypeError, ValueError):
+            tension = 0.0
+        try:
+            trust = float(entry.get("trust") or 0.0)
+        except (TypeError, ValueError):
+            trust = 0.0
+        return tension, trust
+
+    projected: list[dict[str, Any]] = []
+    for entry in sorted(entries, key=score, reverse=True)[:3]:
+        target = str(entry.get("target") or entry.get("name") or "").strip()
+        if not target:
+            continue
+        projected.append(
+            {
+                "target": target,
+                "trust": entry.get("trust", 0.0),
+                "tension": entry.get("tension", 0.0),
+                "bond": str(
+                    entry.get("bond")
+                    or entry.get("relation_type")
+                    or entry.get("type")
+                    or entry.get("current_attitude")
+                    or ""
+                ),
+            }
+        )
+    return projected
+
+
+def _concise_character_card(card: dict[str, Any]) -> dict[str, Any]:
+    """Project identity into a bounded, decision-oriented director slice.
+
+    The source cards have several legacy shapes. Normalize only the fields
+    needed to choose actions and scene pressure; private secrets, memories,
+    and full personality/profile payloads stay out of the director context.
+    """
+    drive = _plain_dict(card.get("story_drive"))
+    personality = _plain_dict(
+        card.get("personality") or card.get("personality_portrait")
     )
-    psychology = portrait.get("psychology") if isinstance(portrait.get("psychology"), dict) else {}
-    behavior = portrait.get("behavior") if isinstance(portrait.get("behavior"), dict) else {}
-    performance = (
-        card.get("performance_profile")
-        if isinstance(card.get("performance_profile"), dict)
-        else {}
+    psychology = _plain_dict(personality.get("psychology"))
+    behavior = _plain_dict(personality.get("behavior"))
+    performance = _plain_dict(
+        card.get("performance") or card.get("performance_profile")
     )
-    relationship_notes = [
-        {
-            key: note.get(key)
-            for key in (
-                "target",
-                "relation_type",
-                "current_attitude",
-                "shared_interest_or_conflict",
-            )
-            if note.get(key) not in (None, "", [], {})
-        }
-        for note in (card.get("relationship_notes") or [])[:3]
-        if isinstance(note, dict)
-    ]
-    relationships = []
-    raw_relationships = card.get("relationships")
-    if isinstance(raw_relationships, dict):
-        for target, relation in list(raw_relationships.items())[:3]:
-            if not isinstance(relation, dict):
-                continue
-            relationships.append(
-                {
-                    "target": str(relation.get("target") or target),
-                    "trust": relation.get("trust", 0),
-                    "tension": relation.get("tension", 0),
-                    "bond": str(relation.get("bond") or "")[:80],
-                }
-            )
-    return {
+
+    projected: dict[str, Any] = {
         "id": card.get("id"),
-        "name": card.get("name"),
-        "role": card.get("role"),
-        "narrative_function": card.get("narrative_function"),
-        "location": card.get("location"),
-        "current_state": card.get("current_state"),
         "lifecycle": card.get("lifecycle") or card.get("lifecycle_state"),
         "summary": card.get("summary"),
+        "relationship_notes": [dict(note) for note in (card.get("relationship_notes") or [])[:3] if isinstance(note, dict)],
+        "name": card.get("name", ""),
+        "role": card.get("role", ""),
+        "narrative_function": (
+            card.get("narrative_function")
+            or card.get("story_function")
+            or card.get("chapter_role")
+            or ""
+        ),
+        "location": card.get("location", ""),
+        "current_state": card.get("current_state", ""),
         "story_drive": {
-            key: str(drive.get(key) or "")[:140]
-            for key in ("immediate_goal", "motivation", "main_conflict_reason")
-            if str(drive.get(key) or "").strip()
+            "immediate_goal": drive.get("immediate_goal", ""),
+            "motivation": drive.get("motivation", ""),
+            "main_conflict_reason": drive.get("main_conflict_reason", ""),
         },
         "personality": {
-            "desire": str(psychology.get("desire") or "")[:100],
-            "fear": str(psychology.get("fear") or "")[:100],
-            "pressure_mode": str(behavior.get("pressure_mode") or "")[:100],
-            "conflict_response": str(behavior.get("conflict_response") or "")[:100],
+            "desire": personality.get("desire") or psychology.get("desire", ""),
+            "fear": personality.get("fear") or psychology.get("fear", ""),
+            "pressure_mode": personality.get("pressure_mode")
+            or behavior.get("pressure_mode", ""),
+            "conflict_response": personality.get("conflict_response")
+            or behavior.get("conflict_response", ""),
         },
         "performance": {
-            "speech_style": str(performance.get("speech_style") or "")[:100],
-            "action_style": str(performance.get("action_style") or "")[:100],
-            "decision_rules": [
-                str(item)[:100]
-                for item in (performance.get("decision_rules") or [])[:2]
-                if str(item).strip()
-            ],
-            "reveal_limits": [
-                str(item)[:100]
-                for item in (performance.get("reveal_limits") or [])[:2]
-                if str(item).strip()
-            ],
+            "speech_style": performance.get("speech_style", ""),
+            "action_style": performance.get("action_style", ""),
+            "decision_rules": _bounded_items(performance.get("decision_rules")),
+            "reveal_limits": _bounded_items(performance.get("reveal_limits")),
         },
-        "relationship_notes": relationship_notes,
-        "relationships": relationships,
+        "relationships": _project_relationships(card),
     }
+
+    # Keep the small legacy identity envelope because existing artifact
+    # consumers use it for display and lifecycle filtering.
+    if "id" in card:
+        projected["id"] = card["id"]
+    if "lifecycle" in card or "lifecycle_state" in card:
+        projected["lifecycle"] = card.get("lifecycle", card.get("lifecycle_state"))
+    if "summary" in card:
+        projected["summary"] = card["summary"]
+    elif isinstance(card.get("current_state"), dict):
+        current = card["current_state"]
+        current_state = current.get("current") if isinstance(current.get("current"), dict) else current
+        if isinstance(current_state, dict) and current_state.get("summary"):
+            projected["summary"] = current_state["summary"]
+    return projected
 
 
 def _build_reader(project: Path, reader: ProjectContextReader | None) -> ProjectContextReader:
@@ -146,10 +200,10 @@ def build_director_context(
 
     The director sees the volume summary, a few nearby chapter
     outlines, the previous chapter's summary, the continuity
-    ledger, unresolved foreshadowing, and concise character cards
-    for the actors that are currently active. It does not see
-    craft-module text, retired entities, or the full book
-    outline.
+    ledger, unresolved foreshadowing, and decision-oriented character
+    slices for the actors that are currently active. It does not see
+    craft-module text, retired entities, private secrets, or the full
+    book outline.
     """
     project_root = Path(project).resolve()
     system_root = project_root / ".story-system"
@@ -173,7 +227,10 @@ def build_director_context(
         if isinstance(number, int):
             outline_by_number[number] = entry
     for payload in rolling_outline.get("chapters") or []:
-        adapted = rolling_chapter_to_outline_entry(payload)
+        adapted = rolling_chapter_to_outline_entry(
+            payload, base_entry=outline_by_number.get(payload.get("chapter_number"))
+            if isinstance(payload, dict) else None,
+        )
         number = adapted.get("number")
         if isinstance(number, int):
             outline_by_number[number] = adapted

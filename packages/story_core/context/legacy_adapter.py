@@ -120,6 +120,7 @@ def legacy_outline_view(system_root: Path) -> dict[str, Any] | None:
                 "goal": goal,
                 "obstacle": obstacle,
                 "action": action,
+                "emotional_change": str(entry.get("emotional_change") or ""),
                 "turn": str(entry.get("turn") or ""),
                 "payoff": str(entry.get("payoff") or ""),
                 "ending_hook": str(entry.get("ending_hook") or ""),

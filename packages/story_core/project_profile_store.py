@@ -6,7 +6,7 @@ from copy import deepcopy
 from hashlib import sha256
 from typing import Any
 
-from packages.story_core.book_style import normalize_book_style
+from packages.story_core.book_style import normalize_book_style, normalize_writing_preferences_patch
 from packages.story_core.character_persistence import (
     normalize_character_persistence_card,
 )
@@ -141,6 +141,9 @@ class ProjectProfileStoreMixin:
         world_blueprint_updated = patch.get("world_blueprint") is not None
         normalized_patch_genre_ids: list[str] | None = None
         patch_world_blueprint = patch.get("world_blueprint")
+        if isinstance(patch_world_blueprint, dict):
+            patch_world_blueprint = normalize_writing_preferences_patch(patch_world_blueprint)
+            patch = {**patch, "world_blueprint": patch_world_blueprint}
         if (
             isinstance(patch_world_blueprint, dict)
             and "equipment_cards" in patch_world_blueprint
@@ -265,6 +268,10 @@ class ProjectProfileStoreMixin:
                 state["style"] = normalize_book_style(
                     world_blueprint_patch.get("writing_style")
                 )
+            if isinstance(world_blueprint_patch, dict):
+                for field in ("writing_guidance", "writing_reference"):
+                    if field in world_blueprint_patch:
+                        state[field] = world_blueprint_patch[field]
             if (
                 isinstance(world_blueprint_patch, dict)
                 and "genre_plugin_ids" in world_blueprint_patch

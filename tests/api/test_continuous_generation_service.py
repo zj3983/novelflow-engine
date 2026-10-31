@@ -192,6 +192,7 @@ def test_runner_stops_after_current_chapter_when_user_requests_stop(tmp_path: Pa
         ("volume_missing", "next_volume_required"),
         ("volume_plan_ready", "volume_detail_required"),
         ("detail_partial", "volume_detail_required"),
+        ("ending_reached", "ending_chapter_reached"),
     ],
 )
 def test_runner_stops_at_volume_boundaries(
@@ -234,7 +235,7 @@ def test_quality_warning_saves_new_chapter_and_continues(tmp_path: Path) -> None
     ]
 
 
-def test_length_warning_saves_new_chapter_and_continues(tmp_path: Path) -> None:
+def test_length_failure_keeps_candidate_and_stops_without_force(tmp_path: Path) -> None:
     jobs, job = _create_job(tmp_path)
     project = FakeProjectStore()
     project.fail_confirmation_at = 11
@@ -244,25 +245,18 @@ def test_length_warning_saves_new_chapter_and_continues(tmp_path: Path) -> None:
         str(job["job_id"]), project_store=project, job_store=jobs
     )
 
-    assert result["status"] == "completed"
-    assert result["stop_reason"] == ""
-    assert result["candidate_id"] == ""
-    assert result["completed_chapters"] == [11, 12]
-    assert result["review_warnings"] == [
-        {
-            "chapter": 11,
-            "warning": "generate_length_failed:body_chars 5900 > 5700",
-        }
-    ]
-    assert project.current_chapter == 12
+    assert result["status"] == "stopped"
+    assert result["stop_reason"] == "candidate_length_revision_required"
+    assert result["candidate_id"] == "candidate-11"
+    assert result["completed_chapters"] == []
+    assert project.current_chapter == 10
+    assert project.discarded == []
     assert project.confirmed == [
         {"chapter": 11, "accept_quality_warnings": False},
-        {"chapter": 11, "accept_quality_warnings": True},
-        {"chapter": 12, "accept_quality_warnings": False},
     ]
 
 
-def test_catastrophically_short_candidate_is_discarded_and_regenerated(tmp_path: Path) -> None:
+def test_very_short_candidate_is_kept_for_revision(tmp_path: Path) -> None:
     jobs, job = _create_job(tmp_path)
     project = FakeProjectStore()
     project.fail_confirmation_at = 11
@@ -273,22 +267,19 @@ def test_catastrophically_short_candidate_is_discarded_and_regenerated(tmp_path:
         str(job["job_id"]), project_store=project, job_store=jobs
     )
 
-    assert result["status"] == "completed"
-    assert result["completed_chapters"] == [11, 12]
-    assert project.discarded == ["candidate-11"]
+    assert result["status"] == "stopped"
+    assert result["completed_chapters"] == []
+    assert result["candidate_id"] == "candidate-11"
+    assert project.discarded == []
     assert project.generated == [
         {"chapter": 11, "persist": False},
-        {"chapter": 11, "persist": False},
-        {"chapter": 12, "persist": False},
     ]
     assert project.confirmed == [
         {"chapter": 11, "accept_quality_warnings": False},
-        {"chapter": 11, "accept_quality_warnings": False},
-        {"chapter": 12, "accept_quality_warnings": False},
     ]
 
 
-def test_severely_overlong_candidate_is_discarded_and_regenerated(tmp_path: Path) -> None:
+def test_severely_overlong_candidate_is_kept_for_revision(tmp_path: Path) -> None:
     jobs, job = _create_job(tmp_path)
     project = FakeProjectStore()
     project.fail_confirmation_at = 11
@@ -299,10 +290,10 @@ def test_severely_overlong_candidate_is_discarded_and_regenerated(tmp_path: Path
         str(job["job_id"]), project_store=project, job_store=jobs
     )
 
-    assert result["status"] == "completed"
-    assert project.discarded == ["candidate-11"]
-    assert project.confirmed[0:2] == [
-        {"chapter": 11, "accept_quality_warnings": False},
+    assert result["status"] == "stopped"
+    assert result["candidate_id"] == "candidate-11"
+    assert project.discarded == []
+    assert project.confirmed == [
         {"chapter": 11, "accept_quality_warnings": False},
     ]
 

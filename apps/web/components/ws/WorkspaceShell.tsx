@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 
-import { safeDecodeURIComponent } from "../../lib/routing";
+import { projectHref, safeDecodeURIComponent } from "../../lib/routing";
 
 type NavItem = {
   href: string;
@@ -12,28 +12,71 @@ type NavItem = {
   exact?: boolean;
 };
 
-const GLOBAL_NAV: NavItem[] = [{ href: "/workspace", label: "作品", exact: true }, { href: "/config", label: "设置", exact: true }];
+type NavGroup = {
+  label: string;
+  items: NavItem[];
+  openByDefault?: boolean;
+};
+
+const GLOBAL_NAV: NavItem[] = [
+  { href: "/projects", label: "作品", exact: true },
+  { href: "/novel-types", label: "小说类型", exact: true },
+  { href: "/config", label: "配置", exact: true },
+];
 
 function projectIdFromPath(pathname: string): string | null {
   const match = pathname.match(/^\/projects\/([^/]+)/);
-  if (!match || !match[1]) return null;
-  const projectId = safeDecodeURIComponent(match[1]);
-  return projectId === "new" ? null : projectId;
+  if (!match || !match[1] || match[1] === "new") return null;
+  return safeDecodeURIComponent(match[1]);
 }
 
-function projectNav(projectId: string): NavItem[] {
-  const book = encodeURIComponent(projectId);
+function projectNavGroups(projectId: string): NavGroup[] {
+  const base = projectHref(projectId);
   return [
-    { href: `/workspace?book=${book}&page=planning`, label: "全书规划" },
-    { href: `/workspace?book=${book}&page=writing`, label: "写作" },
-    { href: `/workspace?book=${book}&page=story`, label: "故事设定" },
+    {
+      label: "作品",
+      openByDefault: true,
+      items: [
+        { href: base, label: "总览", exact: true },
+        { href: `${base}/outline`, label: "大纲" },
+        { href: `${base}/write`, label: "章节" },
+      ],
+    },
+    {
+      label: "设定",
+      openByDefault: true,
+      items: [
+        { href: `${base}/world`, label: "世界观" },
+        { href: `${base}/characters`, label: "角色卡" },
+        { href: `${base}/relationships`, label: "人物关系" },
+      ],
+    },
+    {
+      label: "创作工具",
+      items: [
+        { href: `${base}/setup`, label: "开书构建" },
+        { href: `${base}/dissection`, label: "拆书" },
+        { href: `${base}/sim`, label: "世界状态" },
+        { href: `${base}/prompts`, label: "提示词" },
+        { href: `${base}/skills`, label: "Skills" },
+      ],
+    },
+    {
+      label: "项目",
+      items: [
+        { href: `${base}/settings`, label: "项目设置" },
+        { href: `${base}/log`, label: "运行记录" },
+      ],
+    },
   ];
 }
 
 export function WorkspaceShell({ children }: { children: ReactNode }) {
   const pathname = usePathname() || "";
   const projectId = projectIdFromPath(pathname);
-  const items = projectId ? [...GLOBAL_NAV, ...projectNav(projectId)] : GLOBAL_NAV;
+  const groups: NavGroup[] = projectId
+    ? [...projectNavGroups(projectId), { label: "全局", items: GLOBAL_NAV }]
+    : [{ label: "全局", items: GLOBAL_NAV, openByDefault: true }];
 
   const isActive = (item: NavItem) => {
     if (item.exact) return pathname === item.href;
@@ -44,19 +87,31 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
     <div className="ws-shell">
       <nav className="ws-nav" aria-label="主导航">
         <div className="ws-nav__brand">小说工作台</div>
-        {items.map((item) => {
-          const active = isActive(item);
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={`ws-nav__item${active ? " ws-nav__item--active" : ""}`}
-              aria-current={active ? "page" : undefined}
-            >
-              <span>{item.label}</span>
-            </Link>
-          );
-        })}
+        {groups.map((group) => (
+          <details
+            className="ws-nav__group"
+            key={group.label}
+            aria-label={group.label}
+            open={group.openByDefault || group.items.some(isActive)}
+          >
+            <summary className="ws-nav__group-title">{group.label}</summary>
+            <div className="ws-nav__group-items">
+              {group.items.map((item) => {
+                const active = isActive(item);
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    className={`ws-nav__item${active ? " ws-nav__item--active" : ""}`}
+                    aria-current={active ? "page" : undefined}
+                  >
+                    <span>{item.label}</span>
+                  </Link>
+                );
+              })}
+            </div>
+          </details>
+        ))}
       </nav>
       <main className="ws-main">{children}</main>
     </div>

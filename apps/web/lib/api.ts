@@ -73,6 +73,7 @@ export type CharacterPortrait = {
   writing_limits?: string[];
 };
 
+
 export type AgentSettings = NonNullable<CreateStoryRequest["agent_settings"]>;
 export type RuntimeStrategySettings = AgentSettings;
 
@@ -92,7 +93,7 @@ export type RuntimeStageBinding = { provider_id: string; model: string };
 export type RuntimeProviderDefinition = {
   provider_id: string;
   name: string;
-  protocol: "openai_compatible" | "anthropic" | "gemini" | "codex_cli" | "antigravity_cli";
+  protocol: "openai_compatible" | "anthropic" | "gemini" | "codex_cli" | "antigravity_cli" | "gemini_cli";
   default_base_url: string;
   planner_models: string[];
   writer_models: string[];
@@ -520,6 +521,7 @@ export type ReviewSection = {
   metrics?: Record<string, number>;
   issues?: Array<string | { type?: string; reason?: string; suggestion?: string }>;
   revision_plan?: string[];
+  advisory_judgements?: Array<{ issue: string; reason: string }>;
   ai_flavor_review?: ReviewSection;
   cold_reader_review?: ReviewSection;
   reader_agent_review?: ReviewSection;
@@ -537,10 +539,14 @@ export type ReviewSection = {
 
 export type LengthReview = {
   pass?: boolean;
+  acceptance_pass?: boolean;
   body_chars?: number;
   min_chars?: number;
+  hard_min_chars?: number;
   max_chars?: number;
+  hard_max_chars?: number;
   issues?: string[];
+  acceptance_issues?: string[];
 };
 
 export type ReviewStatus = "passed" | "warning" | "blocked" | string;
@@ -582,6 +588,7 @@ export type SimplifiedReview = {
   }>;
   revision_plan?: string[];
   total_issues: number;
+  findings?: SimplifiedReview["issues"];
   diagnostics?: Record<string, unknown>;
 };
 
@@ -1091,6 +1098,8 @@ export type ImportedEquipmentCard = {
 
 export type ImportedWorldBlueprint = {
   writing_style?: string;
+  writing_guidance?: string;
+  writing_reference?: string;
   premise?: string;
   world_rules?: string[];
   power_system?: string[];
@@ -1611,6 +1620,7 @@ export type RollingOutlineChapter = {
   hook: string;
   state_delta: string;
   source?: string;
+  edit_version?: string;
 };
 
 export type RollingOutline = {
@@ -1619,6 +1629,7 @@ export type RollingOutline = {
 };
 
 export type VolumeWorkflowStatus =
+  | "ending_reached"
   | "volume_missing"
   | "volume_plan_ready"
   | "detail_partial"
@@ -1630,6 +1641,7 @@ export type VolumeWorkflowResponse = {
   status: VolumeWorkflowStatus;
   detail_status: string;
   next_action:
+    | "review_ending"
     | "design_next_volume"
     | "generate_volume_detail"
     | "generate_prose";
@@ -2542,6 +2554,7 @@ export function createDefaultRuntimeSettings(): RuntimeSettings {
     accounts: {
       codexcli: { api_key: "", base_url: "", custom_models: [], codex_command: "codex", model_capabilities: {} },
       antigravity: { api_key: "", base_url: "", custom_models: [], codex_command: "agy", model_capabilities: {} },
+      geminicli: { api_key: "", base_url: "", custom_models: [], codex_command: "gemini", model_capabilities: {} },
     },
     stages: {
       planner: { provider_id: "codexcli", model: "gpt-5-codex" },
@@ -2795,6 +2808,7 @@ function normalizeRuntimeSettings(value?: Partial<RuntimeSettings>): RuntimeSett
   );
   if (!accounts.codexcli) accounts.codexcli = base.accounts.codexcli;
   if (!accounts.antigravity) accounts.antigravity = base.accounts.antigravity;
+  if (!accounts.geminicli) accounts.geminicli = base.accounts.geminicli;
   return {
     schema_version: "runtime-config/v2",
     accounts,
@@ -3696,6 +3710,26 @@ export async function startFileProjectPolishJob(
   })) as GenerationJobResponse;
 }
 
+export async function startFileProjectReviewRepairJob(
+  projectId: string,
+  chapterNumber: number,
+  sourceCandidateId?: string,
+): Promise<GenerationJobResponse> {
+  if (!isFileProjectId(projectId)) throw new Error("review_repair_only_supports_file_projects");
+  return (await tryFetchJson(`${fileProjectPath(projectId)}/generation-jobs`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ chapter_number: chapterNumber, operation: "review_repair", source_candidate_id: sourceCandidateId }),
+  })) as GenerationJobResponse;
+}
+
+export async function startFileProjectContextReviewJob(projectId: string, chapterNumber: number, sourceCandidateId?: string): Promise<GenerationJobResponse> {
+  return (await tryFetchJson(`${fileProjectPath(projectId)}/generation-jobs`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ chapter_number: chapterNumber, operation: "context_review", source_candidate_id: sourceCandidateId }),
+  })) as GenerationJobResponse;
+}
+
 export async function fetchCurrentGenerationJob(storyId: string): Promise<GenerationJobResponse | null> {
   const path = isFileProjectId(storyId)
     ? `${fileProjectPath(storyId)}/generation-jobs/current`
@@ -3955,7 +3989,7 @@ export async function generateOpeningDirections(projectId: string, guidance: str
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ guidance }),
     },
-    180000,
+    420000,
   )) as OpeningSetup;
 }
 

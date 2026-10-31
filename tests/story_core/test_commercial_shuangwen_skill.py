@@ -738,7 +738,7 @@ def test_integration_commercial_shuangwen_http_workflow_isolates_creation_and_ma
         enhanced_outline_response.text
     )
 
-    confirmed_body = "沈砚补全最后一式，石碑第九纹亮起，周执事重新打开名册。"
+    confirmed_body = "沈砚补全最后一式，石碑第九纹亮起，周执事重新打开名册。" * 120
     baseline_candidate = _seed_pending_candidate(
         baseline_store,
         body=confirmed_body,

@@ -56,6 +56,7 @@ from packages.story_core.agents.contracts import (
     WriterRequest,
     WriterResult,
 )
+from packages.story_core.character_agent import CharacterAgent
 from packages.story_core.agents.director.agent import DirectorAgent
 from packages.story_core.agents.director.prompt import build_outline_execution_contract
 from packages.story_core.agents.director.runtime import (
@@ -92,9 +93,11 @@ from packages.story_core.chapter_length_policy import (
     target_chars,
 )
 from packages.story_core.chapter_hook import parse_chapter_end_hook, review_chapter_hook
+from packages.story_core.book_style import BOOK_WRITING_FIELDS, book_writing_preferences
 from packages.story_core.generation_progress import report_generation_progress
 from packages.story_core.context.director_context import (
     DirectorContext,
+    _concise_character_card,
     build_director_context,
 )
 from packages.story_core.context.legacy_adapter import (
@@ -114,6 +117,7 @@ from packages.story_core.continuity.delta import ContinuityDelta
 from packages.story_core.models import StoryState
 from packages.story_core.model_gateway.preflight import ModelPreflightBlockedError
 from packages.story_core.skill_packs import resolve_enabled_skill_module_ids
+from packages.story_core.models import CharacterState, StoryState
 
 
 # --- Result envelopes ---------------------------------------------------------
@@ -139,6 +143,8 @@ class WriterPipelineResult:
     canon_review_snapshot: dict[str, Any] = field(default_factory=dict)
     consistency_findings: list[dict[str, Any]] = field(default_factory=list)
     trace_id: str = ""
+    contextual_review: dict[str, Any] = field(default_factory=dict)
+    automatic_revision: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -164,6 +170,8 @@ class ModularChapterBundle:
     consistency_findings: list[dict[str, Any]] = field(default_factory=list)
     continuity_delta: ContinuityDelta | None = None
     fact_extractor_trace_id: str = ""
+    contextual_review: dict[str, Any] = field(default_factory=dict)
+    automatic_revision: list[dict[str, Any]] = field(default_factory=list)
 
 
 # --- Helpers ------------------------------------------------------------------
@@ -414,10 +422,21 @@ def _ensure_writer_context(
     )
     if canonical is None:
         return legacy
+    # Settings are edited in .webnovel even while canonical artifacts coexist.
+    # Current values (including explicit clears) must win over an older snapshot.
+    project_payload = legacy_project_view(system_root) or {}
+    blueprint = project_payload.get("world_blueprint") or {}
+    has_current_voice = isinstance(blueprint, dict) and any(
+        field in blueprint for field in BOOK_WRITING_FIELDS
+    )
+    voice_context = legacy if has_current_voice or not any(
+        getattr(canonical, field) for field in BOOK_WRITING_FIELDS
+    ) else canonical
     return canonical.model_copy(
         update={
             "project_title": canonical.project_title or legacy.project_title,
             "genre": canonical.genre or legacy.genre,
+            **{field: getattr(voice_context, field) for field in BOOK_WRITING_FIELDS},
             "target_chapter_words": legacy.target_chapter_words or canonical.target_chapter_words,
             "rewrite_guidance": "\n".join(dict.fromkeys(filter(None,
                 (canonical.rewrite_guidance, legacy.rewrite_guidance)))),
@@ -446,6 +465,195 @@ def _system_root(project_root: Any):
     from pathlib import Path
 
     return Path(project_root) / ".story-system"
+
+
+def _character_card_for_director(character: CharacterState) -> dict[str, Any]:
+    """Project a character into a decision-oriented director slice."""
+    return _concise_character_card(character.model_dump(mode="json"))
+
+
+def _chapter_signal_text(story: StoryState) -> str:
+    # ``outline`` is normally book-level context. Prefer the selected chapter
+    # slice so a name appearing in a long-range arc does not activate a cast
+    # member in every chapter. Tiny fixtures and legacy callers may not have a
+    # chapter slice, so the plain outline is only a fallback.
+    parts: list[str] = []
+    outline_context = story.outline_context if isinstance(story.outline_context, dict) else {}
+    chapter_context = outline_context.get("chapter")
+    if isinstance(chapter_context, dict):
+        for key in (
+            "summary",
+            "goal",
+            "chapter_goal",
+            "obstacle",
+            "action",
+            "turn",
+            "payoff",
+            "ending_hook",
+            "cast",
+            "participants",
+        ):
+            value = chapter_context.get(key)
+            if value is not None:
+                parts.append(str(value))
+        scene_chain = chapter_context.get("scene_chain")
+        if isinstance(scene_chain, list):
+            parts.extend(
+                str(value)
+                for scene in scene_chain
+                if isinstance(scene, dict)
+                for value in scene.values()
+                if value not in (None, "", [], {})
+            )
+    else:
+        parts.append(story.outline)
+    ledger = story.progression_ledger or {}
+    for key in (
+        "chapter_direction",
+        "chapter_goal",
+        "goal",
+        "obstacle",
+        "action",
+        "summary",
+    ):
+        value = ledger.get(key)
+        if value is not None:
+            parts.append(str(value))
+    for summary in story.chapter_summaries[-2:]:
+        parts.extend(
+            [summary.summary, summary.next_focus, *summary.unresolved_threads]
+        )
+    return "\n".join(parts)
+
+
+def _explicit_cast_names(story: StoryState) -> set[str]:
+    names: set[str] = set()
+    outline_context = story.outline_context if isinstance(story.outline_context, dict) else {}
+    chapter_context = outline_context.get("chapter")
+    payloads: list[Any] = [story.progression_ledger]
+    payloads.append(chapter_context if isinstance(chapter_context, dict) else outline_context)
+
+    def add_name(value: Any) -> None:
+        if isinstance(value, dict):
+            for key in ("name", "character", "character_name"):
+                text = str(value.get(key) or "").strip()
+                if text:
+                    names.add(text)
+            return
+        text = str(value).strip()
+        if text:
+            names.add(text)
+
+    def visit(payload: Any) -> None:
+        if isinstance(payload, dict):
+            for key, value in payload.items():
+                if key in {"cast", "key_characters", "participants", "character_names"}:
+                    if isinstance(value, list):
+                        for item in value:
+                            add_name(item)
+                    elif isinstance(value, str) and value.strip():
+                        add_name(value)
+                    elif isinstance(value, dict):
+                        add_name(value)
+                visit(value)
+        elif isinstance(payload, list):
+            for item in payload:
+                visit(item)
+
+    for payload in payloads:
+        visit(payload)
+    return names
+
+
+def _select_relevant_cast(story: StoryState, *, limit: int = 6) -> list[CharacterState]:
+    """Select a bounded cast without activating role labels by themselves."""
+    signal = _chapter_signal_text(story)
+    explicit = _explicit_cast_names(story)
+    latest_threads = " ".join(
+        [story.chapter_summaries[-1].next_focus]
+        + list(story.chapter_summaries[-1].unresolved_threads)
+        if story.chapter_summaries
+        else []
+    )
+    active = [
+        character
+        for character in story.characters
+        if not character.frozen and character.lifecycle_state == "active"
+    ]
+    ranked: list[tuple[int, CharacterState]] = []
+    selected_names: set[str] = set()
+    for character in active:
+        name = character.name
+        score = 0
+        if name in explicit:
+            score += 100
+        role_text = character.role.strip().casefold()
+        tier_text = character.character_tier.strip().casefold()
+        if (
+            role_text in {"protagonist", "主角"}
+            or tier_text in {"protagonist", "主角"}
+            or "主角" in character.role
+        ):
+            score += 80
+        if name and name in signal:
+            score += 60
+        if name and name in latest_threads:
+            score += 50
+        if character.chapter_role.strip():
+            score += 40
+        if score:
+            ranked.append((score, character))
+    ranked.sort(key=lambda item: (-item[0], item[1].name))
+    chosen = [character for _, character in ranked[:limit]]
+    selected_names.update(character.name for character in chosen)
+
+    # A named relationship can only expand the cast when the chapter signal
+    # already touches the relationship; this prevents recurring labels from
+    # forcing a love interest or comic role into every chapter.
+    if len(chosen) < limit:
+        relationship_candidates: list[tuple[tuple[float, float], CharacterState]] = []
+        for character in active:
+            if character.name in selected_names:
+                continue
+            strongest = max(
+                (
+                    (relationship.tension, relationship.trust)
+                    for relationship in character.relationships.values()
+                    if relationship.target in selected_names
+                    and (relationship.tension >= 0.5 or relationship.trust >= 0.75)
+                ),
+                default=None,
+            )
+            if strongest is not None and character.name in signal:
+                relationship_candidates.append((strongest, character))
+        for _, character in sorted(
+            relationship_candidates,
+            key=lambda item: (-item[0][0], -item[0][1], item[1].name),
+        ):
+            chosen.append(character)
+            selected_names.add(character.name)
+            if len(chosen) >= limit:
+                break
+    return chosen
+
+
+def _attach_character_intents(
+    context: DirectorContext, story: StoryState | None
+) -> DirectorContext:
+    if story is None:
+        return context
+    selected = _select_relevant_cast(story)
+    selected_story = story.model_copy(update={"characters": selected}, deep=True)
+    try:
+        proposals = CharacterAgent().propose_all(selected_story)
+    except Exception:
+        proposals = []
+    return context.model_copy(
+        update={
+            "character_cards": [_character_card_for_director(character) for character in selected],
+            "character_intents": [proposal.model_dump(mode="json") for proposal in proposals],
+        }
+    )
 
 
 def _normalize_legacy_facts(items: Any) -> list[dict[str, Any]]:
@@ -555,6 +763,7 @@ def _legacy_writer_context(
         director_artifact=director_artifact,
         project_title=project_title,
         genre=genre,
+        **book_writing_preferences(project_payload, state),
         rewrite_guidance="\n".join(author_guidance),
         target_chapter_words=project_payload.get("target_chapter_words"),
         previous_tail=str(previous.get("tail") or ""),
@@ -576,6 +785,7 @@ def plan_director_artifact(
     project_root: Any,
     chapter_number: int,
     runtime: DirectorRuntime | None = None,
+    story: StoryState | None = None,
     rewrite_guidance: str = "",
     context: DirectorContext | None = None,
 ) -> DirectorPipelineResult:
@@ -596,9 +806,11 @@ def plan_director_artifact(
     field directly, so the operator sees which runtime
     answered the director call.
     """
-    context = context or _ensure_director_context(
-        project_root=project_root, chapter_number=chapter_number
-    )
+    if context is None:
+        context = _ensure_director_context(
+            project_root=project_root, chapter_number=chapter_number
+        )
+        context = _attach_character_intents(context, story)
     if rewrite_guidance.strip():
         context = context.model_copy(
             update={"rewrite_guidance": "\n".join(filter(None, (context.rewrite_guidance, rewrite_guidance.strip())))}
@@ -742,10 +954,9 @@ def run_writer(
       4. Calls the focused consistency agent to surface any
          contradiction the deterministic hard gate should review.
 
-    The orchestrator still runs its own review / revision flow
-    after this pipeline returns, so the pipeline never
-    overwrites the bounded review contract.
-
+    Managed generation measures/resizes and reviews/revises here before
+    consistency checks or fact extraction. Injected runtimes keep control
+    over their model calls. Confirmed prose is never written by this path.
     ``character_intents`` remains an accepted compatibility argument for
     older direct callers.  The modular production path leaves it unset, and
     this argument is intentionally ignored: Writer consumes only the final
@@ -753,6 +964,7 @@ def run_writer(
     """
     from packages.story_core.opening_build.execution import verify_writer_planning
     verify_writer_planning(project_root, director_artifact)
+    managed_generation = runtime is None and consistency_runtime is None
     context = _ensure_writer_context(
         project_root=project_root,
         chapter_number=chapter_number,
@@ -791,8 +1003,21 @@ def run_writer(
         context=context,
         director_artifact=director_artifact,
     )
-    agent = WriterAgent(runtime=runtime)
+    agent = WriterAgent(runtime=runtime, allow_automatic_repair=managed_generation,
+                        repair_style_signals=not managed_generation)
     result = agent.run(request)
+    contextual_review: dict[str, Any] = {}
+    automatic_revision: list[dict[str, Any]] = []
+    if managed_generation:
+        from packages.story_core.automatic_prose_revision import revise_contextually
+        from packages.story_core.contextual_prose_review import chapter_review_plan
+
+        result, contextual_review, automatic_revision = revise_contextually(agent, request, result, {
+            "upstream_chapter_plan": chapter_review_plan(project_root, chapter_number),
+            "chapter_number": chapter_number, "genre": context.genre,
+            "character_cards": context.character_cards,
+            "director_artifact": director_artifact.model_dump(mode="json"),
+        })
     # Deterministic pre-candidate length gate. The bounded flow
     # used to surface a 3800-character failure only at the
     # confirmation step, by which time the workbench had already
@@ -800,6 +1025,29 @@ def run_writer(
     # here so the candidate quality report shows the same
     # failure the confirmation will reject.
     consistency_findings: list[ConsistencyFinding] = []
+    planned_hook = (
+        director_artifact.outline_contract.planned_hook
+        if director_artifact.outline_contract is not None
+        else ""
+    )
+    hook_review = review_chapter_hook(
+        result.body,
+        parse_chapter_end_hook(planned_hook),
+        None,
+    )
+    # ``review_chapter_hook`` only emits ``hook_landed`` when the HARD
+    # check fails; a successful review has no false-valued score entry.
+    if planned_hook and "hook_landed" in hook_review.get("scores", {}):
+        consistency_findings.append(
+            ConsistencyFinding(
+                code="chapter.hook_not_landed",
+                message="；".join(
+                    hook_review.get("issues") or ["计划章末钩子未在正文末段落地。"]
+                ),
+                source="chapter_hook",
+                blocking=True,
+            )
+        )
     consistency_findings.extend(
         _deterministic_prose_findings(
             result.body,
@@ -827,25 +1075,6 @@ def run_writer(
                 blocking=False,
             )
         )
-    outline_contract = director_artifact.outline_contract
-    if outline_contract is not None and outline_contract.planned_hook:
-        hook_review = review_chapter_hook(
-            result.body,
-            parse_chapter_end_hook(director_artifact.hook),
-            None,
-        )
-        if hook_review.get("scores", {}).get("hook_landed") == 5:
-            consistency_findings.append(
-                ConsistencyFinding(
-                    code="chapter.hook_not_landed",
-                    message=(
-                        "正文末段没有落地上游章节合同要求的章末钩子："
-                        f"{outline_contract.planned_hook}"
-                    ),
-                    source="hook",
-                    blocking=True,
-                )
-            )
     body_chars = len("".join(result.body.split()))
     if body_chars < int(
         request.acceptance_chars.get("min", CHAPTER_HARD_MIN_CHARS)
@@ -938,6 +1167,8 @@ def run_writer(
             for finding in consistency_findings
         ],
         trace_id=f"writer:{chapter_number}",
+        contextual_review=contextual_review,
+        automatic_revision=automatic_revision,
     )
 
 
@@ -966,6 +1197,29 @@ def run_fact_extractor(
     )
     extractor = FactExtractor()
     return extractor.extract(context)
+
+
+def _fact_extractor_director_view(artifact: DirectorArtifact) -> DirectorArtifact:
+    """Strip private planning intent before evidence extraction."""
+    return DirectorArtifact(
+        schema_version=artifact.schema_version,
+        chapter_number=artifact.chapter_number,
+        chapter_title=artifact.chapter_title,
+        chapter_goal=artifact.chapter_goal,
+        opening_state=artifact.opening_state,
+        scene_beats=[
+            {
+                "order": beat.order,
+                "location": beat.location,
+                "action": beat.action,
+                "result": beat.result,
+            }
+            for beat in artifact.scene_beats
+        ],
+        ending_state=artifact.ending_state,
+        hook=artifact.hook,
+        entity_requirements=artifact.entity_requirements,
+    )
 
 
 # --- Internal helpers ---------------------------------------------------------
@@ -1312,13 +1566,14 @@ def _build_writer_request(
         director_artifact=director_artifact,
         project_title=context.project_title,
         genre=context.genre,
+        writing_style=context.writing_style,
+        writing_guidance=context.writing_guidance,
+        writing_reference=context.writing_reference,
         rewrite_guidance=context.rewrite_guidance,
-        # Production length policy is guidance plus review metadata.
-        # Preserve the first draft for human judgment instead of
-        # asking the writer model to resize it automatically.
+        # Managed generation resizes with measured patches before review.
         target_chars=target_chars(context.target_chapter_words),
         acceptance_chars=acceptance_chars(context.target_chapter_words),
-        repair_length=False,
+        repair_length=True,
         previous_tail=context.previous_tail,
         continuity_facts=list(context.continuity_facts),
         character_cards=list(context.character_cards),
@@ -1452,6 +1707,7 @@ def run_modular_pipeline(
     director_result = plan_director_artifact(
         project_root=project_root,
         chapter_number=chapter_number,
+        story=story,
         runtime=director_runtime,
         rewrite_guidance=rewrite_guidance,
         context=director_context,
@@ -1533,6 +1789,7 @@ def run_modular_pipeline(
             body=writer_result.body,
             chapter_number=chapter_number,
             director_artifact=director_result.artifact,
+            fact_artifact=_fact_extractor_director_view(director_result.artifact),
             canon_view=_canon_view_for(
                 _ensure_canon_service(canon_registry, project_root)
             ),
@@ -1657,6 +1914,8 @@ def run_modular_pipeline(
         canon_review_snapshot=dict(writer_result.canon_review_snapshot or {}),
         writer_trace_id=writer_result.trace_id,
         consistency_findings=list(writer_result.consistency_findings or []),
+        contextual_review=writer_result.contextual_review,
+        automatic_revision=writer_result.automatic_revision,
         continuity_delta=delta,
         fact_extractor_trace_id=f"fact-extractor:{chapter_number}",
     )

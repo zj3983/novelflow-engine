@@ -3639,6 +3639,7 @@ class StoryOrchestrator:
             error=error,
             raw=getattr(model_response, "raw", None),
             usage=getattr(model_response, "usage", None),
+            preflight_report=getattr(model_response, "preflight_report", None),
         )
         return text, error
 
@@ -4277,6 +4278,23 @@ class StoryOrchestrator:
             quality_report,
             combined_review,
         )
+        # Managed generation reviews/revises before fact extraction. Reuse the
+        # final body-matched review; do not review once more after extracting facts.
+        if director_runtime is None and writer_runtime is None and consistency_runtime is None:
+            from packages.story_core.contextual_prose_review import review_contextual_prose, apply_contextual_review, chapter_review_plan
+            from hashlib import sha256
+
+            contextual = getattr(bundle, "contextual_review", None) or {}
+            if contextual.get("body_sha256") != sha256(legacy_bundle.body.encode()).hexdigest():
+                contextual = review_contextual_prose(legacy_bundle.body, {
+                "upstream_chapter_plan": chapter_review_plan(project_root, chapter_number),
+                "chapter_number": chapter_number, "genre": story.genre, "style": story.style,
+                "character_cards": legacy_bundle.character_cards,
+                "chapter_intent": legacy_bundle.chapter_intent, "scene_cards": legacy_bundle.scene_cards,
+                "previous_summary": [item.model_dump(mode="json") if hasattr(item, "model_dump") else item for item in list(story.chapter_summaries or [])[-2:]],
+                })
+            legacy_bundle.quality_report = apply_contextual_review(legacy_bundle.quality_report, contextual)
+            legacy_bundle.quality_report["automatic_revision"] = list(getattr(bundle, "automatic_revision", []) or [])
         return legacy_bundle
 
     def _generate_next_chapter_bundle(self, story: StoryState):

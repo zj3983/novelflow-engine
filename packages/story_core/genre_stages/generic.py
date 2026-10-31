@@ -62,7 +62,7 @@ def render_generic_revision_prompt(*, context) -> str:
 def _generic_chapter_phase(chapter_number: int) -> str:
     if chapter_number <= 3:
         return f"黄金三章第{chapter_number}章：推进当前核心矛盾，兑现一个具体进展，并留下下一步行动"
-    return "常规连载章节：目标、行动、结果、代价和章末钩子"
+    return "常规连载章节：目标、行动、具体结果、既定成本和自然的下一步"
 
 
 def render_generic_director_prompt(

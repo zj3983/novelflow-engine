@@ -87,6 +87,13 @@ def discover_provider_models(runtime: Any, *, transport: DiscoveryTransport | No
             for model_id in sorted(set(read_antigravity_cli_models(runtime.codex_command or "agy")))
         ]
 
+    if runtime.protocol == "gemini_cli":
+        definition = provider_definition("geminicli")
+        return [
+            _entry(model_id, "unknown", "gemini-cli", "官方 CLI 模型候选，账号权限需要测试连接确认")
+            for model_id in dict.fromkeys((*definition.planner_models, *definition.writer_models))
+        ]
+
     fetch = transport or _get_json
     base_url = runtime.base_url.rstrip("/")
     if runtime.protocol == "openai_compatible":

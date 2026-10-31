@@ -212,6 +212,9 @@ class FactExtractorContext:
     body: str
     chapter_number: int
     director_artifact: Any = None
+    # Compatibility keeps the original artifact available to callers; the
+    # model-backed pass uses this stripped view when present.
+    fact_artifact: Any = None
     canon_view: dict[str, Any] = field(default_factory=dict)
     continuity_facts: list[dict[str, Any]] = field(default_factory=list)
     candidate_entities: list[dict[str, Any]] = field(default_factory=list)
@@ -710,7 +713,7 @@ def _safe_model_extract(
                 "stage": "fact_extractor",
                 "chapter_number": context.chapter_number,
                 "body": context.body,
-                "director_artifact": _fact_extractor_director_view(context.director_artifact),
+                "director_artifact": _fact_extractor_director_view((context.fact_artifact or context.director_artifact)),
                 "canon_view": context.canon_view,
             }
         )

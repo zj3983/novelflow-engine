@@ -36,7 +36,7 @@ def _valid_report(**updates) -> SmokeReport:
                 {"location": "村内", "action": "观察", "change": "发现线索"},
             ],
         },
-        "writer_prompt": "目标4200至5500字；低于3800字；超过5700字",
+        "writer_prompt": "目标4200至4500字；低于3800字；超过4500字",
         "body_chars": 4800,
         "quality_report": {"ok": True},
     }

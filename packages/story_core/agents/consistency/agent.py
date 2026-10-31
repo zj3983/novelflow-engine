@@ -138,6 +138,10 @@ def _snapshot_evidence(
     def add_item(collection: str, index: int, item: Any) -> None:
         if not isinstance(item, dict):
             return
+        if item.get("authority") == "context" or (
+            item.get("source") == "writer_context" and item.get("authority") != "confirmed"
+        ):
+            return
         sources.add(f"canon.{collection}:{index}".casefold())
         source = _evidence_token(item.get("source"))
         if source and source not in _GENERIC_CANON_SOURCES:
@@ -201,12 +205,11 @@ def _has_verified_canon_evidence(
         return False
     source_token = _evidence_token(source)
     evidence_token = _evidence_token(canon_evidence)
-    return (
-        source_token in sources
-        or source_token in evidence
-        or evidence_token in sources
-        or evidence_token in evidence
-    )
+    # An explicit quotation must itself be supported. A real source ID cannot
+    # launder a fabricated quote into a blocking factual finding.
+    if evidence_token:
+        return evidence_token in sources or evidence_token in evidence
+    return source_token in sources or source_token in evidence
 
 
 def _evidence_label(item: dict[str, Any], *, fallback: str) -> str:
@@ -218,6 +221,10 @@ def _evidence_label(item: dict[str, Any], *, fallback: str) -> str:
         parts.append(f"第{chapter}章")
     if evidence:
         parts.append(f"证据：{evidence}")
+    if item.get("authority") == "context" or (
+        source == "writer_context" and item.get("authority") != "confirmed"
+    ):
+        parts.append("上下文参考，不作为阻断证据")
     return " | ".join(parts)
 
 
@@ -239,6 +246,8 @@ def _render_canon_snapshot(snapshot: dict[str, Any] | None) -> str:
             "- 警告：目标是历史章节，但没有可用的章前状态快照。"
             "不得用当前项目状态倒推历史事实；缺证据的项目一律视为未核验。"
         )
+    if snapshot.get("entity_selection"):
+        lines.append("- " + snapshot["entity_selection"]["note"])
 
     facts = snapshot.get("facts") or []
     if facts:
@@ -345,9 +354,12 @@ def build_consistency_prompt(
     facts = "\n".join(
         f"- {fact.get('subject', '?')} · {fact.get('field', '?')}：{fact.get('value', '?')}"
         for fact in active_facts
+        if fact not in (canon_snapshot or {}).get("facts", [])
     )
     state_lines: list[str] = []
     for card in character_states or []:
+        if card in (canon_snapshot or {}).get("characters", []):
+            continue
         name = card.get("name", "未命名")
         current = _current_character_state(card)
         if current:
@@ -362,6 +374,7 @@ def build_consistency_prompt(
     canon_snapshot_section = _render_canon_snapshot(canon_snapshot)
     return (
         "你是小说事实一致性 agent。\n"
+        f"当前正文经程序实测为{sum(not c.isspace() for c in body)}个非空白字符。篇幅由程序校验，不要估算或返回长度类issues。\n"
         "只判断正文是否与既定事实矛盾。导演计划用于理解本章意图，不是已经发生的事实。\n"
         "正文调整导演动作、过程、地点细节或收尾镜头，不算事实冲突；确需指出时使用 "
         "code=plan.deviation、blocking=false、source=director_plan。不要评价文笔、风格、对话自然度。\n"
@@ -375,7 +388,7 @@ def build_consistency_prompt(
         f"## 场景节拍\n{beats}\n\n"
         f"## 收尾状态\n{director_artifact.ending_state}\n\n"
         f"## 完整章节安排\n{_json_inline(director_artifact.outline_contract.model_dump(mode='json') if director_artifact.outline_contract else {})}\n\n"
-        f"## 既定事实\n{facts or '（无）'}\n\n"
+        f"## 既定事实\n{facts or ('见下方Canon审稿快照，保留完整来源。' if canon_snapshot else '（无）')}\n\n"
         + (f"{character_state_section}\n\n" if character_state_section else "")
         + (f"{canon_snapshot_section}\n\n" if canon_snapshot_section else "")
         + f"## 正文\n{body}\n\n"
@@ -434,7 +447,7 @@ def _downgrade_non_factual(
     # Program-level hard gates are constructed outside this adapter and do not
     # set require_canon_evidence, so they retain their own disposition.
     if require_canon_evidence:
-        return _has_verified_canon_evidence(
+        return blocking and _has_verified_canon_evidence(
             source=source,
             canon_evidence=canon_evidence,
             canon_snapshot=canon_snapshot,
@@ -554,6 +567,10 @@ class FocusedConsistencyAgent:
             message = str(issue.get("message") or "").strip()
             if not code or not message:
                 malformed = True
+                continue
+            # Character counts are checked by the deterministic chapter gate.
+            if code in {"author_requirement.length", "chapter.length_too_short", "chapter.length_too_long",
+                        "chapter.length_below_target", "chapter.length_above_target", "body_too_short", "body_too_long"}:
                 continue
             blocking_raw = issue.get("blocking")
             blocking = bool(blocking_raw) if blocking_raw is not None else True

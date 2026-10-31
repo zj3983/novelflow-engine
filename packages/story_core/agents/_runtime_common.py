@@ -28,7 +28,7 @@ answered with.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from packages.story_core.model_gateway.contracts import ModelRequest, ModelResponse
@@ -182,6 +182,9 @@ def translate_request(
         operation=operation,
         temperature=temperature,
         metadata=metadata,
+        max_tokens=getattr(request, "max_tokens", None),
+        json_mode=bool(getattr(request, "json_mode", False)),
+        timeout_seconds=getattr(request, "timeout_seconds", None),
         output_limit_requirement=(
             "required"
             if metadata.get("output_limit_requirement") == "required"
@@ -286,6 +289,7 @@ def call_with_logging(
         protocol=protocol,
         model=model_request.model,
         temperature=model_request.temperature,
+        max_output_tokens=model_request.max_tokens,
         requested_max_tokens=model_request.max_tokens,
         json_mode=model_request.json_mode,
     )
@@ -329,6 +333,8 @@ def call_with_logging(
         raw=getattr(response, "raw", None),
         usage=getattr(response, "usage", None),
         preflight_report=getattr(response, "preflight_report", None),
+        token_budget_transport=(response.raw.get("transport_metadata") or {})
+        if isinstance(response, ModelResponse) and isinstance(response.raw, dict) else {},
     )
     return response, model_request.provider, model_request.model, protocol
 

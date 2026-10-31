@@ -119,7 +119,7 @@ export function useContinuousGeneration({
       );
       return;
     }
-    if (current.stop_reason === "candidate_confirmation_required" && current.current_chapter > 0) {
+    if (["candidate_confirmation_required", "candidate_length_revision_required"].includes(current.stop_reason) && current.current_chapter > 0) {
       router.replace(`/projects/${encodedProjectId}/write?chapter=${current.current_chapter}`);
     }
   }

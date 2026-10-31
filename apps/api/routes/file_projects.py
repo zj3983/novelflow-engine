@@ -134,7 +134,8 @@ class FileProjectGenerationJobRequest(BaseModel):
     candidate_only: bool = False
     require_accepted_plan: bool = False
     chapter_number: int | None = None
-    operation: Literal["polish", "expand"] | None = None
+    operation: Literal["polish", "expand", "review_repair", "context_review"] | None = None
+    source_candidate_id: str | None = None
     variant: str | None = None
     guidance: str | None = None
     chapter_direction_id: str | None = None
@@ -1439,7 +1440,8 @@ def _run_file_generation_job(
     project_id: str,
     *,
     chapter_number: int | None = None,
-    operation: Literal["polish", "expand"] | None = None,
+    operation: Literal["polish", "expand", "review_repair", "context_review"] | None = None,
+    source_candidate_id: str | None = None,
     variant: str | None = None,
     guidance: str | None = None,
     chapter_direction_id: str | None = None,
@@ -1526,10 +1528,19 @@ def _run_file_generation_job(
                                                guidance=revision_guidance).to_dict()
                 else:
                     generated = recheck(store, review_candidate_id, expected=review_expected).to_dict()
+            elif operation == "context_review":
+                if not isinstance(chapter_number, int) or chapter_number < 1:
+                    raise ValueError("context_review_chapter_required")
+                generated = store.run_contextual_prose_review(chapter_number, source_candidate_id=source_candidate_id)
+            elif operation == "review_repair":
+                if not isinstance(chapter_number, int) or chapter_number < 1:
+                    raise ValueError("chapter_number_required_for_review_repair")
+                generated = store.repair_chapter_review(chapter_number, source_candidate_id=source_candidate_id)
             elif operation == "polish":
                 if not isinstance(chapter_number, int) or chapter_number < 1:
                     raise ValueError("chapter_number_required_for_polish")
-                generated = store.polish_chapter(chapter_number)
+                generated = (store.polish_chapter(chapter_number, source_candidate_id=source_candidate_id)
+                             if source_candidate_id else store.polish_chapter(chapter_number))
             elif operation == "expand":
                 if not isinstance(chapter_number, int) or chapter_number < 1:
                     raise ValueError("chapter_number_required_for_expansion")
@@ -1571,10 +1582,21 @@ def _run_file_generation_job(
                 )
     else:
         chapter_number = generated.get("chapter_number") if isinstance(generated, dict) else None
+        candidate = generated.get("candidate") if isinstance(generated, dict) else None
+        candidate = candidate if isinstance(candidate, dict) else {}
+        length_review = (candidate.get("quality_report") or {}).get("length_review") or {}
+        if operation == "context_review":
+            completion_message = "上下文审稿完成，正文未改动"
+        elif candidate and length_review.get("acceptance_pass") is False:
+            completion_message = "字数未达标，候选稿已保留，请修订后提交"
+        elif candidate:
+            completion_message = "候选稿已生成，待确认提交"
+        else:
+            completion_message = "生成完成"
         _update_file_generation_job(
             job_id,
             status="completed",
-            progress="生成完成",
+            progress=completion_message,
             chapter_number=chapter_number if isinstance(chapter_number, int) else None,
             error="",
         )
@@ -1583,7 +1605,7 @@ def _run_file_generation_job(
             if job is not None:
                 _append_file_generation_job_step(
                     job,
-                    "生产完成",
+                    completion_message,
                     status="done",
                     source="file-project-route",
                     artifact={
@@ -1592,6 +1614,8 @@ def _run_file_generation_job(
                         "outputs": {
                             "generated_chapter": chapter_number,
                             "status": "completed",
+                            "chapter_persisted": operation != "context_review" and not bool(candidate),
+                            "candidate_id": candidate.get("candidate_id", ""),
                         },
                     },
                 )
@@ -1847,6 +1871,7 @@ def _file_story_store(story_id: str) -> FileProjectStore:
 
 
 def _file_chapter_payload(store: FileProjectStore, chapter_number: int) -> dict[str, Any]:
+    from packages.story_core.review.prose_checks import with_prose_annotation_evidence
     try:
         chapter = dict(store.chapter(chapter_number))
     except FileNotFoundError as exc:
@@ -1854,7 +1879,7 @@ def _file_chapter_payload(store: FileProjectStore, chapter_number: int) -> dict[
             status_code=404,
             detail=f"chapter_not_found:{chapter_number}",
         ) from exc
-    quality = dict(chapter.get("quality_report") or {})
+    quality = with_prose_annotation_evidence(str(chapter.get("body") or ""), dict(chapter.get("quality_report") or {}), backfill_missing_checks=True)
     quality["simplified_review"] = build_simplified_review(quality)
     chapter["quality_report"] = quality
     chapter.pop("updated_story", None)
@@ -1891,6 +1916,16 @@ def start_file_generation_job(
     """Queue generation through the shared file-project job runner."""
     store = _store_for(project_id)
     story_id = _story_id_for(store)
+    # Restored repair jobs must validate their saved chapter/source, rather
+    # than being mistaken for a request to generate the next chapter.
+    if reserved_job_id and payload is None:
+        reserved_payload = _load_file_generation_job(store, reserved_job_id)
+        if reserved_payload and reserved_payload.get("operation") in {"review_repair", "context_review", "polish"}:
+            payload = FileProjectGenerationJobRequest(
+                chapter_number=reserved_payload.get("target_chapter"),
+                operation=reserved_payload["operation"],
+                source_candidate_id=reserved_payload.get("source_candidate_id") or None,
+            )
     with _file_generation_jobs_lock:
         if _continuous_generation_active_locked(store):
             raise HTTPException(status_code=409, detail="project_generation_in_progress")
@@ -1907,7 +1942,7 @@ def start_file_generation_job(
         if payload and isinstance(payload.chapter_number, int)
         else None
     )
-    if operation in {"polish", "expand"} and not (
+    if operation in {"polish", "expand", "review_repair", "context_review"} and not (
         isinstance(target_chapter, int) and target_chapter > 0
     ):
         raise HTTPException(
@@ -1921,14 +1956,16 @@ def start_file_generation_job(
         and target_chapter <= current_chapter
     )
     job_operation = (
-        "polish"
+        operation
+        if operation in {"review_repair", "context_review"}
+        else "polish"
         if operation in {"polish", "expand"}
         else "regenerate"
         if targets_existing_chapter
         else "generate"
     )
     execution_chapter_number = (
-        target_chapter if job_operation in {"polish", "regenerate"} else None
+        target_chapter if job_operation in {"polish", "regenerate", "review_repair", "context_review"} else None
     )
     from packages.story_core.opening_build.runtime import enabled as opening_enabled
 
@@ -1937,7 +1974,7 @@ def start_file_generation_job(
     ):
         raise HTTPException(status_code=409, detail="opening_prose_operation_unsupported")
     requires_new_chapter_outline = (
-        operation not in {"polish", "expand"} and not targets_existing_chapter
+        operation not in {"polish", "expand", "review_repair", "context_review"} and not targets_existing_chapter
     )
     if target_chapter is None and requires_new_chapter_outline:
         next_chapter = current_chapter + 1
@@ -1994,7 +2031,7 @@ def start_file_generation_job(
                 job_kwargs = {
                     "chapter_number": (
                         loaded.get("target_chapter")
-                        if loaded.get("operation") in {"polish", "expand", "regenerate"}
+                        if loaded.get("operation") in {"polish", "expand", "regenerate", "review_repair", "context_review"}
                         else None
                     ),
                     "variant": loaded.get("variant") or None,
@@ -2002,6 +2039,9 @@ def start_file_generation_job(
                 }
                 if loaded.get("operation") in {"polish", "expand"}:
                     job_kwargs["operation"] = "polish"
+                if loaded.get("operation") in {"review_repair", "context_review", "polish"}:
+                    job_kwargs["operation"] = loaded["operation"]
+                    job_kwargs["source_candidate_id"] = loaded.get("source_candidate_id") or None
                 loaded_direction = loaded.get("chapter_direction_id")
                 if loaded_direction:
                     job_kwargs["chapter_direction_id"] = loaded_direction
@@ -2075,6 +2115,7 @@ def start_file_generation_job(
                 "accepted_plan": accepted_plan,
                 "executor_session": _file_generation_session,
                 "variant": variant or "",
+                "source_candidate_id": payload.source_candidate_id if payload else None,
                 "guidance": guidance or "",
                 "chapter_direction_id": chapter_direction_id or "",
                 "starting_chapter": int(store.summary().get("current_chapter") or 0),
@@ -2096,6 +2137,9 @@ def start_file_generation_job(
         }
         if operation in {"polish", "expand"}:
             job_kwargs["operation"] = "polish"
+        if operation in {"review_repair", "context_review", "polish"}:
+            job_kwargs["operation"] = operation
+            job_kwargs["source_candidate_id"] = payload.source_candidate_id if payload else None
         if chapter_direction_id:
             job_kwargs["chapter_direction_id"] = chapter_direction_id
         if candidate_only:
@@ -2445,6 +2489,7 @@ def init_file_project_routes() -> APIRouter:
         router,
         store_for=_store_for,
         planning_generator=lambda: outline_planning_generator,
+        assert_mutation_allowed=_assert_file_project_lifecycle_mutation_allowed,
     )
     register_file_project_candidate_routes(
         router,
@@ -4551,10 +4596,12 @@ def init_file_project_routes() -> APIRouter:
         from packages.story_core.outline_rolling_store import RollingOutlineStore
 
         store = _store_for(project_id)
-        return RollingOutlineStore(store.root).read_rolling_outline() or {
+        from packages.story_core.outline_manual_edit import chapter_edit_version
+        outline = RollingOutlineStore(store.root).read_rolling_outline() or {
             "schema_version": "rolling-outline/v1",
             "chapters": [],
         }
+        return {**outline, "chapters": [{**c, "edit_version": chapter_edit_version(c)} for c in outline["chapters"]]}
 
     @router.put("/file-projects/{project_id}/outline/rolling-chapter/{chapter_number}")
     def update_file_project_rolling_chapter(
@@ -4590,12 +4637,17 @@ def init_file_project_routes() -> APIRouter:
         except HTTPException:
             raise
         try:
-            updated = RollingOutlineStore(store.root).update_chapter(
-                chapter_number=int(chapter_number),
-                payload=dict(payload or {}),
-            )
-        except RollingOutlineStoreError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            from packages.story_core.outline_manual_edit import edit_scene_outline
+            def assert_scene_edit_allowed():
+                _assert_file_project_lifecycle_mutation_allowed(store)
+                from apps.api.services.ending_planning import ending_planning_jobs
+                job = ending_planning_jobs.current(store)
+                if job and job["status"] in {"queued", "running"}:
+                    raise HTTPException(status_code=409, detail="project_generation_in_progress")
+            updated = edit_scene_outline(store, int(chapter_number), dict(payload or {}),
+                                         assert_allowed=assert_scene_edit_allowed)
+        except (RollingOutlineStoreError, ValueError) as exc:
+            raise HTTPException(status_code=409 if str(exc) == "rolling_chapter_changed" else 422, detail=str(exc)) from exc
         return {
             "schema_version": "file-project-rolling-chapter/v1",
             "project_id": project_id,

@@ -290,6 +290,8 @@ def review_plot_spine_completion(
         text = str(plot.get(key) or "").strip()
         if not text:
             continue
+        if key == "cost" and text.rstrip("。.;； ") in {"无新增代价", "无新增成本", "无额外代价"}:
+            continue
         is_covered, ratio = _field_is_covered(key, body, text, covered_threshold)
         ratios[label] = round(ratio, 2)
         if is_covered:
@@ -307,8 +309,8 @@ def review_plot_spine_completion(
         scores["plot_spine_critical"] = 4
         issues.append(f"剧情主线落地严重不足：缺少{'、'.join(missing)}。")
         revision_plan.append(
-            "按剧情推演补正文：先写主角这章想要什么，再写付出的具体代价，"
-            "把爽点兑现成任务/经验/补给/装备/路线变化，章末落到下一项具体前置任务或资源缺口。"
+            "按剧情推演补正文：写清本章目标、人物行动与可见结果，已有成本按计划呈现，不为补齐字段额外制造损失。"
+            "让收益和变化落地，章末自然带出下一步，也可以是交接或休整。"
         )
     elif missing:
         scores["plot_spine_partial"] = 6

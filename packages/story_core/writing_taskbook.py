@@ -25,7 +25,7 @@ FIRST_CHAPTER_NOISE_BANS = (
 
 WRITER_TERM_REPLACEMENTS = (
     ("让世界根据主角行动给出可见反应", "主角动手以后，马上出现一个具体结果或麻烦"),
-    ("收益和代价落到账本或关系里", "让收获和代价都能看见，并改变下一步或人物关系"),
+    ("收益和代价落到账本或关系里", "让行动结果落到资源、关系或下一步，按计划呈现已有成本"),
     ("NPC/环境/任务/对手反应", "现场人物、环境或对手的反应"),
     ("关键账本或状态", "眼前最要紧的东西或处境"),
     ("确认边界", "试清楚能不能走"),
@@ -403,12 +403,13 @@ def _apply_plot_to_scenes(
                 [
                     scene.required_surface,
                     payoff and f"爽点兑现：{payoff}",
-                    cost and f"代价：{cost}",
+                    cost and f"已确定的成本：{cost}",
                 ],
                 scene.required_surface,
             )
             if payoff or cost:
-                updates["exit_state"] = f"选择完成，{payoff or '收益'}和{cost or '代价'}落到账本、关系或路线里。"
+                outcomes = "；".join(item for item in (payoff, cost) if item)
+                updates["exit_state"] = f"选择完成，{outcomes}落到资源、关系或下一步。"
         elif scene.key == "hook" and (ending_hook or emotional_turn or outsider_misread):
             updates["goal"] = f"收住本章事件，更新状态，并把章末落到：{ending_hook}" if ending_hook else scene.goal
             updates["required_surface"] = _join(
@@ -519,12 +520,12 @@ def _generic_scenes(plan: dict[str, Any], *, game_context: bool) -> list[Writing
             ),
             WritingTaskScene(
                 key="choice",
-                title="选择与代价",
-                goal="主角做选择，兑现一点收益，同时付出可见代价。",
-                required_surface="选择过程、行动细节、收益、代价、状态变化",
+                title="选择与结果",
+                goal="让行动产生具体结果，按计划呈现收益与成本；无新增代价时不追加损失。",
+                required_surface="选择过程、行动细节、收益、已确定的成本、状态变化",
                 entry_state="主角面对上一场形成的阻力。",
-                exit_state="选择完成，结果和代价已经改变处境或人物关系。",
-                handoff="下一场收束结果并抛出新的问题或行动。",
+                exit_state="选择完成，结果已经改变处境或人物关系，也可以让紧张得到缓解。",
+                handoff="下一场承接本场结果，可以兑现、交接、休息或准备下一步。",
                 target_chars=max(950, total // 4),
             ),
             WritingTaskScene(
@@ -562,10 +563,10 @@ def _generic_scenes(plan: dict[str, Any], *, game_context: bool) -> list[Writing
                 key=_slug(source_id, f"scene_{index}"),
                 title=f"{location}：{purpose}",
                 goal=f"{purpose}；阻力是{conflict}。",
-                required_surface=_join(required, "地点、行动、反馈、代价"),
+                required_surface=_join(required, "地点、行动、反馈、已确定的成本"),
                 forbidden_surface=_join(avoid, "不要写成规则解释，不要越过主角视角"),
                 entry_state=_text(card.get("entry_state") or f"进入{location}。", 90),
-                exit_state=_text(card.get("exit_state") or card.get("ending_pressure") or "形成下一场压力。", 100),
+                exit_state=_text(card.get("exit_state") or card.get("ending_pressure") or "承接本场结果，可推进或缓和。", 100),
                 handoff=_text(card.get("handoff") or "下一场必须承接本场结果，不重置状态。", 100),
                 target_chars=per_scene,
                 source_ids=[source_id],
@@ -577,8 +578,8 @@ def _generic_scenes(plan: dict[str, Any], *, game_context: bool) -> list[Writing
                 key="choice",
                 title="选择与变化",
                 goal="人物根据前面的发现做出选择，让局面发生具体变化。",
-                required_surface="选择过程、实际行动、可见结果，以及为此付出的代价",
-                entry_state="人物已经看见阻力，不能再按原计划轻松推进。",
+                required_surface="选择过程、实际行动、可见结果，以及计划中已确定的成本",
+                entry_state="承接人物已有的发现、关系和处境。",
                 exit_state="选择已经产生结果，人物的资源、关系或处境发生变化。",
                 handoff="下一场承接这个结果收束本章。",
                 target_chars=per_scene,

@@ -638,6 +638,33 @@ def test_generate_next_volume_rejects_invalid_structure(mutation, error) -> None
         )
 
 
+def test_closing_strategy_uses_overall_route_and_contract_and_requires_a_final_volume() -> None:
+    captured = {}
+    model_arc = _next_volume_arc(is_final_arc=True, end_chapter=70)
+
+    def fake_post(base_url, path, payload, api_key, **kwargs):
+        captured.update(json.loads(payload["messages"][1]["content"]))
+        return {"choices": [{"message": {"content": json.dumps(model_arc)}}]}
+
+    generator = LLMOutlinePlanningGenerator(
+        post_json=fake_post,
+        runtime_resolver=RecordingRuntime().resolve,
+    )
+    brief = _next_volume_brief(strategy="close")
+    brief.overall_context.update(
+        closing_route="Finish the repair and return home.",
+        ending_contract="Keep the injury; introduce no new commission.",
+    )
+    generator.generate_next_volume(brief, previous_volume=brief.existing_outline["arcs"][-1])
+    assert captured["planning_strategy"]["mode"] == "close"
+    assert captured["planning_strategy"]["route"] == brief.overall_context["closing_route"]
+    assert captured["planning_strategy"]["ending_contract"] == brief.overall_context["ending_contract"]
+
+    model_arc = _next_volume_arc()
+    with pytest.raises(ValueError, match="^closing_volume_must_be_final$"):
+        generator.generate_next_volume(brief, previous_volume=brief.existing_outline["arcs"][-1])
+
+
 def test_generate_next_volume_allows_short_final_only_for_closing_strategy() -> None:
     final_arc = _next_volume_arc(is_final_arc=True, end_chapter=70)
 

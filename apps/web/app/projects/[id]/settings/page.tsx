@@ -48,6 +48,8 @@ export default function ProjectSettingsPage() {
   const mountedRef = useRef(true);
   const saveRequestIdRef = useRef(0);
   const saveStyleRequestIdRef = useRef(0);
+  const saveWritingRequestIdRef = useRef(0);
+  const writingDraftTouchedRef = useRef(false);
   const typeSelectionTouchedRef = useRef(false);
   const typeSelectionInitializedRef = useRef(false);
   const [novelTypes, setNovelTypes] = useState<NovelType[]>([]);
@@ -60,6 +62,10 @@ export default function ProjectSettingsPage() {
   const [selectedStyle, setSelectedStyle] = useState("");
   const [savingStyle, setSavingStyle] = useState(false);
   const [styleMessage, setStyleMessage] = useState<TypeMessage | null>(null);
+  const [writingGuidance, setWritingGuidance] = useState("");
+  const [writingReference, setWritingReference] = useState("");
+  const [savingWriting, setSavingWriting] = useState(false);
+  const [writingMessage, setWritingMessage] = useState<TypeMessage | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -67,6 +73,7 @@ export default function ProjectSettingsPage() {
       mountedRef.current = false;
       saveRequestIdRef.current += 1;
       saveStyleRequestIdRef.current += 1;
+      saveWritingRequestIdRef.current += 1;
     };
   }, []);
 
@@ -107,6 +114,24 @@ export default function ProjectSettingsPage() {
     setSelectedStyle(project?.world_blueprint?.writing_style || "");
   }, [project?.project_id, project?.world_blueprint?.writing_style]);
 
+  useEffect(() => {
+    saveWritingRequestIdRef.current += 1;
+    setSavingWriting(false);
+    writingDraftTouchedRef.current = false;
+    setWritingGuidance("");
+    setWritingReference("");
+    setWritingMessage(null);
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!project || writingDraftTouchedRef.current) return;
+    setWritingGuidance(project.world_blueprint?.writing_guidance || "");
+    setWritingReference(project.world_blueprint?.writing_reference || "");
+  }, [project?.project_id, project?.world_blueprint?.writing_guidance, project?.world_blueprint?.writing_reference]);
+
+  const writingChanged = writingGuidance.trim() !== (project?.world_blueprint?.writing_guidance || "")
+    || writingReference.trim() !== (project?.world_blueprint?.writing_reference || "");
+
   const selectedType = useMemo(
     () => novelTypes.find((type) => type.id === selectedTypeId),
     [novelTypes, selectedTypeId],
@@ -123,7 +148,6 @@ export default function ProjectSettingsPage() {
     setTypeMessage(null);
     try {
       const nextBlueprint: ImportedWorldBlueprint = {
-        ...(project.world_blueprint ?? {}),
         genre_plugin_ids: [nextTypeId],
       };
       await updateProject(projectId, { world_blueprint: nextBlueprint }, { fallbackToMock: false });
@@ -152,7 +176,6 @@ export default function ProjectSettingsPage() {
     setStyleMessage(null);
     try {
       const nextBlueprint: ImportedWorldBlueprint = {
-        ...(project.world_blueprint ?? {}),
         writing_style: nextStyle,
       };
       await updateProject(projectId, { world_blueprint: nextBlueprint }, { fallbackToMock: false });
@@ -170,6 +193,32 @@ export default function ProjectSettingsPage() {
       setStyleMessage({ kind: "error", text: "文风保存失败，请检查服务后重试。" });
     } finally {
       if (mountedRef.current && requestId === saveStyleRequestIdRef.current) setSavingStyle(false);
+    }
+  }
+
+  async function saveWritingPreferences() {
+    if (!project || savingWriting) return;
+    const requestId = ++saveWritingRequestIdRef.current;
+    setSavingWriting(true);
+    setWritingMessage(null);
+    try {
+      const saved = await updateProject(projectId, {
+        world_blueprint: {
+          writing_guidance: writingGuidance.trim(),
+          writing_reference: writingReference.trim(),
+        },
+      }, { fallbackToMock: false });
+      if (!mountedRef.current || requestId !== saveWritingRequestIdRef.current) return;
+      setWritingGuidance(saved.world_blueprint?.writing_guidance || "");
+      setWritingReference(saved.world_blueprint?.writing_reference || "");
+      writingDraftTouchedRef.current = false;
+      setWritingMessage({ kind: "success", text: "写法已保存，续写、连写和重写都会读取。现有章节保持原样。" });
+      void refresh({ invalidateChapter: false }).catch(() => undefined);
+    } catch {
+      if (!mountedRef.current || requestId !== saveWritingRequestIdRef.current) return;
+      setWritingMessage({ kind: "error", text: "写法保存失败，输入已保留，请重试。" });
+    } finally {
+      if (mountedRef.current && requestId === saveWritingRequestIdRef.current) setSavingWriting(false);
     }
   }
 
@@ -251,7 +300,7 @@ export default function ProjectSettingsPage() {
             <div className="ws-section-head">
               <div>
                 <p className="ws-card__title">文风</p>
-                <p className="ws-card__hint">只控制表达倾向，不改变大纲、人物和题材规则。不选择时不添加额外文风。</p>
+                <p className="ws-card__hint">保存后用于续写、连写和重写。文风决定表达倾向，自定义写法和参考片段帮助保持本书的声音。</p>
               </div>
               <span className="ws-toolbar__meta">{selectedStyle || "未选择"}</span>
             </div>
@@ -260,7 +309,7 @@ export default function ProjectSettingsPage() {
               <select
                 className="ws-input"
                 value={selectedStyle}
-                disabled={!project || projectLoading || savingStyle}
+                disabled={!project || projectLoading || savingStyle || savingWriting}
                 onChange={(event) => void saveWritingStyle(event.target.value)}
               >
                 <option value="">未选择</option>
@@ -271,6 +320,62 @@ export default function ProjectSettingsPage() {
                 ))}
               </select>
             </label>
+            <label className="ws-project-create__field">
+              <span>自定义写法</span>
+              <textarea
+                className="ws-input"
+                rows={5}
+                maxLength={2000}
+                aria-label="自定义写法"
+                value={writingGuidance}
+                disabled={!project || projectLoading || savingWriting}
+                placeholder="例如：口语自然，嘴上吐槽、行动谨慎；网络梗随处境出现，危险时先行动，缓过气再接话。"
+                onChange={(event) => {
+                  writingDraftTouchedRef.current = true;
+                  setWritingGuidance(event.target.value);
+                  setWritingMessage(null);
+                }}
+              />
+              <small>写人物如何反应、怎样接话，以及希望避免的写法。可以单独使用，无需选择预设文风。{writingGuidance.length}/2000</small>
+            </label>
+            <label className="ws-project-create__field">
+              <span>参考片段</span>
+              <textarea
+                className="ws-input"
+                rows={6}
+                maxLength={4000}
+                aria-label="参考片段"
+                value={writingReference}
+                disabled={!project || projectLoading || savingWriting}
+                placeholder="粘贴你认可的一小段对白或正文，也可以记录适合本书的接话和吐槽示例。"
+                onChange={(event) => {
+                  writingDraftTouchedRef.current = true;
+                  setWritingReference(event.target.value);
+                  setWritingMessage(null);
+                }}
+              />
+              <small>参考语气和节奏，不照抄原句，不把片段中的事件当作本书事实。剧情创意请写进故事想法或大纲。{writingReference.length}/4000</small>
+            </label>
+            <div className="ws-toolbar">
+              <button
+                type="button"
+                className="ws-btn ws-btn--primary"
+                disabled={!project || projectLoading || savingStyle || savingWriting || !writingChanged}
+                onClick={() => void saveWritingPreferences()}
+              >
+                {savingWriting ? "保存中..." : "保存写法"}
+              </button>
+              <span className="ws-toolbar__meta">{writingChanged ? "有未保存的写法" : "保存后从下一次写作生效"}</span>
+            </div>
+            {writingMessage ? (
+              <p
+                className={writingMessage.kind === "error" ? "ws-project-create__error" : "ws-card__hint"}
+                role={writingMessage.kind === "error" ? "alert" : "status"}
+                aria-live={writingMessage.kind === "error" ? "assertive" : "polite"}
+              >
+                {writingMessage.text}
+              </p>
+            ) : null}
             {styleMessage?.kind === "success" ? (
               <p className="ws-card__hint" role="status" aria-live="polite">
                 {styleMessage.text}

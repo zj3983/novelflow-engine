@@ -435,7 +435,10 @@ def _project_chapter(
     chapter_goal = _coerce_non_blank_str(payload, "goal")
     core_conflict = _coerce_non_blank_str(payload, "core_conflict")
     gain = _coerce_non_blank_str(payload, "gain")
-    cost = _coerce_non_blank_str(payload, "cost")
+    cost = payload.get("cost", "")
+    if not isinstance(cost, str):
+        raise ValueError("rolling_conversion_cost_invalid")
+    cost = cost.strip()
     hook = _coerce_non_blank_str(payload, "ending_hook")
     state_delta = _coerce_non_blank_str(payload, "state_delta_summary")
     foreshadowing = payload.get("foreshadowing")
@@ -460,6 +463,7 @@ def _project_chapter(
         "scenes": scenes,
         "gain": gain,
         "cost": cost,
+        "emotional_change": str(payload.get("emotional_change") or "").strip(),
         "foreshadowing": clean_foreshadowing,
         "hook": hook,
         "state_delta": state_delta,
@@ -493,8 +497,9 @@ def rolling_batch_from_generated_window(
 
     Plan rules enforced here:
 
-    * blank ``gain`` / ``cost`` / ``hook`` / ``state_delta``
+    * blank ``gain`` / ``hook`` / ``state_delta``
       raise ``ValueError`` before any row is built;
+    * ``cost`` may be absent or empty when there is no additional cost;
     * fewer than 2 scenes or more than 4 raise ``ValueError``;
     * unknown cast names raise ``ValueError``;
     * chapter numbers must equal the expected slot in order;

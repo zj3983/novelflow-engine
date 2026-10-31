@@ -491,7 +491,7 @@ def test_enabled_rolling_conversion_rejects_partial_contracts() -> None:
         )
 
 
-def test_rolling_batch_rejects_blank_gain_or_cost() -> None:
+def test_rolling_batch_rejects_blank_gain_but_accepts_no_additional_cost() -> None:
     from packages.story_core.continuation_outline_bootstrap import (
         rolling_batch_from_generated_window,
     )
@@ -505,14 +505,14 @@ def test_rolling_batch_rejects_blank_gain_or_cost() -> None:
             volume_range=(148, 160),
         )
 
-    blank_cost = detailed_chapter(148)
+    blank_cost = detailed_chapter(149)
     blank_cost["cost"] = "   "
-    with pytest.raises(ValueError):
-        rolling_batch_from_generated_window(
-            chapters=[detailed_chapter(148), blank_cost],
-            character_cards=[character_card("林修", "protagonist")],
-            volume_range=(148, 160),
-        )
+    batch = rolling_batch_from_generated_window(
+        chapters=[detailed_chapter(148), blank_cost],
+        character_cards=[character_card("林修", "protagonist")],
+        volume_range=(148, 160),
+    )
+    assert batch[1]["cost"] == ""
 
 
 def test_rolling_batch_rejects_too_few_scenes() -> None:

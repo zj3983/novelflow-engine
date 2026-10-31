@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from packages.story_core.canon.registry import CanonRegistry
 from packages.story_core.canon.review_snapshot import build_canon_review_snapshot
+from packages.story_core.canon.review_snapshot import select_review_entities
 from packages.story_core.continuity.snapshot import ChapterSnapshot
 from packages.story_core.continuity.store import ContinuityStore
 
@@ -225,3 +226,24 @@ def test_historical_rewrite_without_bounded_state_refuses_live_context(tmp_path)
     assert snapshot["characters"] == []
     assert snapshot["facts"] == []
     assert "第五章地点" not in str(snapshot)
+def test_local_review_selects_whole_entities_and_preserves_authority():
+    from copy import deepcopy
+
+    snapshot = {
+        "as_of_chapter": 311,
+        "characters": [{"name": "林修", "intent": "交班", "knowledge": "不知道旧矿井位置"}],
+        "facts": [{"source": "confirmed:311", "evidence": "钥匙已经交回。"}],
+        "foreshadowing": [{"source": "confirmed:300", "status": "resolved"}],
+        "entities": [
+            {"entity_id": "valve", "name": "回流阀", "aliases": ["旧阀"], "attributes": {"part_id": "bolt"}},
+            {"entity_id": "bolt", "name": "阀座螺栓", "attributes": {"source": "confirmed:300"}},
+            {"entity_id": "mine", "name": "旧矿井", "attributes": {"summary": "无关资料" * 1000}},
+        ],
+    }
+    before = deepcopy(snapshot)
+    selected = select_review_entities(snapshot, "检查旧阀，接好交班。")
+    assert selected["entities"] == snapshot["entities"][:2]
+    for key in ("as_of_chapter", "characters", "facts", "foreshadowing"):
+        assert selected[key] == snapshot[key]
+    assert snapshot == before
+    assert selected["entity_selection"]["omitted_entities"] == 1

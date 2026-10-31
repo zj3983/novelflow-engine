@@ -79,7 +79,7 @@ export function normalizeStoryChapterIndex(story: StoryResponse | null): Chapter
 
 export function ProjectWorkspaceProvider({ projectId, children }: ProjectWorkspaceProviderProps) {
   const pathname = usePathname() ?? "";
-  const productPage = /\/(build|write)\/?$/.test(pathname);
+  const productPage = /\/build\/?$/.test(pathname);
   const [project, setProject] = useState<ProjectResponse | null>(null);
   const [story, setStory] = useState<WorkspaceStory | null>(null);
   const [loading, setLoading] = useState(true);

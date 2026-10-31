@@ -323,27 +323,40 @@ def test_auto_quality_gate_allows_advisory_review_and_records_warning():
     assert report["quality_warning"]["needs_revision"] is True
 
 
+@pytest.mark.parametrize("chars", [4500, 4501])
+def test_auto_chapter_length_enforces_exact_4500_character_ceiling(chars):
+    body = "字" * chars
+    review = _chapter_length_review(body)
+    assert review["acceptance_pass"] is (chars <= 4500)
+    if chars <= 4500:
+        _assert_auto_chapter_length(body, operation="generate")
+    else:
+        with pytest.raises(ValueError, match="硬上限4500字"):
+            _assert_auto_chapter_length(body, operation="generate")
+
+
 def test_auto_chapter_length_rejects_body_above_hard_max():
-    body = "正文" * 2851  # 5702 non-whitespace characters
+    body = "正文" * 2251  # 4502 non-whitespace characters
 
     review = _chapter_length_review(body)
 
     assert review["pass"] is False
-    assert review["max_chars"] == 5500
-    assert review["hard_max_chars"] == 5700
-    with pytest.raises(ValueError, match="硬上限5700字"):
+    assert review["max_chars"] == 4500
+    assert review["hard_max_chars"] == 4500
+    with pytest.raises(ValueError, match="硬上限4500字"):
         _assert_auto_chapter_length(body, operation="generate")
 
 
-def test_length_review_marks_soft_target_miss_without_rejecting_candidate():
-    body = "正" * 3900
+def test_length_review_marks_soft_target_miss_without_rejecting_candidate(monkeypatch):
+    monkeypatch.setattr(importlib.import_module("packages.story_core.chapter_length_policy"), "CHAPTER_TARGET_MIN_CHARS", 3500)
+    body = "正" * 3307
 
     review = _chapter_length_review(body)
 
     assert review["pass"] is False
     assert review["acceptance_pass"] is True
-    assert review["min_chars"] == 4200
-    assert review["hard_min_chars"] == 3800
+    assert review["min_chars"] == 3500
+    assert review["hard_min_chars"] == 3000
     _assert_auto_chapter_length(body, operation="regenerate")
 
 
@@ -352,10 +365,10 @@ def test_shared_chapter_length_policy_is_the_single_source():
     assert importlib.util.find_spec(module_name) is not None
     policy = importlib.import_module(module_name)
 
-    assert policy.CHAPTER_HARD_MIN_CHARS == 3800
-    assert policy.CHAPTER_TARGET_MIN_CHARS == 4200
-    assert policy.CHAPTER_TARGET_MAX_CHARS == 5500
-    assert policy.CHAPTER_HARD_MAX_CHARS == 5700
+    assert policy.CHAPTER_HARD_MIN_CHARS == 3000
+    assert policy.CHAPTER_TARGET_MIN_CHARS == 3000
+    assert policy.CHAPTER_TARGET_MAX_CHARS == 4500
+    assert policy.CHAPTER_HARD_MAX_CHARS == 4500
     assert file_project_store_module.FILE_CHAPTER_MIN_CHARS == policy.CHAPTER_HARD_MIN_CHARS
     assert file_project_store_module.FILE_CHAPTER_TARGET_MIN_CHARS == policy.CHAPTER_TARGET_MIN_CHARS
     assert file_project_store_module.FILE_CHAPTER_MAX_CHARS == policy.CHAPTER_TARGET_MAX_CHARS
@@ -472,6 +485,17 @@ def test_project_legacy_review_preserves_existing_v2_payload():
     assert projected["review_result"]["status"] == "passed"
     # simplified_review mirrors the v2 payload (not the stale v1 issue).
     assert projected["simplified_review"] == projected["review_result"]
+
+
+def test_project_legacy_review_keeps_category_and_individual_severity():
+    projected = _project_legacy_review({"writing_review": {"blocking": [
+        {"code": "style.simile_stacking", "message": "比喻过密", "source": "deterministic"},
+        {"code": "chapter.length_too_long", "message": "超长", "source": "deterministic"},
+    ]}, "ai_flavor_review": {"issues": ["AI味偏重：报告腔明显。"]}})
+    findings = {item["code"]: item for item in projected["review_result"]["issues"]}
+    assert findings["style.simile_stacking"]["category"] == "ai_flavor"
+    assert findings["style.simile_stacking"]["blocking"] is True
+    assert any(item["category"] == "ai_flavor" and not item["blocking"] for item in findings.values())
 from packages.story_core.models import ChapterSummary, StoryState, TimelineEvent
 from packages.story_core.outline_planning import GeneratedOutlinePlan
 from packages.story_core.skill_packs import import_skill_pack_from_path
@@ -1478,8 +1502,8 @@ def test_story_overview_data_matches_state_character_synthesis_in_one_chapter_pa
     assert overview["state"]["characters"] == expected_state["characters"]
     assert {card["name"] for card in overview["state"]["characters"]} >= {
         "苏叶",
-        "药剂师洛婶",
     }
+    assert "药剂师洛婶" not in {card["name"] for card in overview["state"]["characters"]}
     assert overview["chapters"][0]["chapter_title"] == "药剂铺窗口"
     assert read_counts == {1: 1}
 
@@ -5220,6 +5244,43 @@ def test_design_next_volume_revalidates_model_output_without_writing(
     assert RollingOutlineStore(store.root).read_rolling_outline() is None
 
 
+def test_completed_ending_supports_save_and_revision_but_blocks_a_new_volume(tmp_path) -> None:
+    store = _prepare_next_volume_design_project(tmp_path)
+    outline = store.project_outline()
+    outline.pop("source", None)
+    outline["overall"].update(current_strategy="close", core_ending_chapter=50)
+    outline["arcs"][0]["is_final_arc"] = True
+    store.update_project_outline(outline)
+    before = (store.webnovel_dir / "outline.json").read_bytes()
+    generator = _NextVolumeGenerator()
+
+    workflow = store.volume_workflow_status(51)
+    assert workflow["status"] == "ending_reached"
+    assert workflow["next_action"] == "review_ending"
+    assert workflow["volume_range"] == [1, 50]
+    assert store.volume_workflow_status(50)["status"] == "volume_plan_ready"
+    with pytest.raises(ValueError, match="^ending_chapter_reached$"):
+        store.require_volume_detail_for_prose(51)
+    with pytest.raises(ValueError, match="^ending_chapter_reached$"):
+        store.design_next_volume(generator)
+    assert generator.calls == []
+    assert (store.webnovel_dir / "outline.json").read_bytes() == before
+
+
+def test_close_strategy_does_not_persist_a_non_final_generated_volume(tmp_path) -> None:
+    store = _prepare_next_volume_design_project(tmp_path)
+    outline = store.project_outline()
+    outline.pop("source", None)
+    outline["overall"].update(current_strategy="close", closing_route="Publish the ledger and return home.")
+    store.update_project_outline(outline)
+    before = (store.webnovel_dir / "outline.json").read_bytes()
+
+    with pytest.raises(ValueError, match="^closing_volume_must_be_final$"):
+        store.design_next_volume(_NextVolumeGenerator())
+
+    assert (store.webnovel_dir / "outline.json").read_bytes() == before
+
+
 def test_design_next_volume_allows_short_final_for_close_strategy(tmp_path) -> None:
     store = _prepare_next_volume_design_project(tmp_path)
     outline = store.project_outline()
@@ -7029,7 +7090,7 @@ def test_file_project_store_prompt_preview_exposes_generation_prompts(tmp_path):
     assert "原文约40字" not in by_key["expansion"]["content"]
     assert "游戏账本" in by_key["compression"]["content"]
     assert "面板反馈" in by_key["compression"]["content"]
-    assert "目标篇幅：保留完整网文章节感，调整到5000到5400字，绝对不要超过5500字。" in by_key["compression"]["content"]
+    assert "目标篇幅：保留完整网文章节感，调整到3000到4500字，绝对不要超过4500字。" in by_key["compression"]["content"]
     assert "4300到5000字" not in by_key["compression"]["content"]
     assert "只润色表达" in by_key["polish"]["content"]
     assert "不得新增、删除或改写剧情事实" in by_key["polish"]["content"]
@@ -7133,7 +7194,7 @@ def test_non_game_prompt_preview_uses_generic_expansion_and_compression(tmp_path
     assert "核心冲突" in prompts["compression"]
     assert "人物反应" in prompts["compression"]
     assert "关键线索" in prompts["compression"]
-    assert "目标篇幅：保留完整网文章节感，调整到5000到5400字，绝对不要超过5500字。" in prompts["compression"]
+    assert "目标篇幅：保留完整网文章节感，调整到3000到4500字，绝对不要超过4500字。" in prompts["compression"]
     assert "4300到5000字" not in prompts["compression"]
 
 
@@ -7167,7 +7228,7 @@ def test_game_prompt_preview_uses_explicit_plugin_id_when_genre_is_empty(tmp_pat
     prompts = {item["key"]: item["content"] for item in preview["prompts"]}
     assert "游戏账本" in prompts["compression"]
     assert "面板反馈" in prompts["compression"]
-    assert "目标篇幅：保留完整网文章节感，调整到5000到5400字，绝对不要超过5500字。" in prompts["compression"]
+    assert "目标篇幅：保留完整网文章节感，调整到3000到4500字，绝对不要超过4500字。" in prompts["compression"]
 
 
 def test_untyped_game_text_runtime_and_preview_default_to_generic(tmp_path):
@@ -8014,13 +8075,13 @@ def test_file_project_writing_packet_exposes_outline_constraints(tmp_path):
 
     packet = store.writing_packet(2)
 
-    assert packet["target_chars"] == {"min": 4200, "max": 5500}
-    assert packet["acceptance_chars"] == {"min": 3800, "max": 5700}
+    assert packet["target_chars"] == {"min": 3000, "max": 4500}
+    assert packet["acceptance_chars"] == {"min": 3000, "max": 4500}
     assert packet["hard_locks"][0] == (
-        "正文目标为4200至5500字；低于3800字或超过5700字不能通过章节检查，超过5500字应压缩。"
+        "正文目标为3000至4500字；低于3000字或超过4500字不能通过章节检查，超过4500字应压缩。"
     )
     assert packet["chapter_number"] == 2
-    assert any("4200至5500字" in lock for lock in packet["hard_locks"])
+    assert any("3000至4500字" in lock for lock in packet["hard_locks"])
     assert any("当前主线焦点：Follow the arc." in lock for lock in packet["hard_locks"])
     assert packet["scene_cards"][0]["title"] == "First Sale"
     assert packet["scene_cards"][0]["purpose"] == "finish first sale"
@@ -8116,8 +8177,8 @@ def test_compact_prompt_preview_keeps_only_chapter_execution_contract(tmp_path):
 
     preview = store._compact_prompt_preview_packet(
         {
-            "target_chars": {"min": 4200, "max": 5500},
-            "acceptance_chars": {"min": 3800, "max": 5700},
+            "target_chars": {"min": 4200, "max": 4500},
+            "acceptance_chars": {"min": 3800, "max": 4500},
             "hard_locks": ["Keep the chapter within its acceptance range."],
             "scene_cards": [{"title": "First repair", "purpose": "Fix the gate."}],
             "outline_context": {
@@ -8167,8 +8228,8 @@ def test_compact_prompt_preview_keeps_only_chapter_execution_contract(tmp_path):
         }
     )
 
-    assert preview["target_chars"] == {"min": 4200, "max": 5500}
-    assert preview["acceptance_chars"] == {"min": 3800, "max": 5700}
+    assert preview["target_chars"] == {"min": 4200, "max": 4500}
+    assert preview["acceptance_chars"] == {"min": 3800, "max": 4500}
     assert preview["chapter_outline"] == {
         "goal": "Fix the gate",
         "payoff": "Earn trust",
@@ -10442,7 +10503,11 @@ def test_file_project_store_dedupes_npc_aliases_and_filters_surface_entities(tmp
         "chapter_summary": {"summary": "夜烬问药剂师。"},
     }
 
-    cards = store._merge_character_cards([], store._chapter_entity_cards(chapter))
+    roster = [{"name": "药剂师洛婶", "role": "服务NPC", "aliases": ["药剂师NPC", "药剂铺老妇人"]}]
+    cards = store._merge_character_cards(
+        roster,
+        [*store._chapter_entity_cards(chapter), {"name": "药剂师NPC"}, {"name": "药剂铺老妇人"}],
+    )
 
     assert [card["name"] for card in cards] == ["药剂师洛婶"]
     assert cards[0]["role"] == "服务NPC"
@@ -10458,7 +10523,7 @@ def test_file_project_store_filters_stale_non_character_profiles(tmp_path):
         "project_id": "p-file",
         "character_profiles": [
             {"name": "公共频道", "role": "玩家群体", "memory": ["旧噪音。"]},
-            {"name": "药剂铺老妇人", "role": "服务NPC", "memory": ["旧药剂铺卡。"]},
+            {"name": "药剂师洛婶", "aliases": ["药剂师NPC"], "role": "服务NPC", "memory": ["旧药剂铺卡。"]},
         ],
     }
     state = {
@@ -11568,7 +11633,8 @@ def test_file_project_store_blocks_short_generated_bundle(tmp_path):
     assert not (root / ".story-system" / "chapters" / "0001.json").exists()
 
 
-def test_file_project_store_saves_short_first_draft_for_human_review(tmp_path):
+@pytest.mark.parametrize("body_chars", [85, 5812, 7050])
+def test_file_project_store_keeps_out_of_range_first_draft_as_candidate(tmp_path, body_chars):
     root = tmp_path / "novel-human-review"
     store = _make_minimal_file_project(
         root,
@@ -11589,7 +11655,7 @@ def test_file_project_store_saves_short_first_draft_for_human_review(tmp_path):
             return SimpleNamespace(
                 chapter_number=1,
                 chapter_title="First Draft",
-                body="This is a usable but short first draft.",
+                body="稿" * body_chars,
                 cadence="manual",
                 next_outline="Continue.",
                 updated_story=updated_story,
@@ -11611,17 +11677,43 @@ def test_file_project_store_saves_short_first_draft_for_human_review(tmp_path):
     )
 
     assert result["chapter_number"] == 1
-    saved = store.chapter(1)
-    assert saved["body"] == "This is a usable but short first draft."
-    assert saved["quality_report"]["manual_quality_override"] is True
+    candidate = result["candidate"]
+    assert candidate["body"] == "稿" * body_chars
+    assert candidate["status"] == "pending"
+    assert candidate["quality_report"]["length_review"]["acceptance_pass"] is False
+    from packages.story_core.simplified_review import build_simplified_review
+    assert build_simplified_review(candidate["quality_report"])["has_hard_errors"] is True
+    assert not (root / ".story-system" / "chapters" / "0001.json").exists()
+    assert store.persisted_state()["current_chapter"] == 0
+    with pytest.raises(ValueError, match="generate_(?:length|quality)_failed"):
+        store.confirm_candidate(candidate["candidate_id"], accept_quality_warnings=True)
+    assert store.candidate_store.get(candidate["candidate_id"]).status == "pending"
+    assert store.persisted_state()["current_chapter"] == 0
+
+
+@pytest.mark.parametrize("operation", ["generate", "regenerate"])
+def test_persist_bundle_cannot_bypass_length_gate_with_warning_override(tmp_path, operation):
+    root = tmp_path / "length-override"
+    store = _make_minimal_file_project(root, state={"current_chapter": 0})
+    _seed_generation_outline(root, 1)
+    bundle = {
+        "chapter_number": 1,
+        "chapter_title": "Overlong",
+        "body": "长" * 5812,
+        "quality_report": {"ok": True, "issues": [], "writing_review": {"pass": True, "issues": []}},
+    }
+    with pytest.raises(ValueError, match=f"{operation}_length_failed"):
+        store.persist_bundle(bundle, operation=operation, accept_quality_warnings=True)
+    assert not (root / ".story-system" / "chapters" / "0001.json").exists()
+    assert store.persisted_state()["current_chapter"] == 0
 
 
 @pytest.mark.parametrize(
     ("source_body", "candidate_body", "expected_mode", "prompt_marker"),
     [
-        ("短" * 3000, "补" * 4400, "expand", "不是逐句增肥"),
-        ("长" * 5600, "压" * 5000, "shorten", "删重复解释"),
-        ("中" * 4600, "润" * 4550, "polish", "只润色表达"),
+        ("短" * 2500, "补" * 3307, "expand", "不是逐句增肥"),
+        ("长" * 5600, "压" * 4400, "shorten", "删重复解释"),
+        ("中" * 4400, "润" * 4350, "polish", "只润色表达"),
     ],
     ids=["expand-short", "shorten-long", "polish-in-range"],
 )
@@ -11673,6 +11765,61 @@ def test_file_project_store_polishes_chapter_with_adaptive_length_mode(
     assert result["candidate"]["operation"] == "regenerate"
     assert store.chapter(1)["body"] == source_body
 
+    if expected_mode == "shorten":
+        with pytest.raises(ValueError, match="polish_source_candidate_invalid"):
+            store.polish_chapter(1, source_candidate_id="missing", orchestrator=orchestrator)
+        class CandidatePolisher:
+            def _timed_chat(self, story, prompt, **kwargs):
+                assert candidate_body in prompt
+                assert source_body not in prompt
+                return "再" * 4300, ""
+        refined = store.polish_chapter(
+            1, source_candidate_id=result["candidate"]["candidate_id"], orchestrator=CandidatePolisher(),
+        )
+        assert refined["candidate"]["body"] == "再" * 4300
+        assert store.chapter(1)["body"] == source_body
+
+
+def test_review_repair_saves_local_patch_candidate_without_changing_confirmed_data(tmp_path, monkeypatch):
+    from packages.story_core.agents import pipeline
+
+    class ReviewRuntime:
+        def complete(self, request):
+            return {"issues": []}
+
+    monkeypatch.setattr(pipeline, "_default_consistency_runtime", lambda root: ReviewRuntime())
+    root = tmp_path / "review-repair"
+    store = _make_minimal_file_project(root, state={"current_chapter": 1})
+    source = "保持原样。" * 800 + "\n\n他仿佛石像。\n\n收好箱子。"
+    store.write_chapter(chapter_number=1, title="修阀", body=source, summary="阀门修好。")
+    paths = [root / ".webnovel/state.json", root / ".webnovel/project.json", *root.glob("chapters/*.md")]
+    before = {path: path.read_bytes() for path in paths}
+    prompts = []
+
+    class Runner:
+        def _timed_chat(self, story, prompt, **kwargs):
+            prompts.append(prompt)
+            return json.dumps({"edits": [{"before": "他仿佛石像。", "after": "他站着没动。", "reason": "改为动作"}]}), ""
+
+    result = store.repair_chapter_review(1, orchestrator=Runner())
+    candidate = result["candidate"]
+    assert candidate["body"] == source.replace("他仿佛石像。", "他站着没动。")
+    assert candidate["status"] == "pending"
+    assert candidate["quality_report"]["review_repair"]["edits"][0]["reason"] == "改为动作"
+    assert "原句必须逐字匹配" in prompts[0]
+    assert store.chapter(1)["body"] == source
+    assert {path: path.read_bytes() for path in paths} == before
+
+    class CandidateRunner:
+        def _timed_chat(self, story, prompt, **kwargs):
+            assert "他站着没动。" in prompt
+            return json.dumps({"edits": [{"before": "他站着没动。", "after": "他握住把手。", "reason": "动作更具体"}]}), ""
+
+    next_result = store.repair_chapter_review(1, source_candidate_id=candidate["candidate_id"], orchestrator=CandidateRunner())
+    assert next_result["candidate"]["body"] == source.replace("他仿佛石像。", "他握住把手。")
+    assert store.candidate_store.get(candidate["candidate_id"]).body == candidate["body"]
+    assert {path: path.read_bytes() for path in paths} == before
+
 
 def test_file_project_store_polish_repairs_overlong_first_pass_before_saving_candidate(tmp_path):
     root = tmp_path / "manual-polish-length-repair"
@@ -11691,7 +11838,7 @@ def test_file_project_store_polish_repairs_overlong_first_pass_before_saving_can
     _seed_generation_outline(root, 1)
     source_body = "原" * 4600
     first_pass_body = "初" * 5900
-    repaired_body = "改" * 5000
+    repaired_body = "改" * 4400
     store.write_chapter(
         chapter_number=1,
         title="Chapter To Polish",
@@ -11716,7 +11863,7 @@ def test_file_project_store_polish_repairs_overlong_first_pass_before_saving_can
     assert "删重复解释" in orchestrator.calls[1]["prompt"]
     assert orchestrator.calls[1]["kwargs"]["stage"] == "章节润色字数校正（shorten） 第1章"
     assert result["candidate"]["body"] == repaired_body
-    assert result["after_chars"] == 5000
+    assert result["after_chars"] == 4400
     assert result["length_repair_applied"] is True
     assert store.chapter(1)["body"] == source_body
 
@@ -11894,8 +12041,8 @@ def test_file_project_store_keeps_shorter_than_target_expansion_as_reviewable_ca
             "world_facts": [],
         },
     )
-    source_body = "原" * 3500
-    expanded_body = "新" * 3700
+    source_body = "原" * 2500
+    expanded_body = "新" * 2800
     store.write_chapter(
         chapter_number=1,
         title="Short Chapter",

@@ -142,7 +142,7 @@ def _pace_contract(chapter_number: int, level: int | None, *, genre_mode: str) -
         }
     return {
         "pace": "长线章节也要有本章兑现",
-        "must_payoff": "本章必须完成一个阶段结果，同时留下新的压力。",
+        "must_payoff": "本章完成一个阶段结果，自然带出下一步；可以兑现、交接或缓和，不强加新危机。",
         "must_not_drag": "不能用世界观说明替代行动结果。",
     }
 
@@ -158,7 +158,7 @@ def _snowball_logic(chapter_number: int, *, genre_mode: str) -> list[str]:
         return [
             "本章的修行所得、资源消耗和人情因果必须留到后续继续发生作用。",
             "宗门与他人只能依据可见行为、秩序和利益作出反应。",
-            "每次选择都要留下可追踪的因果或资源代价。",
+            "选择应产生可追踪的后果；按计划记录已有成本，不要求每次选择都有新增代价。",
         ]
     if genre_mode == "unknown":
         return [

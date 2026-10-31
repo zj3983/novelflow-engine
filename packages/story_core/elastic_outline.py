@@ -13,6 +13,20 @@ DETAIL_WINDOW = 10
 EXTENSION_WARNING = 3
 
 
+def completed_closing_volume(
+    outline: dict[str, Any], *, current_chapter: int
+) -> dict[str, Any] | None:
+    """Find the completed final volume selected by the author's close strategy."""
+    overall = outline.get("overall", {})
+    ending = overall.get("core_ending_chapter", 0)
+    if overall.get("current_strategy") != "close" or current_chapter < ending:
+        return None
+    volume = find_volume_for_chapter(outline.get("arcs", []), ending)
+    if volume and volume.get("is_final_arc") and volume["end_chapter"] == ending:
+        return volume
+    return None
+
+
 def _normalize_for_current_chapter(
     outline: dict[str, Any], *, current_chapter: int
 ) -> dict[str, Any]:
@@ -110,7 +124,14 @@ def validate_outline_for_project(
     if normalized["overall"]["core_ending_chapter"] < current_chapter:
         raise ValueError("core_ending_before_current_chapter")
     if normalized["overall"]["current_strategy"] == "close":
-        target = current_chapter + 1
+        closing_volume = completed_closing_volume(
+            normalized, current_chapter=current_chapter
+        )
+        target = (
+            int(closing_volume["end_chapter"])
+            if closing_volume is not None
+            else current_chapter + 1
+        )
         active = next(
             (
                 arc
@@ -119,6 +140,8 @@ def validate_outline_for_project(
             ),
             None,
         )
-        if active is None or not active["extension_gate"]["close_route"].strip():
+        overall_route = normalized["overall"]["closing_route"].strip()
+        stage_route = active["extension_gate"]["close_route"].strip() if active else ""
+        if not overall_route and not stage_route:
             raise ValueError("close_route_required_for_active_arc")
     return normalized

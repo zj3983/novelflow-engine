@@ -60,9 +60,9 @@ def _writer_power_spec() -> dict:
 
 
 def test_writer_default_length_matches_quality_target_instead_of_triggering_expansion():
-    assert _plan_target_chars({}) == "4200到5000字，绝对不要超过5500字"
-    assert _plan_target_chars({"target_chars": 3000}) == "4200到5000字，绝对不要超过5500字"
-    assert _plan_target_chars({"target_chars": 4800}) == "4500到5100字，绝对不要超过5500字"
+    assert _plan_target_chars({}) == "3000到4500字，绝对不要超过4500字"
+    assert _plan_target_chars({"target_chars": 3000}) == "3000到3300字，绝对不要超过4500字"
+    assert _plan_target_chars({"target_chars": 4800}) == "4200到4500字，绝对不要超过4500字"
 
 
 def test_director_context_uses_current_chapter_cast_not_future_outline_names():
