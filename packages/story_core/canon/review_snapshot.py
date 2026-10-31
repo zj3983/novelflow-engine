@@ -222,6 +222,7 @@ def _state_continuity_facts(
             as_of_chapter=as_of_chapter,
         )
         if normalized is not None:
+            normalized["authority"] = "confirmed"
             result.append(normalized)
     return _dedupe_dicts(result)
 
@@ -241,6 +242,7 @@ def _state_world_facts(
             as_of_chapter=as_of_chapter,
         )
         if normalized is not None:
+            normalized["authority"] = "confirmed"
             result.append(normalized)
     return _dedupe_dicts(result)
 
@@ -260,6 +262,10 @@ def _context_facts(
             as_of_chapter=as_of_chapter,
         )
         if normalized is not None:
+            # Context labels are supplied by callers, not proof of committed Canon.
+            normalized["context_origin"] = normalized["source"]
+            normalized["source"] = source
+            normalized["authority"] = "context"
             result.append(normalized)
     return _dedupe_dicts(result)
 

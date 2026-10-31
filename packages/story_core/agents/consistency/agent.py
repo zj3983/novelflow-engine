@@ -138,6 +138,10 @@ def _snapshot_evidence(
     def add_item(collection: str, index: int, item: Any) -> None:
         if not isinstance(item, dict):
             return
+        if item.get("authority") == "context" or (
+            item.get("source") == "writer_context" and item.get("authority") != "confirmed"
+        ):
+            return
         sources.add(f"canon.{collection}:{index}".casefold())
         source = _evidence_token(item.get("source"))
         if source and source not in _GENERIC_CANON_SOURCES:
@@ -201,12 +205,10 @@ def _has_verified_canon_evidence(
         return False
     source_token = _evidence_token(source)
     evidence_token = _evidence_token(canon_evidence)
-    return (
-        source_token in sources
-        or source_token in evidence
-        or evidence_token in sources
-        or evidence_token in evidence
-    )
+    # A valid source ID cannot validate an explicitly fabricated quotation.
+    if evidence_token:
+        return evidence_token in sources or evidence_token in evidence
+    return source_token in sources or source_token in evidence
 
 
 def _evidence_label(item: dict[str, Any], *, fallback: str) -> str:
@@ -218,6 +220,10 @@ def _evidence_label(item: dict[str, Any], *, fallback: str) -> str:
         parts.append(f"第{chapter}章")
     if evidence:
         parts.append(f"证据：{evidence}")
+    if item.get("authority") == "context" or (
+        source == "writer_context" and item.get("authority") != "confirmed"
+    ):
+        parts.append("上下文参考，不作为阻断证据")
     return " | ".join(parts)
 
 
@@ -434,7 +440,7 @@ def _downgrade_non_factual(
     # Program-level hard gates are constructed outside this adapter and do not
     # set require_canon_evidence, so they retain their own disposition.
     if require_canon_evidence:
-        return _has_verified_canon_evidence(
+        return blocking and _has_verified_canon_evidence(
             source=source,
             canon_evidence=canon_evidence,
             canon_snapshot=canon_snapshot,
