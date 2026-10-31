@@ -50,16 +50,19 @@ def edit_scene_outline(store, number: int, payload: dict, assert_allowed=lambda:
             raise ValueError("rolling_chapter_scene_field_blank")
         merged.update(source="manual", last_manual_edit_at=_utc_timestamp())
         rolling = {**rolling, "chapters": [merged if c["chapter_number"] == number else c for c in rolling["chapters"]]}
-        adapted = rolling_chapter_to_outline_entry(merged)
-        # Replace the old scene chain, including removed scenes. Generation
-        # still consumes this compatibility field alongside rolling scenes.
-        adapted["scene_chain"] = [
-            ChapterScenePlan(
-                location=scene["location"], action=scene["action"], change=scene["result"],
-            ).model_dump(mode="json")
-            for scene in merged["scenes"]
-        ]
         previous = next((c for c in outline["chapters"] if c["chapter_number"] == number), {})
+        adapted = rolling_chapter_to_outline_entry(merged, base_entry=previous)
+        if merged["scenes"] == old["scenes"] and previous.get("scene_chain"):
+            # The rolling view omits POV, goals and state deltas; an unchanged
+            # scene submission must retain those original details.
+            adapted["scene_chain"] = deepcopy(previous["scene_chain"])
+        else:
+            adapted["scene_chain"] = [
+                ChapterScenePlan(
+                    location=scene["location"], action=scene["action"], change=scene["result"],
+                ).model_dump(mode="json")
+                for scene in merged["scenes"]
+            ]
         if "must_not_write" not in merged and "must_not_write" in previous:
             adapted["must_not_write"] = deepcopy(previous["must_not_write"])
         legacy = ChapterPlan.model_validate({

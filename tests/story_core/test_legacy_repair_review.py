@@ -73,6 +73,73 @@ def confirmed_files(store):
             if folder.exists() for p in folder.rglob("*") if p.is_file()}
 
 
+@pytest.mark.parametrize(("goal", "body_chars"), [(6000, 4999), (2000, 1900)])
+def test_review_repair_uses_project_length_goal(tmp_path, monkeypatch, goal, body_chars):
+    from packages.story_core.chapter_length_policy import acceptance_chars, target_chars
+
+    store = legacy_store(tmp_path)
+    project = store.project()
+    project["target_chapter_words"] = goal
+    store._write_json_atomic(store.webnovel_dir / "project.json", project)
+    body = "林照拿到铜钥匙。" + "静" * (body_chars - len("林照拿到铜钥匙。"))
+    store.write_chapter(chapter_number=1, title="旧锁", body=body, summary="钥匙已经取得。", overwrite=True)
+    before = confirmed_files(store)
+    prompts = []
+
+    class Writer(PatchWriter):
+        def _timed_chat(self, story, prompt, **kwargs):
+            prompts.append(prompt)
+            return super()._timed_chat(story, prompt, **kwargs)
+
+    monkeypatch.setattr(pipeline, "_default_consistency_runtime", lambda root: UnavailableReview())
+    result = store.repair_chapter_review(1, orchestrator=Writer())
+    assert len(prompts) == 1
+    target, accepted = target_chars(goal), acceptance_chars(goal)
+    assert f"目标{target['min']}至{target['max']}" in prompts[0]
+    assert f"硬性范围{accepted['min']}至{accepted['max']}" in prompts[0]
+    assert result["candidate"]["body"] == body.replace("拿到", "接过")
+    assert result["candidate"]["quality_report"]["length_review"]["acceptance_pass"] is True
+    assert confirmed_files(store) == before
+
+
+def test_polish_pending_first_chapter_retains_source_and_requires_recheck(tmp_path):
+    from packages.story_core.candidate_draft import CandidateDraft
+    from packages.story_core.opening_build.execution import source_fingerprint
+    from tests.story_core.test_file_project_store import _seed_generation_outline
+
+    store = _make_minimal_file_project(tmp_path / "pending-polish", state={"current_chapter": 0})
+    _seed_generation_outline(store.root, 1)
+    body = "林照拿到铜钥匙。\n" + "静" * 3500 + "\n他关好门。"
+    source = CandidateDraft.create(project_id=store.project()["project_id"], chapter_number=1,
+        chapter_title="旧锁", body=body, operation="generate", submission_payload={"chapter_number": 1,
+            "updated_story": {"world_facts": ["STALE_POLISH_FACT"]},
+            "chapter_summary": {"facts": ["STALE_POLISH_FACT"]}})
+    source.review_binding = {"state": "unchecked", "source": source_fingerprint(store)}
+    store.candidate_store.save(source)
+
+    class Writer:
+        def _timed_chat(self, story, prompt, **kwargs):
+            assert body in prompt
+            return body.replace("拿到", "接过"), ""
+
+    result = store.polish_chapter(1, source_candidate_id=source.candidate_id, orchestrator=Writer())
+    assert result["candidate"]["body"] == body.replace("拿到", "接过")
+    assert result["candidate"]["operation"] == "generate"
+    assert store.persisted_state()["current_chapter"] == 0
+    retained = store.candidate_store.get(source.candidate_id)
+    assert retained.body == body and retained.status == "pending"
+    candidate = store.candidate_store.get(result["candidate"]["candidate_id"])
+    with pytest.raises(ValueError, match="candidate_review_required"):
+        store.confirm_candidate(candidate.candidate_id, accept_quality_warnings=True)
+    assert "STALE_POLISH_FACT" not in str(candidate.submission_payload)
+    assert candidate.review_binding["state"] == "unchecked"
+    assert store.chapter_numbers() == []
+    reviewed = recheck(store, candidate.candidate_id, expected=candidate_authority(candidate),
+                       consistency_runtime=PassingReview())
+    store.confirm_candidate(reviewed.candidate_id, accept_quality_warnings=True)
+    assert store.chapter(1)["body"] == body.replace("拿到", "接过")
+
+
 def test_repair_preserves_specific_preflight_failure_without_writing(tmp_path):
     from types import SimpleNamespace
     from packages.story_core.model_gateway.preflight import ModelPreflightBlockedError

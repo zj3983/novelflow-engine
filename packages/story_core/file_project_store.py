@@ -7515,7 +7515,7 @@ class FileProjectStore(
         keep_length_candidate = (
             accept_quality_warnings
             and bool(draft_body.strip())
-            and not _chapter_length_review(draft_body)["acceptance_pass"]
+            and not _chapter_length_review(draft_body, goal=project.get("target_chapter_words"))["acceptance_pass"]
         )
         if not persist or keep_length_candidate:
             project_id = str(

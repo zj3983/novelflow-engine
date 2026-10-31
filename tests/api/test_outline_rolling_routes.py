@@ -255,6 +255,36 @@ def test_scene_edit_syncs_all_views_and_rejects_stale_or_invalid_save(rolling_ap
     assert (store.webnovel_dir / "state.json").read_bytes() == state_before
 
 
+@pytest.mark.parametrize("submit_all_fields", [False, True], ids=["title-only", "unchanged-scenes"])
+def test_title_edit_preserves_emotional_change_and_scene_metadata(rolling_api, submit_all_fields):
+    client, export_root = rolling_api
+    project_id = _seed_minimal_file_project(export_root)
+    store = FileProjectStore(export_root / "p-rolling-test")
+    _write_rolling_outline(store, [1])
+    row = _outline_row(1)
+    outline = store.project_outline()
+    outline["chapters"] = [{
+        "chapter_number": 1, "title": row["title"], "emotional_change": "从戒备到信任",
+        "scene_chain": [{
+            "location": scene["location"], "action": scene["action"], "change": scene["result"],
+            "pov": "林修", "goal": "查明裂纹", "obstacle": "旧伤限制行动",
+            "next": "与同伴交流线索", "state_delta": {"injury": "旧伤仍在"},
+        } for scene in row["scenes"]],
+    }]
+    store.update_project_outline(outline)
+    previous = store.project_outline()["chapters"][0]
+    payload = {**row, "title": "新章名"} if submit_all_fields else {"title": "新章名"}
+    response = client.put(f"/file-projects/{project_id}/outline/rolling-chapter/1", json=payload)
+    assert response.status_code == 200, response.text
+    updated = store.project_outline()["chapters"][0]
+    assert updated["title"] == "新章名"
+    assert updated["emotional_change"] == previous["emotional_change"]
+    assert updated["scene_chain"] == previous["scene_chain"]
+    canonical = json.loads((store.story_system_dir / "outline.json").read_text(encoding="utf-8"))
+    assert canonical["chapters"][0]["emotional_change"] == previous["emotional_change"]
+    assert canonical["chapters"][0]["scene_chain"] == previous["scene_chain"]
+
+
 def test_scene_edit_rolls_back_all_views_on_failure(rolling_api, monkeypatch):
     from packages.story_core.outline_manual_edit import edit_scene_outline
     from packages.story_core.persistence.snapshot_store import SnapshotStore

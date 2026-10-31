@@ -11633,8 +11633,8 @@ def test_file_project_store_blocks_short_generated_bundle(tmp_path):
     assert not (root / ".story-system" / "chapters" / "0001.json").exists()
 
 
-@pytest.mark.parametrize("body_chars", [85, 5812, 7050])
-def test_file_project_store_keeps_out_of_range_first_draft_as_candidate(tmp_path, body_chars):
+@pytest.mark.parametrize(("body_chars", "target_words"), [(85, None), (5812, None), (7050, None), (3500, 8000)])
+def test_file_project_store_keeps_out_of_range_first_draft_as_candidate(tmp_path, body_chars, target_words):
     root = tmp_path / "novel-human-review"
     store = _make_minimal_file_project(
         root,
@@ -11648,6 +11648,9 @@ def test_file_project_store_keeps_out_of_range_first_draft_as_candidate(tmp_path
         },
     )
     _seed_generation_outline(root, 1)
+    if target_words is not None:
+        project = store.project()
+        store._write_json_atomic(store.webnovel_dir / "project.json", {**project, "target_chapter_words": target_words})
 
     class FakeEngine:
         def generate_next_chapter(self, story):
@@ -11689,6 +11692,29 @@ def test_file_project_store_keeps_out_of_range_first_draft_as_candidate(tmp_path
         store.confirm_candidate(candidate["candidate_id"], accept_quality_warnings=True)
     assert store.candidate_store.get(candidate["candidate_id"]).status == "pending"
     assert store.persisted_state()["current_chapter"] == 0
+
+
+def test_file_project_store_persists_first_draft_within_custom_length_goal(tmp_path):
+    root = tmp_path / "custom-length-goal"
+    store = _make_minimal_file_project(root, state={"current_chapter": 0, "world_facts": []})
+    _seed_generation_outline(root, 1)
+    project = store.project()
+    store._write_json_atomic(store.webnovel_dir / "project.json", {**project, "target_chapter_words": 2000})
+
+    class FakeEngine:
+        def generate_next_chapter(self, story):
+            return SimpleNamespace(
+                chapter_number=1, chapter_title="First Draft", body="稿" * 2000,
+                cadence="manual", next_outline="Continue.",
+                updated_story=story.model_copy(update={"current_chapter": 1}),
+                chapter_summary={"summary": "A first draft.", "facts": []},
+            )
+
+    result = store.generate_next_chapter(engine=FakeEngine(), accept_quality_warnings=True)
+    assert result["schema_version"] == "file-project-generate-next/v1"
+    assert store.chapter(1)["body"] == "稿" * 2000
+    assert store.persisted_state()["current_chapter"] == 1
+    assert not store.candidate_store.list()
 
 
 @pytest.mark.parametrize("operation", ["generate", "regenerate"])
