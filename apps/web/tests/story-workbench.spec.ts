@@ -1137,7 +1137,7 @@ test("write page sends a finished volume to next-volume design", async ({ page }
   });
 
   await page.goto(`/projects/${fixture.encodedId}/write?chapter=1`);
-  await expect(page.getByLabel("下一章准备状态")).toContainText("请先设计下一卷");
+  await expect(page.getByLabel("下一章准备状态")).toContainText("先设计新一卷，再生成这一卷的章节细纲。");
   await expect(page.getByRole("button", { name: "生成下一章" })).toBeDisabled();
   await page.getByRole("link", { name: "先设计下一卷" }).click();
   await expect(page).toHaveURL(/outline\?tab=arcs&chapter=2&reason=volume_missing/);
@@ -1162,7 +1162,7 @@ test("write page blocks prose while volume detail is partial", async ({ page }) 
   });
 
   await page.goto(`/projects/${fixture.encodedId}/write?chapter=1`);
-  await expect(page.getByLabel("下一章准备状态")).toContainText("本卷细纲只完成了一部分");
+  await expect(page.getByLabel("下一章准备状态")).toContainText("请先补完第 1–60 章的细纲。");
   await expect(page.getByRole("button", { name: "生成下一章" })).toBeDisabled();
   await expect(page.getByRole("link", { name: "继续生成本卷细纲" })).toBeVisible();
 });
@@ -1179,7 +1179,7 @@ test("write page does not start prose when volume workflow cannot be read", asyn
   });
 
   await page.goto(`/projects/${fixture.encodedId}/write?chapter=1`);
-  await expect(page.getByLabel("下一章准备状态")).toContainText("卷纲状态读取失败");
+  await expect(page.getByLabel("下一章准备状态")).toContainText("大纲状态暂时无法读取，请稍后重试或查看运行记录。");
   await expect(page.getByRole("button", { name: "生成下一章" })).toBeDisabled();
   expect(generationCalls).toBe(0);
 });
@@ -2312,15 +2312,16 @@ test("narrow write page keeps the reader below the directory without body auto-s
   await expect(chapterList).toBeVisible();
   const listDimensions = await chapterList.evaluate((element) => ({
     clientHeight: element.clientHeight,
-    scrollHeight: element.scrollHeight,
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth,
   }));
-  expect(listDimensions.clientHeight).toBeLessThanOrEqual(440);
-  expect(listDimensions.scrollHeight).toBeGreaterThan(listDimensions.clientHeight);
+  expect(listDimensions.clientHeight).toBeLessThanOrEqual(180);
+  expect(listDimensions.scrollWidth).toBeGreaterThan(listDimensions.clientWidth);
 
   const pageScrollTop = await page.evaluate(() => document.scrollingElement?.scrollTop ?? 0);
   await page.locator(`a[href="/projects/${fixture.encodedId}/write?chapter=2"]`).click();
   await expect(page).toHaveURL(`/projects/${fixture.encodedId}/write?chapter=2`);
-  await expect(page.getByRole("heading", { name: "章节：第 2 章" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "第 2 章", exact: true })).toBeVisible();
   const readerTop = await page.locator("#chapter-reader").evaluate((element) => element.getBoundingClientRect().top);
   expect(readerTop).toBeGreaterThanOrEqual(0);
   expect(await page.evaluate(() => document.scrollingElement?.scrollTop ?? 0)).toBe(pageScrollTop);
@@ -2464,7 +2465,7 @@ test("write directory retains the visible body while the next chapter loads", as
   await chapterRequested;
   await expect(page.getByText("林照在灰狼坡发现了一枚刻着商会印记的旧铜牌。", { exact: true })).toBeVisible();
   releaseChapterDetail();
-  await expect(page.getByRole("heading", { name: "章节：第 2 章" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "第 2 章", exact: true })).toBeVisible();
   await expect(page.getByText("第 2 章正文，只属于当前选择。")).toBeVisible();
   await expect(page.getByText("林照在灰狼坡发现了一枚刻着商会印记的旧铜牌。", { exact: true })).toHaveCount(0);
   expect(calls.filter((path) => path.endsWith("/chapters/1"))).toHaveLength(1);
@@ -2992,6 +2993,9 @@ test("file project outline edits three levels and runs outline generation", asyn
       }),
     });
   });
+  await page.route("**/file-projects/file%3Aoutline-fixture/outline/ending-audit", async (route) => {
+    await route.fulfill({ json: { schema_version: "ending-audit/v1", version: "fixture", items: [], pending_count: 0 } });
+  });
   await page.route("**/file-projects/file%3Aoutline-fixture/outline/volume-workflow?target_chapter=21", async (route) => {
     await route.fulfill({
       status: 200,
@@ -3127,7 +3131,7 @@ test("file project outline edits three levels and runs outline generation", asyn
   await page.getByLabel("收束路线").fill("");
   await page.getByRole("tab", { name: "总纲", exact: true }).click();
   await expect(page.getByRole("radio", { name: "收束" })).toBeDisabled();
-  await expect(page.getByText("请先填写当前阶段的收束路线。", { exact: true })).toBeVisible();
+  await expect(page.getByText("先填写上面的收束路线，就可以选择收束。", { exact: true })).toBeVisible();
   await page.getByLabel("核心完结章数").fill("");
   await page.getByRole("button", { name: "保存大纲" }).click();
   await expect(page.getByText("请输入有效的核心完结章数和最大扩展章数。", { exact: true })).toBeVisible();
@@ -3136,10 +3140,10 @@ test("file project outline edits three levels and runs outline generation", asyn
   await page.getByRole("tab", { name: "阶段大纲", exact: true }).click();
   await page.getByLabel("收束路线").fill("回收旧名册并转入最终审判。");
   await page.getByRole("tab", { name: "章节大纲", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "待写章节细纲" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "当前卷待写细纲" })).toBeVisible();
   await expect(page.getByText("第 21 章 · 旧名册缺页", { exact: true })).toBeVisible();
   await expect(page.getByText("找到旧名册缺失的一页", { exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "已完成章节记录" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "其他章级记录" })).toBeVisible();
   await expect(page.getByLabel("暂定标题").first()).toHaveValue("守炉");
   await page.getByRole("button", { name: "保存大纲" }).click();
 
@@ -3156,7 +3160,7 @@ test("file project outline edits three levels and runs outline generation", asyn
   expect(savedBody).not.toHaveProperty("source");
 
   await page.getByLabel("本次生成补充要求").fill("阶段对手必须有现实利益");
-  await page.getByRole("button", { name: "重新生成" }).click();
+  await page.getByRole("button", { name: "重新规划全书大纲", exact: true }).click();
   await expect.poll(() => generationBody).toEqual({ mode: "regenerate", guidance: "阶段对手必须有现实利益" });
   await expect(page.getByLabel("本次生成补充要求")).toHaveValue("");
   await expect(page.getByLabel("大纲生成步骤")).toContainText("总纲与阶段大纲");
@@ -3456,6 +3460,7 @@ test("relationship workspace defaults to protagonist and saves the canonical gra
   await page.goto("/projects/file%3Arelationship-fixture/relationships");
 
   await expect(page.getByRole("heading", { name: "人物关系" })).toBeVisible();
+  await page.getByRole("group", { name: "项目", exact: true }).locator("summary").click();
   await expect(page.getByRole("link", { name: "项目设置" })).toHaveAttribute(
     "href",
     "/projects/file%3Arelationship-fixture/settings",
@@ -3584,6 +3589,7 @@ for (const generationCase of [
 for (const source of ["confirmed", "candidate"] as const) {
 test(`contextual prose review refreshes ${source} findings without changing prose`, async ({ page }) => {
   const fixture = await routeCurrentFileProject(page, `contextual-review-${source}`);
+  const chapterNumber = source === "candidate" ? 2 : 1;
   const body = "他把工具箱推回墙边，让门人自己核对压力读数。";
   const categories = { hard: { label: "硬伤", count: 0 }, dialogue: { label: "对话", count: 0 }, ai_flavor: { label: "AI味", count: 0 }, prose: { label: "正文", count: 0 } };
   const initial = { ok: true, simplified_review: {
@@ -3591,7 +3597,7 @@ test(`contextual prose review refreshes ${source} findings without changing pros
     diagnostics: { requires_contextual_prose_review: true, contextual_prose_review_executed: false },
   } };
   Object.assign(fixture.story.history[0], { body, quality_report: initial });
-  const candidateState: CandidateRouteState = { current: source === "candidate" ? pendingCandidate(fixture.projectId, 1, body) : null };
+  const candidateState: CandidateRouteState = { current: source === "candidate" ? pendingCandidate(fixture.projectId, chapterNumber, body) : null };
   if (candidateState.current) candidateState.current.quality_report = initial;
   await routeCandidateLifecycle(page, fixture.encodedId, candidateState);
   const requests: unknown[] = [];
@@ -3605,23 +3611,24 @@ test(`contextual prose review refreshes ${source} findings without changing pros
     } };
     fixture.story.history[0].quality_report = updated;
     if (candidateState.current) candidateState.current.quality_report = updated;
-    await route.fulfill({ json: { job_id: "contextual-job", status: "completed", chapter_number: 1, steps: [], progress: "上下文审稿完成" } });
+    await route.fulfill({ json: { job_id: "contextual-job", status: "completed", chapter_number: chapterNumber, steps: [], progress: "上下文审稿完成" } });
   });
-  await page.goto(`/projects/${fixture.encodedId}/write?chapter=1`);
+  await page.goto(`/projects/${fixture.encodedId}/write?chapter=${chapterNumber}`);
+  if (source === "candidate") await expect(page.getByRole("region", { name: "候选稿", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "上下文审稿", exact: true }).click();
   const explanation = page.getByRole("complementary", { name: "标注问题说明" });
   await expect(explanation).toContainText("前一句已经说明停止抢修");
   await expect(explanation).toContainText("直接回应门人的追问，保留必要术语。");
   const prose = page.getByTestId("annotated-chapter-body");
   expect((await prose.locator("p").allTextContents()).join("\n\n")).toBe(body);
-  expect(requests).toEqual([{ chapter_number: 1, operation: "context_review", ...(candidateState.current ? { source_candidate_id: candidateState.current.candidate_id } : {}) }]);
+  expect(requests).toEqual([{ chapter_number: chapterNumber, operation: "context_review", ...(candidateState.current ? { source_candidate_id: candidateState.current.candidate_id } : {}) }]);
 });
 }
 
 for (const executed of [false, true]) {
 test(`AI flavor review distinguishes execution from zero findings: ${executed}`, async ({ page }) => {
   const fixture = await routeCurrentFileProject(page, `ai-review-execution-${executed}`);
-  const candidate = pendingCandidate(fixture.projectId, 1, "正文保持原样。".repeat(800));
+  const candidate = pendingCandidate(fixture.projectId, 2, "正文保持原样。".repeat(800));
   candidate.quality_report = { simplified_review: {
     schema_version: "simplified-review/v1", status: "passed", pass: true, has_hard_errors: false,
     needs_revision: false, summary: "检查结果", total_issues: 0, issues: [], revision_plan: [],
@@ -3629,8 +3636,8 @@ test(`AI flavor review distinguishes execution from zero findings: ${executed}`,
     diagnostics: { ai_flavor_check_executed: executed },
   } };
   await routeCandidateLifecycle(page, fixture.encodedId, { current: candidate });
-  await page.goto(`/projects/${fixture.encodedId}/write?chapter=1`);
-  await page.getByText("查看候选稿审查", { exact: true }).click();
+  await page.goto(`/projects/${fixture.encodedId}/write?chapter=2`);
+  await page.getByRole("region", { name: "候选稿", exact: true }).getByText("查看候选稿审查", { exact: true }).click();
   const review = page.getByLabel("候选稿").getByTestId("simplified-review");
   await expect(review).toContainText(executed ? "AI味 0" : "AI味 未检查");
   await expect(review).toContainText(executed ? "AI味规则检查已执行" : "AI味专项检查未执行");
@@ -3640,6 +3647,7 @@ test(`AI flavor review distinguishes execution from zero findings: ${executed}`,
 for (const annotationSource of ["confirmed", "candidate"] as const) {
 test(`all review findings mark every exact occurrence in ${annotationSource} prose`, async ({ page }) => {
   const fixture = await routeCurrentFileProject(page, `all-review-annotations-${annotationSource}`);
+  const chapterNumber = annotationSource === "candidate" ? 2 : 1;
   const body = "普通叙述。".repeat(800) + "\n\n此刻他查看数据，记录异常。此刻她核对数据，记下基准。\n\n“波纹细密，一息九颤，收敛。”";
   const messages = ["AI高频套话进入正文：此刻。", "正文存在解释腔", "后台硬词：基准。", "清单式对白"];
   const quality = { ok: true,
@@ -3656,11 +3664,12 @@ test(`all review findings mark every exact occurrence in ${annotationSource} pro
   const state: CandidateRouteState = { current: null };
   Object.assign(fixture.story.history[0], { body, quality_report: quality });
   if (annotationSource === "candidate") {
-    state.current = pendingCandidate(fixture.projectId, 1, body);
+    state.current = pendingCandidate(fixture.projectId, chapterNumber, body);
     state.current.quality_report = quality;
   }
   await routeCandidateLifecycle(page, fixture.encodedId, state);
-  await page.goto(`/projects/${fixture.encodedId}/write?chapter=1`);
+  await page.goto(`/projects/${fixture.encodedId}/write?chapter=${chapterNumber}`);
+  if (annotationSource === "candidate") await expect(page.getByRole("region", { name: "候选稿", exact: true })).toBeVisible();
   const panel = page.getByRole("region", { name: "正文问题标注" });
   await expect(panel).toContainText("正文标注 7 处");
   await expect(panel).toContainText("原文问题 4 项 · 全章问题 1 项 · 待定位 0 项");
@@ -3681,6 +3690,7 @@ test(`all review findings mark every exact occurrence in ${annotationSource} pro
 
 test(`review annotations locate issues in ${annotationSource} prose without changing text`, async ({ page }) => {
   const fixture = await routeCurrentFileProject(page, `review-annotations-${annotationSource}`);
+  const chapterNumber = annotationSource === "candidate" ? 2 : 1;
   const body = "普通叙述。".repeat(1100) + "\n\n" + Array.from({ length: 8 }, (_, index) => `第${index}道阀门如同铁墙。`).join("\n\n");
   const quality = {
     ok: false, issues: ["writing_review"], writing_review: { pass: false, blocking: [
@@ -3695,11 +3705,12 @@ test(`review annotations locate issues in ${annotationSource} prose without chan
   const state: CandidateRouteState = { current: null };
   Object.assign(fixture.story.history[0], { body, quality_report: quality });
   if (annotationSource === "candidate") {
-    state.current = pendingCandidate(fixture.projectId, 1, body);
+    state.current = pendingCandidate(fixture.projectId, chapterNumber, body);
     state.current.quality_report = quality;
   }
   await routeCandidateLifecycle(page, fixture.encodedId, state);
-  await page.goto(`/projects/${fixture.encodedId}/write?chapter=1`);
+  await page.goto(`/projects/${fixture.encodedId}/write?chapter=${chapterNumber}`);
+  if (annotationSource === "candidate") await expect(page.getByRole("region", { name: "候选稿", exact: true })).toBeVisible();
   const panel = page.getByRole("region", { name: "正文问题标注" });
   await expect(panel).toContainText("正文标注 8 处");
   await expect(panel).toContainText("全章问题：章节字数超限。");
@@ -3732,6 +3743,7 @@ test(`review annotations locate issues in ${annotationSource} prose without chan
 for (const repairSource of ["confirmed", "candidate"] as const) {
 test(`review repair creates a precise candidate from ${repairSource} and keeps the original`, async ({ page }) => {
   const fixture = await routeCurrentFileProject(page, `review-repair-${repairSource}`);
+  const chapterNumber = repairSource === "candidate" ? 2 : 1;
   const original = fixture.story.history[0].body;
   Object.assign(fixture.story.history[0], { quality_report: {
     ok: false, issues: ["writing_review"], simplified_review: {
@@ -3742,28 +3754,33 @@ test(`review repair creates a precise candidate from ${repairSource} and keeps t
   } });
   const state: CandidateRouteState = { current: null };
   if (repairSource === "candidate") {
-    state.current = pendingCandidate(fixture.projectId, 1, original);
+    state.current = pendingCandidate(fixture.projectId, chapterNumber, original);
     state.current.quality_report = fixture.story.history[0].quality_report;
   }
   await routeCandidateLifecycle(page, fixture.encodedId, state);
   let payload: Record<string, unknown> | null = null;
   await page.route(`**/file-projects/${fixture.encodedId}/generation-jobs`, async route => {
     payload = route.request().postDataJSON();
-    state.current = pendingCandidate(fixture.projectId, 1, "精修后的候选稿。");
+    state.current = pendingCandidate(fixture.projectId, chapterNumber, "精修后的候选稿。");
     state.current.quality_report = { ok: true, review_repair: { edits: [{ before: "他仿佛石像。", after: "他站着没动。", reason: "删去比喻" }] } };
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ job_id: "repair-job", status: "completed", chapter_number: 1, steps: [] }) });
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ job_id: "repair-job", status: "completed", chapter_number: chapterNumber, steps: [] }) });
   });
-  await page.goto(`/projects/${fixture.encodedId}/write?chapter=1`);
+  await page.goto(`/projects/${fixture.encodedId}/write?chapter=${chapterNumber}`);
+  if (repairSource === "candidate") await expect(page.getByRole("region", { name: "候选稿", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "按审查精修", exact: true }).click();
   const panel = page.getByRole("region", { name: "审查精修" });
   await expect(panel).toContainText("正文使用了18处显式比喻");
   await panel.getByRole("button", { name: "生成精修候选稿" }).click();
   await expect(page.getByRole("region", { name: "候选稿", exact: true })).toContainText("精修后的候选稿。");
-  expect(payload).toEqual({ chapter_number: 1, operation: "review_repair", ...(repairSource === "candidate" ? { source_candidate_id: "candidate-1" } : {}) });
+  expect(payload).toEqual({ chapter_number: chapterNumber, operation: "review_repair", ...(repairSource === "candidate" ? { source_candidate_id: "candidate-2" } : {}) });
   await page.getByText("查看逐处修改（1处）", { exact: true }).click();
   await expect(page.getByRole("region", { name: "候选稿", exact: true })).toContainText("他站着没动。");
-  await page.getByText("查看当前已提交版本", { exact: true }).click();
-  await expect(page.getByRole("region", { name: "候选稿", exact: true })).toContainText(original);
+  if (repairSource === "confirmed") {
+    await page.getByText("查看当前已提交版本", { exact: true }).click();
+    await expect(page.getByRole("region", { name: "候选稿", exact: true })).toContainText(original);
+  } else {
+    await expect(page.getByText("查看当前已提交版本", { exact: true })).toHaveCount(0);
+  }
   expect(fixture.story.history[0].body).toBe(original);
 });
 }

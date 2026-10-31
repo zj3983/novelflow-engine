@@ -3,7 +3,9 @@ import { expect, test, type Page, type Route } from "@playwright/test";
 const BOOK_ID = "file:author-tools-regression";
 const INITIAL_HISTORY = "幼时曾共同守船";
 const CORS_HEADERS = {
-  "access-control-allow-origin": "http://127.0.0.1:3100",
+  "access-control-allow-origin": new URL(
+    process.env.PLAYWRIGHT_BASE_URL || `http://127.0.0.1:${process.env.PLAYWRIGHT_PORT || "3100"}`,
+  ).origin,
   "access-control-allow-credentials": "true",
   "access-control-allow-methods": "GET, POST, OPTIONS",
   "access-control-allow-headers": "content-type",

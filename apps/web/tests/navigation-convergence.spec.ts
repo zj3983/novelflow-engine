@@ -66,7 +66,7 @@ test("main entry opens the four author pages and settings", async ({ page }) => 
 
   await page.getByRole("button", { name: "打开设置" }).click();
   await expect(page).toHaveURL(/\/config$/);
-  await expect(page.getByRole("navigation", { name: "主导航" }).getByRole("link", { name: "设置" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "主导航" }).getByRole("link", { name: "配置", exact: true })).toHaveAttribute("href", "/config");
 
   await page.goto("/books");
   await expect(page).toHaveURL(/\/workspace(?:\?|$)/);
@@ -78,27 +78,28 @@ test("the reserved new-project route does not show a fake project navigation", a
 
   const nav = page.getByRole("navigation", { name: "主导航" });
   await expect(nav.getByRole("link", { name: "作品" })).toBeVisible();
-  await expect(nav.getByRole("link", { name: "设置" })).toBeVisible();
+  await expect(nav.getByRole("link", { name: "配置", exact: true })).toHaveAttribute("href", "/config");
   for (const label of ["全书规划", "写作", "故事设定"]) {
     await expect(nav.getByRole("link", { name: label, exact: true })).toHaveCount(0);
   }
 });
 
-test("legacy chapter-writing URLs stay directly available and link back to the workbench", async ({ page }) => {
+test("legacy chapter-writing URLs stay directly available with project navigation", async ({ page }) => {
   const encodedId = encodeURIComponent("file:legacy-direct-entry");
   const legacyPath = `/projects/${encodedId}/write`;
-  await page.route(`**/file-projects/${encodedId}/product/write**`, async (route) => {
+  await page.route(new RegExp(`/file-(?:projects|stories)/${encodedId}(?:[/?]|$)`), async (route) => {
     await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ detail: "fixture_not_found" }) });
   });
 
   const response = await page.goto(legacyPath, { waitUntil: "domcontentloaded" });
   expect(response?.status()).toBe(200);
   await expect(page).toHaveURL(new RegExp(`/projects/${encodedId}/write$`));
-  await expect(page.getByRole("heading", { name: "章节创作" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "章节", exact: true })).toBeVisible();
 
   const nav = page.getByRole("navigation", { name: "主导航" });
-  await expect(nav.getByRole("link", { name: "写作" })).toHaveAttribute(
+  await expect(nav.getByRole("link", { name: "章节", exact: true })).toHaveAttribute(
     "href",
-    `/workspace?book=${encodedId}&page=writing`,
+    legacyPath,
   );
+  await expect(nav.getByRole("link", { name: "章节", exact: true })).toHaveAttribute("aria-current", "page");
 });
