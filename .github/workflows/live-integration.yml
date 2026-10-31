@@ -1,0 +1,119 @@
+name: Live Integration
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/live-integration.yml
+      - apps/api/**
+      - packages/story_core/**
+      - apps/web/app/projects/**
+      - apps/web/app/layout.tsx
+      - apps/web/app/globals.css
+      - apps/web/components/**
+      - apps/web/lib/**
+      - apps/web/next.config.*
+      - apps/web/tsconfig.json
+      - apps/web/package.json
+      - apps/web/package-lock.json
+      - apps/web/pnpm-lock.yaml
+      - apps/web/pnpm-workspace.yaml
+      - apps/web/playwright.integration.config.ts
+      - apps/web/run-live-api-integration.ps1
+      - apps/web/tests/integration/**
+      - tests/story_core/test_ongoing_planning.py
+      - tests/story_core/test_opening_build.py
+      - tests/story_core/test_opening_prose.py
+      - tests/story_core/test_candidate_confirmation_transaction.py
+      - tests/story_core/test_world_build_graph.py
+      - tests/story_core/test_outline_planning.py
+      - pyproject.toml
+      - uv.lock
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/live-integration.yml
+      - apps/api/**
+      - packages/story_core/**
+      - apps/web/app/projects/**
+      - apps/web/app/layout.tsx
+      - apps/web/app/globals.css
+      - apps/web/components/**
+      - apps/web/lib/**
+      - apps/web/next.config.*
+      - apps/web/tsconfig.json
+      - apps/web/package.json
+      - apps/web/package-lock.json
+      - apps/web/pnpm-lock.yaml
+      - apps/web/pnpm-workspace.yaml
+      - apps/web/playwright.integration.config.ts
+      - apps/web/run-live-api-integration.ps1
+      - apps/web/tests/integration/**
+      - tests/story_core/test_ongoing_planning.py
+      - tests/story_core/test_opening_build.py
+      - tests/story_core/test_opening_prose.py
+      - tests/story_core/test_candidate_confirmation_transaction.py
+      - tests/story_core/test_world_build_graph.py
+      - tests/story_core/test_outline_planning.py
+      - pyproject.toml
+      - uv.lock
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  live-integration:
+    name: Live API / Browser
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      INTEGRATION_API_PORT: "8187"
+      INTEGRATION_WEB_PORT: "3187"
+      NOVELFLOW_E2E_SYNTHETIC: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: uv sync --extra dev --frozen
+      - name: Check trigger and isolation contracts
+        run: uv run python -m unittest discover -s apps/web/tests/integration -p test_ci_workflow.py -v
+      - run: npm ci
+        working-directory: apps/web
+      - run: npx playwright install --with-deps chromium
+        working-directory: apps/web
+      - name: Allocate isolated run root
+        run: |
+          run_root=$(mktemp -d "${RUNNER_TEMP}/novelflow-live-api-e2e.XXXXXX")
+          echo "INTEGRATION_RUN_ROOT=$run_root" >> "$GITHUB_ENV"
+      - name: Run the two live API / browser cases
+        working-directory: apps/web
+        timeout-minutes: 12
+        run: uv run --project ../.. npm exec -- playwright test --config=playwright.integration.config.ts --reporter=line
+      - name: Preserve request logs and browser failure evidence
+        if: ${{ always() && env.INTEGRATION_RUN_ROOT != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-integration-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.INTEGRATION_RUN_ROOT }}/logs/
+            ${{ env.INTEGRATION_RUN_ROOT }}/playwright-output/
+          if-no-files-found: ignore
+          retention-days: 7
