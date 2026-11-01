@@ -59,7 +59,7 @@ export default function RootError({
             textDecoration: "none",
           }}
         >
-          前往新版
+          返回作品
         </a>
       </div>
     </div>

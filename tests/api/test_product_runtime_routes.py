@@ -11,6 +11,11 @@ from packages.story_core.runtime_config import RuntimeConfiguration
 client = TestClient(app)
 
 
+def test_removed_author_workspace_routes_are_unavailable():
+    assert client.get("/author-workspace").status_code == 404
+    assert client.post("/author-workspace/commands", json={}).status_code == 404
+
+
 @pytest.fixture
 def settings(monkeypatch, tmp_path):
     import packages.story_core.runtime_config as config
