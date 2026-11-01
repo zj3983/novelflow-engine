@@ -173,7 +173,7 @@ def adapt_modular_bundle_to_legacy(
         },
         "modular_pipeline": {
             "consistency_checked": not any(finding.get("code") in {
-                "consistency.unavailable", "consistency.invalid_response"} for finding in raw_findings),
+                "consistency.unavailable", "consistency.invalid_response", "candidate.semantic_unverified"} for finding in raw_findings),
             "director_artifact_present": True,
             "fact_extractor_chapter": (
                 continuity_delta.chapter_number
@@ -208,6 +208,9 @@ def adapt_modular_bundle_to_legacy(
             },
         },
     }
+    semantic_review = getattr(modular_bundle, "candidate_semantic_review", None)
+    if semantic_review:
+        quality_report["candidate_semantic_review"] = dict(semantic_review)
     quality_report = contextualize_rule_checks(quality_report)
     scene_results = [
         str(beat.result or "").strip()

@@ -44,7 +44,7 @@ These three entry points are exercised end-to-end by
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 import hashlib
 import re
 from typing import Any
@@ -172,6 +172,7 @@ class ModularChapterBundle:
     fact_extractor_trace_id: str = ""
     contextual_review: dict[str, Any] = field(default_factory=dict)
     automatic_revision: list[dict[str, Any]] = field(default_factory=list)
+    candidate_semantic_review: dict[str, Any] = field(default_factory=dict)
 
 
 # --- Helpers ------------------------------------------------------------------
@@ -943,6 +944,7 @@ def run_writer(
     consistency_runtime: ConsistencyRuntime | None = None,
     rewrite_guidance: str = "",
     character_intents: list[SceneCharacterIntent] | None = None,
+    defer_consistency_review: bool = False,
 ) -> WriterPipelineResult:
     """Run the new writer pipeline for ``chapter_number``.
 
@@ -1114,12 +1116,12 @@ def run_writer(
     # still return the writer's body and just record no
     # findings — the user's confirmation gate is the final
     # safety net for the legacy editor surface.
-    if consistency_runtime is None:
+    if consistency_runtime is None and not defer_consistency_review:
         try:
             consistency_runtime = _default_consistency_runtime(project_root)
         except Exception:
             consistency_runtime = None
-    if consistency_runtime is not None:
+    if consistency_runtime is not None and not defer_consistency_review:
         try:
             model_findings = focused_consistency_review(
                 result.body,
@@ -1146,7 +1148,7 @@ def run_writer(
                     blocking=False,
                 )
             )
-    else:
+    elif not defer_consistency_review:
         consistency_findings.append(ConsistencyFinding(code="consistency.unavailable",
             message="事实检查暂时不可用，请配置模型后重新检查。", source="consistency", blocking=False))
     return WriterPipelineResult(
@@ -1754,6 +1756,7 @@ def run_modular_pipeline(
         runtime=writer_runtime,
         consistency_runtime=consistency_runtime,
         rewrite_guidance=rewrite_guidance,
+        defer_consistency_review=True,
     )
     report_generation_progress(
         {
@@ -1822,6 +1825,25 @@ def run_modular_pipeline(
             },
         }
     )
+
+    # Review the extracted proposals with the final prose in the same model
+    # call. The standalone Writer entry keeps its body-only review contract.
+    from packages.story_core.candidate_semantics import review_candidate_semantics
+
+    try:
+        findings, semantic_review = review_candidate_semantics(
+            body=writer_result.body, chapter_number=chapter_number,
+            director=director_result.artifact, snapshot=writer_result.canon_review_snapshot,
+            delta=delta, runtime=consistency_runtime or _default_consistency_runtime(project_root),
+        )
+    except ModelPreflightBlockedError:
+        raise
+    except ValueError:
+        semantic_review = {"status": "unavailable"}
+        findings = [ConsistencyFinding(code="candidate.semantic_unverified",
+            message="拟提交的状态变化尚未完成语义核验，请重新检查候选稿。",
+            source="delta_semantics", blocking=True)]
+    writer_result.consistency_findings.extend(asdict(finding) for finding in findings)
 
     if workflow_store is not None:
         effective_job_id = job_id or f"chapter-{chapter_number}"
@@ -1916,6 +1938,7 @@ def run_modular_pipeline(
         consistency_findings=list(writer_result.consistency_findings or []),
         contextual_review=writer_result.contextual_review,
         automatic_revision=writer_result.automatic_revision,
+        candidate_semantic_review=semantic_review,
         continuity_delta=delta,
         fact_extractor_trace_id=f"fact-extractor:{chapter_number}",
     )

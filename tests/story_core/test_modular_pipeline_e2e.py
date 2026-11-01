@@ -331,7 +331,7 @@ class _StubConsistencyRuntime:
 
     def complete(self, request: Any) -> dict[str, Any]:
         self.calls.append(request)
-        return {
+        payload = {
             "issues": [
                 {
                     "code": "canon_violation",
@@ -341,6 +341,12 @@ class _StubConsistencyRuntime:
                 }
             ]
         }
+        if "## 拟提交变更\n" in request.prompt:
+            proposals = json.loads(request.prompt.split("## 拟提交变更\n", 1)[1])
+            payload.update(review_id=request.metadata["review_id"], decisions=[
+                {"change_id": item["change_id"], "verdict": "supported", "reason_code": "actual_event"}
+                for item in proposals])
+        return payload
 
 
 class _EmptyConsistencyRuntime:
@@ -703,7 +709,7 @@ def test_double_character_failure_records_empty_source_and_director_continues(tm
     assert "proposals=0" in record.output_summary
 
 
-def test_consistency_preflight_block_stops_before_fact_extraction_or_candidate_artifacts(
+def test_consistency_preflight_block_stops_before_candidate_artifacts(
     tmp_path: Path,
 ) -> None:
     _seed_legacy_project(tmp_path, with_outline=False)
@@ -724,14 +730,14 @@ def test_consistency_preflight_block_stops_before_fact_extraction_or_candidate_a
 
             return Response()
 
-    class NeverExtract:
+    class CountExtract:
         calls = 0
 
         def extract(self, context: Any) -> ContinuityDelta:
             self.calls += 1
-            raise AssertionError("FactExtractor must not run after a blocked review")
+            return ContinuityDelta(chapter_number=context.chapter_number)
 
-    extractor = NeverExtract()
+    extractor = CountExtract()
     workflow_store = WorkflowArtifactStore(tmp_path)
     with pytest.raises(ModelPreflightBlockedError) as blocked:
         run_modular_pipeline(
@@ -746,7 +752,9 @@ def test_consistency_preflight_block_stops_before_fact_extraction_or_candidate_a
         )
 
     assert blocked.value.report["reason"] == "required_capability_unsupported"
-    assert extractor.calls == 0
+    # Review now consumes the extracted delta; preflight rejection still
+    # prevents candidate writes and completed Writer/FactExtractor artifacts.
+    assert extractor.calls == 1
     assert workflow_store.read_stage("preflight-blocked-consistency", "writer") is None
     assert workflow_store.read_stage("preflight-blocked-consistency", "fact-extractor") is None
     assert not (tmp_path / ".story-system" / "candidates").exists()
@@ -1257,7 +1265,7 @@ def test_orchestrator_runs_focused_consistency_review(tmp_path: Path):
         consistency_runtime=consistency_runtime,
     )
 
-    # The consistency runtime was hit exactly once during the writer stage.
+    # The consistency runtime was hit exactly once after extraction.
     # This project has already advanced but has no bounded chapter-0 state,
     # so the model cannot manufacture a blocking Canon finding.
     assert len(consistency_runtime.calls) == 1
