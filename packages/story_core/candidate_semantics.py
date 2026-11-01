@@ -103,6 +103,9 @@ def review_candidate_semantics(*, body, chapter_number, director, snapshot, delt
         raise
     except Exception as exc:
         raise ValueError("candidate_review_unavailable") from exc
+    preflight_report = getattr(response, "preflight_report", None)
+    if isinstance(preflight_report, dict) and preflight_report.get("status") in {"BLOCKED", "SPLIT"}:
+        raise ModelPreflightBlockedError(preflight_report)
     payload = _extract_payload(response)
     if getattr(response, "ok", True) is False or payload.get("review_id") != review_id or not isinstance(payload.get("issues"), list):
         raise ValueError("candidate_review_unavailable")
@@ -152,6 +155,8 @@ def review_candidate_semantics(*, body, chapter_number, director, snapshot, delt
     findings = focused_consistency_review(body, director_artifact=director,
         active_facts=list(snapshot.get("facts") or []), character_states=list(snapshot.get("characters") or []),
         canon_snapshot=snapshot, runtime=CapturedResponse())
+    if any(finding.code in {"consistency.unavailable", "consistency.invalid_response"} for finding in findings):
+        raise ValueError("candidate_review_unavailable")
     by_id = {p["change_id"]: p["change"] for p in proposals}
     normalized = []
     for item in decisions:

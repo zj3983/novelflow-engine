@@ -147,7 +147,7 @@ def test_real_danger_warning_is_allowed_with_upstream_basis():
     assert checked["pass"]
 
 
-def test_managed_pipeline_revises_before_consistency_and_fact_extraction(tmp_path,monkeypatch):
+def test_managed_pipeline_revises_before_extraction_and_semantic_review(tmp_path,monkeypatch):
     from packages.story_core.agents import pipeline
     from packages.story_core.context.writer_context import WriterContext
     from packages.story_core.continuity.delta import ContinuityDelta
@@ -165,21 +165,22 @@ def test_managed_pipeline_revises_before_consistency_and_fact_extraction(tmp_pat
     monkeypatch.setattr(pipeline,"_preflight_entities",lambda *_:({},[]))
     monkeypatch.setattr(pipeline,"_canon_view_for",lambda *_:{})
     monkeypatch.setattr(pipeline,"_default_writer_runtime",lambda *_:writer)
-    monkeypatch.setattr(pipeline,"_default_consistency_runtime",lambda *_:object())
     def reviewer(body,context):
         events.append(('review',body))
         return report(body,body==final)
-    def consistency(body,**_):
-        events.append(('consistency',body))
-        return []
+    class Consistency:
+        def complete(self,request):
+            assert final in request.prompt and first not in request.prompt
+            events.append(('consistency',final))
+            return {"issues":[]}
     class Extractor:
         def extract(self,context):
             events.append(('facts',context.body))
             return ContinuityDelta(chapter_number=307)
     monkeypatch.setattr(revision,"review_contextual_prose",reviewer)
-    monkeypatch.setattr(pipeline,"focused_consistency_review",consistency)
+    monkeypatch.setattr(pipeline,"_default_consistency_runtime",lambda *_:Consistency())
     bundle=pipeline.run_modular_pipeline(project_root=tmp_path,chapter_number=307,fact_extractor=Extractor())
-    assert events==[('review',first),('review',final),('consistency',final),('facts',final)]
+    assert events==[('review',first),('review',final),('facts',final),('consistency',final)]
     assert bundle.body==final and bundle.contextual_review['body_sha256']==sha256(final.encode()).hexdigest()
 
 
